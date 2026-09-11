@@ -649,6 +649,30 @@ If institutional policy requires the university instead, it is a one-line change
 Nothing is published yet, and this was the last blocker.
 What remains is a version tag and a release.
 
+### 2026-09-11 (the first CI run found an import-time bug)
+
+The TestPyPI rehearsal was dispatched and **failed before building anything**, which is the best
+possible outcome for a first CI run.
+
+- **`qupa_cafe/server.py` could not be imported on Python 3.10 to 3.13.**
+  `EXTERNAL_ID_PATTERN` was `re.compile(r"\A[\w-]+\z")` — Discourse's own validation regex,
+  transcribed verbatim from Ruby, where `\z` is the end-of-string anchor.
+  Python spells that `\Z`, and `\z` raises `re.error: bad escape \z` **at import**, so nothing in
+  the module worked at all: no MCP server, no writes, no policy check.
+  Fixed to `\Z`, which behaves identically including rejecting a trailing newline, where `$` would
+  have accepted one.
+- **It was invisible locally because Python 3.14 accepts `\z` as an alias.**
+  The maintainer's interpreter is 3.14.4 and CI pinned 3.12, which is the only reason this was
+  found rather than shipped.
+  `server/ranking.py` already used the correct `\Z`, so the codebase disagreed with itself.
+- **The durable fix is the test matrix, not the character.**
+  `requires-python = ">=3.10"` is a promise that one interpreter cannot check, so the `check` job
+  now runs on **3.10 and 3.13** with `fail-fast: false`.
+  Any of 3.10 through 3.13 would have caught this; testing only what the maintainer runs locally is
+  what let it reach the default branch.
+
+Nothing was uploaded, and nothing was built: the failure was in the job that gates the build.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**

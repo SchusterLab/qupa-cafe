@@ -49,7 +49,14 @@ from .policy import PolicyClient, PolicyError
 # Discourse validates topic.external_id against /\A[\w-]+\z/ with a maximum
 # length of 50 (Topic::EXTERNAL_ID_MAX_LENGTH), and the column has a unique
 # index. Read from the source on 2026-09-10 after a 422 "External is invalid".
-EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\z")
+#
+# Note the spelling. Discourse's regex is Ruby, where the end-of-string anchor
+# is `\z`; the Python equivalent is `\Z`. Transcribing the Ruby form verbatim
+# raises `re.error: bad escape \z` on Python 3.10 to 3.13 -- an import-time
+# failure, so nothing in this module works at all. It is invisible on 3.14,
+# which accepts `\z` as an alias, which is exactly how it survived local
+# testing and was caught only by CI pinning an older interpreter.
+EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\Z")
 EXTERNAL_ID_MAX_LENGTH = 50
 
 PROTOCOL_VERSION = "2025-06-18"
