@@ -224,8 +224,7 @@ Bootstrap finished. It is NOT done until three things are true.
 
   3. A TEST EMAIL ACTUALLY ARRIVES. Admin -> Email, send to an address at a
      major mailbox provider, and read the received headers for dmarc=pass with
-     SPF or DKIM ALIGNED to the domain in From. Expect DKIM to be that half;
-     a relay's spf=pass is for its own bounce domain and counts for nothing.
+     the DKIM signature's d= matching the domain in From. spf=none is fine.
 
 Number 3 is the one people skip. Nothing in the bootstrap validates SMTP beyond
 a literal comparison against "smtp.example.com", so a wrong relay config

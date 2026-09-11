@@ -104,7 +104,7 @@ In rough order of value:
    The lowest-effort attack, because it requires only a forum account.
 4. **The host.** Full compromise.
    Standard mitigations, standard consequences.
-5. **The relay credentials.** Send mail as the forum's domain, which is authenticated by SPF and DKIM and therefore trusted.
+5. **The relay credentials.** Send mail as the forum's domain, which is DKIM-signed and therefore trusted.
    Low impact on the forum, higher on the domain's reputation.
 
 ## 10.7 If something goes wrong

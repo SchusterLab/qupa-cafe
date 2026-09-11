@@ -34,17 +34,16 @@ Check, in order:
    Everything after it was discarded as a YAML comment.
 3. Whether the **subdomain** you send from is verified with the provider, rather than the apex domain.
    Verifying `example.com` while sending as `forum.example.com` leaves mail misconfigured.
-4. Whether the provider's authentication records resolve for the sending domain, following any CNAME delegation to the end.
-   A delegation that resolves while its target holds no key verifies with the provider and signs nothing.
+4. Whether the provider's authentication records resolve, following any CNAME through to the record that holds the key.
 
 Any change to `app.yml` needs `./launcher rebuild app`, not a restart.
 
 ### Mail arrives but lands in spam
 
-Check the received headers of a test message for `dmarc=pass`, and confirm that whichever of SPF or DKIM passed is **aligned** with the domain in `From:`.
+Check the received headers of a test message for `dmarc=pass`, and that the DKIM signature's `d=` matches the domain in `From:`.
 
-Passing SPF for a different domain than the one in From is the common failure, and it looks like a pass at a glance.
-DMARC needs only one aligned half, so `spf=none` beside an aligned `dkim=pass` is a healthy result rather than the fault.
+`spf=none` is not the fault.
+A `dmarc=fail` sitting beside a confident `spf=pass` is, and it looks like a pass at a glance.
 
 ## TLS
 
@@ -86,8 +85,6 @@ cd /var/discourse && sudo ./launcher enter app
 ls /var/www/discourse/plugins | grep <name>
 exit
 ```
-
-Most instructions written before 2026 tell you to clone plugins that are now bundled.
 
 ### Any other hook failure
 

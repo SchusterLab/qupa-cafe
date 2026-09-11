@@ -2,7 +2,7 @@
 
 > **Status:** Requirements confirmed against upstream documentation and source on 2026-09-10.
 > The sizing formula and the hostname constraint are quoted from Discourse's own material; each is cited inline.
-> The email-authentication section was revised on 2026-09-11 after publishing a real relay's records, which asked for a different set than the written guidance describes.
+> The email-authentication section was revised on 2026-09-11, against a relay whose records are published and resolving.
 
 This guide deploys Discourse in its supported Docker configuration, with automatic TLS, a transactional email relay, and persistent state on a separate block device.
 
@@ -66,16 +66,13 @@ A freshly allocated server address has no matching reverse DNS and sits in a ran
 
 ### Authenticate the sending domain
 
-Publish whatever authentication records your relay asks for, add DMARC yourself, and verify the sending **subdomain** with the provider rather than the apex.
+Publish the authentication records your relay asks for, and verify the sending **subdomain** with the provider rather than the apex.
+If the relay does not offer a DMARC record, add one yourself.
 
-Expect DKIM rather than SPF to be the half that carries this.
-SPF authenticates the envelope sender, which for a relay is the relay's own bounce domain, so it passes for a domain the recipient never sees.
-DMARC accepts an aligned SPF **or** an aligned DKIM, and DKIM is the one a relay signs with your domain.
+A password reset in a spam folder is indistinguishable from one that never arrived, and major mailbox providers tightened enforcement against unauthenticated mail through 2025.
 
-This matters more than it used to.
-Major mailbox providers tightened enforcement against unauthenticated mail through 2025, and a password reset in a spam folder is indistinguishable from one that never arrived.
-
-Start DMARC at `p=none` so you can observe before you enforce.
+Leave DMARC at `p=none` until a test message is confirmed delivered.
+Enforcing before then rejects your own mail.
 
 ### Nothing validates that SMTP works
 

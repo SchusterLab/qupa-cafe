@@ -11,7 +11,7 @@ The split is the same in both cases: the guide is written against requirements, 
 `docs/01-requirements.md` says the deployment needs an SMTP relay, a domain you control, and authentication records published for the sending subdomain.
 It deliberately does not say whose relay or whose DNS.
 
-But the record names a particular relay wants, and the exact panel to click in a particular registrar, are things we had to work out, and a reproducer benefits from seeing a worked example.
+But the records a particular relay wants, and the exact panel to click in a particular registrar, are things we had to work out, and a reproducer benefits from seeing a worked example.
 Putting them here keeps them out of the guide without throwing them away.
 
 ## What is here

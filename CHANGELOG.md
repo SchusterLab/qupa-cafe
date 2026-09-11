@@ -56,44 +56,31 @@ An entry here that cites no document is a sign that the documentation drifted.
 
 ### 2026-09-11
 
-Email authentication for `forum.qupa-cafe.com` published at the registrar and verified by resolution:
-an ownership TXT, two DKIM records, and DMARC at `p=none`.
-`providers/brevo/README.md` is no longer a prediction; every `[unverified]` marker on it is gone,
-replaced by the record names the panel actually asked for.
+Email authentication for `forum.qupa-cafe.com` published at the registrar and verified by
+resolution: an ownership TXT, two DKIM records, and DMARC at `p=none`.
+The SMTP key is generated.
+`providers/brevo/README.md` is no longer a prediction -- every `[unverified]` marker on it is gone,
+replaced by the four records the panel asks for and the answers they return.
 
-- **The relay asks for two DKIM CNAMEs, not a DKIM TXT.**
-  The key material stays with the provider and rotates without touching our zone, which is better,
-  but it means instructions telling you to paste a `v=DKIM1; k=rsa; p=...` blob at `mail._domainkey`
-  describe a flow that no longer exists.
-  The delegation has to be followed to its end to be checked at all: a CNAME that resolves while its
-  target holds no key verifies in the panel and signs nothing.
-- **It asks for no SPF record**, and none is needed.
-  SPF authenticates the envelope sender, which for a relay is the relay's own bounce domain, so a
-  record on our subdomain would pass for a domain the recipient never sees.
-- **Four places told the reader to confirm `spf=pass` *and* `dkim=pass` with an aligned From domain.**
-  DMARC passes on an aligned SPF **or** an aligned DKIM, and with a relay's own bounce domain SPF
-  cannot be the aligned one.
-  As written, the guide sent a reader to chase a failure that is the normal result, and the obvious
-  response to it — publish an SPF record, watch `spf=pass` appear — would have looked like a fix
-  while changing nothing.
+- **DKIM is two CNAMEs rather than a TXT record**, so the key material lives with the relay and the
+  delegation has to be followed to its end to be checked at all.
+  A CNAME that resolves while its target holds no key verifies in the panel and signs nothing.
+  Ours end at 2048-bit RSA keys.
+- **Four places told the reader to confirm `spf=pass` *and* `dkim=pass` with an aligned From
+  domain.**
+  DMARC needs only one of the two, and the relay signs with DKIM, so the instruction sent a reader
+  to chase the normal result.
+  Every one of those checks is now the same two questions: did `dmarc` pass, and does the DKIM
+  signature's `d=` match the domain in `From:`.
   Corrected in `docs/01-requirements.md`, `docs/03-install.md`, `docs/08-runbook.md`, and the
   completion notice printed by `scripts/30-install-discourse.sh`.
-- **`_spf.brevo.com` is not the SPF include.**
-  It publishes `v=spf1 -all`, which authorises nothing.
-  The include is `spf.brevo.com`.
-  One character apart, opposite meanings, and both resolve.
-- **A DMARC `rua` pointing at another organisation's domain needs that organisation's permission,
-  published in DNS**, per RFC 7489 §7.1.
-  Ours points at the relay's report collector, so this was worth checking rather than assuming:
-  the authorisation record is present, and reports will be generated.
-  Absent it, DMARC looks configured and no report is ever produced.
 - The registrar's default wildcard stops covering a name once anything is published under it, so
   `forum.qupa-cafe.com` now returns no address at all rather than the parking host.
   Recorded in `providers/README.md`, because it means the forum's address record can be added at
   provisioning time with no stale answer ahead of it.
 
-Still outstanding on email: the SMTP key, and a message that actually arrives with readable headers.
-Both need the account panel or the forum, so `docs/03-install.md` §3.6 stays unverified.
+`docs/03-install.md` §3.6 stays unverified.
+What is left on email is a message that actually arrives, and that needs the forum.
 
 ### Corrections found by running the install
 
@@ -102,8 +89,7 @@ Both need the account panel or the forum, so `docs/03-install.md` §3.6 stays un
   A `git clone` for it in `app.yml`'s `after_code` hook fails the whole bootstrap with
   "destination path already exists" and exit code 128.
   `docker_manager` is not bundled, so that clone stays.
-  Corrected in `config/app.yml.example` and `docs/04-embeddings.md`, with a runbook entry, since most
-  instructions written before 2026 say to clone it.
+  Corrected in `config/app.yml.example` and `docs/04-embeddings.md`, with a runbook entry.
 
 ### Corrections found by running the agent kit against a live forum
 
@@ -122,8 +108,7 @@ scratch forum.
 - **`discourse-ai` embeds topics, not posts.**
   `ai_posts_embeddings` is created by the plugin's migrations and stays empty by default.
   There is a switch — `ai_embeddings_per_post_enabled`, default false — but it is **hidden**, absent
-  from both the admin panel and `SiteSetting.all_settings`, which is why it first looked as though no
-  such setting existed.
+  from both the admin panel and `SiteSetting.all_settings`, and findable only in the plugin source.
   We left it off and so cannot say what it costs.
   `ranking.py` now scores topics and keeps its guardrails per post, which fits the design better:
   the daemon hands the agent the whole thread anyway.
