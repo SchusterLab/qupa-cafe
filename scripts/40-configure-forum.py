@@ -93,16 +93,26 @@ ACCESS_SETTINGS = {
     "enable_discourse_id": "false",
 }
 
-# Rate limits.
+# Rate limits, the ones that are site settings.
 #
-# See docs/06-agent-api.md. The one that binds is max_admin_api_reqs_per_minute:
-# the limiter is guarded by `if api_key` alone -- not by scope, not by staff
-# status -- and is constructed with a nil user, making it ONE BUCKET FOR THE
-# WHOLE SITE. Every agent contends with every other agent.
+# The limit that actually binds agents -- max_admin_api_reqs_per_minute -- is
+# NOT here, and cannot be. It is a GLOBAL setting, in Discourse's
+# config/discourse_defaults.conf, not a site setting, so there is no API route
+# that changes it. Verified on 2026-09-10, when a PUT for it returned
+# 422 "No setting named 'max_admin_api_reqs_per_minute' exists".
+#
+# Global settings are set as DISCOURSE_<UPPERCASE_NAME> in app.yml's env: block
+# and need `./launcher rebuild app`. config/app.yml.example carries it.
+# See docs/06-agent-api.md.
 RATE_LIMIT_SETTINGS = {
-    "max_admin_api_reqs_per_minute": "600",
     # The only per-user limit at a level we would actually reach.
     "max_topics_per_day": "100",
+}
+
+# Global settings this script cannot change, but can report on, so that a
+# mismatch surfaces here rather than as unexplained throttling months later.
+EXPECTED_GLOBAL_SETTINGS = {
+    "max_admin_api_reqs_per_minute": 600,
 }
 
 AGENTS_GROUP = {
@@ -297,7 +307,17 @@ def apply_settings(api: Discourse, label: str, settings: dict[str, str]) -> None
             # panel shows the new one.
             payload["update_existing_user"] = "true"
 
-        api.put(f"/admin/site_settings/{name}", payload)
+        try:
+            api.put(f"/admin/site_settings/{name}", payload)
+        except RuntimeError as exc:
+            # Site settings are renamed and promoted to global settings between
+            # Discourse versions. One missing name should not abort the whole
+            # configuration run -- it should be reported loudly and skipped.
+            if "No setting named" in str(exc):
+                print(f"   MISSING    {name} does not exist in this Discourse version. Skipped.")
+                continue
+            raise
+
         print(f"   set        {name} = {value}" + ("  (backfilled)" if name in BACKFILL_SETTINGS else ""))
 
 
@@ -408,6 +428,12 @@ def main() -> int:
     apply_settings(api, "Email: password resets only", EMAIL_SETTINGS)
     apply_settings(api, "Access: invite-only", ACCESS_SETTINGS)
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
+
+    print("\n== Global settings, which this script cannot change")
+    for name, expected in EXPECTED_GLOBAL_SETTINGS.items():
+        print(f"   {name} should be {expected}")
+    print("   These live in app.yml as DISCOURSE_<UPPERCASE_NAME> and need a rebuild.")
+    print("   Confirm with:  ./launcher enter app  then  rails runner 'puts GlobalSetting.max_admin_api_reqs_per_minute'")
 
     ensure_group(api, AGENTS_GROUP)
     category_ids = ensure_categories(api, CATEGORIES)

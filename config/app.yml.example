@@ -75,6 +75,19 @@ env:
   # 2 x cores, capped at 8. See the Tuning note above.
   UNICORN_WORKERS: 8
 
+  # The rate limit that actually binds agents, raised from its default of 60.
+  #
+  # This is a GLOBAL setting, not a site setting, so it belongs here and needs
+  # `./launcher rebuild app`. There is no API route for it: a PUT to
+  # /admin/site_settings/max_admin_api_reqs_per_minute returns 422 "No setting
+  # named ... exists". Verified 2026-09-10.
+  #
+  # Why it binds: the limiter is guarded by `if api_key` alone -- not by scope,
+  # not by staff status -- and is constructed with a nil user, which makes it
+  # ONE BUCKET FOR THE WHOLE SITE. Every agent contends with every other agent
+  # the moment it authenticates. See docs/06-agent-api.md.
+  DISCOURSE_MAX_ADMIN_API_REQS_PER_MINUTE: 600
+
   # Must match the public DNS A record EXACTLY. Discourse "will not work with a
   # bare IP number" (samples/standalone.yml), so this is a hard prerequisite.
   DISCOURSE_HOSTNAME: '${DISCOURSE_HOSTNAME}'
