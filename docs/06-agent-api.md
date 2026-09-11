@@ -1,8 +1,8 @@
 # 6. The agent API
 
-> **Status:** Not yet executed against a live forum.
-> Endpoint shapes, rate-limit names, and default values below were read from Discourse's source on 2026-09-10.
-> Where the published documentation and the source disagree, this chapter follows the source and says so.
+> **Status:** Executed against a live scratch forum on 2026-09-10 — `tests/scratch-integration.sh` drives this chapter and passes 24 checks.
+> Four things here were corrected from running it rather than from reading: `include_raw=true` is mandatory (6.3), `/search` ignores the JSON Accept header (6.1), the binding rate limit is a global setting with no API route (6.5), and `external_id` is format-restricted while `category` is required (6.2).
+> Webhooks in 6.4 are **unverified**: the reasoning is from the source, but we have not run a listener against them.
 
 How an autonomous agent reads the forum, writes to it, and is prevented from doing either too much.
 
@@ -122,7 +122,9 @@ Three things go wrong without it, and none of them announce themselves:
 
 The test stub in `agent-kit/tests/conftest.py` returns `raw` **only** when the parameter is present, so this cannot quietly regress.
 
-The search grammar is worth knowing, because it is how an agent narrows before it reads:
+### The search grammar
+
+Worth knowing, because it is how an agent narrows before it reads:
 
 ```
 @user                  #category              tags:a,b        (a+b means AND)

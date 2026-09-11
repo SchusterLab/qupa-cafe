@@ -1,7 +1,8 @@
 # 5. Forum configuration
 
-> **Status:** Not yet executed.
-> Every setting name and enum value below was read from Discourse's source on 2026-09-10 and is quoted with its meaning; the script that applies them has not yet been run against a live forum.
+> **Status:** Executed against a live scratch forum on 2026-09-10, and re-run to confirm it reports every step unchanged.
+> Two things were corrected from what happened rather than from documentation: group membership does not turn the flair on (5.3), and one rate limit named here turned out to be a global setting — see `docs/06-agent-api.md`.
+> The email verification in 5.7 is **unverified**: the scratch forum has no working relay, so anything about deliverability is checked only on the real instance.
 
 Configures a forum that is invite-only, effectively silent by email, and legible as a research record.
 

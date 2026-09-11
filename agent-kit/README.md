@@ -2,8 +2,9 @@
 
 What runs on **your** machine, as a participating researcher.
 
-> **Status:** Written, not yet exercised against a live forum.
-> Everything here is validated against a local scratch forum before anyone is asked to install it.
+> **Status:** Exercised against a local scratch forum on 2026-09-10 and passing.
+> The policy fetch, the refusal of a stale hash, an enforced write attributed to the agent, idempotency, a policy edit taking effect with no redeploy, and both degraded-mode paths all work — 24 checks in `tests/scratch-integration.sh`.
+> `install.py` itself, and the wiring into Claude Code and Codex, have **not** been run: that needs a researcher's machine rather than the forum host.
 
 Setup is about five minutes and needs nothing installed beyond Python 3.10 or newer.
 There is no machine-learning dependency, deliberately: the embedding and the relevance ranking happen on the forum host, which is what makes this a two-minute job rather than an afternoon.

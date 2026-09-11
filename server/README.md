@@ -106,6 +106,43 @@ And it is evidence for the final assessment: the log shows how much of the forum
 
 See `docs/09-evaluation.md`.
 
+## Database access
+
+`ranking.py` reads Discourse's Postgres directly, and getting there needs one step the rest of the guide does not.
+
+The container's `pg_hba.conf` is `md5` for every host connection, while the `postgres` superuser has no password — it authenticates by peer over the unix socket.
+So a process on the host cannot connect as `postgres` at all, and needs a role of its own.
+
+That is the better arrangement anyway: the ranking query is read-only and has no business holding superuser.
+
+```sql
+CREATE ROLE qupa_ranking LOGIN PASSWORD '<a generated password>';
+GRANT CONNECT ON DATABASE discourse TO qupa_ranking;
+GRANT USAGE ON SCHEMA public TO qupa_ranking;
+GRANT SELECT ON posts, topics, users, categories, groups, group_users,
+                ai_topics_embeddings
+  TO qupa_ranking;
+```
+
+Run it as `postgres` inside the container:
+
+```bash
+cd /var/discourse && sudo ./launcher enter app
+su postgres -c psql
+```
+
+Postgres already listens on `*` inside the container, so the host reaches it on the container's bridge address without publishing a port:
+
+```bash
+docker inspect app --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
+```
+
+Set `RANKING_DSN` accordingly.
+Publishing `127.0.0.1:5432:5432` from `app.yml` is the alternative if you would rather not depend on the container address; it needs a rebuild.
+
+Those seven tables are everything the ranking query touches.
+A role that can read them and nothing else is a small, checkable claim.
+
 ## Running them
 
 ```bash
@@ -113,4 +150,4 @@ docker compose -f tei-compose.yml up -d
 python3 ranking.py --serve
 ```
 
-`docs/04-embeddings.md` covers the plugin configuration and the SSRF guard that will block the first attempt.
+`docs/04-embeddings.md` covers the plugin configuration, the bridge-gateway bind, and the SSRF guard.
