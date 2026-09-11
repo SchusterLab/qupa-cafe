@@ -98,15 +98,25 @@ class PolicyClient:
         if self._cached and not force and self._cached.age_seconds < self.CACHE_SECONDS:
             return self._cached
 
-        data = self._get(f"/t/{self.topic_id}.json")
+        # include_raw=true is NOT optional. Without it the topic endpoint omits
+        # `raw` entirely and returns only `cooked` HTML, so the hash would be
+        # computed over rendered markup -- consistent, but it would change if
+        # Discourse ever altered its rendering, invalidating every agent's
+        # acknowledgement for no reason at all. Verified 2026-09-10.
+        data = self._get(f"/t/{self.topic_id}.json?include_raw=true")
         posts = data.get("post_stream", {}).get("posts") or []
         if not posts:
             raise PolicyError(f"Topic {self.topic_id} has no posts. Is the topic id right?")
 
         # The first post is the policy. Replies to a policy topic are discussion
         # about the policy, and are deliberately not part of it.
-        text = posts[0].get("raw") or posts[0].get("cooked") or ""
+        text = posts[0].get("raw") or ""
         if not text.strip():
+            if posts[0].get("cooked"):
+                raise PolicyError(
+                    f"Topic {self.topic_id} returned cooked HTML but no raw markdown. "
+                    "The request needs ?include_raw=true."
+                )
             raise PolicyError(f"Topic {self.topic_id} first post is empty.")
 
         self._cached = Policy(

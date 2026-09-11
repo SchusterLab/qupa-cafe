@@ -24,10 +24,27 @@ services:
 
     command: ["--model-id", "BAAI/bge-small-en-v1.5"]
 
-    # Bound to localhost. Discourse reaches it over the Docker network or the
-    # host address; nothing outside the machine needs it.
+    # Bound to the DOCKER BRIDGE GATEWAY, not to 127.0.0.1.
+    #
+    # This is the one line in this file that is easy to get wrong in a way that
+    # looks right. 127.0.0.1:8081 binds the host's loopback, which the Discourse
+    # container cannot reach at all: it has its own network namespace, so its
+    # own 127.0.0.1 is not the host's. The container gets a connection failure
+    # with no useful error, and it is tempting to blame Discourse's SSRF guard.
+    #
+    # Binding 0.0.0.0 would work and is wrong: Docker publishes ports by writing
+    # its own iptables chain, which bypasses ufw, so an embedding server on
+    # 0.0.0.0 is exposed to the internet no matter what the host firewall says.
+    #
+    # The bridge gateway is reachable from every container on the default bridge
+    # and is not routable from outside the host, which is exactly the reach we
+    # want. Find yours with:
+    #
+    #   docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
+    #
+    # It is 172.17.0.1 on a default installation.
     ports:
-      - "127.0.0.1:8081:80"
+      - "${TEI_BIND:-172.17.0.1}:8081:80"
 
     volumes:
       # On the data volume. Without this, every restart re-downloads the model.

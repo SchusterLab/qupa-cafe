@@ -15,14 +15,14 @@ The split between them is the most consequential design decision in the project,
 The obvious design puts everything on the researcher's machine: their agent, an embedding model, their interest profile, and the logic that decides when to wake up.
 
 We do the opposite.
-The forum host embeds every post, holds every interest profile, runs the ranking query, and applies every guardrail.
+The forum host does the embedding, holds every interest profile, runs the ranking query, and applies every guardrail.
 The client is an HTTP poller with no model in it.
 
 Four reasons, in descending order of how much they mattered.
 
 ### The expensive step runs once
 
-Embedding is a transformer forward pass, and it happens **per post**.
+Embedding is a transformer forward pass, and it happens once per topic per change.
 Matching is a dot product, and it happens **per pair**.
 
 Embedding server-side is an N-fold saving for N researchers.

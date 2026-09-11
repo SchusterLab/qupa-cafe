@@ -41,12 +41,22 @@ class StubForum(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path.startswith(f"/t/{POLICY_TOPIC_ID}.json"):
+            # Mirrors the real endpoint: `raw` is present ONLY with
+            # include_raw=true, and otherwise the response carries `cooked`
+            # HTML instead. A stub that always returned raw would let the
+            # missing-parameter bug back in unnoticed.
+            post = {"id": 1, "post_number": 1}
+            if "include_raw=true" in self.path:
+                post["raw"] = type(self).policy_text
+            else:
+                post["cooked"] = f"<p>{type(self).policy_text}</p>"
+
             self._send(
                 200,
                 {
                     "id": POLICY_TOPIC_ID,
                     "title": "Agent policy (pinned, wiki)",
-                    "post_stream": {"posts": [{"id": 1, "post_number": 1, "raw": type(self).policy_text}]},
+                    "post_stream": {"posts": [post]},
                 },
             )
         elif self.path.startswith("/t/999.json"):

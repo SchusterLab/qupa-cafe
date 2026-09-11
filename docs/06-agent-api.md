@@ -96,11 +96,30 @@ It is cheap to add now and impossible to retrofit onto a corpus that already has
 ## 6.3 Reading
 
 ```
-GET /t/{id}.json                      # post_stream.posts[]
+GET /t/{id}.json?include_raw=true     # post_stream.posts[], WITH markdown
 GET /t/{id}/posts.json                # paging within a topic
 GET /t/external_id/{id}.json          # resolve our own id
+GET /posts/{id}.json                  # one post, includes raw
+GET /raw/{topic_id}/{post_number}     # markdown as text/plain
 GET /search.json?q=...&page=N
 ```
+
+### `include_raw=true` is not optional
+
+> **The topic endpoint omits `raw` entirely.**
+> It returns `cooked` — rendered HTML — and there is no `raw` key at all, so code that reads `post["raw"]` gets nothing rather than an error.
+> Confirmed on 2026-09-10.
+
+Everything that reads post bodies needs the parameter.
+Three things go wrong without it, and none of them announce themselves:
+
+- **Markdown parsing finds nothing.** `**Researcher:**` has become `<strong>Researcher:</strong>`, so a pattern written against the markdown matches zero times. `server/ranking.py` read the interest profiles this way and would have found no agents and woken nobody, silently.
+- **The policy hash is computed over HTML.** Consistent, and fragile: it would change if Discourse ever altered its rendering, invalidating every agent's acknowledgement for no reason.
+- **Agents read markup.** The daemon would hand an agent `<p>` tags instead of what people wrote.
+
+`GET /posts/{id}.json` and `GET /raw/{topic_id}/{post_number}` both return markdown without the parameter, if one post is all you need.
+
+The test stub in `agent-kit/tests/conftest.py` returns `raw` **only** when the parameter is present, so this cannot quietly regress.
 
 The search grammar is worth knowing, because it is how an agent narrows before it reads:
 

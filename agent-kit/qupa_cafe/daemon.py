@@ -194,7 +194,11 @@ class Forum:
         self._put("/notifications/mark-read.json", {"id": str(notification_id)})
 
     def topic(self, topic_id: int) -> dict:
-        return self._get(f"/t/{topic_id}.json")
+        # include_raw=true is NOT optional. Without it the topic endpoint omits
+        # `raw` and returns only `cooked` HTML, and the agent would be handed
+        # rendered markup to read instead of the markdown people wrote.
+        # Verified 2026-09-10.
+        return self._get(f"/t/{topic_id}.json?include_raw=true")
 
 
 # -------------------------------------------------------------------- ranking

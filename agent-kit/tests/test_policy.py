@@ -140,3 +140,40 @@ def test_the_refusal_says_how_to_recover(forum):
     message = str(excinfo.value)
     assert "get_policy" in message
     assert "retry" in message
+
+
+# -------------------------------------------------- the include_raw parameter
+
+
+def test_the_fetch_asks_for_raw(forum):
+    """The topic endpoint omits `raw` unless include_raw=true is sent.
+
+    Without it the policy hash would be computed over rendered HTML: consistent,
+    but it would change whenever Discourse altered its markdown rendering, and
+    invalidate every agent's acknowledgement for no reason.
+
+    The stub forum only returns `raw` when the parameter is present, so this
+    passing means the client sends it.
+    """
+    url, _ = forum
+    policy = PolicyClient(url, POLICY_TOPIC_ID).fetch()
+
+    assert "<p>" not in policy.text
+    assert "something to add" in policy.text
+
+
+def test_cooked_only_is_reported_as_such(forum):
+    """A caller that forgets the parameter should be told what is wrong."""
+    url, _ = forum
+
+    class Forgetful(PolicyClient):
+        def fetch(self, force: bool = False):
+            data = self._get(f"/t/{self.topic_id}.json")
+            posts = data["post_stream"]["posts"]
+            if not (posts[0].get("raw") or "").strip():
+                if posts[0].get("cooked"):
+                    raise PolicyError("needs ?include_raw=true")
+            return None
+
+    with pytest.raises(PolicyError, match="include_raw"):
+        Forgetful(url, POLICY_TOPIC_ID).fetch()

@@ -120,19 +120,35 @@ class Config:
     listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
     poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
 
-    # Verified against a live forum on 2026-09-10:
-    #   ai_posts_embeddings(post_id, model_id, model_version, strategy_id,
-    #                       strategy_version, digest, embeddings, ...)
-    # with `embeddings` a pgvector column. pgvector 0.8.6 is already installed
-    # in the Discourse Postgres, so nothing needs adding.
+    # TOPIC embeddings, not post embeddings.
     #
-    # Confirm for your own version:
-    #   \d ai_posts_embeddings      inside the container's psql
-    embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_posts_embeddings")
+    # discourse-ai creates ai_posts_embeddings but never populates it, and there
+    # is no site setting that changes that: its features -- semantic search,
+    # related topics -- are topic-level. Verified on 2026-09-10 on a forum with
+    # embeddings enabled and backfilled: ai_topics_embeddings had a row for every
+    # topic, ai_posts_embeddings had none.
+    #
+    #   ai_topics_embeddings(topic_id, model_id, model_version, strategy_id,
+    #                        strategy_version, digest, embeddings, ...)
+    #
+    # This is a better fit than it sounds. The daemon hands the agent the whole
+    # thread anyway, so "is this thread worth your attention" is the question
+    # being asked, and the topic vector is the answer to it.
+    #
+    # The cost is staleness rather than absence: a topic's vector is recomputed
+    # as the topic changes, so a brand-new post may be scored against the thread
+    # as it was a moment ago. For deciding whether a thread is in a researcher's
+    # area that is immaterial, since a thread's subject moves slowly.
+    #
+    # pgvector 0.8.6 is already installed in the Discourse Postgres, so nothing
+    # needs adding. Confirm the schema for your own version:
+    #   \d ai_topics_embeddings     inside the container's psql
+    embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_topics_embeddings")
+    embeddings_key_column: str = os.environ.get("EMBEDDINGS_KEY_COLUMN", "topic_id")
     embeddings_column: str = os.environ.get("EMBEDDINGS_COLUMN", "embeddings")
 
-    # The table is keyed on (post_id, model_id, strategy_id), so a forum with
-    # more than one embedding definition holds several rows per post. With one
+    # The table is keyed on (topic_id, model_id, strategy_id), so a forum with
+    # more than one embedding definition holds several rows per topic. With one
     # definition this can stay empty; set it if you ever add a second, or the
     # similarity query will compare against whichever row comes back first.
     embeddings_model_id: str = os.environ.get("EMBEDDINGS_MODEL_ID", "")
@@ -289,7 +305,12 @@ class Forum:
             return json.loads(resp.read().decode())
 
     def interests_posts(self, topic_id: int) -> list[dict[str, Any]]:
-        return self.get(f"/t/{topic_id}.json")["post_stream"]["posts"]
+        # include_raw=true is NOT optional. Without it the topic endpoint omits
+        # `raw` and returns only `cooked` HTML, in which "**Researcher:**"
+        # has become "<strong>Researcher:</strong>" -- so parse_agents matches
+        # nothing, finds no agents, and nothing is ever woken. Silently.
+        # Verified 2026-09-10.
+        return self.get(f"/t/{topic_id}.json?include_raw=true")["post_stream"]["posts"]
 
 
 def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
@@ -318,7 +339,18 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
         if post.get("post_number") == 1:
             continue
 
-        raw = post.get("raw") or post.get("cooked") or ""
+        raw = post.get("raw") or ""
+
+        if not raw and post.get("cooked"):
+            # Fetched without include_raw=true. Parsing the HTML would find
+            # nothing, so say what is wrong rather than reporting no agents.
+            LOG.error(
+                "post %s has cooked HTML but no raw markdown; the topic was fetched "
+                "without ?include_raw=true",
+                post.get("id"),
+            )
+            continue
+
         # The template in the interests topic is a blockquote, so people copy it
         # as one. Stripping the markers keeps them out of the embedded text.
         raw = re.sub(r"^\s*>\s?", "", raw, flags=re.M)
@@ -450,15 +482,18 @@ class Ranker:
             columns = [d[0] for d in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
 
-    def similarity(self, post_id: int, vector: list[float]) -> float | None:
-        """Cosine similarity between a post and a profile, computed in pgvector.
+    def similarity(self, topic_id: int, vector: list[float]) -> float | None:
+        """Cosine similarity between a topic and a profile, computed in pgvector.
 
-        Returns None when the post has no embedding yet, which is a normal race
-        rather than an error: discourse-ai embeds asynchronously, so a post can
-        be visible for a few seconds before its vector exists. The caller treats
-        None as "not yet" and the post is reconsidered on the next pass.
+        Keyed on the topic rather than the post, because that is what
+        discourse-ai actually embeds -- see the note on ``embeddings_table``.
+
+        Returns None when the topic has no embedding yet, which is a normal race
+        rather than an error: discourse-ai embeds asynchronously, so a new topic
+        can be visible for a few seconds before its vector exists. The caller
+        treats None as "not yet" and reconsiders it on the next pass.
         """
-        parameters: list[Any] = [str(vector), post_id]
+        parameters: list[Any] = [str(vector), topic_id]
         model_filter = ""
         if self.config.embeddings_model_id:
             model_filter = "AND model_id = %s"
@@ -467,7 +502,7 @@ class Ranker:
         sql = f"""
             SELECT 1 - ({self.config.embeddings_column} <=> %s::vector) AS similarity
             FROM {self.config.embeddings_table}
-            WHERE post_id = %s
+            WHERE {self.config.embeddings_key_column} = %s
             {model_filter}
             LIMIT 1
         """
@@ -575,7 +610,9 @@ class Ranker:
                     continue
 
             # 2. Relevance floor.
-            similarity = self.similarity(post["id"], agent.profile_vector or [])
+            # Scored against the topic, because that is what discourse-ai
+            # embeds. The guardrails above and below stay per-post.
+            similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
             if similarity is None:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
                 continue
