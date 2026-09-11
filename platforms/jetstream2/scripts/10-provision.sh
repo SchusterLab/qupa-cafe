@@ -9,7 +9,7 @@
 # Prerequisites:
 #   - python3-openstackclient and python3-designateclient installed
 #   - an application credential sourced IN A FRESH TERMINAL:
-#       source openrc-CIS261848.sh
+#       source app-cred-qupa-cafe-openrc.sh
 #   - an ed25519 or RSA public key at $KEY_FILE
 #
 # Usage:

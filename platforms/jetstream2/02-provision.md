@@ -93,7 +93,9 @@ If you want the restricted version, upstream documents the syntax — treat it a
 On success Horizon shows the id and secret once, with a **Download openrc file** button.
 
 The file it gives you is a shell script that exports the variables in [`openrc.sh.example`](openrc.sh.example), which is all `source` has to do with it.
-Save it alongside that example as `openrc-CIS261848.sh`; `.gitignore` covers that name and not the downloaded one.
+Keep the name it arrives with and save it alongside that example.
+Horizon derives the name from the credential, so with the table above it is `app-cred-qupa-cafe-openrc.sh`.
+`.gitignore` matches `*openrc*.sh` anywhere in the tree for this reason: the one file in the repository that must never be committed should not depend on anybody remembering to rename it.
 Jetstream2 documents the `openrc.sh` path only, not `clouds.yaml`.
 
 Three traps:
@@ -114,7 +116,7 @@ Three traps:
 > The one you want is the button beside the application credential you just created.
 
 ```bash
-source openrc-CIS261848.sh
+source app-cred-qupa-cafe-openrc.sh
 openstack flavor list                                # smoke test
 openstack application credential show qupa-cafe      # what was actually created
 ```

@@ -9,7 +9,9 @@
 #   Create Application Credential. The success screen has a "Download openrc
 #   file" button.
 #
-# and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
+# and save it next to this one under the name it arrives with -- Horizon
+# derives that from the credential, so ours is app-cred-qupa-cafe-openrc.sh.
+# .gitignore matches *openrc*.sh anywhere, so no renaming is needed.
 # This file exists to document the shape and the traps.
 #
 # Trap 1: we leave both expiration fields blank, so this credential does not
@@ -25,7 +27,7 @@
 #         Use a fresh terminal. The error message does not tell you that.
 #
 # Usage:
-#   source openrc-CIS261848.sh
+#   source app-cred-qupa-cafe-openrc.sh
 #   openstack flavor list          # smoke test
 
 export OS_AUTH_TYPE=v3applicationcredential

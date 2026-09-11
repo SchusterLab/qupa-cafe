@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 config/app.yml
-platforms/jetstream2/openrc*.sh
+*openrc*.sh
 !platforms/jetstream2/openrc.sh.example
 agent-kit/profiles/*.json
 !agent-kit/profiles/*.example.json
