@@ -559,7 +559,7 @@ What follows makes publishing possible rather than doing it.
 
 ### 2026-09-11 (publishing is wired up, and refuses to run)
 
-`.github/workflows/publish.yml` added, using a **trusted publisher** rather than an API token: the
+`.github/workflows/publish-pypi.yml` added, using a **trusted publisher** rather than an API token: the
 workflow exchanges a short-lived OIDC token for an upload token, so there is no long-lived secret
 in the repository to leak, rotate or forget.
 

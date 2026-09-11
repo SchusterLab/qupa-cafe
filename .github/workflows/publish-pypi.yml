@@ -4,10 +4,14 @@
 # exchanges a short-lived OIDC token from GitHub for an upload token from the
 # index, which means nothing long-lived exists to leak, rotate, or forget.
 #
+# This publishes to PyPI and its test instance, and nothing else. If the
+# project ever needs a different index or a different artefact, that belongs
+# in a separate workflow rather than as a branch inside this one.
+#
 # The PyPI side has to be registered once by hand; agent-kit/RELEASING.md has
 # the exact values, and this file's name is one of them, so renaming it breaks
 # publishing until the publisher is updated to match.
-name: publish
+name: publish to PyPI
 
 on:
   # The normal path: publishing follows a GitHub release, so the tag, the

@@ -9,7 +9,8 @@ A researcher installing the kit needs none of this.
 Publishing uses a **trusted publisher** rather than an API token.
 The workflow exchanges a short-lived OIDC token from the forge for an upload token from the index, so there is no long-lived secret in this repository to leak, rotate, or forget.
 
-`.github/workflows/publish.yml` is the whole of the repository's side.
+`.github/workflows/publish-pypi.yml` is the whole of the repository's side.
+It is named for its one job: it publishes this package to PyPI and its test instance, and nothing else.
 
 ## One-time registration, which has to be done by hand
 
@@ -22,7 +23,7 @@ On PyPI, under the account's **Publishing** settings, add a new **pending publis
 | PyPI Project Name | `qupa-cafe` |
 | Owner | `SchusterLab` |
 | Repository name | `qupa-cafe` |
-| Workflow name | `publish.yml` |
+| Workflow name | `publish-pypi.yml` |
 | Environment name | `pypi` |
 
 Then repeat it on TestPyPI, which is a separate account and a separate registration, with the environment name `testpypi`.
@@ -34,7 +35,7 @@ Registering one **reserves the name** `qupa-cafe` on the index for this reposito
 That is useful — it stops the name being taken while the licence is settled — and it is undone by deleting the pending publisher.
 
 **The workflow filename is part of the trust relationship.**
-Renaming `publish.yml` breaks publishing until the publisher is updated to match, and the failure is an authorisation error rather than anything that mentions the rename.
+Renaming `publish-pypi.yml` breaks publishing until the publisher is updated to match, and the failure is an authorisation error rather than anything that mentions the rename.
 
 **The environment name is checked too.**
 The two publish jobs declare `environment: pypi` and `environment: testpypi`, and those environments have to exist in the repository settings.
