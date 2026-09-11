@@ -75,10 +75,13 @@ ADMIN_KEY="$(rails_runner "
   user.update!(admin: true, active: true, approved: true)
   user.email_tokens.update_all(confirmed: true)
 
-  key = ApiKey.where(description: 'scratch-integration').first
-  unless key
-    key = ApiKey.create!(description: 'scratch-integration', created_by_id: user.id)
-  end
+  # A key's plaintext exists only on the object that just created it: the table
+  # stores key_hash, and ApiKey#key is not readable on a row loaded back. So an
+  # existing key cannot be reused -- it is revoked and replaced. That is the
+  # same 'shown once' property docs/06-agent-api.md describes, seen from the
+  # other side.
+  ApiKey.where(description: 'scratch-integration').destroy_all
+  key = ApiKey.create!(description: 'scratch-integration', created_by_id: user.id)
   puts key.key
 ")"
 
@@ -142,10 +145,8 @@ AGENT_KEY="$(rails_runner "
   group = Group.find_by(name: 'agents')
   group.add(agent) if group && !group.users.include?(agent)
 
-  key = ApiKey.where(description: 'scratch-agent-key').first
-  unless key
-    key = ApiKey.create!(description: 'scratch-agent-key', user_id: agent.id, created_by_id: agent.id)
-  end
+  ApiKey.where(description: 'scratch-agent-key').destroy_all
+  key = ApiKey.create!(description: 'scratch-agent-key', user_id: agent.id, created_by_id: agent.id)
   puts key.key
 ")"
 
