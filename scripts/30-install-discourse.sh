@@ -144,9 +144,11 @@ fi
 
 chmod 600 "$TARGET"
 
-if grep -q '\${' "$TARGET"; then
+# Comments are excluded: the template's own header explains the substitution and
+# necessarily contains a placeholder-shaped example.
+if grep -vE '^\s*#' "$TARGET" | grep -q '\${'; then
   printf '\n   Unsubstituted placeholders remain:\n'
-  grep -n '\${' "$TARGET"
+  grep -nE '\$\{' "$TARGET" | grep -vE ':\s*#'
   die "Refusing to bootstrap with unsubstituted placeholders."
 fi
 
