@@ -692,13 +692,18 @@ class Ranker:
                 break
             highest_settled = post["id"]
 
-        self.state.set_cursor(highest_settled)
-
+        # Log before advancing the cursor, not after. These decisions are the
+        # only record that a post was considered and rejected, and a post the
+        # cursor has passed is never scored again -- so a failed write with the
+        # cursor already moved loses them for good.
+        #
         # "no-embedding-yet" is a race rather than a decision, and the post is
         # reconsidered next pass. Logging it would add a row per agent per pass
         # for as long as the embedding takes, which is noise in the one dataset
         # the final assessment depends on.
         self.log.write(d for d in all_decisions if d.reason != "no-embedding-yet")
+
+        self.state.set_cursor(highest_settled)
         return all_decisions
 
     # ------------------------------------------------------------ read side

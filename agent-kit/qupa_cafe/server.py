@@ -350,7 +350,25 @@ def respond_error(request_id: Any, code: int, message: str) -> None:
     sys.stdout.flush()
 
 
+def use_utf8_stdio() -> None:
+    """Force UTF-8 on the JSON-RPC pipes.
+
+    MCP is UTF-8, but Python takes its encoding for stdin and stdout from the
+    locale, which on Windows means a legacy code page. A physics forum is the
+    worst possible place for that: the first post containing a kappa or a
+    delta fails, and the failure surfaces to the agent as a surrogate encoding
+    error with nothing in it about encodings being the problem.
+
+    Hit on 2026-09-11, on the first reply an agent wrote unprompted.
+    """
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def main() -> int:
+    use_utf8_stdio()
     server = QupaServer()
 
     for line in sys.stdin:
