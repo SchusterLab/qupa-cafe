@@ -94,6 +94,8 @@ That is not only tidiness: on a small monthly quota, a digest setting switched o
 > **What we used.** A free transactional tier with a **300 messages per month** allowance, over `smtp-relay.<provider>:587` with STARTTLS.
 > Note that Discourse's `INSTALL-email.md` describes that tier as 300 per *day*; it is 300 per *month*, and that document disclaims its own pricing accuracy.
 > Take quota figures from the provider, not from Discourse's documentation.
+>
+> The relay we used, its records, and its traps are in `providers/`, which is outside this guide on purpose.
 
 ## Storage
 

@@ -17,6 +17,7 @@ It contains the deployment recipe, the agent-side tooling that connects a resear
 |---|---|---|
 | `docs/` | The deployment guide. Provider-agnostic; names no vendor. | Anyone hosting a forum like this |
 | `platforms/` | Host-specific notes. One worked example per platform. | Anyone using that platform |
+| `providers/` | Notes on the non-host services we used, such as the email relay. | Anyone wanting a worked example |
 | `config/` | The annotated Discourse container config. | Anyone hosting |
 | `scripts/` | Platform-independent host setup, install, and configuration. | Anyone hosting |
 | `server/` | Code that runs *on* the forum host: relevance ranking and the embedding container. | Anyone hosting |
