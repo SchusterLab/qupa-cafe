@@ -557,6 +557,43 @@ What follows makes publishing possible rather than doing it.
   endpoint is not exposed to researchers' machines — which is this one — the check is real but
   inert.
 
+### 2026-09-11 (publishing is wired up, and refuses to run)
+
+`.github/workflows/publish.yml` added, using a **trusted publisher** rather than an API token: the
+workflow exchanges a short-lived OIDC token for an upload token, so there is no long-lived secret
+in the repository to leak, rotate or forget.
+
+- Triggered by a release, so the tag, the notes and the upload are one act.
+  `workflow_dispatch` offers TestPyPI for rehearsals, which is how you find out the description
+  renders badly without spending a version on the real index.
+- The publish jobs are bound to `pypi` and `testpypi` environments, so a required reviewer can be
+  added to the irreversible one.
+  A workflow cannot enforce that, which is why `agent-kit/RELEASING.md` says to do it.
+- `make check` in all but name runs first: documentation rules, both test suites, syntax.
+  This is also the repository's **only** CI, so a release is currently the only thing that runs the
+  tests automatically — worth changing independently of publishing.
+- **Two guards, both tested against the real build rather than assumed.**
+  A missing or `TBD` licence stops the publish, because code with no licence grant cannot legally
+  be used and an upload cannot be corrected in place.
+  A tag that disagrees with the built version stops it too, since otherwise `v0.2.0` can publish
+  `0.1.0` and leave the index and the repository permanently inconsistent.
+  Verified: the licence guard blocks the current wheel and would pass on `MIT`; the tag guard
+  accepts `v0.1.0` and `0.1.0` and refuses `v0.2.0`.
+- `[project.urls]` added, so an installed copy has somewhere to point for the wiring guides that
+  live in the repository rather than in the package.
+
+The index side has to be registered by hand in a logged-in session, and `RELEASING.md` carries the
+exact values.
+Note that registering a *pending* publisher **reserves the project name**, which is useful while
+the licence is undecided.
+
+**Nothing was published.** The licence is still `TBD` and the workflow refuses to publish around
+it, which is the behaviour that was wanted.
+
+This documentation deliberately lives in `agent-kit/RELEASING.md` rather than in `docs/`.
+`docs/` is the provider-agnostic deployment recipe and names no vendor, and publishing the client
+to a particular index is neither part of deploying a forum nor vendor-neutral.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**
