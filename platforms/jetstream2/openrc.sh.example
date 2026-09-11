@@ -4,15 +4,20 @@
 #
 # Do NOT fill this file in. Download the real one:
 #
-#   Horizon -> Identity -> Application Credentials -> Download openrc file
+#   In Horizon -- OpenStack's dashboard, not Exosphere -- go to Identity,
+#   then Application Credentials, then Create Application Credential. The
+#   success screen has a "Download openrc file" button.
 #
 # and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
-# This file exists to document the shape and the two traps.
+# This file exists to document the shape and the traps.
 #
 # Trap 1: a blank expiration field on the credential defaults to TODAY.
 #         Set one explicitly when creating it, or it dies the same day.
 #
-# Trap 2: sourcing this over a previously sourced openrc fails with
+# Trap 2: the secret is shown once. Download it on the success screen; there
+#         is no way back to it, only a new credential.
+#
+# Trap 3: sourcing this over a previously sourced openrc fails with
 #         "Application credentials cannot request a scope".
 #         Use a fresh terminal. The error message does not tell you that.
 #

@@ -18,6 +18,10 @@ Two reasons.
 A configuration produced by clicking is not reproducible, which is the same argument that makes `app.yml` hand-written.
 And Exosphere — the friendly web interface — has a default security group that permits all inbound traffic and no documented way to edit groups, so the CLI is also the only way to get ingress right.
 
+There are two web interfaces, and the difference matters below.
+**Exosphere** is the simplified one, built for Jetstream2, and it is the one this section is declining to use.
+**Horizon** is OpenStack's own dashboard, the full administrative interface, and it is where the CLI's credentials come from.
+
 ### Install it
 
 Jetstream2 tells Windows users to use WSL, and that is what we did.
@@ -32,19 +36,33 @@ openstack --version
 
 ### Credentials
 
-Horizon -> Identity -> Application Credentials -> **Download openrc file**.
+The CLI authenticates with an **application credential**: an id and secret you create to stand in for your login.
 
+That indirection is not optional here.
+Jetstream2 signs you in through federated single sign-on, so there is no password that could go into a configuration file.
+An application credential is also scoped and revocable on its own, which a login is not.
+
+In Horizon, the OpenStack dashboard: **Identity** in the left-hand navigation, then **Application Credentials**, then **Create Application Credential**.
+On success it shows the id and secret once, with a **Download openrc file** button.
+
+The file it gives you is a shell script that exports the variables in [`openrc.sh.example`](openrc.sh.example), which is all `source` has to do with it.
+Save it alongside that example as `openrc-CIS261848.sh`; `.gitignore` covers that name and not the downloaded one.
 Jetstream2 documents the `openrc.sh` path only, not `clouds.yaml`.
-See [`openrc.sh.example`](openrc.sh.example) for the shape; the real file is gitignored.
 
-Two traps:
+Three traps:
 
 > **A blank expiration field defaults to today.**
 > Set one explicitly, or the credential expires the same day you made it.
 
+> **The secret is shown once.**
+> Download the file on the success screen; there is no way back to it, only a new credential.
+
 > **Sourcing an openrc over a previous one fails**, with "Application credentials cannot request a scope".
 > Use a fresh terminal.
 > The error does not say that.
+
+> **There is a second, wrong "download openrc" in Horizon** [unverified], under **API Access**, which produces a password-based file for a password you do not have.
+> The one you want is the button beside the application credential you just created.
 
 ```bash
 source openrc-CIS261848.sh
