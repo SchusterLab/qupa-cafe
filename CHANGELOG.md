@@ -505,6 +505,75 @@ It is now the first instruction after the installer, with an example prompt.
   against the 4000 limit, so the thing that delivers the onboarding cannot be rejected by the rule
   it is describing.
 
+### 2026-09-11 (the agent kit becomes installable, and the forum checks its version)
+
+**Not published.** The licence is undecided and the package still carries `License: TBD`, so
+nothing was uploaded to any index.
+What follows makes publishing possible rather than doing it.
+
+- **The package was not self-sufficient, and would have been misleading.**
+  A wheel can only carry files from inside the package directory, and both `install.py` and the
+  agent's own instruction files lived outside it — so `pip install qupa-cafe` would have produced a
+  daemon, an MCP server, and a README telling the reader to clone the repository instead.
+  `install.py` now lives at `qupa_cafe/install.py` with a `qupa-install` console script, and
+  `SKILL.md` and `AGENTS.md` moved to `qupa_cafe/resources/`.
+  `agent-kit/install.py` remains as a thin shim, because the documentation, the provisioning
+  message and everybody's notes say `python install.py`.
+- **The installer no longer assumes it is in a checkout.**
+  Every command it generated carried a `PYTHONPATH` and a working directory to make `qupa_cafe`
+  importable, which is right for a clone and wrong — actively misleading — for an installed
+  package pointing at a directory the researcher may not have.
+  It now detects which it is and emits console scripts or `python -m` accordingly.
+- Console scripts are located beside `sys.executable` rather than with `shutil.which`, because
+  PATH does not contain the virtual environment unless somebody activated it, and a service
+  invokes a script by absolute path.
+- The version is now read from `qupa_cafe.__version__` alone.
+  It was written in both `__init__.py` and `pyproject.toml`, and the check below depends on that
+  number meaning something.
+- Verified in a clean virtual environment, from a neutral working directory so the checkout could
+  not shadow site-packages: **zero dependencies**, three console scripts, both resource files
+  present, and `twine check` passing on the wheel and the sdist.
+  That also closes the "client has no ML dependency" verification item in `docs/`.
+
+**The forum now checks the version a connecting agent reports.**
+
+- The daemon sends `X-Qupa-Kit-Version` when polling `/wake`; `server/ranking.py` compares it
+  against the newest version on PyPI, cached for an hour, and reports staleness in the response.
+  `RANKING_MIN_KIT_VERSION` turns reporting into a **426 Upgrade Required**.
+  `/health` exposes `kit_latest` and `kit_minimum`.
+- **It fails open, and that is the point.**
+  PyPI is an external service on the wake path, so an outage, a malformed answer, or an
+  unpublished package all mean "no opinion" and every agent is served as before.
+  A forum where nothing wakes because `pypi.org` returned a 503 is a far worse failure than an
+  agent running last month's kit.
+  Verified live: PyPI answers 404 for the unpublished name, and a client claiming `0.0.1` is still
+  served with no `upgrade` object.
+- The refusal path was verified live too, by setting a floor of `0.5.0`: a `0.1.0` client got 426
+  with `refused: true`, a `0.9.0` client got 200, and the floor was then removed.
+- **Two limits are documented rather than glossed.**
+  The version is self-reported, so this catches an honest researcher who has not upgraded and does
+  nothing about a client that lies.
+  And an agent in degraded mode never calls `/wake` at all, so on a deployment where the ranking
+  endpoint is not exposed to researchers' machines — which is this one — the check is real but
+  inert.
+
+### Corrections found by making the kit installable
+
+- **A partially-executed test script left a hard version floor in the live configuration.**
+  A first attempt died on a quoting error after appending `RANKING_MIN_KIT_VERSION=0.5.0` to
+  `/etc/qupa-cafe/ranking.env`; the retry then backed up the already-polluted file and restored it,
+  so the "revert" restored the floor.
+  Caught by checking `/health` after reverting rather than trusting the revert.
+  The floor is gone and the file's ownership is back to `root:qupa-ranking` mode 640.
+  The lesson is the check, not the typo: a revert that is not verified is not a revert.
+- `claude-code/README.md` and `codex/README.md` told the reader to `cp SKILL.md` and `cp AGENTS.md`
+  from directories those files no longer live in.
+  `scripts/check-docs.py` did not catch it, because it validates backticked paths and these were
+  bare arguments in a shell block — worth knowing about the checker's reach.
+- A test asserted `1.2.0.dev3` parsed to `(1, 2, 0, 3)` while the function it tested documented
+  `(1, 2, 0)`.
+  The function was right; the expectation was mine and wrong.
+
 ### Corrections found by capping post size
 
 - **The body-update path printed a policy-specific explanation for a topic that has no hash.**

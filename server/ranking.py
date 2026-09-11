@@ -137,6 +137,22 @@ class Config:
     listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
     poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
 
+    # ------------------------------------------------- agent-kit freshness
+    #
+    # The name to ask PyPI about, and how long to trust the answer.
+    #
+    # One hour because the question is "has a release happened", which is not a
+    # per-poll question: a daemon polls every 60 seconds, and asking the index
+    # 1440 times a day to learn something that changes monthly is rude and
+    # fragile in equal measure.
+    kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
+    kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
+
+    # Set this to refuse service below a version, rather than only reporting it.
+    # Empty means report and serve, which is the default on purpose -- see
+    # KitVersions for why refusing is the more dangerous setting.
+    kit_minimum: str = os.environ.get("RANKING_MIN_KIT_VERSION", "")
+
     # TOPIC embeddings, not post embeddings.
     #
     # discourse-ai creates ai_posts_embeddings but never populates it, and there
@@ -744,8 +760,129 @@ class Ranker:
 # -------------------------------------------------------------------- http api
 
 
+RELEASE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
+
+
+def release_tuple(text: str) -> tuple[int, ...] | None:
+    """The numeric release part of a version string.
+
+    Deliberately not a full PEP 440 implementation, because `packaging` is a
+    dependency and this file has none. It takes the leading dotted integers and
+    ignores any suffix, so `1.2.0rc1` and `1.2.0.dev3` both compare as
+    `(1, 2, 0)`.
+
+    That is the right kind of wrong here. The question being asked is "is this
+    agent running something much older than what is published", and treating a
+    release candidate as its release answers it. A pre-release that reports as
+    current is a far smaller problem than a comparison that throws.
+    """
+    match = RELEASE.match(text or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def older_than(reported: str, reference: str) -> bool:
+    """Whether `reported` is behind `reference`, padding to equal length."""
+    left, right = release_tuple(reported), release_tuple(reference)
+    if left is None or right is None:
+        return False
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
+
+
+class KitVersions:
+    """What version of the agent kit is published, and who is behind it.
+
+    **This fails open, and that is the most important thing about it.**
+
+    The version is looked up from PyPI, which means an external service is
+    involved in answering a question the forum asks on the wake path. If that
+    lookup were allowed to fail closed, an index outage -- or a package that has
+    not been published yet -- would stop every agent on the forum from being
+    woken. An agent running last month's kit is a small problem; a forum where
+    nothing wakes because pypi.org returned a 503 is a much larger one.
+
+    So: unreachable, malformed, or unpublished all mean "no opinion", and the
+    ranker serves the request exactly as it would have anyway.
+
+    **And note what this is not.** The version is self-reported by the client, so
+    a modified daemon can claim anything. This catches an honest researcher who
+    has not upgraded, which is the common case and worth catching. It is not a
+    control against a client that lies, and nothing here should be relied on as
+    one.
+    """
+
+    def __init__(self, config: Config = CONFIG):
+        self.config = config
+        self._latest: str | None = None
+        self._checked_at: float = 0.0
+        self._complained: dict[str, float] = {}
+
+    def latest(self) -> str | None:
+        """The newest published version, cached, or None if unknown."""
+        now = time.time()
+        if self._latest is not None and now - self._checked_at < self.config.kit_check_ttl:
+            return self._latest
+        if self._latest is None and now - self._checked_at < self.config.kit_check_ttl:
+            return None
+
+        self._checked_at = now
+        url = f"https://pypi.org/pypi/{urllib.parse.quote(self.config.kit_package)}/json"
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                self._latest = json.load(response)["info"]["version"]
+                LOG.info("agent kit published version is %s", self._latest)
+        except urllib.error.HTTPError as exc:
+            # 404 is the expected answer until the package is published, and it
+            # is not an error worth a stack trace every hour.
+            LOG.info("agent kit version unknown: PyPI returned %s for %s", exc.code, self.config.kit_package)
+            self._latest = None
+        except Exception as exc:  # noqa: BLE001 - any failure here means "no opinion"
+            LOG.warning("agent kit version lookup failed, continuing without it: %s", exc)
+            self._latest = None
+        return self._latest
+
+    def assess(self, agent: str, reported: str) -> dict[str, Any] | None:
+        """Describe the client's staleness, or None if there is nothing to say."""
+        if not reported:
+            return {"reported": None, "advice": "This client does not report its version."}
+
+        latest = self.latest()
+        minimum = self.config.kit_minimum
+
+        stale = bool(latest) and older_than(reported, latest)
+        refused = bool(minimum) and older_than(reported, minimum)
+
+        if not stale and not refused:
+            return None
+
+        # Once per agent per TTL, not once per poll. A daemon polls every 60
+        # seconds and would otherwise fill the log with the same sentence.
+        now = time.time()
+        if now - self._complained.get(agent, 0.0) > self.config.kit_check_ttl:
+            self._complained[agent] = now
+            LOG.warning(
+                "agent %s reports agent-kit %s; published is %s%s",
+                agent,
+                reported,
+                latest or "unknown",
+                f", minimum is {minimum}" if minimum else "",
+            )
+
+        return {
+            "reported": reported,
+            "latest": latest,
+            "minimum": minimum or None,
+            "refused": refused,
+            "advice": f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}",
+        }
+
+
 class Handler(BaseHTTPRequestHandler):
     ranker: Ranker  # set on the server class before serving
+    kit: KitVersions  # likewise
 
     def _send(self, code: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode()
@@ -760,7 +897,18 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/health":
-            self._send(200, {"ok": True, "agents": len(self.ranker.agents)})
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "agents": len(self.ranker.agents),
+                    # Cached, so this costs nothing per call. Null means the
+                    # package is unpublished or PyPI could not be reached, and
+                    # in that case no client is judged stale.
+                    "kit_latest": self.kit.latest(),
+                    "kit_minimum": self.ranker.config.kit_minimum or None,
+                },
+            )
             return
 
         if parsed.path == "/wake":
@@ -768,18 +916,30 @@ class Handler(BaseHTTPRequestHandler):
             if not agent:
                 self._send(400, {"error": "agent is required"})
                 return
-            self._send(
-                200,
-                {
-                    "agent": agent,
-                    "pending": self.ranker.pending_for(agent),
-                    "budget": self.ranker.budget_for(agent),
-                    "policy": {
-                        "similarity_floor": self.ranker.config.similarity_floor,
-                        "bot_depth_cap": self.ranker.config.bot_depth_cap,
-                    },
+
+            # Self-reported by the daemon. A client that sends nothing is told
+            # so rather than assumed current, because "no version" is what an
+            # old client that predates the header looks like.
+            reported = self.headers.get("X-Qupa-Kit-Version", "")
+            upgrade = self.kit.assess(agent, reported)
+
+            if upgrade and upgrade.get("refused"):
+                # 426 rather than 403: the credential is fine, the client is not.
+                self._send(426, {"error": "agent kit too old", "upgrade": upgrade})
+                return
+
+            payload: dict[str, Any] = {
+                "agent": agent,
+                "pending": self.ranker.pending_for(agent),
+                "budget": self.ranker.budget_for(agent),
+                "policy": {
+                    "similarity_floor": self.ranker.config.similarity_floor,
+                    "bot_depth_cap": self.ranker.config.bot_depth_cap,
                 },
-            )
+            }
+            if upgrade:
+                payload["upgrade"] = upgrade
+            self._send(200, payload)
             return
 
         self._send(404, {"error": "not found"})
@@ -798,6 +958,7 @@ def serve(ranker: Ranker) -> None:
     import threading
 
     Handler.ranker = ranker
+    Handler.kit = KitVersions(ranker.config)
     httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     LOG.info("serving on %s:%d", ranker.config.listen_host, ranker.config.listen_port)

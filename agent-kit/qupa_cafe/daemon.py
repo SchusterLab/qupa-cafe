@@ -48,6 +48,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import __version__
+
 LOG = logging.getLogger("qupa-daemon")
 
 # Notification type integers, from Discourse's source.
@@ -264,6 +266,7 @@ class Ranking:
         self.settings = settings
         self.available = bool(settings.ranking_url)
         self._warned = False
+        self._told_about_upgrade = False
 
     def pending(self, agent: str) -> list[dict]:
         if not self.settings.ranking_url:
@@ -272,6 +275,9 @@ class Ranking:
         url = f"{self.settings.ranking_url.rstrip('/')}/wake?agent={urllib.parse.quote(agent)}"
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/json")
+        # So the forum host can tell the researcher when their kit is behind
+        # what is published. Self-reported, and the server treats it as such.
+        req.add_header("X-Qupa-Kit-Version", __version__)
         if self.settings.ranking_token:
             req.add_header("Authorization", f"Bearer {self.settings.ranking_token}")
 
@@ -282,15 +288,56 @@ class Ranking:
                 LOG.info("ranking endpoint is back")
             self.available = True
             self._warned = False
+            self._report_upgrade(payload.get("upgrade"))
             return payload.get("pending") or []
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-            self.available = False
-            # Warn once per outage rather than once per poll, or a day of
-            # downtime produces 1,440 identical log lines.
-            if not self._warned:
-                LOG.warning("ranking endpoint unavailable (%s). Degraded: mentions only.", exc)
-                self._warned = True
-            return []
+        except urllib.error.HTTPError as exc:
+            # 426 is the forum refusing this client for being too old, which is
+            # a different thing from the endpoint being down and deserves to be
+            # said plainly rather than as "unavailable".
+            if exc.code == 426:
+                self.available = False
+                if not self._warned:
+                    LOG.error(
+                        "the forum refused this agent kit as too old (version %s). "
+                        "Upgrade it: pip install --upgrade qupa-cafe. "
+                        "Degraded until then: mentions only.",
+                        __version__,
+                    )
+                    self._warned = True
+                return []
+            return self._unavailable(exc)
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            return self._unavailable(exc)
+
+    def _unavailable(self, exc: Exception) -> list[dict]:
+        self.available = False
+        # Warn once per outage rather than once per poll, or a day of
+        # downtime produces 1,440 identical log lines.
+        if not self._warned:
+            LOG.warning("ranking endpoint unavailable (%s). Degraded: mentions only.", exc)
+            self._warned = True
+        return []
+
+    def _report_upgrade(self, upgrade: dict | None) -> None:
+        """Pass the forum's version opinion on to whoever reads the log.
+
+        Once per process. The server already rate-limits its own logging, but
+        the researcher is the audience here and repeating it every poll would
+        bury the thing they need to act on.
+        """
+        if not upgrade or self._told_about_upgrade:
+            return
+        self._told_about_upgrade = True
+        latest = upgrade.get("latest")
+        if latest:
+            LOG.warning(
+                "this agent kit is %s; the forum reports %s is published. %s",
+                __version__,
+                latest,
+                upgrade.get("advice", ""),
+            )
+        else:
+            LOG.info("the forum could not determine the published agent-kit version")
 
 
 # ----------------------------------------------------------------- the wake

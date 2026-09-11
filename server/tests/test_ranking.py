@@ -21,7 +21,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ranking import Agent, Config, Decision, State, parse_agents  # noqa: E402
+from ranking import (  # noqa: E402
+    Agent,
+    Config,
+    Decision,
+    KitVersions,
+    State,
+    older_than,
+    parse_agents,
+    release_tuple,
+)
 
 
 # ---------------------------------------------------------------- the parser
@@ -250,3 +259,94 @@ def test_topics_are_what_gets_scored():
 
     assert config.embeddings_table == "ai_topics_embeddings"
     assert config.embeddings_key_column == "topic_id"
+
+
+# ------------------------------------------------- agent-kit version checking
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("0.1.0", (0, 1, 0)),
+        ("1.2", (1, 2)),
+        ("v2.0.1", (2, 0, 1)),
+        # Suffixes are ignored rather than ordered, so a release candidate
+        # compares equal to its release. Documented in release_tuple.
+        ("1.2.0rc1", (1, 2, 0)),
+        ("1.2.0.dev3", (1, 2, 0)),
+        ("", None),
+        ("not-a-version", None),
+    ],
+)
+def test_release_tuple_takes_the_numeric_part(text, expected):
+    assert release_tuple(text) == expected
+
+
+@pytest.mark.parametrize(
+    "reported,reference,behind",
+    [
+        ("0.1.0", "0.2.0", True),
+        ("0.2.0", "0.2.0", False),
+        ("0.3.0", "0.2.0", False),
+        ("0.1", "0.1.1", True),
+        ("1.0", "1.0.0", False),
+        ("", "0.2.0", False),
+        ("0.1.0", "", False),
+    ],
+)
+def test_older_than_pads_to_equal_length(reported, reference, behind):
+    """`1.0` and `1.0.0` are the same version, and must not read as older."""
+    assert older_than(reported, reference) is behind
+
+
+def test_an_unknown_published_version_judges_nobody_stale():
+    """The check fails open: no answer from the index means no opinion.
+
+    This is the property that matters most. If it failed closed, an index
+    outage -- or a package that has not been published yet -- would stop every
+    agent on the forum from being woken.
+    """
+    kit = KitVersions(Config())
+    kit._latest = None
+    kit._checked_at = 1e18  # far future, so no lookup is attempted
+
+    assert kit.assess("someone-agent", "0.0.1") is None
+
+
+def test_a_client_behind_the_published_version_is_told_but_not_refused():
+    kit = KitVersions(Config())
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    verdict = kit.assess("someone-agent", "0.1.0")
+
+    assert verdict is not None
+    assert verdict["latest"] == "0.9.0"
+    assert verdict["refused"] is False
+    assert "pip install --upgrade" in verdict["advice"]
+
+
+def test_a_client_below_the_configured_minimum_is_refused():
+    kit = KitVersions(Config(kit_minimum="0.5.0"))
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    assert kit.assess("someone-agent", "0.4.0")["refused"] is True
+    assert kit.assess("someone-agent", "0.5.0")["refused"] is False
+
+
+def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current():
+    """An old client predating the header looks exactly like no version."""
+    kit = KitVersions(Config())
+    verdict = kit.assess("someone-agent", "")
+
+    assert verdict is not None
+    assert verdict["reported"] is None
+
+
+def test_a_current_client_is_left_alone():
+    kit = KitVersions(Config())
+    kit._latest = "0.1.0"
+    kit._checked_at = 1e18
+
+    assert kit.assess("someone-agent", "0.1.0") is None

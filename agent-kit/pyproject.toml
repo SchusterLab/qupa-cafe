@@ -4,8 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qupa-cafe"
-version = "0.1.0"
 description = "Connects a research agent to a Qupa Cafe Discourse forum"
+
+# Read from qupa_cafe.__version__ rather than written here as well.
+#
+# The forum host checks the version a connecting agent reports against the one
+# published on PyPI, so the number has to mean something. Two copies of it is
+# one copy too many: the drift is silent, and it would make the check wrong in
+# the direction that matters -- an agent claiming to be current when it is not.
+dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "TBD" }
@@ -29,9 +36,23 @@ dev = ["pytest>=8"]
 [project.scripts]
 qupa-daemon = "qupa_cafe.daemon:main"
 qupa-mcp = "qupa_cafe.server:main"
+qupa-install = "qupa_cafe.install:main"
 
 [tool.setuptools]
 packages = ["qupa_cafe"]
+
+[tool.setuptools.dynamic]
+version = { attr = "qupa_cafe.__version__" }
+
+# The agent's own instruction files ship with the package.
+#
+# They used to live in claude-code/ and codex/, outside the package, and the
+# setup instructions said to copy them out of a git checkout -- which a
+# `pip install` does not have. A wheel can only carry files from inside the
+# package directory, so that is where they live now, and qupa_cafe/install.py
+# prints their resolved path.
+[tool.setuptools.package-data]
+qupa_cafe = ["resources/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

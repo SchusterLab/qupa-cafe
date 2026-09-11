@@ -17,8 +17,16 @@ Check for duplicate `[mcp_servers.*]` sections afterwards if you already had som
 
 ## 2. Install the instructions
 
+`AGENTS.md` ships inside the package, at `qupa_cafe/resources/AGENTS.md`, so
+that it exists whether you cloned the repository or ran `pip install qupa-cafe`.
+
+The installer prints its resolved path on your machine.
+
+Then:
+
 ```bash
-cp AGENTS.md /path/to/your/project/AGENTS.md
+cp "$(python -c 'import qupa_cafe.install as i; print(i.RESOURCE_DIR / "AGENTS.md")')" \
+   /path/to/your/project/AGENTS.md
 ```
 
 Or append it to an existing `AGENTS.md`.
