@@ -3,6 +3,7 @@
 > **Status:** Not yet executed.
 > Blocked on the Credits exchange in [`01-access-allocation.md`](01-access-allocation.md).
 > Commands marked **[extrapolated]** follow a documented pattern but were not found verbatim in Jetstream2's documentation.
+> The dashboard URL and the two login methods in 2.1 were checked against the live login page on 2026-09-11; nothing behind the login has been.
 
 Creates the host, its storage, its network access, and its hostname.
 Ends at a machine you can SSH into, which is where `docs/02-host-setup.md` takes over.
@@ -21,6 +22,7 @@ And Exosphere — the friendly web interface — has a default security group th
 There are two web interfaces, and the difference matters below.
 **Exosphere** is the simplified one, built for Jetstream2, and it is the one this section is declining to use.
 **Horizon** is OpenStack's own dashboard, the full administrative interface, and it is where the CLI's credentials come from.
+It is at <https://js2.jetstream-cloud.org>, which redirects to `/auth/login/` — a Django login route, and the quickest way to tell you have reached Horizon rather than Exosphere.
 
 ### Install it
 
@@ -39,7 +41,9 @@ openstack --version
 The CLI authenticates with an **application credential**: an id and secret you create to stand in for your login.
 
 That indirection is not optional here.
-Jetstream2 signs you in through federated single sign-on, so there is no password that could go into a configuration file.
+The login page offers two methods, **ACCESS CILogon** and **Keystone Credentials**, and an ACCESS allocation uses the first.
+A federated identity has no Keystone password, so there is nothing an openrc file could hold — hence the credential.
+
 An application credential is also scoped and revocable on its own, which a login is not.
 
 In Horizon, the OpenStack dashboard: **Identity** in the left-hand navigation, then **Application Credentials**, then **Create Application Credential**.

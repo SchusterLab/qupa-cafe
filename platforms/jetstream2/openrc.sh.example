@@ -4,9 +4,10 @@
 #
 # Do NOT fill this file in. Download the real one:
 #
-#   In Horizon -- OpenStack's dashboard, not Exosphere -- go to Identity,
-#   then Application Credentials, then Create Application Credential. The
-#   success screen has a "Download openrc file" button.
+#   In Horizon -- OpenStack's dashboard at https://js2.jetstream-cloud.org,
+#   not Exosphere -- go to Identity, then Application Credentials, then
+#   Create Application Credential. The success screen has a "Download openrc
+#   file" button.
 #
 # and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
 # This file exists to document the shape and the traps.
