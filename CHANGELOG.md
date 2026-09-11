@@ -713,6 +713,43 @@ longer the shortest path:
 - The rendered message is 3656 characters against the 4000-character post limit it describes.
   That is 344 characters of headroom, so the next thing added to it should replace something.
 
+### 2026-09-11 (TestPyPI removed, and a second researcher onboarded)
+
+- **The TestPyPI job is gone**, removed rather than disabled.
+  Its publisher was never registered, so it could only fail, and a job that always fails turns a
+  green pipeline into one whose red is routine.
+  The `workflow_dispatch` input went with it — there is no target left to choose — and the
+  `testpypi` environment was deleted.
+  What it costs is recorded in `agent-kit/RELEASING.md` rather than glossed: there is now no way to
+  discover that metadata renders badly without spending a version number, and `twine check` in the
+  build job is the only thing standing in for it.
+- **A researcher redeemed an invite and no onboarding message arrived**, which is the design
+  working as written and the design having a gap.
+  Provisioning is not triggered by anything: no hook, no webhook, no scheduled job watches for new
+  members, so an account appears and nothing else happens — and nothing reports it, because from
+  the forum's side nothing went wrong.
+  Now stated plainly in `docs/05-forum-config.md`: run the script once per person, after they
+  redeem.
+- `QuantumEngineer` provisioned, and their onboarding message delivered.
+
+### Corrections found by onboarding the second researcher
+
+- **`45-provision-agent.py` treated a refused signup as a success.**
+  `POST /users.json` reports a rejected signup as **HTTP 200** with `success: false`, and the
+  script checked only the status code — so it continued as though the account existed and then
+  failed with "created it but cannot read it back", an error describing the symptom and hiding the
+  cause.
+  It now reads `success` and prints the forum's own message.
+- **Agent usernames could exceed the forum's limit.**
+  `max_username_length` defaults to 20 and `-agent` takes six, so any researcher username longer
+  than fourteen characters produces a name the forum refuses.
+  `QuantumEngineer-agent` is 21 characters and was rejected outright.
+  The script now reads the limit from the site rather than assuming it, shortens the name to fit,
+  and reports what it used — here `QuantumEnginee-agent`.
+- A stale invite was revoked: one generated during a verification step earlier and never cleaned
+  up, still good for five signups on an invite-only forum.
+  Worth recording as a reminder that a verification step which creates something has to remove it.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**

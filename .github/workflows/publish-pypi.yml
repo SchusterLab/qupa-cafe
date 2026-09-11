@@ -4,9 +4,10 @@
 # exchanges a short-lived OIDC token from GitHub for an upload token from the
 # index, which means nothing long-lived exists to leak, rotate, or forget.
 #
-# This publishes to PyPI and its test instance, and nothing else. If the
-# project ever needs a different index or a different artefact, that belongs
-# in a separate workflow rather than as a branch inside this one.
+# This publishes this package to PyPI and does nothing else. If the project
+# ever needs a different index or a different artefact, that belongs in a
+# separate workflow rather than as a branch inside this one -- which is why
+# the TestPyPI job that used to live here was removed rather than disabled.
 #
 # The PyPI side has to be registered once by hand; agent-kit/RELEASING.md has
 # the exact values, and this file's name is one of them, so renaming it breaks
@@ -19,17 +20,12 @@ on:
   release:
     types: [published]
 
-  # For a rehearsal on TestPyPI, or a re-run after a transient failure.
+  # For re-running a publish that failed after the release was already made.
+  #
+  # There is no target to choose any more, so there is no input. Note that the
+  # `pypi` environment admits only `v*` tags, so a dispatch has to select one
+  # as its ref; dispatching from a branch is refused by the environment.
   workflow_dispatch:
-    inputs:
-      index:
-        description: Which index to publish to
-        required: true
-        default: testpypi
-        type: choice
-        options:
-          - testpypi
-          - pypi
 
 permissions:
   contents: read
@@ -156,39 +152,14 @@ jobs:
           name: distributions
           path: agent-kit/dist/
 
-  # A rehearsal target. Publishing to TestPyPI first is how you find out that
-  # the metadata renders badly without burning a version number on the real
-  # index.
-  publish-testpypi:
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi'
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      id-token: write # the whole point: this is what replaces the API token
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: distributions
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          # TestPyPI accumulates rehearsals, and a repeated version there is a
-          # nuisance rather than a failure worth stopping for.
-          skip-existing: true
-
   publish-pypi:
     needs: build
-    if: >-
-      github.event_name == 'release' ||
-      (github.event_name == 'workflow_dispatch' && inputs.index == 'pypi')
     runs-on: ubuntu-latest
 
-    # Bound to an environment so the repository can require a human approval
-    # before the irreversible step. Configure that on the environment itself;
-    # this file cannot enforce it.
+    # Bound to an environment, which is where the guard on this irreversible
+    # step actually lives: `pypi` admits only `v*` tags, so nothing publishes
+    # from a branch. A required reviewer would be better and needs a billing
+    # plan this repository does not have; agent-kit/RELEASING.md records that.
     environment: pypi
     permissions:
       id-token: write

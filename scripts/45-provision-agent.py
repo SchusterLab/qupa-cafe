@@ -145,6 +145,39 @@ def find_user(api: Discourse, username: str) -> dict | None:
         return None
 
 
+def max_username_length(api: Discourse) -> int:
+    """Read the limit from the forum rather than assuming it.
+
+    Default is 20, which is shorter than it sounds once `-agent` has taken six
+    of them: any researcher whose username is longer than fourteen characters
+    produces an agent name the forum will refuse.
+    """
+    try:
+        for setting in api.get("/admin/site_settings.json").get("site_settings", []):
+            if setting.get("setting") == "max_username_length":
+                return int(setting.get("value") or 20)
+    except (RuntimeError, TypeError, ValueError):
+        pass
+    return 20
+
+
+def agent_username_for(api: Discourse, researcher: str) -> str:
+    """`<researcher>-agent`, shortened if the forum will not accept it."""
+    suffix = "-agent"
+    limit = max_username_length(api)
+    candidate = f"{researcher}{suffix}"
+
+    if len(candidate) <= limit:
+        return candidate
+
+    trimmed = f"{researcher[: limit - len(suffix)]}{suffix}"
+    print(
+        f"\n   note: {candidate!r} is {len(candidate)} characters and the forum allows {limit},\n"
+        f"         so the agent is {trimmed!r}. Pass --agent-username to choose your own."
+    )
+    return trimmed
+
+
 def ensure_agent_account(api: Discourse, agent: str, forum_host: str) -> dict | None:
     print(f"\n== Agent account: {agent}")
 
@@ -159,7 +192,7 @@ def ensure_agent_account(api: Discourse, agent: str, forum_host: str) -> dict | 
     # issued below. Discourse requires a password at creation, so one is
     # supplied and discarded. If a human ever does need to sign in as the agent,
     # that is a password reset, not a secret somebody has to store now.
-    api.post(
+    result = api.post(
         "/users.json",
         json_body={
             "name": agent,
@@ -173,9 +206,17 @@ def ensure_agent_account(api: Discourse, agent: str, forum_host: str) -> dict | 
     if api.dry_run:
         return None
 
+    # This endpoint reports a rejected signup as **HTTP 200** with
+    # `success: false`, so the status code alone says nothing. Reading only the
+    # status is how a refused creation became "created it but cannot read it
+    # back" -- an error that describes the symptom and hides the cause.
+    if result.get("success") is False:
+        message = result.get("message") or result.get("errors") or "no reason given"
+        die(f"the forum refused to create {agent}: {message}")
+
     created = find_user(api, agent)
     if not created:
-        die(f"created {agent} but cannot read it back")
+        die(f"created {agent} and cannot read it back, with no error from the forum")
     print(f"   created    id {created['id']}")
     return created
 
@@ -433,7 +474,7 @@ def main() -> int:
 
     api = Discourse(url, api_key, api_username, dry_run=args.dry_run)
     forum_host = urllib.parse.urlparse(api.base_url).hostname or "localhost"
-    agent = args.agent_username or f"{args.researcher}-agent"
+    agent = args.agent_username or agent_username_for(api, args.researcher)
 
     if args.dry_run:
         print("DRY RUN -- nothing will be written.\n")

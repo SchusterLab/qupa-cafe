@@ -1,8 +1,9 @@
 # Releasing the agent kit
 
-> **Status:** Everything on both sides is in place and nothing has been published.
-> The pending publisher is registered on PyPI, the workflow is on the default branch, both environments exist with the `pypi` one restricted to `v*` tags, the package is MIT-licensed, and both guards pass against a real build.
-> What remains is a version tag and a release, which has not been attempted.
+> **Status:** Executed.
+> `qupa-cafe` 0.1.0 is published on PyPI, released from tag `v0.1.0` by the trusted publisher with no API token involved.
+> Both guards ran and passed on that release, and the package installs from the index with no dependencies.
+> TestPyPI is not used; see "No rehearsal target".
 
 Maintainer-facing.
 A researcher installing the kit needs none of this.
@@ -11,7 +12,7 @@ Publishing uses a **trusted publisher** rather than an API token.
 The workflow exchanges a short-lived OIDC token from the forge for an upload token from the index, so there is no long-lived secret in this repository to leak, rotate, or forget.
 
 `.github/workflows/publish-pypi.yml` is the whole of the repository's side.
-It is named for its one job: it publishes this package to PyPI and its test instance, and nothing else.
+It is named for its one job: it publishes this package to PyPI, and nothing else.
 
 ## One-time registration, which has to be done by hand
 
@@ -27,9 +28,10 @@ On PyPI, under the account's **Publishing** settings, add a new **pending publis
 | Workflow name | `publish-pypi.yml` |
 | Environment name | `pypi` |
 
-Then repeat it on TestPyPI, which is a separate account and a separate registration, with the environment name `testpypi`.
+That is the only registration needed.
+There is no TestPyPI equivalent, because there is no TestPyPI job: see "No rehearsal target" below.
 
-A registered pending publisher does **not** create a project page, so the name still answers 404 until the first upload.
+A registered pending publisher does **not** create a project page, so the name answers 404 until the first upload.
 That is worth knowing because `server/ranking.py` asks that same endpoint what version is published: until the first release it gets a 404, reads it as "no opinion", and judges nobody stale.
 
 Three things about that form are worth knowing before filling it in.
@@ -42,8 +44,8 @@ That is useful — it holds the name before the first release rather than after 
 Renaming `publish-pypi.yml` breaks publishing until the publisher is updated to match, and the failure is an authorisation error rather than anything that mentions the rename.
 
 **The environment name is checked too.**
-The two publish jobs declare `environment: pypi` and `environment: testpypi`, and those environments have to exist in the repository settings.
-Create them there; an environment that is only named in a workflow is not an environment.
+The publish job declares `environment: pypi`, and that environment has to exist in the repository settings.
+Create it there; an environment that is only named in a workflow is not an environment — GitHub will make one implicitly on first use, with no protection rules at all, which is the quiet version of having no guard.
 
 ## What guards the `pypi` environment
 
@@ -68,12 +70,9 @@ The `pypi` environment carries a deployment branch policy admitting **only `v*` 
 | Environment | May deploy from | Protection |
 |---|---|---|
 | `pypi` | `v*` tags only | branch policy |
-| `testpypi` | anything | none |
 
-So publishing to the real index cannot happen from `main`, from a feature branch, or from an accidental dispatch.
+So publishing cannot happen from `main`, from a feature branch, or from an accidental dispatch.
 It can only happen from a tag that was deliberately created for a version, which is itself a human act.
-
-The asymmetry is intended: rehearsals on TestPyPI should be cheap and runnable from anywhere, and the irreversible one should not.
 
 One consequence to know.
 Running the workflow by hand against `pypi` requires selecting a `v*` tag as the ref.
@@ -99,8 +98,8 @@ The action then prints the claims it sent, which is what to compare against the 
 | `workflow_ref` | The workflow filename |
 | `environment` | The environment name |
 
-Observed once, on the first TestPyPI rehearsal: every claim was correct and the registration simply did not exist, because **PyPI and TestPyPI are separate accounts** and only the former had been done.
-Registering the second one is the whole fix.
+Seen once, before TestPyPI was dropped: every claim was correct and the registration simply did not exist, because that index is a separate account from PyPI and only PyPI had been registered.
+The lesson generalises past that particular cause — compare the printed claims against the registration field by field, and suspect the registration rather than the token.
 
 ## The release itself
 
@@ -112,8 +111,16 @@ Registering the second one is the whole fix.
 
 Publishing follows the release, so the tag, the notes and the upload are one act rather than three.
 
-For a rehearsal, run the workflow by hand and choose `testpypi`.
-That is how you discover that the description renders badly without spending a version number on the real index.
+## No rehearsal target
+
+There was a TestPyPI job and it has been removed rather than left disabled.
+Its publisher was never registered, so it could not upload, and a job that always fails is worse than no job: it turns a green pipeline into one whose red is routine.
+
+What that costs is real and worth stating.
+There is now no way to find out that the description renders badly, or that the metadata is wrong, without spending a version number on the real index — and a version can be yanked but never replaced.
+The mitigation is that `build` runs `twine check` on both artefacts before anything is uploaded, which catches malformed metadata if not ugly metadata.
+
+Restoring it is a dozen lines: a second job with `repository-url: https://test.pypi.org/legacy/`, a `testpypi` environment, and a pending publisher on TestPyPI, which is a separate account from PyPI.
 
 ## Two guards, and why they exist
 
