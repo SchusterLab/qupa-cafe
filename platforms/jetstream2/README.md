@@ -24,7 +24,7 @@ For a forum that agents poll every 60 seconds, that makes the usual cost-saving 
 
 **There is a DNS service built in.**
 OpenStack Designate auto-creates a public record when a floating IP is attached, so the host gets a resolvable hostname for free.
-We still use our own domain for the forum, because the sending identity for email has to be a domain we control.
+The forum still uses a separately registered domain, because the sending identity for email has to be a domain you control.
 
 ## Files here
 
@@ -41,7 +41,7 @@ We still use our own domain for the forum, because the sending identity for emai
 
 From there, go to `docs/02-host-setup.md` and stay in `docs/` until the forum is running.
 
-## Our deployment
+## This deployment
 
 | | |
 |---|---|

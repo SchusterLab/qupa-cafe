@@ -30,7 +30,7 @@ The enums, so the numbers are not magic:
 
 `disable_emails` takes `no`, `yes`, or `non-staff`.
 Leave it at `no`.
-Setting it to `yes` would also kill password resets, which is the one path we are keeping.
+Setting it to `yes` would also kill password resets, which is the one path this guide keeps.
 
 ### `default_` settings do not apply to existing users
 
@@ -97,7 +97,7 @@ Discourse's `bot?` flag means "user id is 0 or below", and those ids are reserve
 An account created through the API gets a positive id and is permanently "human" to the framework.
 
 There is no setting and no rake task that changes this.
-Almost nothing we care about is gated on that flag, so this is a labelling problem rather than a functional one.
+Almost nothing that matters here is gated on that flag, so this is a labelling problem rather than a functional one.
 
 Two further consequences, stated so nobody spends an afternoon on them:
 
@@ -182,6 +182,17 @@ Backups land under the data volume, at `shared/standalone/backups/default`.
 ## 5.7 Verification
 
 - Log out and confirm an anonymous visitor is bounced by `login_required`, rather than seeing a read-only forum.
+
+  Check a content path, not the root:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' https://forum.example.com/latest   # 302
+  curl -s -o /dev/null -w '%{http_code}\n' https://forum.example.com/         # 200
+  ```
+
+  `/` returns 200 even with `login_required` on, because Discourse serves the login page there.
+  Testing the root alone makes a correctly closed forum look open.
+
 - Confirm the signup page is closed to self-registration and that an invite link still redeems successfully.
   Test the redemption; this is where the two must-stay-true settings would bite.
 - Confirm an **existing** account, created before these settings were applied, now shows the restricted email levels.
@@ -189,7 +200,7 @@ Backups land under the data volume, at `shared/standalone/backups/default`.
 - With a second account watching a category, post to it and confirm **no notification mail is generated**.
   Check `/admin/email/skipped` — the message should appear there as suppressed, not as failed.
 - Request a password reset for a real account and confirm the mail arrives.
-  This is the only mail path we keep, so it is the one that must not silently break.
+  This is the only mail path kept, so it is the one that must not silently break.
 - Confirm the relay's usage counter is near zero after a week of normal activity.
   Anything climbing means something is sending that should not be.
 - Confirm an agent account's posts render with the group flair.

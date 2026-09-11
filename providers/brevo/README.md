@@ -2,8 +2,8 @@
 
 The transactional email relay for `forum.qupa-cafe.com`.
 
-> **Status:** Done as far as it can be without the forum, on 2026-09-11.
-> The account exists, the four records are published at Porkbun and all four resolve, and the SMTP key is generated.
+> **Status:** Done as far as it can be without the forum.
+> The account exists, the SMTP key is generated, and all four records are published and resolving — including both DKIM records followed through to the 2048-bit keys they point at.
 > Outstanding: a password reset that actually arrives, which needs the forum.
 
 ## Why a relay at all
@@ -79,7 +79,25 @@ None of it needs the forum, the host, or an IP address, and doing it early keeps
 
 9. Check the records resolve, below, then press verify in Brevo's panel.
 10. Create an **SMTP key** under **SMTP & API** -> **SMTP**.
-    Its login and key are `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD` in `.env`.
+
+    That page gives you two separate values: an **SMTP login**, which looks like an address ending `@smtp-brevo.com`, and the **SMTP key** itself.
+    You have to paste both into `.env` by hand.
+    Nothing fetches them for you, and the install refuses to start until they are set.
+
+    `.env` lives at the root of this repository.
+    Create it with `cp .env.example .env` if it is not there yet, then fill in these two lines:
+
+    ```
+    DISCOURSE_SMTP_USER_NAME=<paste the SMTP login here>
+    DISCOURSE_SMTP_PASSWORD=<paste the SMTP key here>
+    ```
+
+    No quotes, and no spaces around the `=`.
+    `.env` is gitignored, so the key does not get committed.
+
+> **The key is shown once.**
+> Copy it before leaving the page.
+> There is no way to read it back afterwards, only to generate a replacement and paste that instead.
 
 > **If the key contains a `#`, quote it in `app.yml`.**
 > An unquoted `#` begins a YAML comment and the rest of the password is silently discarded.
@@ -103,7 +121,7 @@ A stale negative answer in a local cache looks exactly like a record you forgot 
 The last query is the one to remember.
 It follows the DKIM record through to the key itself, and a DKIM record that resolves while its target holds no key verifies in the panel and signs nothing.
 
-What ours returned on 2026-09-11:
+A correctly published zone answers like this:
 
 | Query | Answer |
 |---|---|
@@ -111,7 +129,10 @@ What ours returned on 2026-09-11:
 | `CNAME brevo1._domainkey.forum` | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
 | `CNAME brevo2._domainkey.forum` | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
 | `TXT _dmarc.forum.qupa-cafe.com` | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
-| `TXT b1.forum-qupa-cafe-com.dkim.brevo.com` | `k=rsa; p=<2048-bit key>` |
+| `TXT b1.forum-qupa-cafe-com.dkim.brevo.com` | `k=rsa;p=<2048-bit key>` |
+
+The DKIM lookup takes two hops, and only the second one proves anything.
+Brevo's `b1...` name is itself a CNAME onto a numbered signing host, so the key arrives from a third name again — which is why following the chain matters more than confirming that the record you typed exists.
 
 ## Then send a real message
 

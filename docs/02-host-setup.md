@@ -1,8 +1,8 @@
 # 2. Host setup
 
-> **Status:** Executed on 2026-09-10 on a scratch host — Ubuntu 26.04 in WSL2, against a loopback block device standing in for the data volume.
-> `scripts/20-host-setup.sh` ran clean: filesystem created, mounted by UUID through `fstab`, Docker verified.
-> Not yet run on the real instance, so the device naming in 2.3 and the reboot check in 2.7 are still unverified.
+> **Status:** Executed on the deployed host, on Ubuntu 24.04 against a real 100 GB block device, and previously on a scratch host against a loopback device.
+> `scripts/20-host-setup.sh` ran clean both times: filesystem created, mounted by UUID through `fstab`, Docker verified.
+> The reboot check in 2.7 was performed on the real host and the volume came back with no manual step.
 
 Prepares a freshly installed Debian-family host to run Discourse.
 Everything here is deliberately generic: it assumes a Linux host, a block device, and a working package manager, and nothing about where those came from.
@@ -51,8 +51,9 @@ sudo blkid /dev/sdb
 sudo mkdir -p /mnt/qupa-cafe
 ```
 
-`mkfs.ext4` on a bare device warns that it is about to format the entire device rather than a partition.
-That is what we want here: a single-purpose data volume needs no partition table.
+`mkfs.ext4` on a bare device warns that it is about to format the entire device rather than a partition, and waits for confirmation.
+That is the intent here: a single-purpose data volume needs no partition table.
+Answer `y`, or pass `-F` to skip the prompt, which is what `scripts/20-host-setup.sh` does so that it can run unattended.
 
 Add the mount to `/etc/fstab`, **by UUID and with `nofail`**:
 
@@ -65,7 +66,7 @@ sudo mount -a
 df -h /mnt/qupa-cafe
 ```
 
-Two choices here are ours and worth stating rather than adopting silently.
+Two choices here are this guide's own, and worth stating rather than adopting silently.
 
 **By UUID, not by device path.** Device letters are assigned in discovery order and are not guaranteed stable across reboots.
 A `/dev/sdb` entry that becomes `/dev/sdc` mounts the wrong filesystem or nothing at all.
@@ -98,7 +99,7 @@ sudo systemctl enable --now fail2ban
 sudo fail2ban-client status sshd
 ```
 
-`fail2ban` is our addition rather than anything Discourse requires.
+`fail2ban` is this guide's addition rather than anything Discourse requires.
 Its value here is bounded and specific: it rate-limits SSH brute-force attempts against port 22.
 
 ## 2.6 Firewall, and why it matters less than you think
@@ -133,3 +134,15 @@ sudo reboot                           # then confirm /mnt/qupa-cafe remounted
 
 The reboot is part of the test, not a formality.
 A data volume that mounts by hand but not from `fstab` is a failure that otherwise surfaces months later, during an unrelated restart.
+
+Reboot from inside the operating system, as above, rather than through a platform control panel or API.
+If your platform offers a delete-protection setting and `platforms/` told you to enable it, that setting may also refuse power actions, so an API reboot can fail with a conflict while `sudo reboot` works.
+
+After it comes back, check that the mount returned on its own:
+
+```bash
+findmnt /mnt/qupa-cafe
+```
+
+No output means `fstab` did not mount it, and `nofail` is why the host booted anyway rather than stopping to tell you.
+That is the trade `nofail` makes: the failure is survivable, and therefore silent.

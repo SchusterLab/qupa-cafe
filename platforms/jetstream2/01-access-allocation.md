@@ -1,14 +1,14 @@
 # 1. The ACCESS allocation
 
-> **Status:** The exchange has not yet been submitted.
-> Rates and quotas below are from ACCESS and Jetstream2 documentation, checked 2026-09-10, plus the exchange calculator in the allocations portal.
+> **Status:** The exchange was approved, and the quotas in 1.3 were read back from the live allocation.
+> Rates come from ACCESS and Jetstream2 documentation and the exchange calculator in the allocations portal.
 
 An ACCESS award is denominated in **Credits**, which are not compute.
 Credits must be exchanged for service units on a specific resource before any machine can be created.
 
 This is the step that surprises people, because an approved allocation looks like it should be usable.
 
-## 1.1 Our allocation
+## 1.1 The allocation
 
 | | |
 |---|---|
@@ -35,11 +35,11 @@ The [click path](https://allocations.access-ci.org/how-to):
 8. Expect a few days to a week.
    Resource providers may approve, modify, or decline.
 
-Two things to check in the interface rather than take on trust.
-The exchange calculator renders its rates client-side, so confirm the 1:1 rate before submitting.
-And confirm the exact CPU resource label in the dropdown — "Indiana Jetstream2 Storage" is verbatim, and the CPU label is inferred by symmetry rather than read from documentation.
+The two resource labels are separate dropdown entries, and picking the wrong one is the mistake the storage trap below punishes.
 
 ### Why 50,000
+
+One Credit exchanges for one service unit on this resource, so the numbers below are both Credits and SUs.
 
 An always-on `m3.quad` costs 4 SU/hr.
 
@@ -65,10 +65,15 @@ Exchanging 100 Credits for 100 GB would shrink the quota from 1,000 GB to 100 GB
 This is the sharpest trap in the allocation process, and it is the opposite of what "adding storage" implies.
 ([quotas](https://docs.jetstream-cloud.org/general/quotas/), [storage](https://docs.jetstream-cloud.org/general/storage/))
 
-Our 160 GB across two disks fits inside the free default with room to spare.
+The 160 GB this deployment uses across two disks fits inside the free default with room to spare.
 
-Confirmed on 2026-09-11, before any exchange of Credits for storage: `openstack quota show` reports `gigabytes: 1000` and `volumes: 10`, alongside 150 cores, 585 GB of RAM and 25 instances.
-The free terabyte is really there, and it is what an exchange would replace.
+Check the quota before exchanging anything for storage, and you will see the free terabyte that an exchange would replace:
+
+```bash
+openstack quota show --usage
+```
+
+With no storage exchanged it reports `gigabytes: 1000` and `volumes: 10`.
 
 ## 1.3 Default quotas
 
@@ -76,11 +81,18 @@ The free terabyte is really there, and it is what an exchange would replace.
 |---|---|
 | vCPU | 150 |
 | RAM | 585 GB |
-| Floating IPs | 10 |
+| Instances | 25 |
+| Floating IPs | 50 |
 | Storage | 1 TB |
 | Volumes | 10 |
 
 `openstack quota show --usage` reports RAM in MB.
+
+Read these from the allocation rather than from this table.
+Nova and Neutron answer separately and do not agree on floating IPs: `openstack limits show --absolute` reports no Nova limit at all, while `openstack quota show` reports the Neutron quota of 50.
+
+The volume limit counts the boot disk.
+Booting from a volume and attaching one data volume uses two of the ten.
 
 ## 1.4 Cost model
 

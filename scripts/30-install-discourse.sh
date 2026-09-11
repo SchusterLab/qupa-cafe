@@ -9,6 +9,11 @@
 #   cp .env.example .env      # then fill it in
 #   sudo ./30-install-discourse.sh
 #   sudo ./30-install-discourse.sh --render-only    # write app.yml, do not build
+#   sudo ./30-install-discourse.sh --local          # scratch host: no TLS, no DNS check
+#
+# --render-only is worth running first even on the real host. It performs the
+# DNS check and the substitution, so an unset variable or an A record that has
+# not propagated surfaces in a second rather than partway through a bootstrap.
 #
 # Corresponds to docs/03-install.md.
 

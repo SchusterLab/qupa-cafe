@@ -152,11 +152,16 @@ fi
 say "Attach $VOLUME to $INSTANCE"
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '   WOULD RUN: openstack server add volume %s %s\n' "$INSTANCE" "$VOLUME"
-elif openstack volume show "$VOLUME" -f value -c attachments | grep -q "$INSTANCE"; then
-  skip "attachment"
 else
-  openstack server add volume "$INSTANCE" "$VOLUME"
-  did "attachment"
+  # The attachments field records the server's UUID, never its name, so the
+  # name has to be resolved before it can be looked for.
+  SERVER_ID="$(openstack server show "$INSTANCE" -f value -c id)"
+  if openstack volume show "$VOLUME" -f value -c attachments | grep -q "$SERVER_ID"; then
+    skip "attachment"
+  else
+    openstack server add volume "$INSTANCE" "$VOLUME"
+    did "attachment"
+  fi
 fi
 
 # -------------------------------------------------------------- floating IP
@@ -167,10 +172,19 @@ if [ "$DRY_RUN" -eq 1 ]; then
   FLOATING_IP="<dry-run>"
 else
   # An address already on the instance is reused rather than a second allocated.
-  FLOATING_IP="$(openstack server show "$INSTANCE" -f value -c addresses \
-                 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | tail -1 || true)"
+  # The instance reports its fixed and floating addresses in one list, in an
+  # order Nova does not promise, so the floating one is identified by looking
+  # each address up rather than by taking a position in that list.
+  FLOATING_IP=""
+  for addr in $(openstack server show "$INSTANCE" -f value -c addresses \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'); do
+    if openstack floating ip list -f value -c "Floating IP Address" | grep -qx "$addr"; then
+      FLOATING_IP="$addr"
+      break
+    fi
+  done
 
-  if [ -n "$FLOATING_IP" ] && openstack floating ip list -f value -c "Floating IP Address" | grep -qx "$FLOATING_IP"; then
+  if [ -n "$FLOATING_IP" ]; then
     skip "$FLOATING_IP"
   else
     FLOATING_IP="$(openstack floating ip create public -f value -c floating_ip_address)"

@@ -1,8 +1,9 @@
 # 4. Embeddings and relevance
 
-> **Status:** Executed end to end against a live scratch forum on 2026-09-10.
-> Embeddings are enabled, the local server serves 384-dimension vectors, and all fourteen existing topics were backfilled.
+> **Status:** Executed end to end on the deployed instance, and previously on a scratch forum.
+> Embeddings are enabled, the local server serves 384-dimension vectors on the bridge gateway only, and every existing topic is backfilled.
 > Four things here were corrected from what actually happened rather than written from documentation: `discourse-ai` ships in core (4.3), the server must bind to the bridge gateway (4.4), there is no preset for a small model and a credential is mandatory (4.6), and **topics are embedded while posts are not** (4.7).
+> The embedding latency in 4.6 was measured on the deployed instance rather than inferred.
 > The semantic-search-by-meaning check at the end of 4.7 has not been run.
 
 Adds semantic search, Related Topics, and — the reason this chapter exists — a vector for every topic, so that something can decide which threads are worth an agent's attention.
@@ -15,7 +16,7 @@ This is optional for an ordinary forum and central to this one.
 Two pieces.
 
 **The `discourse-ai` plugin**, which embeds every topic as it changes, backfills existing ones, and stores the vectors in Postgres.
-We write no embedding code at all.
+This deployment writes no embedding code at all.
 
 Topics, not posts — see 4.7, which is where that turns out to matter.
 
@@ -34,7 +35,7 @@ Small enough to run comfortably on shared CPU cores, and good enough that releva
 Embedding a generous 200 topic revisions a day is on the order of 200 CPU-seconds spread across four cores, which is a duty cycle near zero.
 
 There is no case for a GPU here.
-`platforms/` records the arithmetic for our own host, but the short version is that the expensive operation — a transformer forward pass — happens a few hundred times a day, and the cheap one — a dot product — is what happens often.
+`platforms/` records the arithmetic for the deployed host, but the short version is that the expensive operation — a transformer forward pass — happens a few hundred times a day, and the cheap one — a dot product — is what happens often.
 
 ## 4.3 The plugin is already installed
 
@@ -48,8 +49,7 @@ Most third-party instructions still tell you to clone it, because it was a separ
 You can check for yourself before editing anything:
 
 ```bash
-cd /var/discourse
-sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 ls /var/www/discourse/plugins | grep discourse-ai
 exit
 ```
@@ -108,7 +108,7 @@ curl -X POST http://172.17.0.1:8081/embed \
   -H 'Content-Type: application/json' \
   -d '{"inputs":"Testing string for embeddings"}'
 
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://172.17.0.1:8081/embed \
   -H 'Content-Type: application/json' -d '{"inputs":"probe"}'
 exit
@@ -132,7 +132,7 @@ The same guard constrains webhook targets, which is why `docs/06-agent-api.md` d
 ## 4.6 Configure the plugin
 
 There is an admin path — Admin -> Plugins -> Discourse AI -> Embeddings -> **New** — and a **Test** button worth using.
-What follows is the scripted equivalent, because that is what we ran and because a configuration produced by clicking is not reproducible.
+What follows is the scripted equivalent, which is what was run here, and a configuration produced by clicking is not reproducible.
 
 Three things about this are not what the plugin's own documentation leads you to expect.
 
@@ -158,7 +158,7 @@ EmbeddingDefinition.create!(
 ```
 
 Note `pg_function: "<#>"` — negative inner product, which is what the `bge-large-en` preset uses, not the cosine operator `<=>`.
-BGE models emit normalised vectors, so the two agree up to sign; matching the preset keeps our definition consistent with the plugin's own queries.
+BGE models emit normalised vectors, so the two agree up to sign; matching the preset keeps the definition consistent with the plugin's own queries.
 
 The tokenizer is the `BgeLargeEn` one.
 There is no small-specific tokenizer class, and the BGE family shares a tokenizer.
@@ -201,51 +201,67 @@ SiteSetting.ai_embeddings_semantic_related_topics_enabled = true
 Semantic search and Related Topics are enabled because the human researchers benefit from them and they cost nothing extra once the vectors exist.
 A project about accumulating context rather than losing it should let its participants find what was said before.
 
-Backfill is automatic and needs no prompting.
-On the scratch forum all fourteen existing topics had vectors within a minute of these settings being applied.
+Backfill is automatic, but it is not immediate.
+Enabling these settings does not embed anything at the moment you apply them; the scheduled job does it on its next run.
 
-### Do not assume a new topic is embedded immediately
+### A new topic is not embedded immediately, and the event callback does not fire
 
-Two mechanisms exist.
+Two mechanisms appear to exist.
 An event callback on `topic_created`, `topic_edited`, `post_created` and `post_edited` enqueues a `generate_embeddings` job, and a scheduled job `Jobs::EmbeddingsBackfill` runs **every 5 minutes** with a batch size of `ai_embeddings_backfill_batch_size`, default 250.
 
-The backfill definitely works: running it by hand embedded every missing topic at once.
+Only the second one was observed doing any work.
+
+Measured on the deployed instance, with embeddings enabled, the server healthy and Sidekiq idle:
+
+| Event | Result |
+|---|---|
+| Settings applied, 11 existing topics | no vectors at all until a backfill ran |
+| Backfill run by hand | all 11 embedded at once |
+| New topic created, watched for 90 s | **no vector** — the event path did not fire |
+| New topic left to the scheduler | embedded after **135 s** |
+
+So treat the 5-minute scheduled job as the only path, and its interval as the worst-case latency.
+The event callback is not something to rely on, and an empty Sidekiq queue is not evidence that embedding has happened.
+
+Running the backfill by hand is how you avoid waiting:
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 rails runner 'Jobs::EmbeddingsBackfill.new.execute({})'
 exit
 ```
 
-What we could **not** confirm is the real-time path.
-A topic created over the REST API had no vector after 30 seconds, with embeddings enabled, the provider healthy, Sidekiq processing normally and every queue empty.
+That is worth doing once after enabling embeddings, rather than waiting out the first cycle.
 
-That observation comes with a caveat that makes it weak evidence: our scratch host is a WSL distro that suspends when idle, so a scheduler's ticking there says little about an always-on server.
-**Measure this on the real instance** rather than trusting either reading.
-
-It does not affect correctness, only latency.
+None of this affects correctness, only latency.
 `server/ranking.py` treats a missing vector as "not yet", logs nothing, and does not advance its cursor past the topic — so a delayed embedding delays a wake instead of losing it.
+The practical consequence is that an agent's reaction to a brand-new topic is bounded below by this interval, not by its own poll.
 
 ## 4.7 Verification
 
 ```bash
-curl -X POST http://localhost:8081/embed -H 'Content-Type: application/json' -d '{"inputs":"hello"}'
+curl -X POST http://172.17.0.1:8081/embed -H 'Content-Type: application/json' -d '{"inputs":"hello"}'
 ```
+
+> **Use the bridge gateway here, not `localhost`.**
+> `localhost:8081` does not answer, because 4.4 binds the server to the gateway address only.
+> A `curl` to `localhost` fails to connect and reads like a server that did not start.
 
 Then, inside the container:
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 rails runner 'puts DB.query_single("select count(*) from ai_topics_embeddings").first'
 exit
 ```
 
-**Backfill works.**
-On a forum with six seeded topics and eight of ours, all fourteen had a vector within a minute of enabling embeddings, at 384 dimensions.
-Nothing had to be triggered.
+The count should equal the number of undeleted topics.
+If it is zero, nothing is broken and the scheduled job has not run yet — see the latency table in 4.6.
+
+Deleting a topic leaves its embedding row behind, so a count slightly above the topic count means old rows, not a fault.
 
 **pgvector is already there.**
-The Discourse Postgres carried `vector` 0.8.6 on a fresh install, alongside `hstore`, `pg_trgm` and `unaccent`, with nothing added by us.
+The Discourse Postgres carried `vector` 0.8.6 on a fresh install, alongside `hstore`, `pg_trgm` and `unaccent`, with nothing added by hand.
 Nothing needs installing, and the extension is not something to plan for.
 
 ### Topics are embedded. Posts are not.
@@ -270,7 +286,7 @@ if DiscourseAi::Embeddings.enabled? && !paused? &&
      (target.is_a?(Topic) || SiteSetting.ai_embeddings_per_post_enabled)
 ```
 
-We left it off and therefore cannot tell you what enabling it costs or how it behaves.
+It is left off here, so this guide cannot tell you what enabling it costs or how it behaves.
 If you want per-post vectors, that is the switch; treat it as unexplored rather than recommended.
 
 This matters because it is a natural mistake to build a per-post relevance query against a table whose name says exactly what you want.

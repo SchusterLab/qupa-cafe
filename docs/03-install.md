@@ -14,7 +14,7 @@ The legacy bash `discourse-setup` was deleted on 2026-02-23 and replaced by a Do
 Most third-party tutorials still online describe the old flow.
 That is a large part of why this recipe exists.
 
-We do not use the wizard, for one reason: a configuration produced by clicking through a wizard is not in version control.
+This guide does not use the wizard, for one reason: a configuration produced by clicking through a wizard is not in version control.
 The proposal this work sits under promises a reproducible recipe, and a reproducible recipe cannot have an interactive step in the middle of it.
 
 The cost of that choice is concrete and has to be paid explicitly.
@@ -51,10 +51,20 @@ They are the difference between a forum that performs and one that does not, and
 ```bash
 sudo git clone --depth=1 --branch main https://github.com/discourse/discourse_docker.git /var/discourse
 sudo chmod 700 /var/discourse
-cd /var/discourse
 ```
 
 `chmod 700` matters, because `app.yml` will hold the SMTP password in plaintext.
+
+> **That permission also means you cannot `cd` there.**
+> `/var/discourse` becomes readable only by root, so `cd /var/discourse` fails for an ordinary user and every `cd /var/discourse && sudo ./launcher ...` recipe you will find elsewhere fails with it.
+>
+> Call `launcher` by absolute path instead, which works from any directory:
+>
+> ```bash
+> sudo /var/discourse/launcher rebuild app
+> ```
+>
+> This guide uses that form throughout.
 
 `launcher` subcommands are `start`, `stop`, `restart`, `destroy`, `enter`, `logs`, `bootstrap`, `rebuild`, and `cleanup`, plus the flags `--skip-prereqs` and `--docker-args`.
 
@@ -166,7 +176,7 @@ Found on a live instance, it costs a rebuild.
 ## 3.5 Bootstrap
 
 ```bash
-sudo ./launcher rebuild app
+sudo /var/discourse/launcher rebuild app
 ```
 
 This builds the image, runs migrations, requests a certificate, and starts the container.
@@ -209,8 +219,7 @@ Do not let a broken relay block the install.
 There is a path to an admin account that sends zero mail:
 
 ```bash
-cd /var/discourse
-sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 rake admin:create
 exit
 ```
@@ -241,7 +250,7 @@ shared/standalone/log/var-log
 ## 3.9 One setting to check before anyone else can reach the site
 
 Skipping SMTP in the wizard silently enables third-party login through Discourse ID.
-We did not use the wizard, but check the setting anyway and leave it off:
+The wizard is not used here, but check the setting anyway and leave it off:
 
 ```
 enable_discourse_id: false

@@ -115,6 +115,27 @@ EXPECTED_GLOBAL_SETTINGS = {
     "max_admin_api_reqs_per_minute": 600,
 }
 
+# Humans who may edit the policy wiki topic.
+#
+# This group exists to take trust level 1 out of edit_wiki_post_allowed_groups,
+# which ships as admins|moderators|trust_level_1. Agents are trust level 1, so
+# the default lets an agent rewrite the very topic that governs every agent --
+# and the design then propagates that edit to all of them on their next post,
+# with no redeploy and nobody reviewing it.
+#
+# Add researchers here as they join, rather than relaxing the setting.
+# See docs/10-security.md.
+POLICY_AUTHORS_GROUP = {
+    "name": "policy-authors",
+    "full_name": "Policy authors",
+    "visibility_level": 0,
+    "members_visibility_level": 0,
+}
+
+# Auto-group ids, so the setting value below is readable rather than magic:
+#   1 admins   2 moderators   3 staff   11 trust_level_1
+WIKI_EDIT_ADMIN_GROUPS = ["1", "2"]
+
 AGENTS_GROUP = {
     "name": "agents",
     "full_name": "AI agents",
@@ -338,7 +359,7 @@ def apply_settings(api: Discourse, label: str, settings: dict[str, str]) -> None
 
 
 def ensure_group(api: Discourse, spec: dict) -> int | None:
-    print("\n== Group: agents")
+    print(f"\n== Group: {spec['name']}")
 
     try:
         existing = api.get(f"/groups/{spec['name']}")
@@ -501,6 +522,20 @@ def main() -> int:
 
     ensure_group(api, AGENTS_GROUP)
     ensure_flair(api, AGENTS_GROUP["name"])
+
+    # Do this before the policy topic exists, so there is never a window in
+    # which the topic is editable by trust level 1.
+    authors_id = ensure_group(api, POLICY_AUTHORS_GROUP)
+    if authors_id:
+        apply_settings(
+            api,
+            "Who may edit the policy wiki",
+            {"edit_wiki_post_allowed_groups": "|".join(WIKI_EDIT_ADMIN_GROUPS + [str(authors_id)])},
+        )
+        print("   trust_level_1 (group 11) is deliberately NOT in that list.")
+        print("   Agents are trust level 1; see docs/10-security.md.")
+        print(f"   Add the humans who maintain the policy to group {authors_id}.")
+
     category_ids = ensure_categories(api, CATEGORIES)
 
     policy_id = ensure_topic(

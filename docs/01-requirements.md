@@ -1,24 +1,23 @@
 # 1. Requirements
 
-> **Status:** Requirements confirmed against upstream documentation and source on 2026-09-10.
+> **Status:** Requirements confirmed against upstream documentation and source, and against the host and relay this guide was deployed on.
 > The sizing formula and the hostname constraint are quoted from Discourse's own material; each is cited inline.
-> The email-authentication section was revised on 2026-09-11, against a relay whose records are published and resolving.
 
 This guide deploys Discourse in its supported Docker configuration, with automatic TLS, a transactional email relay, and persistent state on a separate block device.
 
 It is written against requirements rather than against a particular host.
-Wherever a requirement can be met more than one way, the guide states the requirement and then documents the single way we actually used.
+Wherever a requirement can be met more than one way, the guide states the requirement and then documents the single way that was actually deployed and tested.
 
 ## Host
 
-| Resource | Minimum | What we ran | Why |
+| Resource | Minimum | Deployed | Why |
 |---|---|---|---|
 | RAM | 4 GB | 15 GB | Postgres shared buffers plus one Unicorn worker per core; 4 GB is Discourse's own floor |
 | CPU | 2 cores | 4 cores | Two Unicorn workers per core, plus the embedding container |
 | Root filesystem | 40 GB | 60 GB | Docker images and layers; see [Storage](#storage) |
 | Data volume | 100 GB | 100 GB | Database, uploads, and backups |
 | OS | Debian-family, current LTS | Ubuntu 24.04 LTS | Docker is packaged and `unattended-upgrades` is available |
-| Docker | 20.10 | 29.7 | `launcher` refuses to run below 20.10 and recommends 24.0.7 |
+| Docker | 20.10 | 29.1 | `launcher` refuses to run below 20.10 and recommends 24.0.7 |
 | Kernel | 4.4 | — | Enforced by `launcher` |
 
 A smaller host will run Discourse.
@@ -30,7 +29,7 @@ Discourse's setup wizard auto-tunes two Postgres and Unicorn values from the hos
 This guide writes `app.yml` by hand and therefore **gets no auto-tuning at all**.
 
 Both values must be set explicitly or the install silently runs on 256 MB of shared buffers and 3 workers.
-The formula and our values are in `docs/03-install.md`.
+The formula, and the values it produces for the host above, are in `docs/03-install.md`.
 
 ## Hostname
 
@@ -93,11 +92,11 @@ This guide configures Discourse so that **password resets are the only mail path
 That is not only tidiness: on a small monthly quota, a digest setting switched on by accident drains the quota and takes account recovery down with it, silently.
 `docs/05-forum-config.md` covers the settings and the check that nothing else sends.
 
-> **What we used.** A free transactional tier with a **300 messages per month** allowance, over `smtp-relay.<provider>:587` with STARTTLS.
+> **What this deployment used.** A free transactional tier with a **300 messages per month** allowance, over port 587 with STARTTLS.
 > Note that Discourse's `INSTALL-email.md` describes that tier as 300 per *day*; it is 300 per *month*, and that document disclaims its own pricing accuracy.
 > Take quota figures from the provider, not from Discourse's documentation.
 >
-> The relay we used, its records, and its traps are in `providers/`, which is outside this guide on purpose.
+> That relay, its records, and its traps are in `providers/`, which is outside this guide on purpose.
 
 ## Storage
 
@@ -121,6 +120,7 @@ Doing it afterwards means stopping the container and `rsync -a` to preserve owne
 Two consequences worth planning for rather than discovering:
 
 - `./launcher cleanup` must be scheduled, or images accumulate without bound.
+  It prompts for confirmation, so scheduling it takes one more step than it looks; `docs/07-backups-and-ops.md` has the form that works unattended.
 - A future major Postgres upgrade needs two to three times the database size free on whichever filesystem holds `postgres_data`.
 
 ## Network
@@ -138,7 +138,7 @@ Configure it there and treat `ufw` as defence for anything *not* published by a 
 
 ## What this guide does not cover
 
-Named so you know they exist, not instructed, because we did not deploy them:
+Named so you know they exist, not instructed, because none of them was deployed or tested here:
 
 - **A host-level reverse proxy.** If you need port 443 for a second service on the same host, Discourse supports it through `web.socketed.template.yml`.
   See Discourse's [reverse proxy howto](https://meta.discourse.org/t/run-other-websites-on-the-same-machine-as-discourse/17247).

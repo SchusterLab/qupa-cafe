@@ -1,8 +1,8 @@
 # 7. Backups and operations
 
-> **Status:** The restore drill in 7.2 was run on the scratch forum on 2026-09-11, destroying a topic and recovering it.
-> `scripts/50-backup-check.sh` was run against that host and passes.
-> Timings and sizes below come from that run, on a forum with 19 topics; they say nothing about a forum with a year of content.
+> **Status:** 7.1, 7.3 and 7.6 were executed on the deployed instance: nightly backups set, a real backup taken and confirmed on the data volume, cleanup run, both cron jobs installed, and `scripts/50-backup-check.sh` passing with every check green.
+> The restore drill in 7.2 was run on the scratch forum, destroying a topic and recovering it, and **has not been repeated on the deployed instance**.
+> Timings and sizes are from forums with a handful of topics; they say nothing about a forum with a year of content.
 
 What has to keep happening after the forum is running.
 
@@ -10,7 +10,33 @@ What has to keep happening after the forum is running.
 
 Discourse takes its own backups: a database dump plus uploads, written to `shared/standalone/backups/default` on the data volume.
 
-Enable nightly backups with retention from Admin -> Backups.
+Automatic backups are **already on** after a fresh install, at `backup_frequency` 7 days keeping `maximum_backups` 5.
+There is no separate enable switch: older guides mention an `automatic_backups_enabled` setting, and it no longer exists — asking for it raises "No setting named 'automatic_backups_enabled' exists".
+The frequency alone is what schedules them.
+
+So this is a change of interval, not an enablement:
+
+| Setting | Default | Set to |
+|---|---|---|
+| `backup_frequency` | 7 | 1 |
+| `maximum_backups` | 5 | 7 |
+
+That is nightly, a week of history, from Admin -> Backups or through the API.
+
+Take one immediately rather than waiting for the first scheduled run, so that the path is known to work:
+
+```bash
+sudo docker exec app discourse backup
+```
+
+On a new forum that takes about eight seconds and produces a file of a few megabytes.
+Confirm it landed on the data volume rather than the root filesystem, which is what proves the `volumes:` retargeting in `docs/03-install.md` took effect:
+
+```bash
+ls -lh /mnt/qupa-cafe/shared/standalone/backups/default/
+```
+
+The directory does not exist until the first backup, so its absence before then is not a fault.
 
 Two things this is not.
 
@@ -36,7 +62,7 @@ The drill is complete when a restored copy serves the forum's content, not when 
 ### What the run looked like
 
 ```bash
-./launcher enter app
+sudo /var/discourse/launcher enter app
 discourse backup                       # 5 s, 2.9 MB, 19 topics
 discourse enable_restore
 discourse restore <file>.tar.gz        # 19 s
@@ -66,13 +92,42 @@ Two things fill the disk, on two different filesystems.
 
 **Docker images and layers, on the root filesystem.**
 Every `./launcher rebuild` leaves the previous image behind.
-Schedule cleanup:
 
 ```bash
-cd /var/discourse && sudo ./launcher cleanup
+sudo /var/discourse/launcher cleanup
 ```
 
 Without this, images accumulate without bound and the root filesystem fills at an unpredictable moment, typically mid-rebuild.
+
+> **`launcher cleanup` asks for confirmation, twice, and that makes it hard to schedule.**
+> Run unattended it reads end-of-file, takes that as "no", reclaims nothing, and exits successfully.
+> The log looks like a job that ran.
+>
+> Supply the answers on standard input:
+>
+> ```bash
+> yes | sudo /var/discourse/launcher cleanup
+> ```
+
+Read the output rather than `docker system df` when judging whether it worked.
+`docker system df` reports the Discourse base image as reclaimable, but `cleanup` deliberately keeps it so the next rebuild does not re-download several gigabytes.
+A large reclaimable figure immediately after a successful cleanup is normal.
+
+### Scheduling it
+
+Both of these belong in cron rather than in anybody's memory:
+
+```cron
+# /etc/cron.d/qupa-cafe
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+17 4 * * 0 root cd /var/discourse && yes | ./launcher cleanup >> /var/log/qupa-cleanup.log 2>&1
+23 5 * * * root DISCOURSE_HOSTNAME=forum.example.com /path/to/repo/scripts/50-backup-check.sh >> /var/log/qupa-backup-check.log 2>&1
+```
+
+`DISCOURSE_HOSTNAME` is not decoration on the second line.
+Without it the certificate-expiry check is skipped, and a renewal that quietly stopped working is exactly what this job exists to notice.
 
 **Backups and uploads, on the data volume.**
 Retention settings bound the backups; uploads grow with use.
@@ -94,9 +149,8 @@ Check it against free space before starting, not during.
 Discourse itself updates from Admin -> Upgrade, or by rebuilding:
 
 ```bash
-cd /var/discourse
-sudo git pull
-sudo ./launcher rebuild app
+sudo git -C /var/discourse pull
+sudo /var/discourse/launcher rebuild app
 ```
 
 A rebuild is required after any change to `app.yml`, including adding a plugin.
@@ -139,6 +193,6 @@ Automatic renewal is reliable right up until something about the HTTP-01 path ch
 ## 7.7 Things not to do
 
 - **Do not stop or suspend the host to save money.** Whatever your platform charges for a stopped instance, a forum that agents poll every 60 seconds cannot be intermittently unreachable.
-  `platforms/` has the arithmetic for our host.
+  `platforms/` has the arithmetic for the deployed host.
 - **Do not edit `containers/app.yml` on the host without updating this repository.** That is exactly the drift the changelog exists to prevent.
 - **Do not restore into the live container as a first attempt.** Use a throwaway.

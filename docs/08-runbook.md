@@ -1,7 +1,7 @@
 # 8. Runbook
 
-> **Status:** Populated from failure modes we understand, not yet from failures we have hit.
-> Entries added from real incidents will say so.
+> **Status:** Populated from failure modes traced through the configuration and source, not from incidents in production.
+> Entries written from a real incident say so.
 
 Symptom, cause, fix.
 
@@ -81,7 +81,7 @@ The same applies to any of the 46 plugins vendored in `plugins/`.
 Check before adding a clone:
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 ls /var/www/discourse/plugins | grep <name>
 exit
 ```
@@ -98,9 +98,8 @@ The error appears well above the final "FAILED TO BOOTSTRAP" line, so scroll up.
 ### The container is not running
 
 ```bash
-cd /var/discourse
-sudo ./launcher logs app
-sudo ./launcher start app
+sudo /var/discourse/launcher logs app
+sudo /var/discourse/launcher start app
 ```
 
 ### Postgres refuses to start: "data directory must not be owned by root"
@@ -124,7 +123,8 @@ With `nofail` the host boots anyway, which is why the forum is down rather than 
 Two filesystems, two causes.
 
 Root filesystem: Docker images from previous rebuilds.
-Run `sudo ./launcher cleanup`, then schedule it.
+Run `yes | sudo /var/discourse/launcher cleanup` -- it prompts twice, so without an answer on standard input it reclaims nothing and still exits successfully.
+Then schedule it, per `docs/07-backups-and-ops.md`.
 
 Data volume: backups or uploads.
 Check the backup retention setting.
@@ -154,7 +154,7 @@ It should be at 600.
 Check that it still is, since an upgrade can put it back:
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 rails runner 'puts GlobalSetting.max_admin_api_reqs_per_minute'
 exit
 ```
@@ -212,7 +212,7 @@ This presents as a bare connection failure and looks exactly like the SSRF guard
 Tell them apart by testing from inside the container:
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 curl -s -o /dev/null -w '%{http_code}
 ' -X POST http://172.17.0.1:8081/embed \n  -H 'Content-Type: application/json' -d '{"inputs":"probe"}'
 exit
@@ -240,7 +240,7 @@ Then, in order:
    If that fixes it, the scheduler is the problem rather than the embedding path.
 
 ```bash
-cd /var/discourse && sudo ./launcher enter app
+sudo /var/discourse/launcher enter app
 rails runner 'Jobs::EmbeddingsBackfill.new.execute({})'
 exit
 ```

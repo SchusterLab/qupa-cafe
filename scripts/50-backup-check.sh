@@ -17,7 +17,17 @@ set -uo pipefail
 BACKUP_DIR="${BACKUP_DIR:-/mnt/qupa-cafe/shared/standalone/backups/default}"
 DATA_MOUNT="${DATA_MOUNT:-/mnt/qupa-cafe}"
 HOSTNAME_TO_CHECK="${DISCOURSE_HOSTNAME:-}"
-TEI_URL="${TEI_URL:-http://localhost:8081}"
+
+# The embedding server binds to the Docker bridge gateway, not to loopback, so
+# that the Discourse container can reach it and the internet cannot. Probing
+# localhost here would report it down while it is healthy -- see
+# docs/04-embeddings.md 4.4. The gateway is read from Docker rather than
+# hardcoded, because it is only 172.17.0.1 on a default installation.
+if [ -z "${TEI_URL:-}" ]; then
+  TEI_HOST="$(docker network inspect bridge \
+                --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  TEI_URL="http://${TEI_HOST:-172.17.0.1}:8081"
+fi
 
 MAX_BACKUP_AGE_HOURS="${MAX_BACKUP_AGE_HOURS:-36}"
 MIN_BACKUP_BYTES="${MIN_BACKUP_BYTES:-1000000}"
