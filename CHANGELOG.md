@@ -43,3 +43,23 @@ An entry here that cites no document is a sign that the documentation drifted.
 - `scripts/20-host-setup.sh` gained `SKIP_UFW=1`, for environments where a host firewall is the wrong
   tool and enabling it can break networking.
 - `Makefile` added: `make check` runs the documentation checks, both test suites, and a syntax pass.
+- `scripts/check-docs.py` also checks that every path the documentation points at exists.
+  Backticked paths matter more than Markdown links here, because the prose uses them constantly and
+  nothing renders them, so a rename leaves them silently wrong.
+- `providers/brevo/` added, for the email relay.
+  `docs/` states the SMTP requirement and names no vendor, and `platforms/` is for hosts, so the
+  relay's record names and traps previously had nowhere to live.
+- `.gitattributes` added, normalising to LF.
+  Development is on Windows and the scripts run on Linux hosts, where a CRLF script fails with
+  "bad interpreter" — a confusing error for an obvious cause.
+  Verified by cloning into WSL and checking the result with `file`.
+
+### Corrections found by running the install
+
+- **`discourse-ai` ships in Discourse core and must not be cloned.**
+  Discourse vendors 46 plugins in `plugins/` as of 2026-09.
+  A `git clone` for it in `app.yml`'s `after_code` hook fails the whole bootstrap with
+  "destination path already exists" and exit code 128.
+  `docker_manager` is not bundled, so that clone stays.
+  Corrected in `config/app.yml.example` and `docs/04-embeddings.md`, with a runbook entry, since most
+  instructions written before 2026 say to clone it.
