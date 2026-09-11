@@ -1,0 +1,130 @@
+# Discourse container configuration for Qupa Cafe.
+#
+# This is the tracked, annotated version. scripts/30-install-discourse.sh renders
+# it into /var/discourse/containers/app.yml, substituting ${VARS} from an
+# untracked .env. The rendered file contains the SMTP password in plaintext and
+# is gitignored; /var/discourse is mode 700 for the same reason.
+#
+# Written by hand rather than produced by the setup wizard, because a config
+# produced by clicking is not in version control. The cost of that choice is
+# that NOTHING IS AUTO-TUNED -- see "Tuning" below, which is the single most
+# consequential block in this file.
+#
+# Full reasoning: docs/03-install.md.
+
+templates:
+  - "templates/postgres.template.yml"
+  - "templates/redis.template.yml"
+  - "templates/web.template.yml"
+  # In the stock sample already. It stays, and it matters more here than on an
+  # ordinary forum: agents post over the API, and these nginx-level limits are
+  # the ones that cannot be configured away from inside Discourse.
+  - "templates/web.ratelimited.template.yml"
+  # Order matters. web.ssl must come before web.letsencrypt.ssl.
+  - "templates/web.ssl.template.yml"
+  - "templates/web.letsencrypt.ssl.template.yml"
+
+# Port 80 is not optional if you want automatic certificates: it is where the
+# HTTP-01 challenge arrives.
+expose:
+  - "80:80"
+  - "443:443"
+
+params:
+  db_default_text_search_config: "pg_catalog.english"
+
+  # ------------------------------------------------------------------ Tuning
+  #
+  # Auto-tuning happens ONLY inside the setup wizard. A hand-written app.yml
+  # gets none of it. Leave these unset and the install silently runs on 256 MB
+  # of shared buffers and 3 workers, however large the host.
+  #
+  # Formula, recovered from the deleted discourse-setup script:
+  #
+  #   db_shared_buffers = 256 MB x GB_RAM, capped at 4096 MB
+  #                       (1 GB host -> 128 MB, 2 GB host -> 256 MB)
+  #   UNICORN_WORKERS   = 2 x cores,       capped at 8
+  #                       (if RAM <= 2 GB, use 2 x GB_RAM instead)
+  #
+  # Values below are for a 4 vCPU / 15 GB host. RECOMPUTE THEM FOR YOURS.
+  db_shared_buffers: "3840MB"
+  db_work_mem: "40MB"
+
+# Relocates Discourse's state onto the data volume.
+#
+# SET THIS BEFORE THE FIRST BOOTSTRAP. Doing it now is a two-line edit. Doing it
+# afterwards means stopping the container and copying with `rsync -a`, because
+# anything that loses ownership makes Postgres refuse to start with
+# "data directory must not be owned by root".
+#
+# Note what this does NOT move: Docker's images and layers stay on the root
+# filesystem, which is why the root needs to be roomy regardless.
+volumes:
+  - volume:
+      host: /mnt/qupa-cafe/shared/standalone
+      guest: /shared
+  - volume:
+      host: /mnt/qupa-cafe/shared/standalone/log/var-log
+      guest: /var/log
+
+env:
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+  LANGUAGE: en_US.UTF-8
+
+  # 2 x cores, capped at 8. See the Tuning note above.
+  UNICORN_WORKERS: 8
+
+  # Must match the public DNS A record EXACTLY. Discourse "will not work with a
+  # bare IP number" (samples/standalone.yml), so this is a hard prerequisite.
+  DISCOURSE_HOSTNAME: '${DISCOURSE_HOSTNAME}'
+
+  # The platform's automatic hostname, if it has one, belongs here rather than
+  # as the primary. Comma-separated.
+  DISCOURSE_HOSTNAME_ALIASES: '${DISCOURSE_HOSTNAME_ALIASES}'
+
+  # Registering with this address grants admin automatically. It is also the
+  # address the certificate request uses -- do NOT set LETSENCRYPT_ACCOUNT_EMAIL,
+  # which is obsolete.
+  DISCOURSE_DEVELOPER_EMAILS: '${DISCOURSE_DEVELOPER_EMAILS}'
+
+  # --------------------------------------------------------------------- SMTP
+  #
+  # NOTHING VALIDATES THAT THIS WORKS. The only check during bootstrap is a
+  # literal string comparison against "smtp.example.com" in web.template.yml. A
+  # configuration that is merely wrong rather than unset bootstraps cleanly and
+  # then fails at the first password reset, months later, with no visible error.
+  #
+  # Send a real test message and read the received headers. docs/03-install.md
+  # treats that as a gate on declaring the install finished.
+  #
+  # QUOTE THE PASSWORD. An unquoted '#' begins a YAML comment and the rest of
+  # the password is silently discarded.
+  DISCOURSE_SMTP_ADDRESS: '${DISCOURSE_SMTP_ADDRESS}'
+  DISCOURSE_SMTP_PORT: 587
+  DISCOURSE_SMTP_USER_NAME: '${DISCOURSE_SMTP_USER_NAME}'
+  DISCOURSE_SMTP_PASSWORD: "${DISCOURSE_SMTP_PASSWORD}"
+  DISCOURSE_SMTP_ENABLE_START_TLS: true
+
+  # The SENDING SUBDOMAIN, verified with the relay provider. Verifying the apex
+  # while sending from a subdomain leaves mail misconfigured.
+  DISCOURSE_SMTP_DOMAIN: '${DISCOURSE_HOSTNAME}'
+  DISCOURSE_NOTIFICATION_EMAIL: 'noreply@${DISCOURSE_HOSTNAME}'
+
+# Adding a plugin requires `./launcher rebuild app`, not a restart.
+hooks:
+  after_code:
+    - exec:
+        cd: $home/plugins
+        cmd:
+          - git clone --depth 1 https://github.com/discourse/docker_manager.git
+          # Embeds every post and backfills existing ones, into pgvector.
+          # Needs the embedding server from server/tei-compose.yml, and that
+          # server's host added to `allowed_internal_hosts` -- Discourse's SSRF
+          # guard blocks private addresses, and a sibling container on the
+          # Docker bridge is a private address. See docs/04-embeddings.md.
+          - git clone --depth 1 https://github.com/discourse/discourse-ai.git
+
+run:
+  - exec: echo "Beginning of custom commands"
+  - exec: echo "End of custom commands"

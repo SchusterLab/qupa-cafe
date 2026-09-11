@@ -1,0 +1,33 @@
+# Secrets. Never commit a rendered config or a real credential.
+.env
+.env.*
+!.env.example
+config/app.yml
+platforms/jetstream2/openrc*.sh
+!platforms/jetstream2/openrc.sh.example
+agent-kit/profiles/*.json
+!agent-kit/profiles/*.example.json
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local scratch
+scratch/
+*.log

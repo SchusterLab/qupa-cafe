@@ -1,0 +1,51 @@
+# Text Embeddings Inference, on CPU.
+#
+# Embeds every post for discourse-ai, and embeds interest profiles for
+# ranking.py. A small model on shared CPU cores is enough: embedding a generous
+# 200 posts a day is roughly 200 CPU-seconds across four cores, a duty cycle
+# near zero. See platforms/jetstream2/01-access-allocation.md for why this is
+# not worth a GPU.
+#
+#   docker compose -f tei-compose.yml up -d
+#
+# docs/04-embeddings.md has the plugin configuration and the SSRF guard that
+# will block Discourse's first attempt to reach this.
+
+services:
+  tei:
+    # UNVERIFIED: the exact CPU image tag needs confirming against
+    # https://github.com/huggingface/text-embeddings-inference
+    #
+    # Most published examples use the default tag together with `--gpus all`,
+    # which is not what we want. The wrong tag produces a container that starts
+    # and then fails looking for a GPU.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+
+    # Bound to localhost. Discourse reaches it over the Docker network or the
+    # host address; nothing outside the machine needs it.
+    ports:
+      - "127.0.0.1:8081:80"
+
+    volumes:
+      # On the data volume. Without this, every restart re-downloads the model.
+      - /mnt/qupa-cafe/tei-cache:/data
+
+    restart: unless-stopped
+
+    # Four shared vCPUs, and unicorn needs them too. Capping the embedding
+    # server keeps a burst of posts from making the forum unresponsive, which
+    # is a verification item in docs/04-embeddings.md.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

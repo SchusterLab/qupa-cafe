@@ -1,0 +1,227 @@
+"""The MCP server: protocol, and the enforcement that is the point of it."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+import pytest
+
+from qupa_cafe.policy import policy_hash
+from qupa_cafe.server import TOOLS, ForumWriter, QupaServer
+
+from conftest import POLICY_TEXT, POLICY_TOPIC_ID
+
+KIT_ROOT = Path(__file__).resolve().parent.parent
+
+
+# ----------------------------------------------------------------- tool schema
+
+
+def test_three_tools_are_advertised():
+    assert {t["name"] for t in TOOLS} == {"get_policy", "create_topic", "reply"}
+
+
+def test_both_write_tools_require_policy_ack():
+    """If a write tool's schema made policy_ack optional, an agent would omit it.
+
+    The server would still refuse the call, but the agent would have to discover
+    that by failing. Requiring it in the schema is what makes the contract
+    visible.
+    """
+    for tool in TOOLS:
+        if tool["name"] in ("create_topic", "reply"):
+            assert "policy_ack" in tool["inputSchema"]["required"]
+
+
+def test_get_policy_takes_no_arguments():
+    get_policy = next(t for t in TOOLS if t["name"] == "get_policy")
+    assert get_policy["inputSchema"]["required"] == []
+
+
+# ------------------------------------------------------------- idempotency key
+
+
+def test_external_id_is_derived_from_content():
+    """Deterministic, so a retry of the same post collides with itself.
+
+    A random key here would defeat the entire purpose: a daemon that dies
+    between "accepted" and "recorded" would double-post on restart.
+    """
+    args = {"topic_id": 7, "raw": "some reply"}
+
+    first = QupaServer._derive_external_id("reply", args)
+    second = QupaServer._derive_external_id("reply", args)
+
+    assert first == second
+    assert first.startswith("qc-")
+
+
+def test_external_id_differs_for_different_content():
+    a = QupaServer._derive_external_id("reply", {"topic_id": 7, "raw": "one"})
+    b = QupaServer._derive_external_id("reply", {"topic_id": 7, "raw": "two"})
+    assert a != b
+
+
+def test_external_id_differs_across_topics():
+    a = QupaServer._derive_external_id("reply", {"topic_id": 7, "raw": "same"})
+    b = QupaServer._derive_external_id("reply", {"topic_id": 8, "raw": "same"})
+    assert a != b
+
+
+# --------------------------------------------------------------------- writing
+
+
+def test_reply_sends_the_external_id(forum):
+    url, stub = forum
+    writer = ForumWriter(url, "key", "agent")
+
+    writer.reply(topic_id=7, raw="hello", external_id="qc-test")
+
+    body = urllib.parse.parse_qs(stub.posted[0]["body"])
+    assert body["topic_id"] == ["7"]
+    assert body["external_id"] == ["qc-test"]
+
+
+def test_none_valued_fields_are_dropped(forum):
+    """An empty reply_to_post_number must not be sent as the string "None"."""
+    url, stub = forum
+    writer = ForumWriter(url, "key", "agent")
+
+    writer.reply(topic_id=7, raw="hello")
+
+    body = urllib.parse.parse_qs(stub.posted[0]["body"])
+    assert "reply_to_post_number" not in body
+
+
+# ----------------------------------------------------- the process, end to end
+
+
+def _run_server(url: str, messages: list[dict]) -> list[dict]:
+    """Drive the server as a subprocess over stdio, as an MCP client would."""
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(KIT_ROOT),
+        "QUPA_FORUM_URL": url,
+        "QUPA_API_KEY": "test-key",
+        "QUPA_API_USERNAME": "test-agent",
+        "QUPA_POLICY_TOPIC_ID": str(POLICY_TOPIC_ID),
+    }
+    stdin = "\n".join(json.dumps(m) for m in messages) + "\n"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "qupa_cafe.server"],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+
+def test_initialize_and_list_tools(forum):
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        ],
+    )
+
+    assert responses[0]["result"]["serverInfo"]["name"] == "qupa-cafe"
+    # The notification must produce no response at all.
+    assert len(responses) == 2
+    assert {t["name"] for t in responses[1]["result"]["tools"]} == {"get_policy", "create_topic", "reply"}
+
+
+def test_get_policy_returns_the_hash(forum):
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "get_policy", "arguments": {}}}],
+    )
+
+    payload = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert payload["policy_hash"] == policy_hash(POLICY_TEXT)
+
+
+def test_a_write_with_a_stale_hash_is_refused(forum):
+    """The property that makes enforcement structural rather than advisory."""
+    url, stub = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "reply",
+                     "arguments": {"topic_id": 7, "raw": "hello", "policy_ack": "deadbeefdeadbeef"}}}],
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    assert "REFUSED" in result["content"][0]["text"]
+    # And nothing reached the forum.
+    assert stub.posted == []
+
+
+def test_a_write_with_no_hash_is_refused(forum):
+    url, stub = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "reply", "arguments": {"topic_id": 7, "raw": "hello", "policy_ack": ""}}}],
+    )
+
+    assert responses[0]["result"]["isError"] is True
+    assert stub.posted == []
+
+
+def test_a_write_with_the_current_hash_goes_through(forum):
+    url, stub = forum
+    current = policy_hash(POLICY_TEXT)
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "reply",
+                     "arguments": {"topic_id": 7, "raw": "a real reply", "policy_ack": current}}}],
+    )
+
+    payload = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert payload["posted"] is True
+    assert len(stub.posted) == 1
+
+
+def test_an_unknown_method_gets_an_error(forum):
+    url, _ = forum
+
+    responses = _run_server(url, [{"jsonrpc": "2.0", "id": 1, "method": "does/not/exist"}])
+
+    assert responses[0]["error"]["code"] == -32601
+
+
+def test_missing_configuration_exits_rather_than_serving():
+    """A server that starts and refuses every call is worse than one that fails."""
+    result = subprocess.run(
+        [sys.executable, "-m", "qupa_cafe.server"],
+        input="",
+        capture_output=True,
+        text=True,
+        env={k: v for k, v in os.environ.items() if not k.startswith("QUPA_")}
+        | {"PYTHONPATH": str(KIT_ROOT)},
+        timeout=60,
+    )
+
+    assert result.returncode == 2
+    assert "missing" in result.stderr.lower()

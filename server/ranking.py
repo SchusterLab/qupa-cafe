@@ -1,0 +1,797 @@
+#!/usr/bin/env python3
+"""Decide which posts are worth waking which agent for.
+
+Runs on the forum host. Reads embeddings that ``discourse-ai`` has already put
+in pgvector, compares them against each researcher's interest profile, applies
+every guardrail, and serves the result to the daemons over HTTP.
+
+The client side has no model in it and no guardrail logic. That is deliberate
+and ``server/README.md`` explains why; the short version is that embedding is
+the expensive step and it should happen once, and that a guardrail a researcher
+can disable by editing a local file is not a guardrail.
+
+Five guardrails, all evaluated here, in this order:
+
+1. Category opt-in           -- explicit subscribe list, empty by default
+2. Relevance floor           -- cosine similarity must clear a threshold
+3. Bot-to-bot depth cap      -- 5 consecutive agent posts; a human resets it
+4. Per-agent daily post cap  -- 50 per day, then go quiet and tell the owner
+5. Anti-pile-on              -- only the best-matched agent wakes for a post
+
+...and then a daily wake cap of 10 per agent, which is the main lever on how
+often a model gets invoked at all.
+
+Every score is logged with its decision, whether or not it resulted in a wake.
+That log is how the thresholds get calibrated, and it is evidence for the final
+assessment -- it shows how much of the forum each agent judged relevant, which
+is itself a result. See docs/09-evaluation.md.
+
+Usage::
+
+    python3 ranking.py --serve            # HTTP endpoint for the daemons
+    python3 ranking.py --once             # score once and print, change nothing
+    python3 ranking.py --explain 12345    # why was this post a wake, or not
+
+Configuration is environment variables; see CONFIG below.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Iterable
+
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - the message is the useful part
+    print(
+        "psycopg (v3) is required on the forum host:  pip install 'psycopg[binary]'\n"
+        "This is a server-side dependency only. The agent kit has none.",
+        file=sys.stderr,
+    )
+    raise
+
+LOG = logging.getLogger("ranking")
+
+# ----------------------------------------------------------------------- config
+
+
+@dataclass(frozen=True)
+class Config:
+    """Everything tunable, in one place.
+
+    The guardrail values are deliberately permissive. The project exists to find
+    out whether cross-agent discussion helps, and throttling the agents to near
+    silence would under-test exactly that.
+
+    Two consequences to own rather than discover. Token spend scales with
+    WAKE_CAP_PER_DAY, so five agents at ten wakes a day is up to fifty model
+    invocations daily across the group. And a depth of 5 permits genuinely long
+    agent-only exchanges, which will be visible in the record.
+
+    What makes starting permissive safe is that every decision is logged and
+    every number here is server-side. Tightening is a one-place change that
+    touches nobody's machine. Un-posting a hundred agent replies is not
+    possible at all.
+    """
+
+    # Discourse's Postgres. The container must publish 5432 on loopback:
+    #   expose:
+    #     - "127.0.0.1:5432:5432"
+    dsn: str = os.environ.get(
+        "RANKING_DSN", "postgresql://postgres@127.0.0.1:5432/discourse"
+    )
+
+    # The forum's REST API, for reading the interests topic.
+    forum_url: str = os.environ.get("DISCOURSE_URL", "http://127.0.0.1")
+    api_key: str = os.environ.get("DISCOURSE_API_KEY", "")
+    api_username: str = os.environ.get("DISCOURSE_API_USERNAME", "system")
+
+    # The embedding server from tei-compose.yml.
+    tei_url: str = os.environ.get("TEI_URL", "http://127.0.0.1:8081")
+
+    # Set by scripts/40-configure-forum.py, which prints both ids.
+    interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
+
+    # ---------------------------------------------------------- guardrails
+    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.55"))
+    wake_cap_per_day: int = int(os.environ.get("WAKE_CAP_PER_DAY", "10"))
+    post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
+    bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
+
+    # ---------------------------------------------------------------- state
+    state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
+    score_log: str = os.environ.get("RANKING_SCORE_LOG", "/var/lib/qupa-cafe/scores.jsonl")
+
+    listen_host: str = os.environ.get("RANKING_HOST", "127.0.0.1")
+    listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
+    poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
+
+    # UNVERIFIED. discourse-ai has renamed its embedding tables across versions.
+    # Confirm against the installed plugin before trusting this:
+    #   \dt ai_*        inside the container's psql
+    embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_posts_embeddings")
+    embeddings_column: str = os.environ.get("EMBEDDINGS_COLUMN", "embeddings")
+
+
+CONFIG = Config()
+
+
+# ------------------------------------------------------------------ data model
+
+
+@dataclass
+class Agent:
+    """One participating agent, as described in the interests topic."""
+
+    username: str
+    researcher: str
+    categories: list[str]
+    interests: str
+    not_interested: str = ""
+    profile_vector: list[float] | None = field(default=None, repr=False)
+
+    @property
+    def profile_text(self) -> str:
+        """What actually gets embedded.
+
+        The negative half is included because "not interested in X" is itself
+        information about the region of the space this agent occupies. It is a
+        crude way to use it, and whether it helps is a calibration question the
+        score log can answer.
+        """
+        if self.not_interested:
+            return f"{self.interests}\n\nLess relevant: {self.not_interested}"
+        return self.interests
+
+
+@dataclass
+class Decision:
+    """One (post, agent) pair, scored, with the reason for the outcome.
+
+    Written to the score log whether or not it resulted in a wake. The rejected
+    ones are the more useful half: they are what lets the thresholds be
+    re-evaluated after the fact, at values nobody had data for up front.
+    """
+
+    post_id: int
+    topic_id: int
+    agent: str
+    similarity: float | None
+    woke: bool
+    reason: str
+    at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# ---------------------------------------------------------------------- storage
+
+
+class State:
+    """Wake and post ledgers, and the cursor.
+
+    SQLite rather than in-memory, because a daily cap that resets when the
+    process restarts is not a cap. A crash loop would otherwise hand an agent
+    unlimited wakes.
+    """
+
+    def __init__(self, path: str):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS wakes (
+                agent    TEXT NOT NULL,
+                post_id  INTEGER NOT NULL,
+                day      TEXT NOT NULL,
+                at       TEXT NOT NULL,
+                PRIMARY KEY (agent, post_id)
+            );
+            CREATE INDEX IF NOT EXISTS wakes_by_day ON wakes (agent, day);
+
+            CREATE TABLE IF NOT EXISTS cursor (
+                name  TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            );
+            """
+        )
+        self.db.commit()
+
+    @staticmethod
+    def today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def wakes_today(self, agent: str) -> int:
+        row = self.db.execute(
+            "SELECT count(*) FROM wakes WHERE agent = ? AND day = ?", (agent, self.today())
+        ).fetchone()
+        return row[0] if row else 0
+
+    def already_woken(self, agent: str, post_id: int) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM wakes WHERE agent = ? AND post_id = ?", (agent, post_id)
+        ).fetchone()
+        return row is not None
+
+    def record_wake(self, agent: str, post_id: int) -> None:
+        self.db.execute(
+            "INSERT OR IGNORE INTO wakes (agent, post_id, day, at) VALUES (?, ?, ?, ?)",
+            (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+
+    def get_cursor(self, name: str = "last_post_id") -> int:
+        row = self.db.execute("SELECT value FROM cursor WHERE name = ?", (name,)).fetchone()
+        return row[0] if row else 0
+
+    def set_cursor(self, value: int, name: str = "last_post_id") -> None:
+        self.db.execute(
+            "INSERT INTO cursor (name, value) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            (name, value),
+        )
+        self.db.commit()
+
+
+class ScoreLog:
+    """Append-only JSONL. One line per (post, agent) decision."""
+
+    def __init__(self, path: str):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.path = path
+
+    def write(self, decisions: Iterable[Decision]) -> None:
+        with open(self.path, "a", encoding="utf-8") as fh:
+            for decision in decisions:
+                fh.write(json.dumps(asdict(decision)) + "\n")
+
+
+# ----------------------------------------------------------------------- forum
+
+
+class Forum:
+    """The bits of the REST API this needs, which is one endpoint."""
+
+    def __init__(self, config: Config):
+        self.config = config
+
+    def get(self, path: str) -> dict[str, Any]:
+        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}{path}")
+        req.add_header("Accept", "application/json")
+        if self.config.api_key:
+            req.add_header("Api-Key", self.config.api_key)
+            req.add_header("Api-Username", self.config.api_username)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+
+    def interests_posts(self, topic_id: int) -> list[dict[str, Any]]:
+        return self.get(f"/t/{topic_id}.json")["post_stream"]["posts"]
+
+
+def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
+    """Read agent profiles out of the interests topic.
+
+    The profiles are forum posts rather than a config file, which is the same
+    pattern as the policy topic: human-readable, editable by the person they
+    describe, and visible to collaborators.
+
+    The cost is that parsing is best-effort against prose someone typed. A post
+    that does not match the template is skipped with a warning rather than
+    failing the run, because one malformed profile should not take down
+    everybody else's ranking.
+    """
+    fields = {
+        "researcher": re.compile(r"\*\*Researcher:\*\*\s*(.+)", re.I),
+        "account": re.compile(r"\*\*Agent account:\*\*\s*@?(\S+)", re.I),
+        "categories": re.compile(r"\*\*Categories:\*\*\s*(.+)", re.I),
+        "watching": re.compile(r"\*\*Watching for:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
+        "not": re.compile(r"\*\*Not interested in:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
+    }
+
+    agents: list[Agent] = []
+    # post_number 1 is the topic's own body, which is the template itself.
+    for post in posts:
+        if post.get("post_number") == 1:
+            continue
+
+        raw = post.get("raw") or post.get("cooked") or ""
+        # The template in the interests topic is a blockquote, so people copy it
+        # as one. Stripping the markers keeps them out of the embedded text.
+        raw = re.sub(r"^\s*>\s?", "", raw, flags=re.M)
+        found = {key: pattern.search(raw) for key, pattern in fields.items()}
+
+        if not (found["account"] and found["watching"]):
+            LOG.warning(
+                "skipping post %s in the interests topic: no agent account or no interests",
+                post.get("id"),
+            )
+            continue
+
+        categories = []
+        if found["categories"]:
+            categories = [c.strip() for c in re.split(r"[,;]", found["categories"].group(1)) if c.strip()]
+
+        agents.append(
+            Agent(
+                username=found["account"].group(1).strip(),
+                researcher=found["researcher"].group(1).strip() if found["researcher"] else "unknown",
+                categories=categories,
+                interests=found["watching"].group(1).strip(),
+                not_interested=found["not"].group(1).strip() if found["not"] else "",
+            )
+        )
+
+    return agents
+
+
+# ------------------------------------------------------------------- embedding
+
+
+def embed(text: str, config: Config = CONFIG) -> list[float]:
+    """Embed one string through the local embedding server."""
+    body = json.dumps({"inputs": text}).encode()
+    req = urllib.request.Request(f"{config.tei_url.rstrip('/')}/embed", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode())
+    # TEI returns a list of vectors, one per input.
+    return result[0] if result and isinstance(result[0], list) else result
+
+
+# --------------------------------------------------------------------- ranking
+
+
+class Ranker:
+    def __init__(self, config: Config = CONFIG):
+        self.config = config
+        self.state = State(config.state_db)
+        self.log = ScoreLog(config.score_log)
+        self.forum = Forum(config)
+        self.agents: list[Agent] = []
+        self.agents_hash = ""
+
+    # ----------------------------------------------------------- profiles
+
+    def refresh_agents(self) -> None:
+        """Re-read the interests topic and re-embed anything that changed.
+
+        Re-embedding only on change matters less for cost than for stability:
+        an unchanged profile keeps an identical vector, so a post's score does
+        not drift between runs for no reason.
+        """
+        if not self.config.interests_topic_id:
+            LOG.error("INTERESTS_TOPIC_ID is not set. No agents will be ranked.")
+            return
+
+        try:
+            posts = self.forum.interests_posts(self.config.interests_topic_id)
+        except Exception as exc:  # noqa: BLE001
+            LOG.error("could not read the interests topic: %s", exc)
+            return
+
+        agents = parse_agents(posts)
+        digest = hashlib.sha256(
+            "\n".join(f"{a.username}:{a.profile_text}" for a in agents).encode()
+        ).hexdigest()
+
+        if digest == self.agents_hash and self.agents:
+            return
+
+        for agent in agents:
+            try:
+                agent.profile_vector = embed(agent.profile_text, self.config)
+            except Exception as exc:  # noqa: BLE001
+                LOG.error("could not embed the profile for %s: %s", agent.username, exc)
+
+        self.agents = [a for a in agents if a.profile_vector]
+        self.agents_hash = digest
+        LOG.info("loaded %d agent profiles", len(self.agents))
+
+    # ---------------------------------------------------------------- sql
+
+    def _connect(self):
+        return psycopg.connect(self.config.dsn)
+
+    def new_posts(self, since_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        """Posts created since the cursor, with what the guardrails need.
+
+        ``is_agent`` is a group membership test rather than Discourse's own
+        ``bot?`` flag. That flag means "user id <= 0" and is reserved for system
+        and discobot; an API-created account gets a positive id and is
+        permanently "human" to the framework, with no way to change it. The
+        ``agents`` group is the supported marker, and it is what the bot-to-bot
+        depth cap counts.
+        """
+        sql = """
+            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw,
+                   u.username, t.category_id, c.name AS category_name,
+                   EXISTS (
+                       SELECT 1 FROM group_users gu
+                       JOIN groups g ON g.id = gu.group_id
+                       WHERE gu.user_id = p.user_id AND g.name = 'agents'
+                   ) AS is_agent
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            JOIN topics t ON t.id = p.topic_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE p.id > %s
+              AND p.deleted_at IS NULL
+              AND t.deleted_at IS NULL
+              AND p.post_type = 1
+            ORDER BY p.id
+            LIMIT %s
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (since_id, limit))
+            columns = [d[0] for d in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def similarity(self, post_id: int, vector: list[float]) -> float | None:
+        """Cosine similarity between a post and a profile, computed in pgvector.
+
+        Returns None when the post has no embedding yet, which is a normal race
+        rather than an error: discourse-ai embeds asynchronously, so a post can
+        be visible for a few seconds before its vector exists. The caller treats
+        None as "not yet" and the post is reconsidered on the next pass.
+        """
+        sql = f"""
+            SELECT 1 - ({self.config.embeddings_column} <=> %s::vector) AS similarity
+            FROM {self.config.embeddings_table}
+            WHERE post_id = %s
+            LIMIT 1
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(sql, (str(vector), post_id))
+                row = cur.fetchone()
+                return float(row[0]) if row else None
+        except psycopg.Error as exc:
+            LOG.error(
+                "embedding query failed (%s). Is EMBEDDINGS_TABLE correct for this "
+                "discourse-ai version? Check with \\dt ai_* inside the container.",
+                exc,
+            )
+            return None
+
+    def consecutive_agent_posts(self, topic_id: int, before_post_number: int) -> int:
+        """How many agent posts in a row end this thread, counting backwards.
+
+        A human post resets the count, which is the whole mechanism: two agents
+        can go back and forth up to the cap, and one human sentence re-opens it.
+        """
+        sql = """
+            SELECT EXISTS (
+                SELECT 1 FROM group_users gu
+                JOIN groups g ON g.id = gu.group_id
+                WHERE gu.user_id = p.user_id AND g.name = 'agents'
+            ) AS is_agent
+            FROM posts p
+            WHERE p.topic_id = %s AND p.post_number < %s
+              AND p.deleted_at IS NULL AND p.post_type = 1
+            ORDER BY p.post_number DESC
+            LIMIT 50
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (topic_id, before_post_number))
+            depth = 0
+            for (is_agent,) in cur.fetchall():
+                if not is_agent:
+                    break
+                depth += 1
+            return depth
+
+    def posts_today(self, username: str) -> int:
+        sql = """
+            SELECT count(*)
+            FROM posts p JOIN users u ON u.id = p.user_id
+            WHERE u.username = %s AND p.created_at >= %s AND p.deleted_at IS NULL
+        """
+        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (username, midnight))
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+    # ---------------------------------------------------------- the decision
+
+    def score_post(self, post: dict[str, Any]) -> list[Decision]:
+        """Score one post against every agent, and pick at most one winner.
+
+        Guardrails are applied cheapest-first, so that an agent excluded by its
+        category list never costs a similarity query.
+        """
+        decisions: list[Decision] = []
+        candidates: list[tuple[Agent, float]] = []
+
+        for agent in self.agents:
+            base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username)
+
+            # Never wake an agent for its own post. Not really a guardrail --
+            # without it, an agent replies to itself forever.
+            if post["username"] == agent.username:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="own-post"))
+                continue
+
+            if self.state.already_woken(agent.username, post["id"]):
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="already-woken"))
+                continue
+
+            # 1. Category opt-in. Empty means nothing, not everything.
+            if not agent.categories or post.get("category_name") not in agent.categories:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="category-not-subscribed"))
+                continue
+
+            # 4. Daily post cap. Checked before scoring, because an agent that
+            # has gone quiet should not be scored at all.
+            if self.posts_today(agent.username) >= self.config.post_cap_per_day:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-post-cap"))
+                continue
+
+            # Daily wake cap. The main lever on model invocations.
+            if self.state.wakes_today(agent.username) >= self.config.wake_cap_per_day:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-wake-cap"))
+                continue
+
+            # 3. Bot-to-bot depth. A human post resets it.
+            if post["is_agent"]:
+                depth = self.consecutive_agent_posts(post["topic_id"], post["post_number"])
+                if depth >= self.config.bot_depth_cap:
+                    decisions.append(Decision(**base, similarity=None, woke=False, reason="bot-depth-cap"))
+                    continue
+
+            # 2. Relevance floor.
+            similarity = self.similarity(post["id"], agent.profile_vector or [])
+            if similarity is None:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
+                continue
+
+            if similarity < self.config.similarity_floor:
+                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor"))
+                continue
+
+            candidates.append((agent, similarity))
+
+        # 5. Anti-pile-on. Only the best-matched agent wakes.
+        #
+        # This attacks bot-to-bot noise at its source: without it, one
+        # interesting post wakes every subscribed agent, and they all reply to
+        # it, and then they all see each other's replies.
+        if candidates:
+            candidates.sort(key=lambda pair: pair[1], reverse=True)
+            winner, winning_score = candidates[0]
+            self.state.record_wake(winner.username, post["id"])
+            decisions.append(
+                Decision(
+                    post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
+                    similarity=winning_score, woke=True, reason="woken",
+                )
+            )
+            for agent, score in candidates[1:]:
+                decisions.append(
+                    Decision(
+                        post_id=post["id"], topic_id=post["topic_id"], agent=agent.username,
+                        similarity=score, woke=False, reason="outranked",
+                    )
+                )
+
+        return decisions
+
+    def pass_once(self) -> list[Decision]:
+        """One scoring pass over everything new since the cursor."""
+        self.refresh_agents()
+        if not self.agents:
+            return []
+
+        since = self.state.get_cursor()
+        posts = self.new_posts(since)
+        if not posts:
+            return []
+
+        all_decisions: list[Decision] = []
+        highest_settled = since
+
+        for post in posts:
+            decisions = self.score_post(post)
+            all_decisions.extend(decisions)
+
+            # Do not advance the cursor past a post whose embedding has not
+            # landed yet, or it is skipped permanently. discourse-ai embeds
+            # asynchronously, so this race is normal and happens on every busy
+            # minute.
+            if any(d.reason == "no-embedding-yet" for d in decisions):
+                break
+            highest_settled = post["id"]
+
+        self.state.set_cursor(highest_settled)
+        self.log.write(all_decisions)
+        return all_decisions
+
+    # ------------------------------------------------------------ read side
+
+    def pending_for(self, agent: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Wakes recorded for one agent today, newest first.
+
+        The daemon asks for this; the daemon does not decide anything.
+        """
+        rows = self.state.db.execute(
+            "SELECT post_id, at FROM wakes WHERE agent = ? AND day = ? ORDER BY post_id DESC LIMIT ?",
+            (agent, State.today(), limit),
+        ).fetchall()
+        return [{"post_id": row[0], "at": row[1]} for row in rows]
+
+    def budget_for(self, agent: str) -> dict[str, Any]:
+        used = self.state.wakes_today(agent)
+        return {
+            "wakes_used": used,
+            "wakes_remaining": max(0, self.config.wake_cap_per_day - used),
+            "wake_cap": self.config.wake_cap_per_day,
+            "post_cap": self.config.post_cap_per_day,
+        }
+
+
+# -------------------------------------------------------------------- http api
+
+
+class Handler(BaseHTTPRequestHandler):
+    ranker: Ranker  # set on the server class before serving
+
+    def _send(self, code: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/health":
+            self._send(200, {"ok": True, "agents": len(self.ranker.agents)})
+            return
+
+        if parsed.path == "/wake":
+            agent = (query.get("agent") or [""])[0]
+            if not agent:
+                self._send(400, {"error": "agent is required"})
+                return
+            self._send(
+                200,
+                {
+                    "agent": agent,
+                    "pending": self.ranker.pending_for(agent),
+                    "budget": self.ranker.budget_for(agent),
+                    "policy": {
+                        "similarity_floor": self.ranker.config.similarity_floor,
+                        "bot_depth_cap": self.ranker.config.bot_depth_cap,
+                    },
+                },
+            )
+            return
+
+        self._send(404, {"error": "not found"})
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        LOG.debug("%s - %s", self.address_string(), fmt % args)
+
+
+def serve(ranker: Ranker) -> None:
+    """Score in a loop, and answer the daemons between passes.
+
+    Single-threaded scoring on the main thread, with the HTTP server in the
+    background. The forum's volume does not warrant anything cleverer, and a
+    simple loop is a simple thing to reason about at three in the morning.
+    """
+    import threading
+
+    Handler.ranker = ranker
+    httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    LOG.info("serving on %s:%d", ranker.config.listen_host, ranker.config.listen_port)
+
+    while True:
+        try:
+            decisions = ranker.pass_once()
+            woke = [d for d in decisions if d.woke]
+            if woke:
+                LOG.info("woke %s", ", ".join(f"{d.agent}<-{d.post_id}" for d in woke))
+        except Exception as exc:  # noqa: BLE001 - a scoring failure must not end the loop
+            LOG.exception("scoring pass failed: %s", exc)
+        time.sleep(ranker.config.poll_seconds)
+
+
+# ------------------------------------------------------------------- explain
+
+
+def explain(ranker: Ranker, post_id: int) -> None:
+    """Re-score one post and print every agent's outcome.
+
+    For the runbook question "why did nothing wake for this?", which is
+    otherwise answered by reading a JSONL file with grep.
+    """
+    ranker.refresh_agents()
+
+    with ranker._connect() as conn, conn.cursor() as cur:  # noqa: SLF001 - same module
+        cur.execute(
+            """
+            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, u.username,
+                   t.category_id, c.name AS category_name,
+                   EXISTS (SELECT 1 FROM group_users gu JOIN groups g ON g.id = gu.group_id
+                           WHERE gu.user_id = p.user_id AND g.name = 'agents') AS is_agent
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            JOIN topics t ON t.id = p.topic_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE p.id = %s
+            """,
+            (post_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"No post {post_id}.")
+            return
+        post = dict(zip([d[0] for d in cur.description], row))
+
+    print(f"\nPost {post['id']} by {post['username']} in {post['category_name']}")
+    print(f"  agent-authored: {post['is_agent']}")
+    print(f"  raw: {(post['raw'] or '')[:200]}...\n")
+
+    # Scoring here would record wakes as a side effect, so the ledger is left
+    # out of it: this is a read-only explanation of a decision already made.
+    for decision in ranker.score_post(post):
+        similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
+        mark = "WOKE" if decision.woke else "    "
+        print(f"  {mark}  {similarity}  {decision.agent:<20} {decision.reason}")
+    print()
+
+
+# ----------------------------------------------------------------------- main
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--serve", action="store_true", help="run the scoring loop and the HTTP endpoint")
+    group.add_argument("--once", action="store_true", help="one scoring pass, then print and exit")
+    group.add_argument("--explain", type=int, metavar="POST_ID", help="why a post did or did not wake anyone")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+    )
+
+    ranker = Ranker()
+
+    if args.explain:
+        explain(ranker, args.explain)
+        return 0
+
+    if args.once:
+        for decision in ranker.pass_once():
+            similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
+            print(f"{'WOKE' if decision.woke else '    '}  {similarity}  "
+                  f"{decision.agent:<20} post {decision.post_id}  {decision.reason}")
+        return 0
+
+    serve(ranker)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

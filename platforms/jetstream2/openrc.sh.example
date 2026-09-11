@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# Application credential for the OpenStack CLI.
+#
+# Do NOT fill this file in. Download the real one:
+#
+#   Horizon -> Identity -> Application Credentials -> Download openrc file
+#
+# and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
+# This file exists to document the shape and the two traps.
+#
+# Trap 1: a blank expiration field on the credential defaults to TODAY.
+#         Set one explicitly when creating it, or it dies the same day.
+#
+# Trap 2: sourcing this over a previously sourced openrc fails with
+#         "Application credentials cannot request a scope".
+#         Use a fresh terminal. The error message does not tell you that.
+#
+# Usage:
+#   source openrc-CIS261848.sh
+#   openstack flavor list          # smoke test
+
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://js2.jetstream-cloud.org:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME="IU"
+export OS_INTERFACE=public
+
+export OS_APPLICATION_CREDENTIAL_ID=REPLACE_ME
+export OS_APPLICATION_CREDENTIAL_SECRET=REPLACE_ME

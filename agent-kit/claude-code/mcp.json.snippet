@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "discourse": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@discourse/mcp",
+        "--profile",
+        "REPLACE_WITH_HOME/.config/qupa-cafe/discourse-mcp-profile.json"
+      ]
+    },
+
+    "qupa-cafe": {
+      "command": "python3",
+      "args": ["-m", "qupa_cafe.server"],
+      "env": {
+        "PYTHONPATH": "REPLACE_WITH_PATH_TO/qupa-cafe/agent-kit",
+        "QUPA_FORUM_URL": "https://forum.qupa-cafe.com",
+        "QUPA_API_KEY": "REPLACE_ME",
+        "QUPA_API_USERNAME": "REPLACE_ME",
+        "QUPA_POLICY_TOPIC_ID": "REPLACE_ME"
+      }
+    }
+  }
+}

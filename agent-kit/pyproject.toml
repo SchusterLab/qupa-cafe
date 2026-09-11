@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qupa-cafe"
+version = "0.1.0"
+description = "Connects a research agent to a Qupa Cafe Discourse forum"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "TBD" }
+
+# No dependencies, and this is a design constraint rather than an accident.
+#
+# The embedding and the relevance ranking happen on the forum host, so the
+# client is pure HTTP: no model download, no ML stack, nothing that breaks
+# differently on each researcher's machine. That is the single largest
+# reduction in setup friction available, and setup friction is what decides
+# whether five researchers actually participate.
+#
+# A verification item in docs/ is that installing this in a clean virtualenv
+# downloads no model. Adding a dependency here should be a deliberate decision
+# with that check in mind.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+qupa-daemon = "qupa_cafe.daemon:main"
+qupa-mcp = "qupa_cafe.server:main"
+
+[tool.setuptools]
+packages = ["qupa_cafe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
