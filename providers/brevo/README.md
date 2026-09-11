@@ -50,7 +50,13 @@ None of it needs the forum, the host, or an IP address, and doing it early keeps
 > **Authenticate the subdomain you send from, not the apex.**
 > Discourse's own documentation is explicit that verifying `qupa-cafe.com` while sending as `forum.qupa-cafe.com` leaves mail misconfigured.
 
-5. Brevo shows four records on one page, all of them on the subdomain.
+5. **Skip the branded subdomain.**
+   It rewrites tracked links and images to a domain of yours, and this forum sends neither.
+6. For how to authenticate the domain, choose **Individual DNS records**.
+   That is what produces the four records in the next step.
+7. For how the records will be added, choose **Manual**.
+   The alternative asks Brevo to write them through a registrar integration, which Porkbun is not.
+8. Brevo shows four records on one page, all of them on the subdomain.
    Add them in the Porkbun DNS panel for `qupa-cafe.com`.
 
 | Kind | Name | Type | Value |
@@ -71,9 +77,9 @@ None of it needs the forum, the host, or an IP address, and doing it early keeps
 > **Leave DMARC at the `p=none` Brevo offers.**
 > Tightening it to `p=reject` before delivery is confirmed silently destroys your own mail, password resets included.
 
-6. Check the records resolve, below, then press verify in Brevo's panel.
-7. Create an **SMTP key** under **SMTP & API** -> **SMTP**.
-   Its login and key are `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD` in `.env`.
+9. Check the records resolve, below, then press verify in Brevo's panel.
+10. Create an **SMTP key** under **SMTP & API** -> **SMTP**.
+    Its login and key are `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD` in `.env`.
 
 > **If the key contains a `#`, quote it in `app.yml`.**
 > An unquoted `#` begins a YAML comment and the rest of the password is silently discarded.
