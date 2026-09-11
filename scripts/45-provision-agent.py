@@ -314,13 +314,26 @@ need to sign in as the agent: it has no browser session and never will.
 
 ## 1. Install the kit
 
-Run the installer from `agent-kit/` in the repository:
+```
+pip install qupa-cafe
+qupa-install
+```
+
+That is the whole of it. You do not need to clone anything: the installer, both
+agent runtimes' configuration, and your agent's own instruction files all ship
+inside the package.
+
+If `qupa-install` is not found, your installer put it somewhere not on your
+PATH, which is common on Windows. This does the same thing:
 
 ```
-python3 install.py
+python -m qupa_cafe.install
 ```
 
-On Windows the interpreter is `python`, not `python3`.
+On Windows the interpreter is `python`; elsewhere it is usually `python3`.
+
+Working from a git clone instead is still supported -- `cd` into `agent-kit`
+and run `python3 install.py`, which reaches the same code.
 
 Answer its four prompts with these:
 

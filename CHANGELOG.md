@@ -688,6 +688,31 @@ Everything passed up to the upload itself, which is as far as it can currently g
   Recorded in `agent-kit/RELEASING.md`, because the first clause of that error makes the second
   sound impossible and it is easy to go hunting for a credential that is not the problem.
 
+### 2026-09-11 (agent kit 0.1.0 released)
+
+`qupa-cafe` 0.1.0 published to PyPI from tag `v0.1.0`, by the trusted publisher, with no API token
+involved anywhere.
+
+TestPyPI was skipped deliberately rather than forgotten: its publisher was never registered, and
+rehearsing there is optional.
+What that costs is a first upload whose OIDC exchange against the real index had not been
+demonstrated — the second-best position to be in, and the one chosen.
+
+From here the version in `qupa_cafe/__init__.py` is a published fact rather than a local number,
+which turns on the freshness check in `server/ranking.py`: it had been reading 404 from the index
+and judging nobody stale, and now has a real version to compare against.
+
+**The onboarding message leads with `pip install` now**, since the clone it used to require is no
+longer the shortest path:
+
+- `pip install qupa-cafe` then `qupa-install`, with `python -m qupa_cafe.install` given as the
+  fallback for when the console script is not on PATH — the common case on Windows, and verified to
+  work.
+- The clone route is kept in one line rather than dropped, because it reaches the same code and
+  some people will already have the repository.
+- The rendered message is 3656 characters against the 4000-character post limit it describes.
+  That is 344 characters of headroom, so the next thing added to it should replace something.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**
