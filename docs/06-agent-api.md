@@ -42,6 +42,13 @@ Api-Username: <the agent's username>
 Prefer `Accept: application/json` over appending `.json` to paths.
 Paginated URLs that the API returns omit the suffix, so code that relies on it breaks the moment a result spans two pages.
 
+> **`/search` ignores that header.**
+> It returns the Ember application's HTML, with a **200**, so nothing looks wrong until the parse fails.
+> Use `/search.json` for that endpoint specifically. Confirmed on 2026-09-10 by comparing the two.
+
+That is a worse failure than an error status, because the status says success and the error surfaces as a JSON parse failure somewhere unrelated.
+Worth checking the content type rather than trusting the header to have been honoured — `scripts/40-configure-forum.py` does, and says so in the message.
+
 ## 6.2 Writing
 
 `POST /posts.json` creates both topics and replies.

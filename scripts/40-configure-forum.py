@@ -236,9 +236,14 @@ Template:
 class Discourse:
     """A very small Discourse admin client.
 
-    Prefers ``Accept: application/json`` over a ``.json`` suffix, because
-    paginated URLs the API returns omit the suffix, so code relying on it breaks
-    the moment a result spans two pages.
+    Sends ``Accept: application/json``, because paginated URLs the API returns
+    omit the ``.json`` suffix, so code that depends on the suffix breaks the
+    moment a result spans two pages.
+
+    The header is not sufficient everywhere, though. ``/search`` ignores it and
+    returns the Ember app with a 200, so that one call carries the suffix
+    explicitly, and ``_request`` reports a non-JSON body rather than letting it
+    surface as a parse error pointing at the wrong thing.
     """
 
     def __init__(self, base_url: str, api_key: str, username: str, dry_run: bool = False):
@@ -260,7 +265,18 @@ class Discourse:
 
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                content_type = resp.headers.get("Content-Type", "")
                 raw = resp.read().decode()
+
+                # Some endpoints ignore Accept: application/json and return the
+                # Ember app instead, with a 200. /search is one. Saying so is
+                # much more useful than a JSONDecodeError from deep in the stack.
+                if raw and "json" not in content_type:
+                    raise RuntimeError(
+                        f"{method} {path} returned {content_type!r}, not JSON. "
+                        "Some endpoints need an explicit .json suffix -- /search does."
+                    )
+
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:500]
@@ -376,7 +392,9 @@ def ensure_topic(
     print(f"\n== Topic: {title}")
 
     query = urllib.parse.quote(f'"{title}"')
-    hits = api.get(f"/search?q={query}").get("topics") or []
+    # .json suffix, not Accept: application/json. /search ignores the header
+    # and returns HTML with a 200. Verified 2026-09-10.
+    hits = api.get(f"/search.json?q={query}").get("topics") or []
     for topic in hits:
         if topic.get("title") == title:
             print(f"   unchanged  exists (id {topic['id']})")
