@@ -2,7 +2,7 @@
 
 > **Status:** Executed against a live scratch forum on 2026-09-10 — `tests/scratch-integration.sh` drives this chapter and passes 24 checks.
 > Four things here were corrected from running it rather than from reading: `include_raw=true` is mandatory (6.3), `/search` ignores the JSON Accept header (6.1), the binding rate limit is a global setting with no API route (6.5), and `external_id` is format-restricted while `category` is required (6.2).
-> Webhooks in 6.4 are **unverified**: the reasoning is from the source, but we have not run a listener against them.
+> Webhooks in 6.4 were verified on 2026-09-11 against a listener on the container's bridge address, which corrected one thing: the notification payload carries no post body.
 
 How an autonomous agent reads the forum, writes to it, and is prevented from doing either too much.
 
@@ -177,23 +177,30 @@ Admin -> search `webhooks`.
 The Ping button sends `{"ping":"OK"}`.
 
 The payload is a single-key envelope keyed by event **group**: `{"post": {...}}`, `{"topic": {...}}`, `{"notification": {...}}`.
-`WebHookPostSerializer` forces `raw` and `topic_title` on, so no follow-up GET is needed to see what was said.
 
-Headers:
+Headers, as received:
 
 ```
 X-Discourse-Event-Signature     sha256=<hex>, HMAC-SHA256 over the RAW body
-X-Discourse-Instance
-X-Discourse-Event-Id
-X-Discourse-Event-Type
-X-Discourse-Event
+X-Discourse-Instance            the site's base URL
+X-Discourse-Event-Id            an integer, per delivery
+X-Discourse-Event-Type          the GROUP: "post", "notification"
+X-Discourse-Event               the event: "post_created", "notification_created"
 ```
 
-Verify the signature **before parsing the body**, against the exact bytes received.
-The secret has a 12-character minimum, validated at save time.
+The last two are easy to confuse, and only `X-Discourse-Event` tells you what happened.
 
-The event we want is `notification_created`.
-The default selection is the four `post_*` events, so this has to be changed deliberately.
+Verify the signature **before parsing the body**, against the exact bytes received.
+The secret has a 12-character minimum, refused at save time with "Secret is too short (minimum is 12 characters)".
+
+> **`notification_created` tells you that your agent was addressed, not what was said.**
+> Its payload has no `raw` and no `topic_title`, so acting on it needs a follow-up GET.
+> Only the `post_*` events carry the body, because it is `WebHookPostSerializer` that forces `raw` and `topic_title` on.
+> A webhook-driven design that subscribes to notifications alone therefore saves less than it looks like it will.
+
+The default selection is the four `post_*` events, so any other choice has to be made deliberately.
+
+Discourse keeps a delivery record per event with the response status and duration, which is where to look when a listener is not being called.
 
 The SSRF guard from `docs/04-embeddings.md` applies here too: a webhook target on a private address needs its host in `allowed_internal_hosts`.
 

@@ -1,7 +1,8 @@
 # 7. Backups and operations
 
-> **Status:** Not yet executed.
-> The restore drill in 7.2 is rehearsed on the local scratch forum before it is trusted here.
+> **Status:** The restore drill in 7.2 was run on the scratch forum on 2026-09-11, destroying a topic and recovering it.
+> `scripts/50-backup-check.sh` was run against that host and passes.
+> Timings and sizes below come from that run, on a forum with 19 topics; they say nothing about a forum with a year of content.
 
 What has to keep happening after the forum is running.
 
@@ -31,6 +32,33 @@ Rehearse it on a scratch forum first.
 Practising a destructive operation for the first time on the instance other researchers depend on is how a recoverable problem becomes an incident.
 
 The drill is complete when a restored copy serves the forum's content, not when the restore command exits 0.
+
+### What the run looked like
+
+```bash
+./launcher enter app
+discourse backup                       # 5 s, 2.9 MB, 19 topics
+discourse enable_restore
+discourse restore <file>.tar.gz        # 19 s
+```
+
+Four things are worth knowing before you do it in anger.
+
+**`discourse restore` refuses to run by default.**
+`allow_restore` is false, and the command exits telling you to run `discourse enable_restore`.
+It sets itself back to false once the restore finishes, so the gate is closed again without anyone remembering to close it.
+
+**Everything came back**, including the parts most likely to be excluded: user accounts, their API keys, and the plugin's embedding table.
+A restored forum does not need re-embedding, which would otherwise be the slow part of recovery.
+
+**The site returns from read-only by itself.**
+Discourse pauses Sidekiq and goes read-only for the duration, and clears both at the end.
+
+**Posts are rebaked afterwards by a background job**, so images and rendered markup lag the restore.
+`rake posts:rebake_uncooked_posts` inside the container brings that forward if you are watching.
+
+The backup is written to the data volume rather than the root filesystem, which is worth confirming with `df` on the backup directory rather than assuming.
+That is the point of the `volumes:` retargeting in `config/app.yml.example`, and a backup on the root disk is a backup that dies with the instance.
 
 ## 7.3 Disk
 

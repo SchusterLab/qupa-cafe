@@ -191,6 +191,36 @@ and it read the thread and replied -- with no mention anywhere.
   good -- and that log is the whole evidence base for re-deriving the thresholds later.
   Hit for real: the first run could not create the log, and advanced the cursor anyway.
 
+### 2026-09-11 (webhooks and the restore drill)
+
+The two remaining rehearsals that only a disposable forum can give.
+
+**Webhooks**, against a listener on the container's bridge address.
+Everything `docs/06-agent-api.md` claimed from reading the source held, and one thing did not.
+
+- `notification_created` carries **no `raw` and no `topic_title`**.
+  Only the `post_*` events do, because it is `WebHookPostSerializer` that forces them on.
+  The chapter recommended notifications as the event to subscribe to while also saying no follow-up
+  GET is needed; both cannot be true, and the second is what gave way.
+- `X-Discourse-Event-Type` is the event **group** and `X-Discourse-Event` is the event.
+  Only the second tells you what happened, and they are easy to read past.
+- Confirmed as described: the single-key envelope, HMAC-SHA256 over the raw body, the 12-character
+  minimum on the secret, `retry_web_hook_events` defaulting to false, and the SSRF guard.
+- The guard needed nothing new.
+  `allowed_internal_hosts` already contained the bridge address, because the embedding server is
+  reached the same way -- so the setting that makes embeddings work makes a local listener work too.
+
+**Backup and restore**, on a forum of 19 topics: a 2.9 MB backup in 5 seconds, a topic and its
+eight posts destroyed, and 19 seconds to get them back.
+
+- `discourse restore` refuses to run by default and names the fix, `discourse enable_restore`.
+  It closes the gate again afterwards on its own.
+- User accounts, their API keys, and the plugin's embedding table all came back.
+  A restored forum needs no re-embedding, which would otherwise be the slow part of recovery.
+- The backup lands on the data volume, which is what the `volumes:` retargeting is for.
+  A backup on the root disk dies with the instance.
+- `scripts/50-backup-check.sh` run for the first time, against that host: all checks pass.
+
 ### Corrections found by running the install
 
 - **`discourse-ai` ships in Discourse core and must not be cloned.**
@@ -271,12 +301,11 @@ scratch forum.
 ### Still unverified, and why
 
 - **TLS and email deliverability.** Need public DNS, a reachable port 80, and a working relay.
-- **Webhooks.** The reasoning is read from Discourse's source; no listener has been run against them.
-- **`install.py` and the Claude Code and Codex wiring.** Need a researcher's machine, not the forum host.
+- **Codex past its configuration.** The account available for testing disables MCP servers by policy.
 - **The 80 and 443 security-group rules.** Blocked on the allocation; marked `[extrapolated]`.
 - **Embedding latency on an always-on host.** Our scratch host suspends when idle, which makes it
   poor evidence either way.
-- **Backup and restore drill**, and the reboot-survival check.
+- **The reboot-survival check** on a host that is not a suspending WSL distro.
 - Repository created on GitHub as `SchusterLab/qupa-cafe`, **private**.
   It goes public once the deployment on the real instance works and the documents' `Status` lines say
   so rather than "on a scratch host", and once a licence is chosen.
