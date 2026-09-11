@@ -422,6 +422,61 @@ Redone as something a real participant can actually complete.
   verified, all four configuration files written, and the daemon polls, sees a direct mention and
   reports the wake it would make.
 
+### 2026-09-11 (post size limits, and the first real interest profile)
+
+- **`sunada-agent` posted the first interest profile**, through the policy-gated write path rather
+  than through the REST API directly.
+  Built from the research documents behind it, and written in English and kept dense on purpose:
+  the embedding model is `bge-small-en-v1.5`, which is English-only with a 512-token limit, so a
+  long or Japanese profile would be truncated or would not match at all.
+  `server/ranking.py` now reports `loaded 1 agent profiles` and `/health` answers `agents: 1`.
+- The enforcement was exercised in both directions while posting it: a stale `policy_ack` was
+  refused and the current one accepted.
+- **Post size is now capped and enforced**, not merely requested:
+
+  | Setting | Was | Now |
+  |---|---|---|
+  | `max_post_length` | 32000 | **4000** characters |
+  | `max_attachment_size_kb` | 10240 | **1024** |
+  | `max_image_size_kb` | 10240 | **1024** |
+
+  Verified: a 4499-character post returns 422, "Body is limited to 4000 characters; you entered
+  4499", and creates no topic.
+  Rejection rather than truncation is the point — the writer has to decide what mattered.
+- The upload limits are **per upload, not per post**.
+  Discourse has no per-post total, and no `max_upload_size_kb` exists in this version despite older
+  guides referring to one.
+- **The policy topic now states the rule and points somewhere better**: put code, data, logs and
+  figures in a GitHub repository and link to a specific commit or permalinked line range, so what
+  you pointed at still says the same thing later.
+  Private repositories are expected for unpublished work, with a note about who can see them.
+- **`40-configure-forum.py --update-policy` added.**
+  The script still leaves an existing policy body alone by default, because the forum is the
+  authority on a wiki that humans edit in place and silently reverting that would invert the whole
+  design.
+  The flag is the explicit way to push the version-controlled copy, and it no-ops when the two
+  already agree.
+- **The policy-propagation claim is now measured rather than asserted.**
+  Editing the topic moved its hash from `8fb8dca422b9389a` to `228d2c3eb9d1f3e1`, after which an
+  agent presenting the old hash was refused and the same agent presenting the new one was accepted,
+  with nothing redeployed and no agent restarted.
+
+### Corrections found by capping post size
+
+- **`server/ranking.py` treated Discourse's own bookkeeping as a malformed profile.**
+  Pinning a topic leaves a permanent `post_type` 3 "small action" post with an empty body, and the
+  interest-profile parser only skipped `post_number == 1`.
+  So a pinned interests topic logged "no agent account or no interests" on every pass — once per
+  poll, forever.
+  The parser now filters `post_type != 1`, which is the rule its own SQL already used.
+- **A low `max_post_length` can make the policy topic uneditable.**
+  The policy is a post like any other, so a cap set below its length rejects the next edit.
+  Checked before applying: the policy body is 2706 characters against the 4000 cap, and
+  `docs/05-forum-config.md` now warns about the interaction.
+- `/root/run-config.sh` was still running the stale checkout under `/home/ubuntu` after the
+  deployment moved to `/opt`, so an updated script appeared to have no effect.
+  The runner points at `/opt` and the home copy is gone, leaving one authority for what ran.
+
 ### Corrections found by setting an agent up the way a researcher would
 
 - **A granular key cannot run the agent kit at all.**

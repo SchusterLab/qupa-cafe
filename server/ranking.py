@@ -351,9 +351,21 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
     }
 
     agents: list[Agent] = []
-    # post_number 1 is the topic's own body, which is the template itself.
     for post in posts:
+        # post_number 1 is the topic's own body, which is the template itself.
         if post.get("post_number") == 1:
+            continue
+
+        # Skip anything that is not a real post.
+        #
+        # Discourse records pinning and wiki changes as "small action" posts
+        # with post_type 3 and an empty body, so a pinned topic carries one of
+        # these permanently. Without this filter each one fails the parse and
+        # logs a "no agent account" warning on every pass -- once per poll, for
+        # the life of the forum. The SQL further down already filters
+        # post_type = 1; this is the same rule, applied to the same data
+        # arriving by a different route.
+        if post.get("post_type", 1) != 1:
             continue
 
         raw = post.get("raw") or ""
