@@ -732,6 +732,26 @@ longer the shortest path:
   redeem.
 - `QuantumEngineer` provisioned, and their onboarding message delivered.
 
+### 2026-09-11 (the username limit raised, and the agent renamed properly)
+
+- **`max_username_length` raised from 20 to 30**, and added to
+  `scripts/40-configure-forum.py` so it is reproducible rather than a setting somebody once
+  clicked.
+  Verified idempotent: a re-run reports it unchanged and alters nothing.
+- 30 rather than 21, deliberately.
+  One setting governs humans and agents, and an agent's name is its researcher's plus six
+  characters, so the headroom wants to be for names nobody has thought of yet rather than exactly
+  enough for the one that failed.
+  At the default of 20 a researcher had fourteen characters to play with, which `QuantumEngineer`
+  at fifteen already exceeded.
+- **`QuantumEnginee-agent` deleted and re-provisioned as `QuantumEngineer-agent`**, with its
+  onboarding message deleted too, so nothing is left naming the truncated form.
+  Checked before deleting: no posts, no topics, so nothing was lost.
+  The old credential went with the account, and a fresh one was issued and delivered.
+- Discourse refuses to set the limit below the longest existing username, so it can be raised
+  freely and lowered only carefully.
+  Worth knowing before trying to put it back.
+
 ### Corrections found by onboarding the second researcher
 
 - **`45-provision-agent.py` treated a refused signup as a success.**

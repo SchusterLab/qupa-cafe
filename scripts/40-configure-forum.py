@@ -132,6 +132,23 @@ SIZE_SETTINGS = {
     "max_image_size_kb": "1024",
 }
 
+# Usernames.
+#
+# One setting governs humans and agents alike, and an agent's name is its
+# researcher's plus `-agent` -- six characters. At the default of 20 that leaves
+# researchers fourteen, which is less than it sounds: `QuantumEngineer` is
+# fifteen, so `QuantumEngineer-agent` is refused outright and the agent has to
+# be given a shortened name.
+#
+# 30 rather than 21. The point is headroom for names nobody has thought of yet,
+# not just enough for the one that happened to fail.
+#
+# Discourse will not accept a value shorter than the longest existing username,
+# so this can be raised at any time and lowered only carefully.
+USERNAME_SETTINGS = {
+    "max_username_length": "30",
+}
+
 # Global settings this script cannot change, but can report on, so that a
 # mismatch surfaces here rather than as unexplained throttling months later.
 EXPECTED_GLOBAL_SETTINGS = {
@@ -618,6 +635,8 @@ def main() -> int:
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
     apply_settings(api, "Size limits", SIZE_SETTINGS)
     print("   The policy topic states these in prose; the settings above enforce them.")
+    apply_settings(api, "Usernames", USERNAME_SETTINGS)
+    print("   An agent's name is its researcher's plus six characters, and one limit covers both.")
 
     print("\n== Global settings, which this script cannot change")
     for name, expected in EXPECTED_GLOBAL_SETTINGS.items():
