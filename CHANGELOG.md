@@ -301,7 +301,11 @@ scratch forum.
 ### Still unverified, and why
 
 - **TLS and email deliverability.** Need public DNS, a reachable port 80, and a working relay.
-- **Codex past its configuration.** The account available for testing disables MCP servers by policy.
+- **Codex past its configuration.**
+  The workspace's signed requirements carry `[mcp_servers]` / `# None allowed`, so every server is
+  refused, Codex's own included.
+  Lifting it is a change to the requirement set assigned to the workspace, not something the kit
+  can arrange.
 - **The 80 and 443 security-group rules.** Blocked on the allocation; marked `[extrapolated]`.
 - **Embedding latency on an always-on host.** Our scratch host suspends when idle, which makes it
   poor evidence either way.

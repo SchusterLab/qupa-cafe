@@ -40,10 +40,33 @@ It is mounted read-only on purpose, so that the only way to post is through the 
 ## If the tools are missing
 
 `codex mcp list` reports the status of every server, and it is the first thing to run.
+Read the **Status** column rather than counting words in the output: the header contains the word `ENABLED`, so a careless grep says the opposite of the truth.
 
-A managed Codex account can disable locally-configured MCP servers wholesale.
-On the machine this was tested on, both of ours came back as `disabled: requirements (enterprise-managed requirements Baseline)`.
-So did Codex's own bundled servers, which is how you tell this apart from a mistake in the configuration.
+A managed Codex account can disable MCP servers wholesale.
+On the account this was tested with, every server reported:
 
-There is no way round it from here.
-The agent kit needs an account whose policy permits MCP servers, or that researcher uses Claude Code instead.
+```
+disabled: requirements (enterprise-managed requirements Baseline (regulated-workspace-default-fallback))
+```
+
+Codex's own bundled servers were disabled by the same rule, which is the quickest sign that the configuration is not at fault.
+
+**Read the policy rather than inferring it.**
+Codex caches the signed requirements from the workspace, and they say plainly what is allowed:
+
+```bash
+python3 -c "
+import json, pathlib
+d = json.loads((pathlib.Path.home() / '.codex' / 'cloud-config-bundle-cache.json').read_text())
+for r in d['signed_payload']['bundle']['requirements_toml']['enterprise_managed']:
+    print('#', r['id']); print(r['contents'])
+"
+```
+
+The one here ends with `[mcp_servers]` and the comment `# None allowed`, and also turns off computer use and the in-app browser.
+`regulated-workspace-default-fallback` is the name of the requirement set, not a sign that fetching it failed — the bundle is signed, populated, and refreshed hourly.
+It is the baseline a regulated workspace gets when no more specific set has been assigned to it.
+
+So this is administrative rather than technical.
+Permitting MCP servers is a change to the requirement set assigned to the workspace, made by whoever administers it.
+Until then that researcher uses Claude Code, which is verified.
