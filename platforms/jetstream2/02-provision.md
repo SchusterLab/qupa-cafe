@@ -47,7 +47,39 @@ A federated identity has no Keystone password, so there is nothing an openrc fil
 An application credential is also scoped and revocable on its own, which a login is not.
 
 In Horizon, the OpenStack dashboard: **Identity** in the left-hand navigation, then **Application Credentials**, then **Create Application Credential**.
-On success it shows the id and secret once, with a **Download openrc file** button.
+
+What we filled in [unverified]:
+
+| Field | Value |
+|---|---|
+| Name | `qupa-cafe` |
+| Description | `OpenStack CLI for the Qupa Cafe forum host (CIS261848)` |
+| Secret | blank |
+| Expiration Date | `2027-09-09` |
+| Expiration Time | blank |
+| Roles | as offered |
+| Access Rules | blank |
+| Unrestricted | unchecked |
+
+Four of those are decisions rather than form-filling.
+
+**The expiration date is the one not to skip**, for the reason in the first trap below.
+Matching it to the allocation's end date means the credential cannot outlive the project it exists for.
+A shorter life is better security practice, but the failure it invites is a credential that expires in the middle of the year and produces an authentication error that never mentions expiry.
+The field is UTC, so the credential dies at the start of that day rather than the end.
+
+**Leave the secret blank** and let Horizon generate one.
+Choosing your own changes nothing — it arrives in the same downloaded file — and is one more secret to keep.
+
+**Leave Unrestricted unchecked.**
+Horizon labels it dangerous because it lets the credential mint further credentials and trusts, and provisioning needs neither.
+
+**Leave Access Rules blank.**
+Restricting the credential to named API calls is the appealing option, and we did not take it: `scripts/10-provision.sh` spans compute, block storage, networking and DNS, so the list would be long and easy to get subtly wrong.
+A dated expiry and one-click revocation are the security story instead.
+If you want the restricted version, upstream documents the syntax — treat it as something to work out and test, not to copy.
+
+On success Horizon shows the id and secret once, with a **Download openrc file** button.
 
 The file it gives you is a shell script that exports the variables in [`openrc.sh.example`](openrc.sh.example), which is all `source` has to do with it.
 Save it alongside that example as `openrc-CIS261848.sh`; `.gitignore` covers that name and not the downloaded one.
