@@ -194,7 +194,7 @@ They do contend on `admin_api_key_limiter`, which is why it gets raised.
 
 > **The published settings documentation contradicts the source on the user-API defaults.**
 > This chapter follows the source.
-> If you are checking these numbers, read `config/site_settings.yml` and the rate limiter in `lib/`, not the settings reference.
+> If you are checking these numbers, read Discourse's own `discourse/config/site_settings.yml` and the rate limiter under `discourse/lib/`, not the settings reference.
 
 ## 6.6 Policy enforcement
 

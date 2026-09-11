@@ -137,6 +137,56 @@ def check_line_breaks(show_hints: bool) -> list[str]:
     return problems
 
 
+# Markdown links, and the backticked paths the prose uses instead of links.
+MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+BACKTICKED_PATH = re.compile(r"`([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)+)`")
+
+# Top-level directories of this repository, used to tell our own paths apart
+# from the many upstream ones the prose mentions.
+OUR_DIRECTORIES = {
+    "docs", "scripts", "server", "agent-kit", "platforms", "config", "providers", "tests",
+}
+
+
+def check_references() -> list[str]:
+    """Every path this repository points at must exist.
+
+    Both forms are checked. Markdown links are the obvious ones; the backticked
+    paths matter more in practice, because the prose refers to files that way
+    constantly and nothing renders them, so a rename leaves them silently wrong.
+    """
+    problems = []
+
+    for path in markdown_files():
+        relative = path.relative_to(REPO_ROOT)
+
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            targets = [
+                target for target in MARKDOWN_LINK.findall(line)
+                if not target.startswith(("http://", "https://", "#", "mailto:"))
+            ]
+            # A whitelist, not a blacklist. The prose is full of backticked
+            # paths that are not ours -- `containers/app.yml` inside the
+            # Discourse install, `templates/web.ssl.template.yml` upstream,
+            # `BAAI/bge-small-en-v1.5` on HuggingFace -- and enumerating those
+            # is a losing game. Checking only paths that start with a directory
+            # this repository actually has is both simpler and stricter.
+            targets += [
+                target for target in BACKTICKED_PATH.findall(line)
+                if target.split("/")[0] in OUR_DIRECTORIES
+            ]
+
+            for target in targets:
+                clean = target.split("#")[0].rstrip("/")
+                if not clean:
+                    continue
+                if (path.parent / clean).exists() or (REPO_ROOT / clean).exists():
+                    continue
+                problems.append(f"{relative}:{number}: no such path: {target}")
+
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fix-hints", action="store_true", help="show where to split each long line")
@@ -150,6 +200,16 @@ def main() -> int:
         for problem in vendor_problems:
             print(f"  {problem}")
         print("  FAIL: move the above to platforms/.")
+        failed = True
+    else:
+        print("  ok")
+
+    print("\n== references ==")
+    reference_problems = check_references()
+    if reference_problems:
+        for problem in reference_problems:
+            print(f"  {problem}")
+        print("  FAIL: the paths above do not exist.")
         failed = True
     else:
         print("  ok")
