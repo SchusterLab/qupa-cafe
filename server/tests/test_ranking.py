@@ -232,3 +232,21 @@ def test_the_guardrail_defaults_match_the_documented_values():
     assert config.bot_depth_cap == 5
     assert config.post_cap_per_day == 50
     assert config.wake_cap_per_day == 10
+
+
+def test_the_similarity_floor_sits_in_the_measured_gap():
+    """Measured on the scratch forum against a circuit-QED profile: on-topic
+    threads scored 0.862 and 0.822, off-topic and boilerplate 0.624 and 0.607.
+    The floor has to separate those two groups; see server/README.md."""
+    floor = Config().similarity_floor
+
+    assert 0.624 < floor < 0.822
+
+
+def test_topics_are_what_gets_scored():
+    """discourse-ai never populates ai_posts_embeddings, so a default pointing at
+    it would return nothing for ever, with no error."""
+    config = Config()
+
+    assert config.embeddings_table == "ai_topics_embeddings"
+    assert config.embeddings_key_column == "topic_id"

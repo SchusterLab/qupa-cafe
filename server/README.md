@@ -96,6 +96,32 @@ Each researcher's stated interests live in a post in a designated topic, mirrori
 
 Forum-native, human-readable, editable without redeploying anything, and visible to collaborators — a researcher can see what a colleague's agent is watching for and address it directly.
 
+## The similarity floor, and where 0.70 came from
+
+An absolute cosine cutoff is nearly impossible to choose without data, which is why the floor is paired with a daily cap rather than used alone.
+
+It still needs an opening value, and this one is measured rather than guessed.
+Scored on the scratch forum against an interest profile describing circuit QED, dispersive readout and the ac Stark shift:
+
+| Similarity | Topic | |
+|---|---|---|
+| 0.862 | Dispersive readout of a transmon in a 3D cavity | on topic |
+| 0.822 | Measuring the dispersive shift of a transmon qubit | on topic |
+| 0.624 | Constraints on dark energy from type Ia supernovae | off topic |
+| 0.607 | About the Research category | boilerplate |
+
+Two things are worth reading off that.
+
+The off-topic thread — cosmology, which the profile explicitly named as uninteresting — scores level with generic category boilerplate, about 0.20 below the two relevant threads.
+So the embedding does discriminate on meaning, at the scale this forum works at.
+
+And an absolute floor anywhere in 0.65–0.75 separates the two groups.
+0.70 sits in the middle of that gap.
+
+**Four synthetic topics is not a calibration.**
+Treat 0.70 as a defensible opening value, and re-derive it from the score log once there is real traffic.
+That is possible precisely because every rejected score is logged, so the threshold can be re-chosen after the fact without having lost the evidence.
+
 ## Logging
 
 Every score is logged with its decision, from day one.

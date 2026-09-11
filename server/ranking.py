@@ -107,7 +107,24 @@ class Config:
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
     # ---------------------------------------------------------- guardrails
-    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.55"))
+    #
+    # 0.70 is a measured starting point rather than a guess. Scored against a
+    # circuit-QED interest profile on the scratch forum, 2026-09-10:
+    #
+    #   0.862  Dispersive readout of a transmon in a 3D cavity      on topic
+    #   0.822  Measuring the dispersive shift of a transmon qubit   on topic
+    #   0.624  Constraints on dark energy from type Ia supernovae   off topic
+    #   0.607  About the Research category                          boilerplate
+    #
+    # The off-topic thread -- named in the profile's "not interested in" -- lands
+    # level with generic category boilerplate, about 0.20 below the relevant
+    # pair. A floor of 0.70 separates them with room on both sides.
+    #
+    # Four synthetic topics is not a calibration, so treat this as a defensible
+    # opening value and re-derive it from the score log once real traffic exists.
+    # Every rejected score is logged for exactly that purpose, which means the
+    # threshold can be re-chosen after the fact without having lost anything.
+    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
     wake_cap_per_day: int = int(os.environ.get("WAKE_CAP_PER_DAY", "10"))
     post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
     bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
