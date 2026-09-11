@@ -4,6 +4,7 @@
 > Blocked on the Credits exchange in [`01-access-allocation.md`](01-access-allocation.md).
 > Commands marked **[extrapolated]** follow a documented pattern but were not found verbatim in Jetstream2's documentation.
 > The dashboard URL and the two login methods in 2.1 were checked against the live login page on 2026-09-11; nothing behind the login has been.
+> The expiration behaviour in 2.1 was read from Horizon's source rather than guessed at, after the earlier claim about it turned out to be wrong.
 
 Creates the host, its storage, its network access, and its hostname.
 Ends at a machine you can SSH into, which is where `docs/02-host-setup.md` takes over.
@@ -55,7 +56,7 @@ What we filled in [unverified]:
 | Name | `qupa-cafe` |
 | Description | `OpenStack CLI for the Qupa Cafe forum host (CIS261848)` |
 | Secret | blank |
-| Expiration Date | `2027-09-09` |
+| Expiration Date | `2027-09-10` |
 | Expiration Time | blank |
 | Roles | as offered |
 | Access Rules | blank |
@@ -63,10 +64,12 @@ What we filled in [unverified]:
 
 Four of those are decisions rather than form-filling.
 
-**The expiration date is the one not to skip**, for the reason in the first trap below.
-Matching it to the allocation's end date means the credential cannot outlive the project it exists for.
-A shorter life is better security practice, but the failure it invites is a credential that expires in the middle of the year and produces an authentication error that never mentions expiry.
-The field is UTC, so the credential dies at the start of that day rather than the end.
+**The expiration date is a decision, and the two fields interact.**
+A date with no time means **00:00 on that date**, so the day you enter is the first day the credential does not work.
+`2027-09-10` is therefore how you cover an allocation that ends on the 9th.
+
+Tying it to the allocation's end means the credential cannot outlive the project it exists for.
+A shorter life is better security practice, but the failure it invites is a credential that expires mid-year and produces an authentication error that never mentions expiry.
 
 **Leave the secret blank** and let Horizon generate one.
 Choosing your own changes nothing — it arrives in the same downloaded file — and is one more secret to keep.
@@ -87,8 +90,10 @@ Jetstream2 documents the `openrc.sh` path only, not `clouds.yaml`.
 
 Three traps:
 
-> **A blank expiration field defaults to today.**
-> Set one explicitly, or the credential expires the same day you made it.
+> **An expiration *time* with no date means today.**
+> Horizon fills the date in from the clock, so a credential given only a time expires that same day — possibly at a time that has already passed.
+> Leaving *both* fields blank does the opposite: the credential never expires.
+> Neither is stated on the form; both are in Horizon's `identity/application_credentials` form, in the branch on `expiration_date`.
 
 > **The secret is shown once.**
 > Download the file on the success screen; there is no way back to it, only a new credential.

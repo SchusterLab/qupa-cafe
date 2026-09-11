@@ -12,8 +12,10 @@
 # and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
 # This file exists to document the shape and the traps.
 #
-# Trap 1: a blank expiration field on the credential defaults to TODAY.
-#         Set one explicitly when creating it, or it dies the same day.
+# Trap 1: the two expiration fields interact. A time with no date means
+#         TODAY, at that time -- possibly already past. Both blank means the
+#         credential never expires. A date with no time means 00:00 on that
+#         date, so the date you enter is the first day it does not work.
 #
 # Trap 2: the secret is shown once. Download it on the success screen; there
 #         is no way back to it, only a new credential.
