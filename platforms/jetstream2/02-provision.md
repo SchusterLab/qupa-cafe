@@ -58,7 +58,7 @@ What we filled in [unverified]:
 | Secret | blank |
 | Expiration Date | `2027-09-10` |
 | Expiration Time | blank |
-| Roles | as offered |
+| Roles | `member` and `reader` |
 | Access Rules | blank |
 | Unrestricted | unchecked |
 
@@ -70,6 +70,13 @@ A date with no time means **00:00 on that date**, so the day you enter is the fi
 
 Tying it to the allocation's end means the credential cannot outlive the project it exists for.
 A shorter life is better security practice, but the failure it invites is a credential that expires mid-year and produces an authentication error that never mentions expiry.
+
+**Take `member` and `reader`, not everything offered.**
+Four roles were on offer here: `reader`, `creator`, `member`, and `load-balancer_member`.
+`scripts/10-provision.sh` uses compute, block storage, networking and DNS, all of which `member` covers, and `reader` is worth keeping beside it because some services want an explicit read role under newer RBAC.
+`creator` is the key manager's role and `load-balancer_member` is the load balancer's; this deployment creates neither.
+
+Selecting the extra two is not an escalation — a credential can only carry roles you already hold — but it widens what the secret can do if it leaks, and buys nothing.
 
 **Leave the secret blank** and let Horizon generate one.
 Choosing your own changes nothing — it arrives in the same downloaded file — and is one more secret to keep.
@@ -107,8 +114,12 @@ Three traps:
 
 ```bash
 source openrc-CIS261848.sh
-openstack flavor list          # smoke test
+openstack flavor list                                # smoke test
+openstack application credential show qupa-cafe      # what was actually created
 ```
+
+The second command is worth running once.
+It reports the roles and the `expires_at` the server recorded, rather than what the form appeared to accept — and a blank expiry shows up there as `None`, which is the only place it is stated plainly.
 
 ## 2.2 SSH key
 
