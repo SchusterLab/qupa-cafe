@@ -194,9 +194,12 @@ It is granted admin automatically.
 ### A test email actually arrives
 
 Admin -> Email -> send a test message to an address at a major mailbox provider.
-Open the received headers and confirm `spf=pass` and `dkim=pass`, with the From domain aligned.
+Open the received headers and confirm `dmarc=pass`, with at least one of SPF or DKIM **aligned** to the domain in `From:`.
 
-That third check is the one people skip.
+That third check is the one people skip, and reading it correctly is its own trap.
+A relay that bounces to its own domain gives you `spf=pass` for a domain the recipient never sees, which is unaligned and carries no DMARC weight.
+DKIM is then the half that has to align, and one aligned half is enough.
+So the shape to watch for is a confident `spf=pass` sitting next to `dmarc=fail`.
 
 > **Nothing else validates SMTP.**
 > The only check during bootstrap is a literal string comparison against `smtp.example.com` in `web.template.yml`.

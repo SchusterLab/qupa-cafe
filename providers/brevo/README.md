@@ -2,9 +2,10 @@
 
 The transactional email relay for `forum.qupa-cafe.com`.
 
-> **Status:** Not yet done.
-> Every record name below is marked, because they must be taken from Brevo's own panel rather than from here.
-> This page is a checklist and a set of traps, not a source of truth for record values.
+> **Status:** DNS done and verified by resolution on 2026-09-11.
+> The account exists, the domain-authentication records are published at Porkbun, and every one resolves — including the DKIM chains, which resolve to real RSA keys.
+> Still outstanding: the SMTP key, and a delivered message with readable headers.
+> Nothing below is marked `[unverified]` any more, and the record shapes are now what the panel asked for rather than what its documentation implied.
 
 ## Why a relay at all
 
@@ -38,8 +39,11 @@ Stanford's bypass policy also requires servers to sit on a University-IT-provisi
 None of it needs the forum, the host, or an IP address.
 Doing it early means SPF and DKIM have propagated long before the install needs them, and any friction surfaces while there is time to deal with it.
 
+That reasoning held up.
+The records were published before the host existed, so propagation is not on the critical path for the install, and the one surprise — that the panel asks for a different set of records than the written guidance describes — surfaced with nothing else half-built.
+
 > **Free tiers sometimes hold sending pending account review.**
-> Create the account and send a throwaway test message now.
+> Create the account and send a throwaway test message.
 > Discovering a hold while the forum is half-built is the avoidable version of this problem.
 
 ## Steps
@@ -52,47 +56,130 @@ Doing it early means SPF and DKIM have propagated long before the install needs 
 > **Authenticate the subdomain you send from, not the apex.**
 > Discourse's own documentation is explicit that verifying `qupa-cafe.com` while sending as `forum.qupa-cafe.com` leaves mail misconfigured.
 
-5. Brevo shows the records to add, of three kinds:
+5. Brevo shows three records to add.
+   All three are on the **subdomain**, and two of them are CNAMEs rather than TXT:
 
-| Kind | Expected shape |
-|---|---|
-| Ownership | a TXT record, `brevo-code` **[unverified]** |
-| DKIM | a TXT record under `mail._domainkey` **[unverified]** |
-| SPF | an include for `spf.brevo.com` **[unverified]** |
+| Kind | Name | Type | Value |
+|---|---|---|---|
+| Ownership | `forum.qupa-cafe.com` | TXT | `brevo-code:<32 hex characters>` |
+| DKIM 1 | `brevo1._domainkey.forum.qupa-cafe.com` | CNAME | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
+| DKIM 2 | `brevo2._domainkey.forum.qupa-cafe.com` | CNAME | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
 
-> **Take these from the panel, not from this table.**
-> The names above follow Brevo's documented pattern but were not confirmed against a live account, which is what the markers mean.
+Three things in that table are not what the older written guidance leads you to expect.
+
+**DKIM is delegated, not published.**
+The records are CNAMEs pointing into `dkim.brevo.com`, so the key material lives with Brevo and rotates without anyone touching our zone.
+Instructions that tell you to paste a `v=DKIM1; k=rsa; p=...` blob into a TXT record at `mail._domainkey` describe an older flow.
+
+**The DKIM target embeds the domain with hyphens**, not dots: `forum-qupa-cafe-com`, once per selector.
+Copy it from the panel.
+A hand-typed `forum.qupa-cafe.com` in that position resolves to nothing and the failure is a verification that never completes, with no indication why.
+
+**The ownership TXT sits at the subdomain itself**, sharing that name with anything else published there.
+There is no `brevo-code.` label in front of it.
 
 6. Add them in the Porkbun DNS panel for `qupa-cafe.com`.
-7. Add a DMARC record as well, which Brevo does not ask for:
+
+> **Porkbun's host field is relative to the zone**, so the DKIM host is `brevo1._domainkey.forum`, not the full name from Brevo's panel.
+> Pasting the absolute name produces `brevo1._domainkey.forum.qupa-cafe.com.qupa-cafe.com`, which resolves for nobody.
+> The resolution check below is what tells you which of the two you did.
+
+7. Brevo does not ask for an SPF record, and none is needed for DMARC to pass — see the SPF section below.
+8. Add a DMARC record, which Brevo also does not ask for:
 
 ```
-_dmarc.forum.qupa-cafe.com   TXT   "v=DMARC1; p=none; rua=mailto:<an address you read>"
+_dmarc.forum.qupa-cafe.com   TXT   "v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com"
 ```
 
 `p=none` to start.
 Observe before enforcing; a `p=reject` published before SPF and DKIM are confirmed aligned will silently destroy your own mail.
 
-8. Wait for propagation, then verify in Brevo's panel.
-9. Create an **SMTP key**, under **SMTP & API** -> **SMTP**.
-   It gives a login and a key, which are the `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD` in `.env`.
+`rua@dmarc.brevo.com` sends the aggregate reports to Brevo, who surface them in their panel, rather than to a mailbox.
+That is a real choice and not a default worth accepting blindly, because it means nobody reads the reports unless somebody opens that panel.
+Any address you actually read is a defensible substitute.
+
+> **A `rua` at another organisation's domain needs that organisation's permission, published in DNS.**
+> RFC 7489 §7.1 requires a reporter to check for an authorisation record before sending reports across an organisational boundary, and to decline if it is absent.
+> Brevo publishes ours, which is checked below.
+> This is the failure mode where DMARC looks configured and no report is ever generated.
+
+9. Wait for propagation, then verify in Brevo's panel.
+10. Create an **SMTP key**, under **SMTP & API** -> **SMTP**.
+    It gives a login and a key, which are the `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD` in `.env`.
 
 > **If the key contains a `#`, quote it in `app.yml`.**
 > An unquoted `#` begins a YAML comment and the rest of the password is silently discarded.
 > `config/app.yml.example` quotes it already; this matters if you ever hand-edit.
 
+## SPF, and why there is not one
+
+Brevo's domain authentication asks for ownership and DKIM only.
+Older instructions add `v=spf1 include:spf.brevo.com ~all` on the sending domain, and it is worth being clear about why skipping it is not a gap.
+
+SPF authenticates the **envelope** sender, which is the relay's own bounce domain, not the `From:` header.
+An SPF record on `forum.qupa-cafe.com` would therefore pass for a domain that is not the one in `From:`, which is unaligned and contributes nothing to DMARC.
+DMARC passes on aligned SPF **or** aligned DKIM, and here DKIM is the aligned one.
+
+Publishing the include anyway is harmless and gives a receiver something to see for the From domain rather than `spf=none`.
+We have not done it, so this page does not tell you it works.
+
+> **`_spf.brevo.com` is not the include.**
+> That name exists and publishes `v=spf1 -all`, which authorises nothing.
+> The include is `spf.brevo.com`, without the underscore, and it publishes ten `ip4` ranges.
+> The two differ by one character and fail in opposite directions.
+
 ## Verify from the command line
+
+Run these before touching the panel's verify button.
+`dig` on a Linux host:
 
 ```bash
 dig +short TXT forum.qupa-cafe.com
-dig +short TXT mail._domainkey.forum.qupa-cafe.com
+dig +short CNAME brevo1._domainkey.forum.qupa-cafe.com
+dig +short CNAME brevo2._domainkey.forum.qupa-cafe.com
 dig +short TXT _dmarc.forum.qupa-cafe.com
+dig +short TXT forum.qupa-cafe.com._report._dmarc.dmarc.brevo.com
 ```
 
-Then, once the forum is up, the check that actually matters.
-Send a test message from Discourse's admin panel to an address at a major mailbox provider, open the received headers, and confirm `spf=pass` and `dkim=pass` with the From domain **aligned**.
+Or `nslookup`, which is what is present on Windows:
 
-Passing SPF for a different domain than the one in `From:` looks like a pass at a glance and is not one.
+```
+nslookup -type=TXT forum.qupa-cafe.com 1.1.1.1
+nslookup -type=CNAME brevo1._domainkey.forum.qupa-cafe.com 1.1.1.1
+```
+
+Naming a resolver explicitly matters more than it looks.
+A stale negative answer in the local resolver's cache is indistinguishable from a record you forgot to add.
+
+What resolved on 2026-09-11:
+
+| Query | Answer |
+|---|---|
+| `TXT forum.qupa-cafe.com` | `brevo-code:<32 hex>` |
+| `CNAME brevo1._domainkey.forum` | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
+| `CNAME brevo2._domainkey.forum` | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
+| `TXT _dmarc.forum.qupa-cafe.com` | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
+| `TXT forum.qupa-cafe.com._report._dmarc.dmarc.brevo.com` | `v=DMARC1`, so reports are authorised |
+
+**Follow the DKIM CNAMEs to the end.**
+Each is itself a CNAME into a numbered selector that holds the key, and only the last hop proves there is a key rather than a dangling delegation:
+
+```bash
+dig +short TXT b1.forum-qupa-cafe-com.dkim.brevo.com
+```
+
+Ours ends at `brevo7.dkim.brevo.com` and `brevo8.dkim.brevo.com`, each publishing a `k=rsa; p=<2048-bit key>`.
+A CNAME that resolves while its target has no TXT is a DKIM setup that verifies in the panel and signs nothing.
+
+## Then the check that actually matters
+
+Once the forum is up, send a test message from Discourse's admin panel to an address at a major mailbox provider, open the received headers, and confirm `dkim=pass` with `d=forum.qupa-cafe.com` — the same domain as `From:`.
+
+**Read the alignment, not the pass.**
+`spf=pass` for the relay's bounce domain is a pass for a domain nobody sees, and it appears next to a `dmarc=fail` that is easy to overlook.
+With no SPF record of our own, expect `spf=none` or an unaligned pass, and expect DKIM to be what carries DMARC.
+
+`docs/03-install.md` §3.6 treats this as a gate on declaring the install finished.
 
 ## After it works
 

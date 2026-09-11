@@ -34,15 +34,17 @@ Check, in order:
    Everything after it was discarded as a YAML comment.
 3. Whether the **subdomain** you send from is verified with the provider, rather than the apex domain.
    Verifying `example.com` while sending as `forum.example.com` leaves mail misconfigured.
-4. Whether SPF, DKIM, and DMARC resolve for the sending domain.
+4. Whether the provider's authentication records resolve for the sending domain, following any CNAME delegation to the end.
+   A delegation that resolves while its target holds no key verifies with the provider and signs nothing.
 
 Any change to `app.yml` needs `./launcher rebuild app`, not a restart.
 
 ### Mail arrives but lands in spam
 
-Check the received headers of a test message for `spf=pass` and `dkim=pass`, and confirm the From domain is **aligned** with the authenticated domain.
+Check the received headers of a test message for `dmarc=pass`, and confirm that whichever of SPF or DKIM passed is **aligned** with the domain in `From:`.
 
 Passing SPF for a different domain than the one in From is the common failure, and it looks like a pass at a glance.
+DMARC needs only one aligned half, so `spf=none` beside an aligned `dkim=pass` is a healthy result rather than the fault.
 
 ## TLS
 
