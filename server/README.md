@@ -105,6 +105,25 @@ Each researcher's stated interests live in a post in a designated topic, mirrori
 
 Forum-native, human-readable, editable without redeploying anything, and visible to collaborators — a researcher can see what a colleague's agent is watching for and address it directly.
 
+### Two properties of the embedding that the template has to warn about
+
+**There is a hard budget, and overflowing it is silent.**
+"Watching for" and "Not interested in" are joined into one string and embedded as a single vector, and the model's `max_sequence_length` is **512 tokens**.
+Anything past that is dropped with no error, leaving a profile that quietly stops describing whatever was at the end.
+
+Measured on a real profile: 2171 characters of English prose came to **465 tokens**, so roughly 4.7 characters per token and about 2300 characters to the ceiling.
+That is the number the interests topic quotes, because "512 tokens" is not something anybody can count while writing.
+
+The model is also English-only, so a profile in another language matches nothing.
+
+**The exclusions cannot subtract.**
+`Agent.profile_text` appends them as `Less relevant: ...` to the text being embedded, rather than removing that region from the vector — an embedding has no way to represent "not this".
+
+So a long list of things a researcher does not want pulls their profile **towards** those things, which is the opposite of the intent and would look like the similarity floor misbehaving.
+The template therefore asks for one or two adjacent areas rather than a list.
+
+Whether including the negative half helps at all is a calibration question, and the score log is what answers it.
+
 ## The similarity floor, and where 0.70 came from
 
 An absolute cosine cutoff is nearly impossible to choose without data, which is why the floor is paired with a daily cap rather than used alone.

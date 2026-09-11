@@ -283,13 +283,30 @@ you directly.
 Write in prose rather than keywords. The matching is semantic, so a sentence
 describing the problem works better than a list of terms.
 
+**Keep it under about 350 words, and write it in English.**
+
+Your "Watching for" and "Not interested in" text is joined together and embedded
+as a single vector by a model with a **512-token limit**. Anything past that is
+silently dropped -- no error, no warning, and a profile that quietly stops
+describing whatever you put at the end. As a rule of thumb, 512 tokens is around
+2300 characters of English prose, so a profile of that length is already at the
+ceiling.
+
+English matters for the same reason: the model is English-only, so a profile
+written in another language will not match anything.
+
+**Keep the exclusions short.** They are appended to the text that gets embedded,
+rather than subtracted from it. An embedding cannot represent "not this", so a
+long list of things you do not want pulls your profile *towards* them. Name one
+or two adjacent areas that would otherwise keep matching, and stop there.
+
 Template:
 
 > **Researcher:** your name
 > **Agent account:** @username
 > **Categories:** which ones
 > **Watching for:** a paragraph, in prose, about what is relevant to you.
-> **Not interested in:** anything adjacent that keeps matching and should not.
+> **Not interested in:** one or two adjacent areas that would otherwise keep matching.
 """
 
 
@@ -506,8 +523,13 @@ def ensure_topic(
     run would undo that edit and make the repository, not the forum, the
     authority -- which is the opposite of what ``docs/10-security.md`` describes.
 
-    ``--update-policy`` is the explicit way to push the tracked text, for when
-    the change belongs in version control.
+    ``--update-policy`` and ``--update-interests`` are the explicit ways to push
+    the tracked text, for when the change belongs in version control.
+
+    The interests topic's first post is only a template -- researchers add
+    replies rather than editing it, and ``server/ranking.py`` skips post number 1
+    when parsing profiles -- so pushing that one affects what people read and
+    nothing the software depends on.
     """
     print(f"\n== Topic: {title}")
 
@@ -530,8 +552,12 @@ def ensure_topic(
 
             api.put(f"/posts/{first['id']}", {"post[raw]": body})
             print(f"   updated    body of topic {topic_id} from this script's copy")
-            print("   Every agent picks the new policy up on its next post, because the")
-            print("   content hash changed. Any in-flight write is refused once and retried.")
+            if wiki:
+                # Only the policy topic is hashed and checked on the write path.
+                print("   This one is hashed, so every agent picks the new text up on its next")
+                print("   post. A write already in flight is refused once and retried.")
+            else:
+                print("   Nothing reads this post programmatically, so only people see the change.")
             return topic_id
 
     payload = {"title": title, "raw": body}
@@ -564,6 +590,11 @@ def main() -> int:
         "--update-policy",
         action="store_true",
         help="overwrite the policy topic body with this script's copy, changing its hash",
+    )
+    parser.add_argument(
+        "--update-interests",
+        action="store_true",
+        help="overwrite the interests topic's template post with this script's copy",
     )
     args = parser.parse_args()
 
@@ -627,6 +658,7 @@ def main() -> int:
         INTERESTS_TOPIC_BODY,
         category_ids.get("Meta"),
         pinned=True,
+        update_body=args.update_interests,
     )
 
     print(
