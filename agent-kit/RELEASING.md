@@ -79,6 +79,29 @@ One consequence to know.
 Running the workflow by hand against `pypi` requires selecting a `v*` tag as the ref.
 Dispatching it from `main` is blocked by the environment rather than by the workflow, so it appears as a skipped deployment rather than as a failed step.
 
+## When the upload is refused
+
+The error to expect from a missing or mismatched registration is this, and it is worth reading carefully because the first clause sounds like the second is impossible:
+
+```
+Trusted publishing exchange failure:
+* `invalid-publisher`: valid token, but no corresponding publisher
+```
+
+"Valid token" means the forge authenticated correctly and the problem is entirely on the index side: no publisher there matches the claims presented.
+It is not a credential to fix, and there is no secret to rotate.
+
+The action then prints the claims it sent, which is what to compare against the registration:
+
+| Claim | What it must match |
+|---|---|
+| `repository` | Owner and repository name |
+| `workflow_ref` | The workflow filename |
+| `environment` | The environment name |
+
+Observed once, on the first TestPyPI rehearsal: every claim was correct and the registration simply did not exist, because **PyPI and TestPyPI are separate accounts** and only the former had been done.
+Registering the second one is the whole fix.
+
 ## The release itself
 
 1. Bump `__version__` in `agent-kit/qupa_cafe/__init__.py`.

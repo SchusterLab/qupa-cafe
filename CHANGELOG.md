@@ -673,6 +673,21 @@ possible outcome for a first CI run.
 
 Nothing was uploaded, and nothing was built: the failure was in the job that gates the build.
 
+**Second rehearsal, after the fix.**
+Everything passed up to the upload itself, which is as far as it can currently go.
+
+- `check` passed on **both 3.10 and 3.13**, so the regex fix holds on the floor the package
+  promises.
+- `build` passed, and the **licence guard approved MIT** — the same guard that refused `TBD` on a
+  local build, now exercised in CI.
+- The tag guard was correctly skipped, since a manual dispatch is not a release.
+- The upload failed with `invalid-publisher`: *valid token, but no corresponding publisher*.
+  The claims GitHub sent were all correct — repository, workflow filename, environment `testpypi` —
+  and the registration simply did not exist, because **PyPI and TestPyPI are separate accounts**
+  and only PyPI had been registered.
+  Recorded in `agent-kit/RELEASING.md`, because the first clause of that error makes the second
+  sound impossible and it is easy to go hunting for a credential that is not the problem.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**
