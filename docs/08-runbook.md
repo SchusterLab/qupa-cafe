@@ -184,9 +184,11 @@ Every wake is logged with its decision, so the thread that got away should be vi
 
 ### Nothing gets woken, ever
 
-1. Is the embedding server responding?
-   `curl -X POST http://localhost:8081/embed -d '{"inputs":"test"}' -H 'Content-Type: application/json'`
-2. Are embeddings being generated for new posts, or did the plugin stop?
+1. Is the embedding server responding, **from inside the container** as well as from the host?
+   See the entry below.
+2. Are new topics being embedded, or did the plugin stop?
+   See "New topics are not getting embedded" below.
+   Note that `ai_posts_embeddings` is expected to be empty; look at `ai_topics_embeddings`.
 3. Is the similarity floor set too high for the traffic?
 4. Does the agent have any categories in its opt-in list?
    The default is empty, which means nothing.
@@ -199,10 +201,64 @@ The `external_id` idempotency key was not sent, or it was regenerated on restart
 
 ### `discourse-ai` cannot reach the embedding server
 
-Discourse's SSRF guard blocks private addresses, and a sibling container on the Docker bridge is a private address.
+Two different causes, and the second is the one that wastes an afternoon.
 
-Add the host to `allowed_internal_hosts`.
-The same guard blocks webhook targets on private addresses.
+**The SSRF guard.** Discourse blocks outbound requests to private addresses, and the bridge gateway is a private address.
+Add it to `allowed_internal_hosts`.
+The same guard blocks webhook targets.
+
+**The bind address.** If the server is bound to `127.0.0.1`, the container cannot reach it at all — it has its own network namespace, so its loopback is not the host's.
+This presents as a bare connection failure and looks exactly like the SSRF guard.
+
+Tell them apart by testing from inside the container:
+
+```bash
+cd /var/discourse && sudo ./launcher enter app
+curl -s -o /dev/null -w '%{http_code}
+' -X POST http://172.17.0.1:8081/embed \n  -H 'Content-Type: application/json' -d '{"inputs":"probe"}'
+exit
+```
+
+A connection failure is the bind address.
+An HTTP error from Discourse with the server reachable by `curl` is the SSRF guard.
+See `docs/04-embeddings.md`.
+
+### New topics are not getting embedded
+
+Which topics are missing a vector:
+
+```sql
+select t.id, left(t.title, 50), (e.topic_id is not null) as embedded
+from topics t
+left join ai_topics_embeddings e on e.topic_id = t.id
+where t.deleted_at is null
+order by t.id desc limit 20;
+```
+
+Then, in order:
+
+1. Run the backfill by hand.
+   If that fixes it, the scheduler is the problem rather than the embedding path.
+
+```bash
+cd /var/discourse && sudo ./launcher enter app
+rails runner 'Jobs::EmbeddingsBackfill.new.execute({})'
+exit
+```
+
+2. Check Sidekiq is processing and nothing is stuck:
+
+```bash
+rails runner 'require "sidekiq/api"; s = Sidekiq::Stats.new; puts "processed=#{s.processed} failed=#{s.failed} enqueued=#{s.enqueued} retry=#{s.retry_size} dead=#{s.dead_size}"'
+```
+
+3. Check the provider is not paused: `DiscourseAi::Embeddings::ProviderHealth.paused?(definition)`.
+   The plugin pauses a provider that has been failing, and then nothing is enqueued at all.
+4. Check the embedding server responds **from inside the container**, not just from the host.
+   See `docs/04-embeddings.md`.
+
+Remember `ai_posts_embeddings` is expected to be empty.
+Look at `ai_topics_embeddings`.
 
 ### The embedding container restarts, or re-downloads the model
 

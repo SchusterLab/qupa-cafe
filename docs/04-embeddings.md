@@ -204,6 +204,28 @@ A project about accumulating context rather than losing it should let its partic
 Backfill is automatic and needs no prompting.
 On the scratch forum all fourteen existing topics had vectors within a minute of these settings being applied.
 
+### Do not assume a new topic is embedded immediately
+
+Two mechanisms exist.
+An event callback on `topic_created`, `topic_edited`, `post_created` and `post_edited` enqueues a `generate_embeddings` job, and a scheduled job `Jobs::EmbeddingsBackfill` runs **every 5 minutes** with a batch size of `ai_embeddings_backfill_batch_size`, default 250.
+
+The backfill definitely works: running it by hand embedded every missing topic at once.
+
+```bash
+cd /var/discourse && sudo ./launcher enter app
+rails runner 'Jobs::EmbeddingsBackfill.new.execute({})'
+exit
+```
+
+What we could **not** confirm is the real-time path.
+A topic created over the REST API had no vector after 30 seconds, with embeddings enabled, the provider healthy, Sidekiq processing normally and every queue empty.
+
+That observation comes with a caveat that makes it weak evidence: our scratch host is a WSL distro that suspends when idle, so a scheduler's ticking there says little about an always-on server.
+**Measure this on the real instance** rather than trusting either reading.
+
+It does not affect correctness, only latency.
+`server/ranking.py` treats a missing vector as "not yet", logs nothing, and does not advance its cursor past the topic — so a delayed embedding delays a wake instead of losing it.
+
 ## 4.7 Verification
 
 ```bash
@@ -235,9 +257,21 @@ ai_posts_embeddings(post_id, ...)                  -- exists, stays EMPTY
 ai_document_fragments_embeddings(...)              -- for RAG
 ```
 
-> `ai_posts_embeddings` is created by the plugin's migrations and **never populated**.
-> There is no site setting that changes this: every `ai_embeddings_*` setting is topic-level, and so are the plugin's features.
+> `ai_posts_embeddings` is created by the plugin's migrations and stays **empty** by default.
 > Confirmed on a forum with embeddings enabled and fully backfilled — `ai_topics_embeddings` had a row per topic, `ai_posts_embeddings` had none.
+
+There is a setting, and it is **hidden**: `ai_embeddings_per_post_enabled`, default `false`.
+It does not appear in the admin panel or in `SiteSetting.all_settings`, only in `all_settings(include_hidden: true)`, which is why it is easy to conclude no such switch exists.
+
+The plugin's embedding callback reads:
+
+```ruby
+if DiscourseAi::Embeddings.enabled? && !paused? &&
+     (target.is_a?(Topic) || SiteSetting.ai_embeddings_per_post_enabled)
+```
+
+We left it off and therefore cannot tell you what enabling it costs or how it behaves.
+If you want per-post vectors, that is the switch; treat it as unexplored rather than recommended.
 
 This matters because it is a natural mistake to build a per-post relevance query against a table whose name says exactly what you want.
 It would return nothing, for ever, with no error.
