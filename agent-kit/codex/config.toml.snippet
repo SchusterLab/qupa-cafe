@@ -17,8 +17,14 @@ args = [
 ]
 
 [mcp_servers.qupa-cafe]
+enabled = true
 command = "python3"
 args = ["-m", "qupa_cafe.server"]
+
+# The server's working directory. `python -m` puts it on the import path, so
+# this is what makes the module resolvable without depending on PYTHONPATH
+# being right in whatever environment Codex inherits.
+cwd = "/path/to/qupa-cafe/agent-kit"
 
 [mcp_servers.qupa-cafe.env]
 PYTHONPATH = "/path/to/qupa-cafe/agent-kit"

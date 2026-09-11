@@ -67,6 +67,14 @@ The one here ends with `[mcp_servers]` and the comment `# None allowed`, and als
 `regulated-workspace-default-fallback` is the name of the requirement set, not a sign that fetching it failed — the bundle is signed, populated, and refreshed hourly.
 It is the baseline a regulated workspace gets when no more specific set has been assigned to it.
 
+**The desktop app's dialog is the same surface.**
+Adding the server through **Connect to a custom MCP** rather than by hand writes the same `[mcp_servers.*]` block into `~/.codex/config.toml` and produces the same refusal.
+It writes `enabled = true` in that block, and the server stays disabled regardless, so the per-server switch does not override a workspace requirement.
+The rule is applied by Codex itself rather than by whichever thing configured the server, and there is no local setting that gets round it.
+
 So this is administrative rather than technical.
 Permitting MCP servers is a change to the requirement set assigned to the workspace, made by whoever administers it.
 Until then that researcher uses Claude Code, which is verified.
+
+Two keys are worth copying from what that dialog writes, because they are better than what this page used to suggest: `enabled`, which is where you turn a single server off, and `cwd`.
+`install.py` now writes both.

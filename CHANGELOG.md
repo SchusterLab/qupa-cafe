@@ -304,8 +304,12 @@ scratch forum.
 - **Codex past its configuration.**
   The workspace's signed requirements carry `[mcp_servers]` / `# None allowed`, so every server is
   refused, Codex's own included.
+  Adding one through the desktop app's dialog instead writes the same block to the same file and is
+  refused identically, with `enabled = true` in it, so no local setting overrides the requirement.
   Lifting it is a change to the requirement set assigned to the workspace, not something the kit
   can arrange.
+  The generated Codex configuration gained `enabled` and `cwd` from comparing it against what that
+  dialog writes; `cwd` is what makes the module resolvable without relying on PYTHONPATH.
 - **The 80 and 443 security-group rules.** Blocked on the allocation; marked `[extrapolated]`.
 - **Embedding latency on an always-on host.** Our scratch host suspends when idle, which makes it
   poor evidence either way.
