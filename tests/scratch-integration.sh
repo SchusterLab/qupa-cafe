@@ -206,7 +206,16 @@ fi
 
 section "Policy enforcement"
 
-STALE="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy hash and must be refused.\",\"policy_ack\":\"deadbeefdeadbeef\"}}}")"
+# allow_uncategorized_topics defaults to false, so a category id is required for
+# every new topic. Omitting it returns 422 "Category can't be blank".
+CATEGORY_ID="$(rails_runner "puts Category.find_by(name: 'Research')&.id")"
+if [ -n "$CATEGORY_ID" ]; then
+  ok "Research category is $CATEGORY_ID"
+else
+  bad "no Research category; 40-configure-forum.py should have made one"
+fi
+
+STALE="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy hash and must be refused.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"deadbeefdeadbeef\"}}}")"
 
 if printf '%s' "$STALE" | grep -q "REFUSED"; then
   ok "a stale policy_ack is refused"
@@ -214,9 +223,11 @@ else
   bad "a stale policy_ack was NOT refused: $STALE"
 fi
 
+# Match the title field, not the raw body: a search response echoes the query
+# term back under "term", so grepping the body matched unconditionally.
 if curl -fsS "$FORUM_URL/search.json?q=Should+never+be+created" \
      -H "Api-Key: $ADMIN_KEY" -H "Api-Username: $ADMIN_USERNAME" \
-     | grep -q "Should never be created"; then
+     | grep -q '"title":"Should never be created"'; then
   bad "the refused topic exists on the forum"
 else
   ok "the refused topic does not exist"
@@ -224,8 +235,13 @@ fi
 
 section "An enforced write"
 
-TITLE="Scratch integration $(date +%s)"
-CREATED="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"scratch-$TITLE\"}}}")"
+STAMP="$(date +%s)"
+TITLE="Scratch integration $STAMP"
+# Word characters and hyphens only, max 50: Discourse validates external_id
+# against /\A[\w-]+\z/. The normaliser in the MCP server covers agents that
+# do not know that; this test should not depend on it.
+EXTERNAL_ID="scratch-$STAMP"
+CREATED="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
 
 if printf '%s' "$CREATED" | grep -q '"posted": true'; then
   ok "a write with a current policy_ack succeeds"
@@ -252,7 +268,7 @@ fi
 
 section "Idempotency of a write"
 
-REPEAT="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"scratch-$TITLE\"}}}")"
+REPEAT="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
 
 if printf '%s' "$REPEAT" | grep -q '"idempotent": true'; then
   ok "the same external_id resolves to the existing topic"

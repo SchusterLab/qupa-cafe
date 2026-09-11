@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -225,3 +226,61 @@ def test_missing_configuration_exits_rather_than_serving():
 
     assert result.returncode == 2
     assert "missing" in result.stderr.lower()
+
+
+# ------------------------------------------------ external_id normalisation
+
+
+def test_a_conforming_external_id_passes_through_unchanged():
+    r"""Discourse validates against /\A[\w-]+\z/, max length 50."""
+    assert QupaServer._normalise_external_id("qc-abc123") == "qc-abc123"
+    assert QupaServer._normalise_external_id("under_scores-and-digits-42") == "under_scores-and-digits-42"
+
+
+def test_spaces_are_normalised():
+    """The natural instruction -- derive a key from what you are posting about --
+    produces exactly the strings Discourse rejects with 422 'External is invalid'."""
+    normalised = QupaServer._normalise_external_id("scratch Scratch integration 1789")
+
+    assert " " not in normalised
+    assert normalised.startswith("qc-")
+
+
+def test_punctuation_is_normalised():
+    for bad in ("has.dots", "has:colons", "has/slashes", "has(parens)", "unicode-caf\u00e9"):
+        normalised = QupaServer._normalise_external_id(bad)
+        assert re.fullmatch(r"[\w-]+", normalised), f"{bad!r} produced {normalised!r}"
+
+
+def test_an_over_long_id_is_normalised():
+    normalised = QupaServer._normalise_external_id("a" * 60)
+
+    assert len(normalised) <= 50
+    assert normalised != "a" * 60
+
+
+def test_normalisation_is_deterministic():
+    """The whole point of an idempotency key. If normalising were not stable, a
+    retry would produce a different key and post a duplicate."""
+    first = QupaServer._normalise_external_id("some title with spaces")
+    second = QupaServer._normalise_external_id("some title with spaces")
+
+    assert first == second
+
+
+def test_different_inputs_do_not_collide():
+    """Hashing rather than stripping, because stripping makes these two equal --
+    and a collision silently suppresses a legitimate post as a duplicate."""
+    a = QupaServer._normalise_external_id("topic one")
+    b = QupaServer._normalise_external_id("topic.one")
+
+    assert a != b
+
+
+def test_the_category_requirement_is_in_the_tool_description():
+    """allow_uncategorized_topics defaults to false, so an agent that omits the
+    category gets a 422. The schema is where it finds out first."""
+    create_topic = next(t for t in TOOLS if t["name"] == "create_topic")
+    description = create_topic["inputSchema"]["properties"]["category"]["description"]
+
+    assert "Required" in description

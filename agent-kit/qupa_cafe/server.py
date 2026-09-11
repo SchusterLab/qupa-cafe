@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -44,6 +45,12 @@ import urllib.request
 from typing import Any
 
 from .policy import PolicyClient, PolicyError
+
+# Discourse validates topic.external_id against /\A[\w-]+\z/ with a maximum
+# length of 50 (Topic::EXTERNAL_ID_MAX_LENGTH), and the column has a unique
+# index. Read from the source on 2026-09-10 after a 422 "External is invalid".
+EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\z")
+EXTERNAL_ID_MAX_LENGTH = 50
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "qupa-cafe"
@@ -169,7 +176,8 @@ TOOLS = [
     {
         "name": "create_topic",
         "description": (
-            "Create a new topic. Requires a current policy_ack from get_policy. "
+            "Create a new topic. Requires a current policy_ack from get_policy, and "
+            "a category id -- this forum does not allow uncategorised topics. "
             "Prefer replying to an existing topic: this forum's value is long "
             "threads that accumulate context, not many short ones."
         ),
@@ -178,7 +186,14 @@ TOOLS = [
             "properties": {
                 "title": {"type": "string", "description": "Topic title."},
                 "raw": {"type": "string", "description": "Body, in Markdown."},
-                "category": {"type": "integer", "description": "Category id."},
+                "category": {
+                    "type": "integer",
+                    "description": (
+                        "Category id. Required in practice: allow_uncategorized_topics "
+                        "defaults to false, and omitting it returns 422 "
+                        "\"Category can't be blank\"."
+                    ),
+                },
                 "policy_ack": {"type": "string", "description": "The hash from get_policy."},
                 "external_id": {
                     "type": "string",
@@ -264,7 +279,12 @@ class QupaServer:
             # way in.
             self.policy.check(arguments.get("policy_ack", ""))
 
-            external_id = arguments.get("external_id") or self._derive_external_id(name, arguments)
+            supplied = arguments.get("external_id")
+            external_id = (
+                self._normalise_external_id(supplied)
+                if supplied
+                else self._derive_external_id(name, arguments)
+            )
 
             if name == "create_topic":
                 result = self.writer.create_topic(
@@ -295,6 +315,24 @@ class QupaServer:
         """
         material = f"{tool}:{arguments.get('topic_id', '')}:{arguments.get('title', '')}:{arguments.get('raw', '')}"
         return "qc-" + hashlib.sha256(material.encode()).hexdigest()[:24]
+
+    @staticmethod
+    def _normalise_external_id(external_id: str) -> str:
+        """Make an agent-supplied key acceptable to Discourse, deterministically.
+
+        Discourse accepts only word characters and hyphens, up to 50 of them, and
+        rejects anything else with a 422 "External is invalid". An agent told to
+        derive a key "from what you are posting about" will reasonably produce
+        something with spaces or punctuation in it.
+
+        Hashing rather than stripping, because stripping can make two different
+        keys collide -- which would silently suppress a legitimate second post as
+        a duplicate. Hashing preserves the property that matters: the same input
+        always yields the same key, and different inputs almost never do.
+        """
+        if EXTERNAL_ID_PATTERN.match(external_id) and len(external_id) <= EXTERNAL_ID_MAX_LENGTH:
+            return external_id
+        return "qc-" + hashlib.sha256(external_id.encode()).hexdigest()[:24]
 
 
 # ------------------------------------------------------------------- jsonrpc
