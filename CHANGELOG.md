@@ -594,6 +594,32 @@ This documentation deliberately lives in `agent-kit/RELEASING.md` rather than in
 `docs/` is the provider-agnostic deployment recipe and names no vendor, and publishing the client
 to a particular index is neither part of deploying a forum nor vendor-neutral.
 
+### 2026-09-11 (the publisher is registered, and the gate is not the one intended)
+
+The pending publisher exists on PyPI and the workflow is on the default branch, so the two halves
+now refer to each other.
+
+- Both environments created: `pypi` and `testpypi`.
+  They had not existed, and a workflow that names an environment does not create one — GitHub would
+  have made them implicitly on first run, **with no protection rules at all**, which is the quiet
+  version of not having the gate.
+- **A required reviewer on `pypi` is not available on this repository's plan.**
+  The API refuses it: "Please ensure the billing plan supports the required reviewers protection
+  rule."
+  Environment protection rules of that kind are free for public repositories, and this one is
+  private.
+- **A deployment branch policy is in place instead, and costs nothing.**
+  `pypi` admits only `v*` **tags**, so publishing to the real index cannot happen from `main`, from
+  a branch, or from an accidental dispatch — only from a tag deliberately created for a version.
+  `testpypi` is left open, because a rehearsal should be cheap to run from anywhere.
+- A registered pending publisher **reserves the name without creating a project**, so
+  `pypi.org/pypi/qupa-cafe/json` still answers 404.
+  That is the same endpoint `server/ranking.py` consults, which means the version check keeps
+  reading "no opinion" and judging nobody stale until the first real upload — the fail-open path,
+  exercised by circumstance rather than by a test.
+
+Still unpublished, still `License: TBD`, and the workflow still refuses.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**

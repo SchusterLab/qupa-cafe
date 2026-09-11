@@ -1,7 +1,8 @@
 # Releasing the agent kit
 
-> **Status:** The workflow is written and its guards are tested locally; nothing has been published.
-> The trusted publisher on the index side has not been registered, and the licence is still undecided, which the workflow deliberately refuses to publish around.
+> **Status:** The pending publisher is registered on PyPI, the workflow is on the default branch, and both environments exist with the `pypi` one restricted to `v*` tags.
+> Nothing has been published: the licence is still undecided and the workflow deliberately refuses to publish around it.
+> The guards were tested against a real build; a release has not been attempted.
 
 Maintainer-facing.
 A researcher installing the kit needs none of this.
@@ -28,6 +29,9 @@ On PyPI, under the account's **Publishing** settings, add a new **pending publis
 
 Then repeat it on TestPyPI, which is a separate account and a separate registration, with the environment name `testpypi`.
 
+A registered pending publisher does **not** create a project page, so the name still answers 404 until the first upload.
+That is worth knowing because `server/ranking.py` asks that same endpoint what version is published: until the first release it gets a 404, reads it as "no opinion", and judges nobody stale.
+
 Three things about that form are worth knowing before filling it in.
 
 **It is called a *pending* publisher because the project does not exist yet.**
@@ -41,14 +45,39 @@ Renaming `publish-pypi.yml` breaks publishing until the publisher is updated to 
 The two publish jobs declare `environment: pypi` and `environment: testpypi`, and those environments have to exist in the repository settings.
 Create them there; an environment that is only named in a workflow is not an environment.
 
-## Worth doing on the `pypi` environment
-
-Add a **required reviewer**.
+## What guards the `pypi` environment
 
 An upload cannot be undone: a version can be yanked but never replaced, and the name and version are spent either way.
-A required reviewer turns the last step into something a human agrees to, which is the appropriate weight for an irreversible public action.
+So the last step wants something between an accident and a permanent public artefact.
 
-The workflow cannot enforce this — it can only name the environment, which is why it is written down here instead.
+**A required reviewer is the obvious answer and is not available here.**
+Environment protection rules of that kind need a billing plan that covers them for a **private** repository, and this repository is private.
+The API refuses it outright:
+
+```
+Failed to create the environment protection rule.
+Please ensure the billing plan supports the required reviewers protection rule.
+```
+
+Two ways to get it, if it is wanted: make the repository public, which makes those rules free, or move to a plan that includes them.
+Making it public is on the cards anyway — the deployment recipe is a promised deliverable of the allocation — and it is gated on the same licence decision as publishing.
+
+**What is in place instead, and it costs nothing.**
+The `pypi` environment carries a deployment branch policy admitting **only `v*` tags**:
+
+| Environment | May deploy from | Protection |
+|---|---|---|
+| `pypi` | `v*` tags only | branch policy |
+| `testpypi` | anything | none |
+
+So publishing to the real index cannot happen from `main`, from a feature branch, or from an accidental dispatch.
+It can only happen from a tag that was deliberately created for a version, which is itself a human act.
+
+The asymmetry is intended: rehearsals on TestPyPI should be cheap and runnable from anywhere, and the irreversible one should not.
+
+One consequence to know.
+Running the workflow by hand against `pypi` requires selecting a `v*` tag as the ref.
+Dispatching it from `main` is blocked by the environment rather than by the workflow, so it appears as a skipped deployment rather than as a failed step.
 
 ## The release itself
 
