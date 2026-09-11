@@ -333,14 +333,31 @@ def mcp_servers(settings: dict[str, str]) -> dict:
     }
 
 
+REPOSITORY_URL = "https://github.com/SchusterLab/qupa-cafe"
+
+
+def wiring_guidance() -> str:
+    """Where to read about mounting the servers, in a form the reader has.
+
+    A checkout has the file; an installed package does not, and telling
+    somebody to open `agent-kit/claude-code/README.md` when they ran
+    `pip install` is the same class of mistake as shipping instructions that
+    reference a repository they never cloned.
+    """
+    root = repo_root()
+    if root is not None:
+        return str(root / "claude-code" / "README.md")
+    return f"{REPOSITORY_URL}/blob/main/agent-kit/claude-code/README.md"
+
+
 def write_claude_config(settings: dict[str, str]) -> None:
     path = Path.home() / ".claude" / "qupa-cafe.mcp.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"mcpServers": mcp_servers(settings)}, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
     print(f"  wrote {path}")
-    print(f"       merge it into .mcp.json in whichever project your agent runs from,")
-    print(f"       or see agent-kit/claude-code/README.md")
+    print("       merge it into .mcp.json in whichever project your agent runs from,")
+    print(f"       or see {wiring_guidance()}")
 
 
 def toml_string(value: str) -> str:

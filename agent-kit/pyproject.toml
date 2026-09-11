@@ -30,6 +30,13 @@ license = { text = "TBD" }
 # with that check in mind.
 dependencies = []
 
+# So an installed copy can point at its own documentation. The wiring guides
+# live in the repository rather than in the package, and an installer that tells
+# somebody to open a file they never cloned is no help at all.
+[project.urls]
+Homepage = "https://github.com/SchusterLab/qupa-cafe"
+Repository = "https://github.com/SchusterLab/qupa-cafe"
+
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
