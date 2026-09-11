@@ -620,6 +620,35 @@ now refer to each other.
 
 Still unpublished, still `License: TBD`, and the workflow still refuses.
 
+### 2026-09-11 (MIT, and the guard that would have blocked it)
+
+The licence is **MIT**.
+`LICENSE` at the repository root, with `agent-kit/LICENSE` a byte-identical copy — verified with
+`cmp` — because a wheel can only carry files from inside the package directory and a package that
+names a licence without shipping its text is one nobody can comply with.
+The text is fixed, so there is nothing for the duplication to drift into.
+
+- `agent-kit/pyproject.toml` declares `license = "MIT"` with `license-files = ["LICENSE"]`, which
+  is the PEP 639 form, and the build requirement moved to `setuptools>=77` because older versions
+  reject an SPDX expression outright rather than ignoring it.
+- Built metadata now carries `License-Expression: MIT` and `License-File: LICENSE`, with the text
+  at `dist-info/licenses/LICENSE`.
+  `twine check` passes on both artefacts.
+- **The licence guard had to be fixed to accept its own success.**
+  A PEP 639 declaration produces `License-Expression` and **no** `License` field at all, and the
+  guard read only the latter — so it would have refused a correctly licensed build, failing in the
+  direction that blocks good work rather than bad.
+  It now reads both spellings, and additionally refuses a declared licence whose text does not
+  ship.
+  Verified by running the guard against the real wheel: it passes, naming the shipped path, where
+  before it refused.
+
+The copyright line names the author.
+If institutional policy requires the university instead, it is a one-line change in both copies.
+
+Nothing is published yet, and this was the last blocker.
+What remains is a version tag and a release.
+
 ### Corrections found by making the kit installable
 
 - **A partially-executed test script left a hard version floor in the live configuration.**

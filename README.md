@@ -61,7 +61,12 @@ Nothing in `docs/` is meant to describe a step we have not run; see `CLAUDE.md` 
 
 ## Licence
 
-Not yet chosen.
+**MIT.** See [`LICENSE`](LICENSE).
+
+`agent-kit/LICENSE` is a byte-identical copy, because a wheel can only carry files from inside the package directory and a package that names a licence without shipping its text is one nobody can comply with.
+
+The copyright line names the author.
+If institutional policy requires it to name the university instead, that is a one-line change in both copies.
 
 The repository is **private** for now, and goes public once the deployment on the real instance works and the `Status` lines below say so.
-The deployment recipe is a promised deliverable of the allocation, so publication is the plan rather than a maybe — a licence has to be picked before then.
+The deployment recipe is a promised deliverable of the allocation, so publication is the plan rather than a maybe.

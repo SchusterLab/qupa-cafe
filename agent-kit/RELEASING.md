@@ -1,8 +1,8 @@
 # Releasing the agent kit
 
-> **Status:** The pending publisher is registered on PyPI, the workflow is on the default branch, and both environments exist with the `pypi` one restricted to `v*` tags.
-> Nothing has been published: the licence is still undecided and the workflow deliberately refuses to publish around it.
-> The guards were tested against a real build; a release has not been attempted.
+> **Status:** Everything on both sides is in place and nothing has been published.
+> The pending publisher is registered on PyPI, the workflow is on the default branch, both environments exist with the `pypi` one restricted to `v*` tags, the package is MIT-licensed, and both guards pass against a real build.
+> What remains is a version tag and a release, which has not been attempted.
 
 Maintainer-facing.
 A researcher installing the kit needs none of this.
@@ -36,7 +36,7 @@ Three things about that form are worth knowing before filling it in.
 
 **It is called a *pending* publisher because the project does not exist yet.**
 Registering one **reserves the name** `qupa-cafe` on the index for this repository.
-That is useful — it stops the name being taken while the licence is settled — and it is undone by deleting the pending publisher.
+That is useful — it holds the name before the first release rather than after — and it is undone by deleting the pending publisher.
 
 **The workflow filename is part of the trust relationship.**
 Renaming `publish-pypi.yml` breaks publishing until the publisher is updated to match, and the failure is an authorisation error rather than anything that mentions the rename.
@@ -60,7 +60,7 @@ Please ensure the billing plan supports the required reviewers protection rule.
 ```
 
 Two ways to get it, if it is wanted: make the repository public, which makes those rules free, or move to a plan that includes them.
-Making it public is on the cards anyway — the deployment recipe is a promised deliverable of the allocation — and it is gated on the same licence decision as publishing.
+Making it public is on the cards anyway, since the deployment recipe is a promised deliverable of the allocation, and the licence that was blocking it is now settled.
 
 **What is in place instead, and it costs nothing.**
 The `pypi` environment carries a deployment branch policy admitting **only `v*` tags**:
@@ -97,10 +97,13 @@ That is how you discover that the description renders badly without spending a v
 Both run before anything is uploaded, and both were tested against the real build.
 
 **A missing licence stops the publish.**
-The workflow reads the built wheel's metadata and refuses if `License` is empty or `TBD`.
-Publishing code with no licence grant means nobody may legally use it, which defeats the point of publishing, and it cannot be corrected in place afterwards.
+The workflow reads the built wheel's metadata and refuses if no licence is declared, or if it reads `TBD`.
+It also refuses if a licence is declared but its text does not ship, because a package nobody can read the terms of is one nobody can comply with.
+Neither can be corrected in place after an upload.
 
-This is not hypothetical: the package currently declares `License: TBD`, so the workflow will refuse until a licence is chosen and a `LICENSE` file added.
+It reads **two** field names, and that detail earned itself.
+A PEP 639 declaration produces `License-Expression` and **no** `License` field at all, so a guard reading only the older spelling rejects a correctly licensed build -- failing in the direction that blocks good work rather than bad.
+This package declares `license = "MIT"`, so its metadata carries `License-Expression: MIT` and the guard passes on the first of the two.
 
 **A tag that disagrees with the built version stops the publish.**
 On a release, the workflow compares the tag against the version in the built distribution and refuses if they differ, accepting either `v0.1.0` or `0.1.0` as the tag.

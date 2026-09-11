@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68"]
+# 77 rather than 68, because the licence below is declared as a PEP 639 SPDX
+# expression, which older setuptools rejects outright rather than ignoring.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,7 +17,16 @@ description = "Connects a research agent to a Qupa Cafe Discourse forum"
 dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "TBD" }
+# An SPDX expression, which is the current form, so the built metadata carries
+# `License-Expression: MIT` rather than a free-text `License:` field.
+#
+# `LICENSE` here is a copy of the one at the repository root. A wheel can only
+# carry files from inside the project directory, and a package that states a
+# licence without shipping its text is a package nobody can comply with. The
+# duplication is safe in the one way that matters: the text is fixed, so there
+# is nothing to drift.
+license = "MIT"
+license-files = ["LICENSE"]
 
 # No dependencies, and this is a design constraint rather than an accident.
 #

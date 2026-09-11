@@ -92,22 +92,38 @@ jobs:
       - name: Refuse to publish without a licence
         run: |
           python - <<'PY'
-          import glob, sys, zipfile, re
+          import glob, sys, zipfile
           wheel = glob.glob("agent-kit/dist/*.whl")[0]
           with zipfile.ZipFile(wheel) as z:
               name = next(n for n in z.namelist() if n.endswith("METADATA"))
               meta = z.read(name).decode()
-          declared = next(
-              (l.split(":", 1)[1].strip() for l in meta.splitlines() if l.startswith("License:")),
-              "",
-          )
+              shipped = [n for n in z.namelist() if "/licenses/" in n or n.endswith("LICENSE")]
+
+          # Two spellings, because they come from two eras of packaging. A PEP
+          # 639 declaration produces `License-Expression` and NO `License`
+          # field, so reading only the latter would reject a correctly licensed
+          # build -- a guard failing in the direction that blocks good work.
+          def field(name: str) -> str:
+              prefix = name + ":"
+              return next(
+                  (l.split(":", 1)[1].strip() for l in meta.splitlines() if l.startswith(prefix)),
+                  "",
+              )
+
+          declared = field("License-Expression") or field("License")
           if not declared or declared.upper() in {"TBD", "UNKNOWN", "NONE"}:
               sys.exit(
-                  f"License is {declared!r}. Publishing code with no licence grant means\n"
+                  f"Licence is {declared!r}. Publishing code with no licence grant means\n"
                   "nobody may legally use it, which defeats the point of publishing.\n"
                   "Set it in agent-kit/pyproject.toml and add a LICENSE file first."
               )
-          print(f"licence declared as {declared}")
+          if not shipped:
+              sys.exit(
+                  f"Licence declared as {declared} but no licence text ships in the wheel.\n"
+                  "A package nobody can read the terms of is one nobody can comply with.\n"
+                  "Check `license-files` in agent-kit/pyproject.toml."
+              )
+          print(f"licence declared as {declared}, text shipped at {shipped[0]}")
           PY
 
       - name: Refuse to publish a version that does not match the tag

@@ -27,10 +27,10 @@ pip install qupa-cafe
 qupa-install
 ```
 
-> **It is not published yet.** The licence is undecided, and the package carries `License: TBD` until it is settled, so `pip install qupa-cafe` currently finds nothing.
-> The clone above is the install path today.
+> **It is not published yet**, so `pip install qupa-cafe` currently finds nothing, and the clone above is the install path today.
 >
-> Publishing is wired up and waiting: `agent-kit/RELEASING.md` has the protocol, and the workflow refuses to upload anything whose licence is still `TBD`.
+> Everything else is ready: the package is MIT-licensed, the trusted publisher is registered, and the workflow's guards pass.
+> What remains is a version tag and a release; `agent-kit/RELEASING.md` has the protocol.
 
 Everything the installer needs ships inside the package either way — including the agent's own instruction files, which is why `SKILL.md` and `AGENTS.md` live in `qupa_cafe/resources/` rather than beside the runtime READMEs.
 A wheel can only carry files from inside the package directory, and instructions that exist only in a git checkout are no use to somebody who installed from an index.
