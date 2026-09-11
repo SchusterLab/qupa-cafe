@@ -100,12 +100,14 @@ Port 80 is not optional if you want automatic certificates, because that is wher
 ```yaml
 volumes:
   - volume:
-      host: /mnt/qupa-cafe/shared/standalone
+      host: /mnt/data/shared/standalone
       guest: /shared
   - volume:
-      host: /mnt/qupa-cafe/shared/standalone/log/var-log
+      host: /mnt/data/shared/standalone/log/var-log
       guest: /var/log
 ```
+
+In `config/app.yml.example` that path is `${DISCOURSE_DATA_DIR}`, set in `.env`.
 
 This is the officially sanctioned way to relocate Discourse's state, and doing it now is a two-line edit.
 Doing it after a bootstrap means stopping the container and copying with `rsync -a`, because anything that loses ownership makes Postgres refuse to start with "data directory must not be owned by root".
@@ -145,7 +147,22 @@ It is obsolete.
 **`DISCOURSE_HOSTNAME` must match the DNS record exactly.**
 If your platform also assigns the host an automatic hostname, keep that as a `DISCOURSE_HOSTNAME_ALIASES` entry rather than as the primary.
 
-## 3.4 Bootstrap
+## 3.4 Rehearse it somewhere disposable first
+
+```bash
+sudo ./30-install-discourse.sh --local
+```
+
+`--local` drops the two TLS templates and port 443, and skips the DNS check.
+It is for a scratch forum on a laptop or a throwaway machine.
+
+What that validates is worth being precise about: that `app.yml` parses, that the explicit tuning values are accepted, and that the `volumes:` retargeting works.
+What it cannot validate is certificate issuance, which needs public DNS and a reachable port 80, or email deliverability.
+
+A broken configuration found here costs minutes.
+Found on a live instance, it costs a rebuild.
+
+## 3.5 Bootstrap
 
 ```bash
 sudo ./launcher rebuild app
@@ -154,7 +171,7 @@ sudo ./launcher rebuild app
 This builds the image, runs migrations, requests a certificate, and starts the container.
 Expect it to take a while on the first run.
 
-## 3.5 The gate before you call this done
+## 3.6 The gate before you call this done
 
 Three things must be true.
 Do not move on until they are, because everything after this chapter assumes a working forum.
@@ -184,7 +201,7 @@ That third check is the one people skip.
 > The only check during bootstrap is a literal string comparison against `smtp.example.com` in `web.template.yml`.
 > A relay configuration that is merely wrong rather than unset passes bootstrap cleanly and then fails at the first password reset, months later, with no error that anyone sees.
 
-## 3.6 If email is what fails
+## 3.7 If email is what fails
 
 Do not let a broken relay block the install.
 There is a path to an admin account that sends zero mail:
@@ -205,7 +222,7 @@ Use `rake admin:create` and not `rake admin:invite`, because the latter enqueues
 Then fix the relay separately and re-run the test message.
 A forum with an admin account and broken email is recoverable; a forum with neither is not.
 
-## 3.7 Where the files live
+## 3.8 Where the files live
 
 Under the host path you set in `volumes:`:
 
@@ -219,7 +236,7 @@ shared/standalone/log/rails/production.log
 shared/standalone/log/var-log
 ```
 
-## 3.8 One setting to check before anyone else can reach the site
+## 3.9 One setting to check before anyone else can reach the site
 
 Skipping SMTP in the wizard silently enables third-party login through Discourse ID.
 We did not use the wizard, but check the setting anyway and leave it off:

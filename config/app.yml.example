@@ -61,10 +61,10 @@ params:
 # filesystem, which is why the root needs to be roomy regardless.
 volumes:
   - volume:
-      host: /mnt/qupa-cafe/shared/standalone
+      host: ${DISCOURSE_DATA_DIR}/shared/standalone
       guest: /shared
   - volume:
-      host: /mnt/qupa-cafe/shared/standalone/log/var-log
+      host: ${DISCOURSE_DATA_DIR}/shared/standalone/log/var-log
       guest: /var/log
 
 env:

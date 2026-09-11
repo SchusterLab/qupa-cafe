@@ -144,10 +144,18 @@ run systemctl enable --now fail2ban
 # ---------------------------------------------------------------------- ufw
 
 say "Firewall"
-run ufw allow 22/tcp
-run ufw allow 80/tcp
-run ufw allow 443/tcp
-run ufw --force enable
+
+# SKIP_UFW=1 for environments where a host firewall is not the right tool and
+# enabling it can break networking: a WSL distro, a container, or a host whose
+# ingress is managed elsewhere. The scratch forum runs with it set.
+if [ "${SKIP_UFW:-0}" = "1" ]; then
+  printf '   skipped (SKIP_UFW=1)\n'
+else
+  run ufw allow 22/tcp
+  run ufw allow 80/tcp
+  run ufw allow 443/tcp
+  run ufw --force enable
+fi
 
 cat <<'WARNING'
 

@@ -20,7 +20,14 @@ TEMPLATE="$REPO_ROOT/config/app.yml.example"
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
 
 RENDER_ONLY=0
-[ "${1:-}" = "--render-only" ] && RENDER_ONLY=1
+LOCAL=0
+for argument in "$@"; do
+  case "$argument" in
+    --render-only) RENDER_ONLY=1 ;;
+    --local)       LOCAL=1 ;;
+    *) printf 'Unknown argument: %s\n' "$argument" >&2; exit 2 ;;
+  esac
+done
 
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -37,6 +44,7 @@ set -a; . "$ENV_FILE"; set +a
 REQUIRED=(
   DISCOURSE_HOSTNAME
   DISCOURSE_DEVELOPER_EMAILS
+  DISCOURSE_DATA_DIR
   DISCOURSE_SMTP_ADDRESS
   DISCOURSE_SMTP_USER_NAME
   DISCOURSE_SMTP_PASSWORD
@@ -51,19 +59,32 @@ export DISCOURSE_HOSTNAME_ALIASES="${DISCOURSE_HOSTNAME_ALIASES:-}"
 
 # ------------------------------------------------------- the DNS precondition
 
-say "Checking DNS for $DISCOURSE_HOSTNAME"
+if [ "$LOCAL" -eq 1 ]; then
+  say "Local scratch mode"
+  cat <<'LOCALNOTE'
+   No TLS, and no DNS check. Two things this therefore does NOT validate:
+   certificate issuance, which needs public DNS and port 80, and email
+   deliverability. Both are verified only on the real instance.
 
-# The Let's Encrypt HTTP-01 challenge happens during the bootstrap below. If the
-# A record is not resolving yet, the bootstrap fails partway and leaves a
-# half-configured container. Better to stop here.
-RESOLVED="$(getent hosts "$DISCOURSE_HOSTNAME" | awk '{print $1}' | head -1 || true)"
-if [ -z "$RESOLVED" ]; then
-  die "$DISCOURSE_HOSTNAME does not resolve. Add the A record and wait for it before installing."
-fi
-printf '   resolves to %s\n' "$RESOLVED"
+   What it does validate is that app.yml parses, that the tuning values are
+   accepted, and that the volumes: retargeting works -- before any of it
+   touches a live host.
+LOCALNOTE
+else
+  say "Checking DNS for $DISCOURSE_HOSTNAME"
 
-if [ -n "${EXPECTED_IP:-}" ] && [ "$RESOLVED" != "$EXPECTED_IP" ]; then
-  die "$DISCOURSE_HOSTNAME resolves to $RESOLVED, expected $EXPECTED_IP."
+  # The Let's Encrypt HTTP-01 challenge happens during the bootstrap below. If
+  # the A record is not resolving yet, the bootstrap fails partway and leaves a
+  # half-configured container. Better to stop here.
+  RESOLVED="$(getent hosts "$DISCOURSE_HOSTNAME" | awk '{print $1}' | head -1 || true)"
+  if [ -z "$RESOLVED" ]; then
+    die "$DISCOURSE_HOSTNAME does not resolve. Add the A record and wait for it before installing."
+  fi
+  printf '   resolves to %s\n' "$RESOLVED"
+
+  if [ -n "${EXPECTED_IP:-}" ] && [ "$RESOLVED" != "$EXPECTED_IP" ]; then
+    die "$DISCOURSE_HOSTNAME resolves to $RESOLVED, expected $EXPECTED_IP."
+  fi
 fi
 
 # ---------------------------------------------------- the password YAML trap
@@ -107,10 +128,19 @@ envsubst '
   ${DISCOURSE_HOSTNAME}
   ${DISCOURSE_HOSTNAME_ALIASES}
   ${DISCOURSE_DEVELOPER_EMAILS}
+  ${DISCOURSE_DATA_DIR}
   ${DISCOURSE_SMTP_ADDRESS}
   ${DISCOURSE_SMTP_USER_NAME}
   ${DISCOURSE_SMTP_PASSWORD}
 ' < "$TEMPLATE" > "$TARGET"
+
+if [ "$LOCAL" -eq 1 ]; then
+  # Drop the two TLS templates and port 443. Let's Encrypt needs public DNS and
+  # a reachable port 80, neither of which a laptop has; leaving the templates in
+  # makes the bootstrap fail at the certificate request.
+  sed -i '/web\.ssl\.template\.yml/d; /web\.letsencrypt\.ssl\.template\.yml/d; /"443:443"/d' "$TARGET"
+  printf '   local mode: removed the TLS templates and port 443\n'
+fi
 
 chmod 600 "$TARGET"
 
@@ -150,6 +180,31 @@ cd "$DISCOURSE_DIR"
 ./launcher rebuild app
 
 # -------------------------------------------------------------------- report
+
+if [ "$LOCAL" -eq 1 ]; then
+  cat <<REPORT
+
+============================================================
+Scratch forum bootstrapped.
+
+  curl -sSI http://localhost | head -1
+
+Get an admin account without touching SMTP:
+
+    cd $DISCOURSE_DIR && sudo ./launcher enter app
+    rake admin:create
+    exit
+
+What this run validated: app.yml parses, the explicit tuning values are
+accepted, and the volumes: retargeting to $DISCOURSE_DATA_DIR works.
+
+What it did NOT validate, and cannot: certificate issuance, email
+deliverability, and anything platform-specific. Those are verified only on the
+real instance.
+============================================================
+REPORT
+  exit 0
+fi
 
 cat <<REPORT
 
