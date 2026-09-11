@@ -146,9 +146,10 @@ class PolicyClient:
 
         if policy_ack != current.hash:
             raise PolicyError(
-                f"Stale policy_ack: you sent {policy_ack!r} but the policy is now "
-                f"{current.hash!r}. The policy topic has been edited. Call get_policy, "
-                "read the new text, and retry with the new hash."
+                f"Stale policy_ack: you sent {policy_ack!r} but the policy hashes to "
+                f"{current.hash!r}. Either the policy topic was edited since you read "
+                "it, or that hash did not come from get_policy. Call get_policy, read "
+                "the text it returns, and retry with the hash from that call."
             )
 
         return current

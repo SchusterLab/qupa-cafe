@@ -14,6 +14,9 @@ from qupa_cafe.daemon import (
     Ranking,
     Settings,
     build_prompt,
+    load_env_file,
+    mcp_config_disagreement,
+    runtime_command,
 )
 
 
@@ -272,3 +275,128 @@ def test_nothing_pending_means_no_wakes(tmp_path):
     handled = Handled(str(tmp_path / "state.sqlite3"))
 
     assert daemon.one_pass(settings, FakeForum({}), FakeRanking([]), handled, dry_run=False) == 0
+
+
+# ------------------------------------------------------ waking the runtime
+
+
+def _mcp_config(tmp_path, username="u", forum="http://x"):
+    import json
+
+    path = tmp_path / "qupa-cafe.mcp.json"
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "qupa-cafe": {
+                        "command": "python",
+                        "env": {"QUPA_API_USERNAME": username, "QUPA_FORUM_URL": forum},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_claude_is_given_the_mcp_config_and_the_tools(tmp_path):
+    """A woken agent cannot stop to ask for permission.
+
+    Without both of these it reads the thread, finds it has no forum tools, and
+    says so into a log nobody reads.
+    """
+    config = _mcp_config(tmp_path)
+    settings = Settings(runtime="claude", mcp_config=str(config))
+
+    command = runtime_command(settings, "a prompt")
+
+    assert command[:3] == ["claude", "-p", "a prompt"]
+    assert "--mcp-config" in command
+    assert command[command.index("--mcp-config") + 1] == str(config)
+    assert "mcp__qupa-cafe__reply" in command
+    assert "mcp__discourse" in command
+
+
+def test_no_write_tool_outside_the_policy_checked_server_is_pre_authorised(tmp_path):
+    """`discourse` is allowed wholesale only because it is mounted read-only."""
+    command = runtime_command(Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path))), "p")
+
+    allowed = command[command.index("--allowedTools") + 1 :]
+    assert all(tool.startswith("mcp__qupa-cafe__") or tool == "mcp__discourse" for tool in allowed)
+
+
+def test_a_missing_mcp_config_is_not_passed(tmp_path):
+    command = runtime_command(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")), "p")
+    assert "--mcp-config" not in command
+
+
+def test_codex_takes_its_servers_from_its_own_configuration():
+    command = runtime_command(Settings(runtime="codex"), "a prompt")
+    assert command == ["codex", "exec", "--skip-git-repo-check", "a prompt"]
+
+
+# ------------------------------------------- daemon and MCP server identity
+
+
+def test_a_username_mismatch_stops_the_daemon(tmp_path):
+    """The daemon would poll one account's notifications and post as another.
+
+    Both credentials are valid, so nothing errors. It surfaces months later in
+    the analysis, as a researcher who answered questions nobody asked them.
+    """
+    settings = Settings(
+        api_username="cc-agent", forum_url="http://x", mcp_config=str(_mcp_config(tmp_path, "cx-agent"))
+    )
+
+    complaint = mcp_config_disagreement(settings)
+
+    assert "QUPA_API_USERNAME" in complaint
+    assert "cc-agent" in complaint and "cx-agent" in complaint
+
+
+def test_agreement_is_silent(tmp_path):
+    settings = Settings(
+        api_username="u", forum_url="http://x", mcp_config=str(_mcp_config(tmp_path, "u"))
+    )
+    assert mcp_config_disagreement(settings) == ""
+
+
+def test_a_trailing_slash_is_not_a_disagreement(tmp_path):
+    settings = Settings(
+        api_username="u", forum_url="http://x/", mcp_config=str(_mcp_config(tmp_path, "u", "http://x"))
+    )
+    assert mcp_config_disagreement(settings) == ""
+
+
+def test_no_mcp_config_is_not_a_disagreement(tmp_path):
+    settings = Settings(api_username="u", mcp_config=str(tmp_path / "absent.json"))
+    assert mcp_config_disagreement(settings) == ""
+
+
+# ------------------------------------------------------------ the env file
+
+
+def test_the_env_file_is_read(tmp_path, monkeypatch):
+    """Only systemd reads it for us. A scheduled task on Windows does not."""
+    path = tmp_path / "env"
+    path.write_text("# a comment\n\nQUPA_FORUM_URL=http://from-file\n", encoding="utf-8")
+    monkeypatch.delenv("QUPA_FORUM_URL", raising=False)
+
+    load_env_file(path)
+
+    assert Settings().forum_url == "http://from-file"
+
+
+def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
+    path = tmp_path / "env"
+    path.write_text("QUPA_FORUM_URL=http://from-file\n", encoding="utf-8")
+    monkeypatch.setenv("QUPA_FORUM_URL", "http://from-env")
+
+    load_env_file(path)
+
+    assert Settings().forum_url == "http://from-env"
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path):
+    load_env_file(tmp_path / "absent")

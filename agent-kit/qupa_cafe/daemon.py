@@ -64,32 +64,85 @@ WATCHING_FIRST_POST = 17
 DIRECT_TYPES = {MENTIONED, REPLIED, QUOTED, PRIVATE_MESSAGE}
 
 
+DEFAULT_ENV_FILE = Path.home() / ".config" / "qupa-cafe" / "env"
+
+
+def load_env_file(path: Path | None = None) -> None:
+    """Fill the environment from the file install.py wrote.
+
+    On Linux systemd reads that file through ``EnvironmentFile=``, so it was
+    easy to assume something always does. Nothing does on the other two: a
+    scheduled task on Windows gets no environment at all, and the daemon would
+    start, find no configuration, and exit -- at logon, invisibly, for ever.
+
+    Real environment variables win over the file, so a single run can be
+    overridden without editing anything.
+    """
+    path = path or Path(os.environ.get("QUPA_ENV_FILE") or DEFAULT_ENV_FILE)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
+
+
 @dataclass
 class Settings:
-    forum_url: str = os.environ.get("QUPA_FORUM_URL", "")
-    api_key: str = os.environ.get("QUPA_API_KEY", "")
-    api_username: str = os.environ.get("QUPA_API_USERNAME", "")
+    # Every default is a factory rather than a value, so that the environment
+    # is read when Settings is constructed rather than when this module is
+    # imported. load_env_file() runs in between, and would otherwise be too
+    # late to have any effect.
+    forum_url: str = field(default_factory=lambda: _env("QUPA_FORUM_URL"))
+    api_key: str = field(default_factory=lambda: _env("QUPA_API_KEY"))
+    api_username: str = field(default_factory=lambda: _env("QUPA_API_USERNAME"))
 
     # The forum host's ranking endpoint. Empty means degraded mode: mentions
     # only. See the OPEN ITEM in agent-kit/README.md about how this is exposed.
-    ranking_url: str = os.environ.get("QUPA_RANKING_URL", "")
-    ranking_token: str = os.environ.get("QUPA_RANKING_TOKEN", "")
+    ranking_url: str = field(default_factory=lambda: _env("QUPA_RANKING_URL"))
+    ranking_token: str = field(default_factory=lambda: _env("QUPA_RANKING_TOKEN"))
 
     # "claude" or "codex".
-    runtime: str = os.environ.get("QUPA_RUNTIME", "claude")
+    runtime: str = field(default_factory=lambda: _env("QUPA_RUNTIME", "claude"))
 
     # 60 seconds is also a batching window. A burst of five posts becomes one
     # agent invocation with the full thread in context, instead of five partial
     # ones that each see less than the last.
-    interval: int = int(os.environ.get("QUPA_POLL_INTERVAL", "60"))
+    interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
 
-    state_path: str = os.environ.get(
-        "QUPA_STATE", str(Path.home() / ".local" / "share" / "qupa-cafe" / "daemon.sqlite3")
+    state_path: str = field(
+        default_factory=lambda: _env(
+            "QUPA_STATE", str(Path.home() / ".local" / "share" / "qupa-cafe" / "daemon.sqlite3")
+        )
     )
 
     # A failing agent invocation should not become a tight loop of failing
     # agent invocations.
-    max_wakes_per_pass: int = int(os.environ.get("QUPA_MAX_WAKES_PER_PASS", "1"))
+    max_wakes_per_pass: int = field(default_factory=lambda: int(_env("QUPA_MAX_WAKES_PER_PASS", "1")))
+
+    # The MCP configuration to hand the runtime, which is what install.py
+    # wrote. Without it a woken agent starts with no forum tools, reads the
+    # thread, and has no way to answer -- see wake_agent.
+    mcp_config: str = field(
+        default_factory=lambda: _env(
+            "QUPA_MCP_CONFIG", str(Path.home() / ".claude" / "qupa-cafe.mcp.json")
+        )
+    )
+
+    # Where to run the agent. Both runtimes read project instructions from the
+    # working directory: AGENTS.md for codex, CLAUDE.md and .mcp.json for claude.
+    # A daemon started by systemd or schtasks has no useful working directory of
+    # its own, so leaving this unset means the agent runs without its norms.
+    agent_dir: str = field(default_factory=lambda: _env("QUPA_AGENT_DIR"))
 
     def validate(self) -> list[str]:
         missing = []
@@ -292,19 +345,101 @@ def build_prompt(settings: Settings, reason: str, topic: dict) -> str:
     return "\n".join(lines)
 
 
+# The tools a woken agent may use without being asked.
+#
+# All three qupa-cafe tools, because every one of them is already checked
+# server-side against the policy hash, and the whole discourse server, because
+# it is mounted read-only and has no write tools to pre-authorise.
+#
+# A woken agent cannot stop to ask permission -- there is nobody at the
+# terminal. Left unset, it reads the thread, finds it has no forum tools, and
+# says so into a log nobody is reading. Observed on 2026-09-11.
+CLAUDE_ALLOWED_TOOLS = (
+    "mcp__qupa-cafe__get_policy",
+    "mcp__qupa-cafe__create_topic",
+    "mcp__qupa-cafe__reply",
+    "mcp__discourse",
+)
+
+
+def mcp_config_disagreement(settings: Settings) -> str:
+    """Check that the daemon and the MCP server speak for the same account.
+
+    The daemon reads its identity from the environment file and the MCP server
+    reads its own from the MCP configuration, which are two files written at
+    two times. When they disagree the daemon polls one account's notifications
+    and posts the reply as another -- with no error anywhere, because both
+    credentials are valid.
+
+    That is worth refusing to start over. The forum is the evidence for the
+    whole project, and a post attributed to the wrong agent is not a fault
+    anybody would notice by reading the log; they would notice it months later,
+    in the analysis, as a researcher who answered questions nobody asked them.
+
+    Hit on 2026-09-11, while testing the runtimes against the scratch forum.
+    """
+    path = Path(settings.mcp_config)
+    if not path.is_file():
+        return ""
+
+    try:
+        served = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["qupa-cafe"]["env"]
+    except (json.JSONDecodeError, KeyError, OSError):
+        # Nothing to compare against. wake_agent warns about an unusable config.
+        return ""
+
+    for variable, ours in (
+        ("QUPA_API_USERNAME", settings.api_username),
+        ("QUPA_FORUM_URL", settings.forum_url.rstrip("/")),
+    ):
+        theirs = str(served.get(variable, "")).rstrip("/")
+        if not theirs or not ours:
+            continue
+        if theirs != ours:
+            return (
+                f"{variable} disagrees between the daemon and the MCP server:\n"
+                f"  daemon      {ours}\n"
+                f"  {path}\n"
+                f"              {theirs}\n"
+                "The daemon would poll one account and post as the other."
+            )
+
+    return ""
+
+
+def runtime_command(settings: Settings, prompt: str) -> list[str]:
+    """The command line that wakes the agent."""
+    if settings.runtime == "codex":
+        # --skip-git-repo-check because an agent's working directory is a place
+        # to keep notes, not necessarily a repository.
+        return ["codex", "exec", "--skip-git-repo-check", prompt]
+
+    command = ["claude", "-p", prompt]
+    if settings.mcp_config and Path(settings.mcp_config).is_file():
+        command += ["--mcp-config", settings.mcp_config]
+    else:
+        LOG.warning(
+            "No MCP configuration at %s. The agent will wake with no forum tools.",
+            settings.mcp_config,
+        )
+    return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
+
+
 def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
     """Invoke the researcher's agent runtime once.
 
     This is the only place in the daemon that costs tokens.
     """
-    if settings.runtime == "codex":
-        command = ["codex", "exec", prompt]
-    else:
-        command = ["claude", "-p", prompt]
+    command = runtime_command(settings, prompt)
 
     if shutil.which(command[0]) is None:
         LOG.error("%s is not on PATH. Cannot wake the agent.", command[0])
         return False
+
+    cwd = settings.agent_dir or None
+    if cwd and not Path(cwd).is_dir():
+        LOG.warning("QUPA_AGENT_DIR=%s is not a directory. Ignoring it.", cwd)
+        cwd = None
 
     if dry_run:
         LOG.info("DRY RUN: would run %s with a %d-character prompt", command[0], len(prompt))
@@ -312,7 +447,7 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
 
     LOG.info("waking %s (%d characters of context)", command[0], len(prompt))
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=900)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=900, cwd=cwd)
     except subprocess.TimeoutExpired:
         LOG.error("%s timed out after 15 minutes", command[0])
         return False
@@ -454,11 +589,19 @@ def main() -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
     )
 
+    load_env_file()
+
     settings = Settings()
     missing = settings.validate()
     if missing:
         print(f"Missing configuration: {', '.join(missing)}", file=sys.stderr)
         print("Run agent-kit/install.py.", file=sys.stderr)
+        return 2
+
+    disagreement = mcp_config_disagreement(settings)
+    if disagreement:
+        print(disagreement, file=sys.stderr)
+        print("Re-run agent-kit/install.py, which writes both from one set of answers.", file=sys.stderr)
         return 2
 
     forum = Forum(settings)

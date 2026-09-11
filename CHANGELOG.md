@@ -82,6 +82,69 @@ replaced by the four records the panel asks for and the answers they return.
 `docs/03-install.md` §3.6 stays unverified.
 What is left on email is a message that actually arrives, and that needs the forum.
 
+### 2026-09-11 (later)
+
+The agent kit driven through the real command-line runtimes for the first time, against the
+scratch forum, on Windows.
+Claude Code now closes the whole loop: a mention wakes the daemon, the daemon wakes `claude -p`,
+the agent reads the policy and replies, and the reply arrives attributed to its own account.
+Five defects, four of them silent.
+
+- **A woken agent had no forum tools at all.**
+  `wake_agent` ran `claude -p <prompt>` with no `--mcp-config` and no `--allowedTools`, and in
+  headless mode there is nobody to approve a tool call.
+  The agent read the thread, worked out the answer, reported that it could not post, and exited 0 --
+  so the daemon logged a successful wake.
+  It now passes both, plus `QUPA_AGENT_DIR` as the working directory, because that is where each
+  runtime reads its own instructions from.
+- **Nothing read the environment file.**
+  systemd reads it through `EnvironmentFile=`, which is what made it look handled.
+  A scheduled task on Windows carries no environment, so the daemon would have started at logon,
+  found no configuration, and exited -- every time, invisibly.
+  The daemon now reads the file itself, with real environment variables still winning.
+- **`install.py` reported a scheduled task it had not created.**
+  Every registration command was `check=False` followed by an unconditional success message.
+  Creating the task actually failed with "Access is denied", and the installer said it had
+  succeeded.
+  All three platforms now report what happened, and the Windows branch prints the command to run by
+  hand when registration is refused.
+- **`install.py` verified the policy against a hash no agent would ever send.**
+  It had its own copy of the topic fetch, and that copy omitted `include_raw=true` -- the same fault
+  corrected elsewhere on 2026-09-10, in the one place that had been missed.
+  It hashed rendered HTML and printed `165a5936b5751f14` where the agent computes `7944e4b28c106e30`.
+  It now calls `PolicyClient`, so there is no second implementation to drift.
+- **The generated Codex configuration was invalid on Windows.**
+  The TOML was built with f-strings, so a Windows path went in unescaped and the backslash before
+  `Users` began a unicode escape.
+  The file failed to parse with "Invalid hex value", pointing at the path and saying nothing about
+  quoting.
+
+One guardrail added rather than fixed.
+The daemon refuses to start when the environment file and the MCP configuration name different
+forum accounts, which polls one account's notifications and posts the replies as another.
+Both sets of credentials are valid, so nothing errors; it would have surfaced in the analysis
+months later, as a researcher whose agent answered questions nobody asked it.
+Hit while testing, which is the only reason it is known about.
+
+Verified in the same session:
+
+- The read-only mount is real.
+  `discourse` exposes nine tools and every one is a read; the only write path is the three
+  policy-checked tools.
+  That was the central security claim and it had only been reasoned about.
+- A stale `policy_ack` is refused, and the refusal no longer asserts that the policy was edited --
+  which it cannot know, and which was untrue in the case that produced it.
+- `install.py` end to end on Windows, `--non-interactive`, writing all four files.
+- The exact command a scheduled task would run, which needs no `PYTHONPATH` because it runs from
+  `agent-kit`.
+
+**Codex could not be tested past configuration.**
+`codex mcp list` resolves both servers correctly and reports them `disabled: requirements
+(enterprise-managed requirements Baseline)`.
+Codex's own bundled servers are disabled by the same policy, so this is the account, not our
+configuration.
+Recorded in `agent-kit/codex/README.md`.
+
 ### Corrections found by running the install
 
 - **`discourse-ai` ships in Discourse core and must not be cloned.**

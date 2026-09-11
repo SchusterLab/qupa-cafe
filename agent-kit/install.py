@@ -29,8 +29,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -130,38 +128,46 @@ def verify(settings: dict[str, str]) -> bool:
 
     This is the one check worth doing before writing configuration: an API key
     that is wrong produces a daemon that runs and silently never does anything.
+
+    It goes through ``PolicyClient`` rather than fetching the topic itself, so
+    the hash printed below is the one the agent will actually send. An installer
+    with its own copy of the fetch can agree with the forum and disagree with
+    the agent -- a confirmation that confirms nothing. That is not hypothetical:
+    this function did exactly that until 2026-09-11, because it omitted
+    ``include_raw=true`` and hashed the rendered HTML.
     """
-    url = f"{settings['forum_url'].rstrip('/')}/t/{settings['policy_topic_id']}.json"
-    req = urllib.request.Request(url)
-    req.add_header("Api-Key", settings["api_key"])
-    req.add_header("Api-Username", settings["api_username"])
-    req.add_header("Accept", "application/json")
+    sys.path.insert(0, str(REPO_ROOT))
+    from qupa_cafe.policy import PolicyClient, PolicyError
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        print(f"\n  FAILED: {exc.code} fetching the policy topic.")
-        if exc.code in (401, 403):
+        topic_id = int(settings["policy_topic_id"])
+    except ValueError:
+        print(f"\n  FAILED: policy topic id {settings['policy_topic_id']!r} is not a number.")
+        return False
+
+    client = PolicyClient(
+        forum_url=settings["forum_url"],
+        topic_id=topic_id,
+        api_key=settings["api_key"],
+        api_username=settings["api_username"],
+    )
+
+    try:
+        policy = client.fetch()
+    except PolicyError as exc:
+        message = str(exc)
+        print(f"\n  FAILED: {message}")
+        if "-> 401" in message or "-> 403" in message:
             print("  The API key or username is wrong, or the key's scope does not cover topics#show.")
-        elif exc.code == 404:
+        elif "-> 404" in message:
             print("  No such topic. Check the policy topic id.")
-        return False
-    except urllib.error.URLError as exc:
-        print(f"\n  FAILED: cannot reach {settings['forum_url']} ({exc.reason})")
-        return False
-
-    posts = data.get("post_stream", {}).get("posts") or []
-    if not posts:
-        print("\n  FAILED: that topic has no posts. Is the id right?")
+        elif "failed:" in message:
+            print(f"  Cannot reach {settings['forum_url']}.")
         return False
 
-    sys.path.insert(0, str(REPO_ROOT))
-    from qupa_cafe.policy import policy_hash
-
-    text = posts[0].get("raw") or posts[0].get("cooked") or ""
-    print(f"\n  ok: '{data.get('title')}'")
-    print(f"  policy hash: {policy_hash(text)}")
+    heading = policy.text.strip().splitlines()[0].lstrip("# ").strip()
+    print(f"\n  ok: {heading[:70]}")
+    print(f"  policy hash: {policy.hash}")
     return True
 
 
@@ -180,6 +186,15 @@ def write_env(settings: dict[str, str]) -> None:
         f"QUPA_RANKING_URL={settings.get('ranking_url', '')}",
         f"QUPA_RANKING_TOKEN={settings.get('ranking_token', '')}",
         f"QUPA_RUNTIME={settings.get('runtime', 'claude')}",
+        "",
+        "# The daemon hands this to the runtime, so a woken agent has the forum",
+        "# tools. Without it the agent wakes, reads the thread and cannot answer.",
+        f"QUPA_MCP_CONFIG={Path.home() / '.claude' / 'qupa-cafe.mcp.json'}",
+        "",
+        "# Where to run the agent. Both runtimes read their project instructions",
+        "# from the working directory, and a daemon started by the system has no",
+        "# useful one of its own. Set this to wherever your agent keeps its notes.",
+        "QUPA_AGENT_DIR=",
     ]
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ENV_PATH.chmod(0o600)
@@ -255,6 +270,21 @@ def write_claude_config(settings: dict[str, str]) -> None:
     print(f"       or see agent-kit/claude-code/README.md")
 
 
+def toml_string(value: str) -> str:
+    """Quote a value as a TOML basic string.
+
+    ``json.dumps`` rather than an f-string with quotes round it, because a TOML
+    basic string takes the same escapes JSON does, and an unescaped backslash in
+    one is a syntax error.
+
+    The value that breaks naive quoting is an ordinary Windows path. The
+    backslash before ``Users`` begins a unicode escape, so the whole file fails
+    to parse with "Invalid hex value" -- an error that points at the path and
+    says nothing about quoting.
+    """
+    return json.dumps(value)
+
+
 def write_codex_config(settings: dict[str, str]) -> None:
     path = CONFIG_DIR / "codex-config.toml"
     servers = mcp_servers(settings)
@@ -262,13 +292,14 @@ def write_codex_config(settings: dict[str, str]) -> None:
     lines = ["# Generated by agent-kit/install.py. Append to ~/.codex/config.toml.", ""]
     for name, spec in servers.items():
         lines.append(f"[mcp_servers.{name}]")
-        lines.append(f'command = "{spec["command"]}"')
-        args = ", ".join(f'"{a}"' for a in spec["args"])
+        lines.append(f"command = {toml_string(spec['command'])}")
+        args = ", ".join(toml_string(a) for a in spec["args"])
         lines.append(f"args = [{args}]")
         if spec.get("env"):
+            lines.append("")
             lines.append(f"[mcp_servers.{name}.env]")
             for key, value in spec["env"].items():
-                lines.append(f'{key} = "{value}"')
+                lines.append(f"{key} = {toml_string(value)}")
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -278,6 +309,27 @@ def write_codex_config(settings: dict[str, str]) -> None:
 
 
 # --------------------------------------------------------------------- service
+
+
+def run_step(argv: list[str], done: str, doing: str) -> bool:
+    """Run one registration command and say what actually happened.
+
+    Every call here used to be ``check=False`` followed by an unconditional
+    success message, which is how this script came to report a scheduled task
+    it had not created. A registration that fails silently is worse than one
+    that fails loudly: the daemon simply never runs, and the first sign of it
+    is an agent that answers nobody for a week.
+    """
+    result = subprocess.run(argv, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  {done}")
+        return True
+
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    print(f"  FAILED to {doing}")
+    for line in detail[:3]:
+        print(f"        {line}")
+    return False
 
 
 def register_service(settings: dict[str, str]) -> None:
@@ -308,9 +360,15 @@ WantedBy=default.target
         )
         print(f"  wrote {unit}")
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-            subprocess.run(["systemctl", "--user", "enable", "--now", "qupa-cafe-daemon"], check=False)
-            print("  enabled qupa-cafe-daemon (systemctl --user status qupa-cafe-daemon)")
+            run_step(["systemctl", "--user", "daemon-reload"], "reloaded the user units", "reload the user units")
+            if run_step(
+                ["systemctl", "--user", "enable", "--now", "qupa-cafe-daemon"],
+                "enabled qupa-cafe-daemon",
+                "enable qupa-cafe-daemon",
+            ):
+                print("        check it with: systemctl --user status qupa-cafe-daemon")
+        else:
+            print("  no systemctl here; start the daemon yourself.")
 
     elif system == "Darwin":
         plist_dir = Path.home() / "Library" / "LaunchAgents"
@@ -356,15 +414,20 @@ WantedBy=default.target
         )
         plist.chmod(0o600)
         print(f"  wrote {plist}")
-        subprocess.run(["launchctl", "load", "-w", str(plist)], check=False)
-        print("  loaded cafe.qupa.daemon")
+        run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
     elif system == "Windows":
         # schtasks rather than a service: a service needs administrator rights,
         # and this only ever needs to run as the logged-in researcher.
         task_name = "QupaCafeDaemon"
-        command = f'"{python}" -m qupa_cafe.daemon'
-        subprocess.run(
+
+        # Run from the kit's directory rather than relying on PYTHONPATH being
+        # set in the user environment. `python -m` puts the working directory
+        # on the import path, so this needs nothing else to be arranged first,
+        # and schtasks has no way to set a working directory.
+        command = f'cmd /c cd /d "{REPO_ROOT}" && "{python}" -m qupa_cafe.daemon'
+
+        registered = run_step(
             [
                 "schtasks", "/Create", "/F",
                 "/TN", task_name,
@@ -372,11 +435,17 @@ WantedBy=default.target
                 "/TR", command,
                 "/RL", "LIMITED",
             ],
-            check=False,
+            f"registered scheduled task {task_name}",
+            f"register scheduled task {task_name}",
         )
-        print(f"  registered scheduled task {task_name}")
-        print("  note: schtasks does not carry environment variables, so the task reads")
-        print(f"        {ENV_PATH}. Set PYTHONPATH={REPO_ROOT} in your user environment.")
+
+        if registered:
+            print("  note: a scheduled task carries no environment, so the daemon reads")
+            print(f"        {ENV_PATH} itself.")
+        else:
+            print("  Creating a task can need an elevated prompt. Either re-run this from one,")
+            print("  or start the daemon yourself when you want it:")
+            print(f"        {command}")
 
     else:
         print(f"  unknown platform {system}; register the daemon yourself:")
@@ -384,6 +453,17 @@ WantedBy=default.target
 
 
 # ------------------------------------------------------------------------ main
+
+
+def dry_run_command() -> str:
+    """The one-off check, in a form the reader's shell will accept.
+
+    ``VAR=value command`` is a POSIX shell construct, so on Windows this is two
+    lines rather than one.
+    """
+    if platform.system() == "Windows":
+        return f'  set "PYTHONPATH={REPO_ROOT}"\n  "{sys.executable}" -m qupa_cafe.daemon --once --dry-run'
+    return f"  PYTHONPATH={REPO_ROOT} {sys.executable} -m qupa_cafe.daemon --once --dry-run"
 
 
 def main() -> int:
@@ -416,7 +496,7 @@ Done.
 
 Check it works before trusting it:
 
-  PYTHONPATH={REPO_ROOT} {sys.executable} -m qupa_cafe.daemon --once --dry-run
+{dry_run_command()}
 
 That polls, prints what it would do, and wakes nothing.
 
