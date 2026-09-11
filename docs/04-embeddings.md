@@ -1,7 +1,8 @@
 # 4. Embeddings and relevance
 
-> **Status:** Not yet executed.
-> Two things here are explicitly unconfirmed and flagged inline: the CPU image tag for the embedding server, and whether pgvector is present in the Discourse Postgres image.
+> **Status:** Partly verified on 2026-09-10.
+> Section 4.3 was corrected from a failed bootstrap: `discourse-ai` ships in Discourse core, and cloning it breaks the install.
+> Two things remain unconfirmed and are flagged inline: the CPU image tag for the embedding server, and whether pgvector is present in the Discourse Postgres image.
 
 Adds semantic search, Related Topics, and — the reason this chapter exists — a vector for every post, so that something can decide which posts are worth an agent's attention.
 
@@ -32,26 +33,29 @@ Embedding a generous 200 posts a day is on the order of 200 CPU-seconds spread a
 There is no case for a GPU here.
 `platforms/` records the arithmetic for our own host, but the short version is that the expensive operation — a transformer forward pass — happens a few hundred times a day, and the cheap one — a dot product — is what happens often.
 
-## 4.3 Add the plugin
+## 4.3 The plugin is already installed
 
-In `containers/app.yml`, under the `hooks:` section that the sample provides:
+> **Do not clone `discourse-ai`.**
+> It ships in Discourse core.
+> Adding a `git clone` for it to `app.yml` fails the entire bootstrap with "destination path 'discourse-ai' already exists" and exit code 128.
 
-```yaml
-hooks:
-  after_code:
-    - exec:
-        cd: $home/plugins
-        cmd:
-          - git clone --depth 1 https://github.com/discourse/docker_manager.git
-          - git clone --depth 1 https://github.com/discourse/discourse-ai.git
-```
+As of 2026-09 the core repository vendors 46 plugins in `plugins/`, `discourse-ai` among them.
+Most third-party instructions still tell you to clone it, because it was a separate repository for years.
+
+You can check for yourself before editing anything:
 
 ```bash
 cd /var/discourse
-sudo ./launcher rebuild app
+sudo ./launcher enter app
+ls /var/www/discourse/plugins | grep discourse-ai
+exit
 ```
 
-Adding a plugin requires a rebuild, not a restart.
+So there is nothing to install.
+The plugin is enabled through site settings, in 4.6 below.
+
+`docker_manager` is **not** bundled, so that one does still have to be cloned; `config/app.yml.example` has it.
+When you do add a plugin that needs cloning, it requires `./launcher rebuild app` rather than a restart.
 
 ## 4.4 Run the embedding server
 

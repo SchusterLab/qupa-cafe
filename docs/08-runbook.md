@@ -65,6 +65,35 @@ The cause is almost always that something changed in the HTTP-01 path after inst
 
 Work through the same four checks as above.
 
+## The bootstrap fails
+
+### "destination path 'discourse-ai' already exists", exit code 128
+
+*Hit on 2026-09-10.*
+
+`discourse-ai` ships in Discourse core, so a `git clone` for it in `app.yml`'s `after_code` hook fails, and a failed hook fails the whole bootstrap.
+
+Remove the clone.
+The plugin is enabled through site settings instead; see `docs/04-embeddings.md`.
+
+The same applies to any of the 46 plugins vendored in `plugins/`.
+Check before adding a clone:
+
+```bash
+cd /var/discourse && sudo ./launcher enter app
+ls /var/www/discourse/plugins | grep <name>
+exit
+```
+
+Most instructions written before 2026 tell you to clone plugins that are now bundled.
+
+### Any other hook failure
+
+A failed command in `after_code` or `run` aborts the bootstrap and leaves no container.
+
+The error appears well above the final "FAILED TO BOOTSTRAP" line, so scroll up.
+`./discourse-doctor` is worth running if the cause is not obvious.
+
 ## The forum is down
 
 ### The container is not running

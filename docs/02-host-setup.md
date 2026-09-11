@@ -1,16 +1,21 @@
 # 2. Host setup
 
-> **Status:** Not yet executed.
-> This document will be rewritten from real command output when the host is provisioned.
-> Commands below are drawn from upstream documentation; treat them as unverified until this line says otherwise.
+> **Status:** Executed on 2026-09-10 on a scratch host — Ubuntu 26.04 in WSL2, against a loopback block device standing in for the data volume.
+> `scripts/20-host-setup.sh` ran clean: filesystem created, mounted by UUID through `fstab`, Docker verified.
+> Not yet run on the real instance, so the device naming in 2.3 and the reboot check in 2.7 are still unverified.
 
 Prepares a freshly installed Debian-family host to run Discourse.
 Everything here is deliberately generic: it assumes a Linux host, a block device, and a working package manager, and nothing about where those came from.
 
 If your platform needs steps before this — creating the machine, attaching the device, opening ports — those belong in `platforms/`.
 
-Run `scripts/20-host-setup.sh` to perform this chapter, or follow it by hand.
+Run `scripts/20-host-setup.sh /dev/sdX` to perform this chapter, or follow it by hand.
 The script is idempotent and safe to re-run.
+
+It refuses to touch a device that is already mounted somewhere else, or one that looks like the root disk.
+Those guards are what make a typo in the device name survivable.
+
+`SKIP_UFW=1` skips section 2.6, for environments where a host firewall is the wrong tool — a container, or a host whose ingress is managed elsewhere.
 
 ## 2.1 Update and reboot
 

@@ -112,18 +112,25 @@ env:
   DISCOURSE_NOTIFICATION_EMAIL: 'noreply@${DISCOURSE_HOSTNAME}'
 
 # Adding a plugin requires `./launcher rebuild app`, not a restart.
+#
+# DO NOT clone discourse-ai here. It ships in Discourse core -- 46 plugins are
+# vendored in plugins/ as of 2026-09 -- and cloning it fails the whole bootstrap
+# with "destination path already exists" and exit code 128. Verified the hard
+# way on 2026-09-10; see docs/04-embeddings.md.
+#
+# The embedding plugin is therefore enabled through site settings, not installed.
+# It still needs the embedding server from server/tei-compose.yml, and that
+# server's host added to `allowed_internal_hosts` -- Discourse's SSRF guard
+# blocks private addresses, and a sibling container on the Docker bridge is a
+# private address.
+#
+# docker_manager is NOT bundled, so it does still have to be cloned.
 hooks:
   after_code:
     - exec:
         cd: $home/plugins
         cmd:
           - git clone --depth 1 https://github.com/discourse/docker_manager.git
-          # Embeds every post and backfills existing ones, into pgvector.
-          # Needs the embedding server from server/tei-compose.yml, and that
-          # server's host added to `allowed_internal_hosts` -- Discourse's SSRF
-          # guard blocks private addresses, and a sibling container on the
-          # Docker bridge is a private address. See docs/04-embeddings.md.
-          - git clone --depth 1 https://github.com/discourse/discourse-ai.git
 
 run:
   - exec: echo "Beginning of custom commands"
