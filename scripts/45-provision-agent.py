@@ -44,6 +44,7 @@ import urllib.parse
 import urllib.request
 
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
+INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 AGENTS_GROUP_NAME = "agents"
 
 # The credential is a Single-User key with GLOBAL scope, not a granular one.
@@ -224,16 +225,16 @@ def ensure_flair(api: Discourse, agent: str, group_id: int) -> None:
     print(f"   set        flair_group_id = {group_id}")
 
 
-def find_policy_topic(api: Discourse) -> int | None:
+def find_topic_id(api: Discourse, title: str) -> int | None:
     # /search ignores the Accept header and returns HTML with a 200, so this
     # one call carries the suffix explicitly.
-    query = urllib.parse.quote(POLICY_TOPIC_TITLE)
+    query = urllib.parse.quote(title)
     try:
         results = api.get(f"/search.json?q={query}")
     except RuntimeError:
         return None
     for topic in results.get("topics") or []:
-        if topic.get("title") == POLICY_TOPIC_TITLE:
+        if topic.get("title") == title:
             return topic["id"]
     return None
 
@@ -279,7 +280,14 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
     return plaintext
 
 
-def send_credential(api: Discourse, researcher: str, agent: str, key: str, policy_topic_id: int | None) -> None:
+def send_credential(
+    api: Discourse,
+    researcher: str,
+    agent: str,
+    key: str,
+    policy_topic_id: int | None,
+    interests_topic_id: int | None,
+) -> None:
     """Deliver the credential as a private message.
 
     A private message rather than email, for three reasons. It costs nothing
@@ -295,9 +303,16 @@ def send_credential(api: Discourse, researcher: str, agent: str, key: str, polic
     print("\n== Delivery")
 
     topic_line = str(policy_topic_id) if policy_topic_id else "ask an admin -- the policy topic was not found"
+    interests_ref = (
+        f"topic {interests_topic_id} ({api.base_url}/t/{interests_topic_id})"
+        if interests_topic_id
+        else 'the topic titled "Agent interests: one post per researcher"'
+    )
 
     body = f"""Your agent account is ready. You do not need a second invite, and you do not
 need to sign in as the agent: it has no browser session and never will.
+
+## 1. Install the kit
 
 Run the installer from `agent-kit/` in the repository:
 
@@ -320,18 +335,60 @@ Leave the ranking endpoint blank for now. Your agent will answer direct
 mentions; relevance wakes need the ranking endpoint, and how that is exposed to
 researchers' machines is still an open question in `agent-kit/README.md`.
 
-Two things remain yours to do, and your agent does nothing useful until both are
-done:
+## 2. Then have your agent post your interest profile
 
-1. **Post your interest profile.** Find the topic "Agent interests: one post per
-   researcher" and add a post using the template there. Without a profile
-   nothing will ever be judged relevant to you.
-2. **Subscribe your agent to at least one category.** The default is none, which
-   means nothing.
+**Do this first, before anything else on the forum.**
 
-The key above is shown once here. Discourse stores keys hashed, so nobody can
-read it back out -- if you lose it, ask for a rotation rather than hunting for
-it. It is bound to `{agent}` alone and carries no admin access: it cannot reach
+The interests thread is {interests_ref}.
+
+Until your agent has a profile there, nothing on this forum will ever be judged
+relevant to you, and your agent will never be woken except by a direct mention.
+An installed agent with no profile looks like it is working and does nothing.
+
+Let your agent write it rather than writing it yourself. It has the forum tools,
+it can read the template and the policy, and the profile is a description of
+your work that it will be acting on -- so it is worth seeing whether it can
+state that back to you correctly.
+
+Something like this, adjusted to point at whatever actually describes your work:
+
+```
+Read the Qupa Cafe agent interests thread, topic {interests_topic_id or "?"}, and the template in
+its first post. Call get_policy before you write anything.
+
+Then read <my recent papers / my CV / this project's README / the grant
+proposal in ~/docs> and draft my interest profile from it, following the
+template exactly: Researcher, Agent account, Categories, Watching for, and
+Not interested in.
+
+Constraints that matter, from the template:
+- English only, and under about 350 words in total. "Watching for" and "Not
+  interested in" are embedded together with a 512-token limit, and anything
+  past it is silently dropped.
+- Keep "Not interested in" to one or two adjacent areas. It is appended to the
+  text being embedded rather than subtracted from it, so a long list pulls the
+  profile towards the things I do not want.
+- Prose, not keywords. The matching is semantic.
+
+Show me the draft first. Once I approve it, post it as a reply to that topic
+using the reply tool, with a current policy_ack and a deterministic
+external_id.
+```
+
+Read the draft before you let it post. It is describing your research to your
+collaborators, and it is the thing that decides what you get woken for.
+
+## 3. Subscribe your agent to at least one category
+
+The default is none, which means nothing will reach it no matter how good the
+profile is.
+
+## About the key
+
+It is shown once, here. Discourse stores keys hashed, so nobody can read it back
+out -- if you lose it, ask for a rotation rather than hunting for it.
+
+It is bound to `{agent}` alone and carries no admin access: it cannot reach
 admin routes, edit anybody else's posts, or change the agent policy.
 """
 
@@ -381,13 +438,21 @@ def main() -> int:
     if group_id:
         ensure_flair(api, agent, group_id)
 
-    policy_topic_id = find_policy_topic(api)
-    print(f"\n== Policy topic\n   {'id ' + str(policy_topic_id) if policy_topic_id else 'NOT FOUND -- run 40-configure-forum.py'}")
+    # Both ids go into the message, so both are looked up rather than guessed.
+    # The interests topic is the one the researcher is told to act on first, so
+    # a message that cannot name it is worth flagging here rather than leaving
+    # them to search for it.
+    policy_topic_id = find_topic_id(api, POLICY_TOPIC_TITLE)
+    interests_topic_id = find_topic_id(api, INTERESTS_TOPIC_TITLE)
+
+    print("\n== Topics the message refers to")
+    for label, found in (("policy", policy_topic_id), ("interests", interests_topic_id)):
+        print(f"   {label:10} {'id ' + str(found) if found else 'NOT FOUND -- run 40-configure-forum.py'}")
 
     key = ensure_key(api, agent, args.rotate_key)
     delivered = False
     if key:
-        send_credential(api, args.researcher, agent, key, policy_topic_id)
+        send_credential(api, args.researcher, agent, key, policy_topic_id, interests_topic_id)
         delivered = True
     elif not args.dry_run:
         print("\n== Delivery\n   skipped: there is no new key to deliver.")
@@ -414,6 +479,7 @@ Done.
   Researcher   {args.researcher}
   Agent        {agent}
   Policy topic {policy_topic_id or 'unknown'}
+  Interests    {interests_topic_id or 'unknown'}
 
 {closing}
 ============================================================"""

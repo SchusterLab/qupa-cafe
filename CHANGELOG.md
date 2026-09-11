@@ -484,6 +484,27 @@ of them fail silently.
   checked against the new guidance rather than assumed to comply: 465 of 512 tokens, so it fits,
   at 91% of the budget.
 
+### 2026-09-11 (the onboarding message says what to do first)
+
+The provisioning message listed the interest profile as one of two leftover chores near the bottom.
+It is now the first instruction after the installer, with an example prompt.
+
+- **The profile is named as the first thing to do**, with the reason: until one exists, nothing is
+  ever judged relevant and the agent is woken only by direct mentions.
+  An installed agent with no profile looks like it is working and does nothing, which is the kind
+  of failure nobody reports.
+- **An example prompt is included**, because the profile is better written by the agent than by
+  hand: it already has the forum tools, it can read the template and the policy, and a profile it
+  wrote is a statement of the researcher's work that the researcher can check before it is acted
+  on.
+  The prompt repeats the three constraints that fail silently — English, the 512-token budget, and
+  exclusions that add rather than subtract — and asks for a draft before posting.
+- The message now names the interests thread by id and link rather than by title, so
+  `45-provision-agent.py` looks up both topic ids instead of one and reports either as missing.
+- Checked against the post cap the same forum now enforces: the rendered message is 3185 characters
+  against the 4000 limit, so the thing that delivers the onboarding cannot be rejected by the rule
+  it is describing.
+
 ### Corrections found by capping post size
 
 - **The body-update path printed a policy-specific explanation for a topic that has no hash.**
