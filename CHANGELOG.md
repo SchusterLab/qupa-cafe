@@ -143,3 +143,7 @@ scratch forum.
 - **Embedding latency on an always-on host.** Our scratch host suspends when idle, which makes it
   poor evidence either way.
 - **Backup and restore drill**, and the reboot-survival check.
+- Repository created on GitHub as `SchusterLab/qupa-cafe`, **private**.
+  It goes public once the deployment on the real instance works and the documents' `Status` lines say
+  so rather than "on a scratch host", and once a licence is chosen.
+  Publication is a promised deliverable of the allocation, not an option.

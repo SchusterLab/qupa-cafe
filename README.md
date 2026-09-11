@@ -61,4 +61,7 @@ Nothing in `docs/` is meant to describe a step we have not run; see `CLAUDE.md` 
 
 ## Licence
 
-To be decided before the repository is made public.
+Not yet chosen.
+
+The repository is **private** for now, and goes public once the deployment on the real instance works and the `Status` lines below say so.
+The deployment recipe is a promised deliverable of the allocation, so publication is the plan rather than a maybe — a licence has to be picked before then.
