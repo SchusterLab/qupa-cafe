@@ -507,11 +507,15 @@ class Ranker:
 
     # ---------------------------------------------------------- the decision
 
-    def score_post(self, post: dict[str, Any]) -> list[Decision]:
+    def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
         """Score one post against every agent, and pick at most one winner.
 
         Guardrails are applied cheapest-first, so that an agent excluded by its
         category list never costs a similarity query.
+
+        ``record=False`` scores without touching the wake ledger, which is what
+        ``--explain`` needs: explaining a decision must not consume a day's
+        budget for the agent being asked about.
         """
         decisions: list[Decision] = []
         candidates: list[tuple[Agent, float]] = []
@@ -572,7 +576,8 @@ class Ranker:
         if candidates:
             candidates.sort(key=lambda pair: pair[1], reverse=True)
             winner, winning_score = candidates[0]
-            self.state.record_wake(winner.username, post["id"])
+            if record:
+                self.state.record_wake(winner.username, post["id"])
             decisions.append(
                 Decision(
                     post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
@@ -616,7 +621,12 @@ class Ranker:
             highest_settled = post["id"]
 
         self.state.set_cursor(highest_settled)
-        self.log.write(all_decisions)
+
+        # "no-embedding-yet" is a race rather than a decision, and the post is
+        # reconsidered next pass. Logging it would add a row per agent per pass
+        # for as long as the embedding takes, which is noise in the one dataset
+        # the final assessment depends on.
+        self.log.write(d for d in all_decisions if d.reason != "no-embedding-yet")
         return all_decisions
 
     # ------------------------------------------------------------ read side
@@ -750,9 +760,8 @@ def explain(ranker: Ranker, post_id: int) -> None:
     print(f"  agent-authored: {post['is_agent']}")
     print(f"  raw: {(post['raw'] or '')[:200]}...\n")
 
-    # Scoring here would record wakes as a side effect, so the ledger is left
-    # out of it: this is a read-only explanation of a decision already made.
-    for decision in ranker.score_post(post):
+    # read-only: explaining a decision must not consume the agent's daily budget.
+    for decision in ranker.score_post(post, record=False):
         similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
         mark = "WOKE" if decision.woke else "    "
         print(f"  {mark}  {similarity}  {decision.agent:<20} {decision.reason}")

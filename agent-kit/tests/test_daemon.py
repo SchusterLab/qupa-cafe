@@ -167,3 +167,108 @@ def test_missing_credentials_are_reported_by_name():
 
 def test_complete_settings_validate():
     assert Settings(forum_url="http://x", api_key="k", api_username="u").validate() == []
+
+
+# ------------------------------------------------------- deferral and dry runs
+
+
+class FakeForum:
+    """Enough of Forum for one_pass, with a record of what was acknowledged."""
+
+    def __init__(self, topics):
+        self.topics = topics
+        self.marked_read = []
+
+    def totals(self):
+        return {"unread_notifications": 0, "total_unread_notifications": 0}
+
+    def unread_notifications(self):
+        return []
+
+    def mark_read(self, notification_id):
+        self.marked_read.append(notification_id)
+
+    def topic(self, topic_id):
+        return self.topics[topic_id]
+
+
+class FakeRanking:
+    def __init__(self, post_ids):
+        self.post_ids = post_ids
+
+    def pending(self, agent):
+        return [{"post_id": post_id} for post_id in self.post_ids]
+
+
+def _topic(topic_id):
+    return {
+        "id": topic_id,
+        "title": f"Topic {topic_id}",
+        "post_stream": {"posts": [{"post_number": 1, "username": "alice", "raw": "text"}]},
+    }
+
+
+def test_a_deferred_topic_is_not_acknowledged(tmp_path, monkeypatch):
+    """The bug this guards: marking on discovery silently drops everything the
+    per-pass cap defers, so a backlog is lost rather than delayed."""
+    import qupa_cafe.daemon as daemon
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=1)
+    handled = Handled(str(tmp_path / "state.sqlite3"))
+    forum = FakeForum({10: _topic(10), 20: _topic(20)})
+    ranking = FakeRanking([101, 201])
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10 if post_id == 101 else 20)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+
+    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 1
+
+    acknowledged = [post_id for post_id in (101, 201) if handled.seen("wake", post_id)]
+    assert len(acknowledged) == 1, "exactly one post should be acknowledged"
+
+    # The deferred one comes back.
+    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 1
+    assert handled.seen("wake", 101) and handled.seen("wake", 201)
+
+
+def test_a_failed_wake_is_retried(tmp_path, monkeypatch):
+    """A wake that failed is not a wake that happened."""
+    import qupa_cafe.daemon as daemon
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    handled = Handled(str(tmp_path / "state.sqlite3"))
+    forum = FakeForum({10: _topic(10)})
+    ranking = FakeRanking([101])
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: False)
+
+    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
+    assert not handled.seen("wake", 101)
+
+
+def test_a_dry_run_acknowledges_nothing(tmp_path, monkeypatch):
+    """--dry-run must change nothing, on this machine or on the forum."""
+    import qupa_cafe.daemon as daemon
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    handled = Handled(str(tmp_path / "state.sqlite3"))
+    forum = FakeForum({10: _topic(10)})
+    ranking = FakeRanking([101])
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+
+    daemon.one_pass(settings, forum, ranking, handled, dry_run=True)
+
+    assert not handled.seen("wake", 101)
+    assert forum.marked_read == []
+
+
+def test_nothing_pending_means_no_wakes(tmp_path):
+    import qupa_cafe.daemon as daemon
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+    handled = Handled(str(tmp_path / "state.sqlite3"))
+
+    assert daemon.one_pass(settings, FakeForum({}), FakeRanking([]), handled, dry_run=False) == 0

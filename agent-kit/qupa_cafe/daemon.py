@@ -45,7 +45,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 LOG = logging.getLogger("qupa-daemon")
@@ -326,15 +326,36 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
 # ------------------------------------------------------------------ the loop
 
 
-def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled, dry_run: bool) -> int:
-    """One poll. Returns the number of agent invocations made."""
-    wakes = 0
-    topics_to_handle: dict[int, str] = {}
+@dataclass
+class Candidate:
+    """A topic worth waking for, and the items that made it so.
+
+    The items travel with the candidate because nothing may be acknowledged
+    until the wake it caused has actually happened. Marking on discovery -- the
+    obvious way to write this -- silently drops everything the per-pass cap
+    defers, and everything whose wake fails.
+    """
+
+    topic_id: int
+    reason: str
+    notification_ids: list[int] = field(default_factory=list)
+    post_ids: list[int] = field(default_factory=list)
+
+
+def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled) -> list[Candidate]:
+    """Find topics worth waking for. Acknowledges nothing."""
+    candidates: dict[int, Candidate] = {}
+
+    def candidate_for(topic_id: int, reason: str) -> Candidate:
+        if topic_id not in candidates:
+            candidates[topic_id] = Candidate(topic_id=topic_id, reason=reason)
+        return candidates[topic_id]
 
     # --- direct mentions. Always, and regardless of ranking availability.
     try:
         totals = forum.totals()
-        if (totals.get("total_unread_notifications") or 0) > 0 or (totals.get("unread_notifications") or 0) > 0:
+        unread = (totals.get("total_unread_notifications") or 0) + (totals.get("unread_notifications") or 0)
+        if unread > 0:
             for note in forum.unread_notifications():
                 if note.get("notification_type") not in DIRECT_TYPES:
                     continue
@@ -342,10 +363,7 @@ def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handle
                     continue
                 topic_id = note.get("topic_id")
                 if topic_id:
-                    topics_to_handle.setdefault(topic_id, "you were mentioned or replied to")
-                handled.mark("notification", note["id"])
-                if not dry_run:
-                    forum.mark_read(note["id"])
+                    candidate_for(topic_id, "you were mentioned or replied to").notification_ids.append(note["id"])
     except (urllib.error.URLError, urllib.error.HTTPError, KeyError) as exc:
         LOG.warning("could not read notifications: %s", exc)
 
@@ -354,33 +372,61 @@ def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handle
         post_id = item.get("post_id")
         if not post_id or handled.seen("wake", post_id):
             continue
-        handled.mark("wake", post_id)
         # The ranking endpoint reports post ids; the topic is what gets read, so
         # that the agent sees the thread rather than one post out of context.
         try:
             topic_id = _topic_for_post(forum, post_id)
-        except Exception as exc:  # noqa: BLE001
+        except (urllib.error.URLError, urllib.error.HTTPError) as exc:
             LOG.warning("could not resolve post %s to a topic: %s", post_id, exc)
             continue
         if topic_id:
-            topics_to_handle.setdefault(topic_id, "a post scored as relevant to your interests")
+            candidate_for(topic_id, "a post scored as relevant to your interests").post_ids.append(post_id)
 
-    if not topics_to_handle:
+    return list(candidates.values())
+
+
+def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled, dry_run: bool) -> int:
+    """One poll. Returns the number of agent invocations made."""
+    candidates = collect(settings, forum, ranking, handled)
+    if not candidates:
         return 0
 
+    wakes = 0
+
     # One invocation per topic, with the whole thread. The cap stops a backlog
-    # from becoming a burst of model calls.
-    for topic_id, reason in list(topics_to_handle.items())[: settings.max_wakes_per_pass]:
+    # from becoming a burst of model calls; everything over it is simply left
+    # unacknowledged and comes back on the next pass.
+    for candidate in candidates[: settings.max_wakes_per_pass]:
         try:
-            topic = forum.topic(topic_id)
+            topic = forum.topic(candidate.topic_id)
         except (urllib.error.URLError, urllib.error.HTTPError) as exc:
-            LOG.warning("could not read topic %s: %s", topic_id, exc)
+            LOG.warning("could not read topic %s: %s", candidate.topic_id, exc)
             continue
 
-        if wake_agent(settings, build_prompt(settings, reason, topic), dry_run=dry_run):
-            wakes += 1
+        if not wake_agent(settings, build_prompt(settings, candidate.reason, topic), dry_run=dry_run):
+            # Deliberately not acknowledged, so the next pass retries it. A wake
+            # that failed is not a wake that happened.
+            LOG.warning("wake failed for topic %s; it will be retried", candidate.topic_id)
+            continue
 
-    deferred = len(topics_to_handle) - settings.max_wakes_per_pass
+        wakes += 1
+
+        # A dry run must change nothing, on this machine or on the forum, so it
+        # acknowledges nothing and will see the same items again next time.
+        if dry_run:
+            continue
+
+        # Acknowledge only now, and only what this wake covered.
+        for notification_id in candidate.notification_ids:
+            handled.mark("notification", notification_id)
+            try:
+                forum.mark_read(notification_id)
+            except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+                LOG.warning("could not mark notification %s read: %s", notification_id, exc)
+        for post_id in candidate.post_ids:
+            handled.mark("wake", post_id)
+
+    deferred = len(candidates) - settings.max_wakes_per_pass
     if deferred > 0:
         LOG.info("%d more topic(s) pending; they will be picked up next pass", deferred)
 

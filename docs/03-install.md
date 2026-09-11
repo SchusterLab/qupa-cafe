@@ -1,7 +1,8 @@
 # 3. Installing Discourse
 
-> **Status:** Not yet executed.
-> `config/app.yml.example` and the sizing formula are derived from upstream source and are cited inline; the procedure has not yet been run end to end.
+> **Status:** Executed on 2026-09-10 on a scratch host, in `--local` mode, and it serves HTTP 200.
+> Three things were confirmed rather than assumed: `app.yml` parses as written, the explicit tuning values reach Postgres (`shared_buffers = 3840MB`, `work_mem = 40MB`, `UNICORN_WORKERS=8`), and the `volumes:` retargeting puts every piece of Discourse state on the data volume with `postgres_data` not root-owned.
+> Section 3.6 is therefore **unverified**: TLS and email cannot be tested locally, and are checked only on the real instance.
 
 Installs Discourse from the official Docker distribution, with a hand-written configuration and automatic TLS.
 
