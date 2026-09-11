@@ -67,6 +67,9 @@ This is the sharpest trap in the allocation process, and it is the opposite of w
 
 Our 160 GB across two disks fits inside the free default with room to spare.
 
+Confirmed on 2026-09-11, before any exchange of Credits for storage: `openstack quota show` reports `gigabytes: 1000` and `volumes: 10`, alongside 150 cores, 585 GB of RAM and 25 instances.
+The free terabyte is really there, and it is what an exchange would replace.
+
 ## 1.3 Default quotas
 
 | Resource | Default |

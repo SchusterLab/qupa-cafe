@@ -1,6 +1,7 @@
 # 2. Provisioning the instance
 
-> **Status:** Not yet executed.
+> **Status:** Section 2.1 was executed on 2026-09-11: the client authenticates and the project answers.
+> Everything from 2.2 onward creates resources and has not been run.
 > Blocked on the Credits exchange in [`01-access-allocation.md`](01-access-allocation.md).
 > Commands marked **[extrapolated]** follow a documented pattern but were not found verbatim in Jetstream2's documentation.
 > The dashboard URL and the two login methods in 2.1 were checked against the live login page on 2026-09-11; nothing behind the login has been.
@@ -121,6 +122,20 @@ openstack flavor list                                # smoke test
 openstack application credential show qupa-cafe      # what was actually created
 ```
 
+The second command is the one worth keeping.
+It reports the roles and the `expires_at` the server recorded rather than what the form appeared to accept, and a blank expiry shows there as `Expires At: null` — the only place it is stated plainly.
+
+What the smoke test returned on 2026-09-11, with client 9.0.0:
+
+| Flavor | RAM | Disk | VCPUs |
+|---|---|---|---|
+| `m3.quad` | 15360 MB | 20 GB | 4 |
+
+That confirms the two numbers the install depends on.
+`docs/03-install.md` computes `db_shared_buffers` from 15 GB of RAM and `UNICORN_WORKERS` from 4 cores, and both were written before any instance existed.
+
+The flavor's own disk is 20 GB and irrelevant: 2.3 boots from a volume, which overrides it.
+
 The second command is worth running once.
 It reports the roles and the `expires_at` the server recorded, rather than what the form appeared to accept — and a blank expiry shows up there as `None`, which is the only place it is stated plainly.
 
@@ -211,9 +226,12 @@ Two names, for two jobs.
 
 Jetstream2 runs OpenStack Designate and creates a public record when a floating IP is attached.
 
+The zone is the allocation id, lowercased, under `projects.jetstream-cloud.org`.
+Ours is `cis261848.projects.jetstream-cloud.org.`, confirmed `ACTIVE` by `openstack zone list` before any instance existed — so the zone is part of the allocation rather than something the first instance creates.
+
 ```bash
 openstack zone list
-openstack recordset list <project>.projects.jetstream-cloud.org.
+openstack recordset list cis261848.projects.jetstream-cloud.org.
 dig +short <name>
 ```
 

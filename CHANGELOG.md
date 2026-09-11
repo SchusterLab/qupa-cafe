@@ -221,6 +221,29 @@ eight posts destroyed, and 19 seconds to get them back.
   A backup on the root disk dies with the instance.
 - `scripts/50-backup-check.sh` run for the first time, against that host: all checks pass.
 
+### 2026-09-11 (the allocation answers)
+
+The OpenStack client authenticated against Jetstream2 for the first time, with an application
+credential created from Horizon.
+Nothing was provisioned; every command was a read.
+
+- `m3.quad` is **15360 MB of RAM and 4 VCPUs**, which confirms the two numbers the install was
+  written around: `docs/03-install.md` computes `db_shared_buffers` from 15 GB and
+  `UNICORN_WORKERS` from 4 cores, and both predate any instance.
+  The flavor's own 20 GB disk does not matter, because the instance boots from a volume.
+- The **free terabyte is real**: `gigabytes: 1000` and `volumes: 10`, before any Credits were
+  exchanged for storage, alongside 150 cores, 585 GB of RAM and 25 instances.
+  That is the quota a storage exchange would have replaced rather than added to, which is the
+  sharpest trap in `01-access-allocation.md`.
+- The **DNS zone already exists and is ACTIVE**, named for the allocation id in lowercase:
+  `cis261848.projects.jetstream-cloud.org.`
+  It is part of the allocation rather than something the first instance creates, and the document
+  had it as a `<project>` placeholder.
+- The credential reads back as intended: roles `reader` and `member` only, unrestricted false,
+  access rules null, `Expires At: null`.
+
+`02-provision.md` §2.1 is now executed; everything from §2.2 creates resources and is not.
+
 ### Corrections found by running the install
 
 - **`discourse-ai` ships in Discourse core and must not be cloned.**
