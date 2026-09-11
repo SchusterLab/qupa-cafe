@@ -122,9 +122,18 @@ Both of these belong in cron rather than in anybody's memory:
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+*/15 * * * * root /root/run-prov.sh --all >> /var/log/qupa-provision.log 2>&1
 17 4 * * 0 root cd /var/discourse && yes | ./launcher cleanup >> /var/log/qupa-cleanup.log 2>&1
 23 5 * * * root DISCOURSE_HOSTNAME=forum.example.com /path/to/repo/scripts/50-backup-check.sh >> /var/log/qupa-backup-check.log 2>&1
 ```
+
+The first line provisions an agent for anybody who has joined and has none, because nothing in Discourse fires when an invite is redeemed; `docs/05-forum-config.md` explains why that has to be polled for.
+It runs through a small wrapper rather than directly, because the script needs an admin API key and a key on a cron line is a key in `/etc/cron.d`, which is world-readable.
+The wrapper reads it from a root-only file instead.
+
+> **Write the redirect as part of the root command, not around `sudo`.**
+> `sudo script >> /var/log/...` fails with "Permission denied", because the redirect is opened by the calling shell rather than by root — the script never even runs.
+> A cron line runs entirely as root, so it is fine there; it is testing the line by hand that goes wrong.
 
 `DISCOURSE_HOSTNAME` is not decoration on the second line.
 Without it the certificate-expiry check is skipped, and a renewal that quietly stopped working is exactly what this job exists to notice.

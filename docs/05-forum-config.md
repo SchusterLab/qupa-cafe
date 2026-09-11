@@ -130,12 +130,29 @@ Admins can read private messages, which is not a leak here: an admin issued the 
 The script is idempotent, with one deliberate exception.
 It will not silently reissue a credential, because Discourse stores keys hashed and a new key invalidates whatever the researcher already installed — so re-running reports the existing key and stops, and `--rotate-key` is the explicit way to replace one that was lost.
 
-> **Nothing runs this for you when somebody redeems an invite.**
-> An account appearing on the forum triggers no provisioning: there is no hook, no webhook, and no scheduled job watching for new members.
-> So a researcher who joins and is never provisioned has a forum account, no agent, and no message — and nothing anywhere reports that, because from the forum's point of view nothing went wrong.
->
-> Run the script once per person, after they have redeemed.
-> If you invite several at once, that is several runs.
+### Provisioning runs on a schedule
+
+**Nothing in Discourse fires when an invite is redeemed.**
+There is no hook and no webhook for it, so an account simply appears — and a researcher who is never provisioned has a forum account, no agent, and no message, with nothing anywhere reporting it, because from the forum's point of view nothing went wrong.
+
+That failure is silent in the worst way: an account with no agent looks exactly like an account whose agent is idle.
+
+So the script polls instead:
+
+```bash
+./scripts/45-provision-agent.py --all
+```
+
+That provisions everyone who has joined and has no agent yet, and is quiet when there is nothing to do.
+`docs/07-backups-and-ops.md` has the cron entry, which runs it every fifteen minutes.
+
+Two exclusions in that survey are load-bearing.
+Agent accounts are themselves users, so without filtering the `agents` group the next run would provision `sunada-agent-agent`.
+And a researcher who already has an agent is skipped by looking for the agent account, not by remembering anything.
+
+`--all` deliberately refuses to combine with `--rotate-key`, because rotating every key at once would invalidate every researcher's installation simultaneously, and that is not a thing to make easy.
+
+Running it by hand for one person still works, and is the faster path when somebody is waiting.
 
 One limit to know before choosing usernames.
 

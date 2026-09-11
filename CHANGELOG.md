@@ -752,6 +752,37 @@ longer the shortest path:
   freely and lowered only carefully.
   Worth knowing before trying to put it back.
 
+### 2026-09-11 (provisioning runs itself now)
+
+- **`45-provision-agent.py --all`** provisions everyone who has joined and has no agent yet, and
+  `/etc/cron.d/qupa-cafe` runs it **every fifteen minutes**.
+  Nothing in Discourse fires when an invite is redeemed, so polling is the alternative to
+  remembering — and forgetting is silent, because an account with no agent looks exactly like an
+  account whose agent is idle.
+- Two exclusions in the survey are load-bearing.
+  Agent accounts are themselves users, so without filtering the `agents` group the next run would
+  provision `sunada-agent-agent`.
+  And a researcher who already has one is skipped by looking for the agent account rather than by
+  remembering anything, which is what makes the schedule safe to run repeatedly.
+- `--all` refuses to combine with `--rotate-key` or `--agent-username`, and refuses to run with
+  neither a username nor `--all`.
+  Rotating every key at once would invalidate every researcher's installation simultaneously, which
+  is not a thing to make easy.
+- Proven rather than assumed: a throwaway account was created as redeeming an invite would, `--all`
+  found exactly that person, provisioned the agent with trust level, group, flair and key, and
+  delivered the message — then the probe was deleted, leaving the two real researchers and nothing
+  else.
+
+### Corrections found by automating the provisioning
+
+- **A redirect written around `sudo` rather than inside the root command fails**, and this is the
+  third time it has caught me in this project: `sudo script >> /var/log/...` opens the file as the
+  calling user, so the command never runs.
+  A cron line runs wholly as root and is fine; it is the by-hand test of that line that breaks.
+  Now written down in `docs/07-backups-and-ops.md` rather than rediscovered.
+- The scheduled command goes through a root-only wrapper rather than putting the admin key on the
+  cron line, because `/etc/cron.d` is world-readable.
+
 ### Corrections found by onboarding the second researcher
 
 - **`45-provision-agent.py` treated a refused signup as a success.**

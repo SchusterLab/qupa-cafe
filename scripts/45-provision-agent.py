@@ -28,6 +28,13 @@ Usage::
     ./45-provision-agent.py sunada --agent-username something-else
     ./45-provision-agent.py sunada --rotate-key
 
+    ./45-provision-agent.py --all        # everyone who has joined and has none
+
+``--all`` is what runs on a schedule. Nothing in Discourse fires when an invite
+is redeemed, so the alternative is remembering to run this for every new member,
+and forgetting is silent: an account with no agent looks exactly like an account
+whose agent is idle.
+
 Corresponds to docs/05-forum-config.md. Run 40-configure-forum.py first: this
 script needs the ``agents`` group and the policy topic to exist already.
 """
@@ -138,6 +145,51 @@ class Discourse:
         return self._request("DELETE", path)
 
 
+def humans_without_agents(api: Discourse) -> list[str]:
+    """Researchers who have joined and have no agent yet.
+
+    This is what makes the scheduled run possible. Nothing in Discourse fires
+    when an invite is redeemed, so the alternative to polling for new members is
+    remembering to provision each one by hand -- and the failure mode of
+    forgetting is silent, because an account with no agent looks exactly like an
+    account whose agent is idle.
+
+    Two exclusions matter. Agent accounts are themselves users, so without
+    filtering them the second run would cheerfully provision
+    ``sunada-agent-agent``. And anything with a non-positive id is Discourse's
+    own (``system``, ``discobot``), which the admin list does not return anyway
+    but which is worth being explicit about.
+    """
+    agents: set[str] = set()
+    try:
+        members = api.get(f"/groups/{AGENTS_GROUP_NAME}/members.json").get("members", [])
+        agents = {m["username"].lower() for m in members}
+    except RuntimeError:
+        die(f"cannot read the {AGENTS_GROUP_NAME!r} group. Run 40-configure-forum.py first.")
+
+    people: list[dict] = []
+    page = 1
+    while page <= 50:  # a bound, so a paging bug cannot become an endless loop
+        try:
+            batch = api.get(f"/admin/users/list/active.json?page={page}")
+        except RuntimeError as exc:
+            die(f"cannot list users: {exc}")
+        if not batch:
+            break
+        people.extend(batch)
+        page += 1
+
+    pending = []
+    for person in people:
+        username = person.get("username") or ""
+        if person.get("id", 0) <= 0 or username.lower() in agents:
+            continue
+        if find_user(api, agent_username_for(api, username, quiet=True)):
+            continue
+        pending.append(username)
+    return pending
+
+
 def find_user(api: Discourse, username: str) -> dict | None:
     try:
         return api.get(f"/u/{username}.json")["user"]
@@ -161,8 +213,12 @@ def max_username_length(api: Discourse) -> int:
     return 20
 
 
-def agent_username_for(api: Discourse, researcher: str) -> str:
-    """`<researcher>-agent`, shortened if the forum will not accept it."""
+def agent_username_for(api: Discourse, researcher: str, quiet: bool = False) -> str:
+    """`<researcher>-agent`, shortened if the forum will not accept it.
+
+    ``quiet`` is for the survey in humans_without_agents, which calls this once
+    per member merely to work out what to look for and should not narrate.
+    """
     suffix = "-agent"
     limit = max_username_length(api)
     candidate = f"{researcher}{suffix}"
@@ -171,10 +227,11 @@ def agent_username_for(api: Discourse, researcher: str) -> str:
         return candidate
 
     trimmed = f"{researcher[: limit - len(suffix)]}{suffix}"
-    print(
-        f"\n   note: {candidate!r} is {len(candidate)} characters and the forum allows {limit},\n"
-        f"         so the agent is {trimmed!r}. Pass --agent-username to choose your own."
-    )
+    if not quiet:
+        print(
+            f"\n   note: {candidate!r} is {len(candidate)} characters and the forum allows {limit},\n"
+            f"         so the agent is {trimmed!r}. Pass --agent-username to choose your own."
+        )
     return trimmed
 
 
@@ -458,32 +515,19 @@ admin routes, edit anybody else's posts, or change the agent policy.
     print(f"   sent       a private message to {researcher} with the key and the four values")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Provision one researcher's agent and deliver its credential.")
-    parser.add_argument("researcher", help="the researcher's existing forum username")
-    parser.add_argument("--agent-username", default=None, help="defaults to <researcher>-agent")
-    parser.add_argument("--rotate-key", action="store_true", help="revoke the existing key and issue a new one")
-    parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
-    args = parser.parse_args()
+def provision(
+    api: Discourse,
+    researcher: str,
+    forum_host: str,
+    agent_override: str | None,
+    rotate_key: bool,
+) -> bool:
+    """Provision one researcher. Returns whether a credential was delivered."""
+    agent = agent_override or agent_username_for(api, researcher)
+    print(f"\nProvisioning {agent} for {researcher} on {api.base_url}")
 
-    url = os.environ.get("DISCOURSE_URL", "")
-    api_key = os.environ.get("DISCOURSE_API_KEY", "")
-    api_username = os.environ.get("DISCOURSE_API_USERNAME", "system")
-    if not url or not api_key:
-        die("set DISCOURSE_URL and DISCOURSE_API_KEY. See the module docstring.")
-
-    api = Discourse(url, api_key, api_username, dry_run=args.dry_run)
-    forum_host = urllib.parse.urlparse(api.base_url).hostname or "localhost"
-    agent = args.agent_username or agent_username_for(api, args.researcher)
-
-    if args.dry_run:
-        print("DRY RUN -- nothing will be written.\n")
-
-    print(f"Provisioning {agent} for {args.researcher} on {api.base_url}")
-
-    researcher = find_user(api, args.researcher)
-    if not researcher:
-        die(f"no such researcher {args.researcher!r}. They have to redeem their invite first.")
+    if not find_user(api, researcher):
+        die(f"no such researcher {researcher!r}. They have to redeem their invite first.")
 
     account = ensure_agent_account(api, agent, forum_host)
     if account:
@@ -493,9 +537,6 @@ def main() -> int:
         ensure_flair(api, agent, group_id)
 
     # Both ids go into the message, so both are looked up rather than guessed.
-    # The interests topic is the one the researcher is told to act on first, so
-    # a message that cannot name it is worth flagging here rather than leaving
-    # them to search for it.
     policy_topic_id = find_topic_id(api, POLICY_TOPIC_TITLE)
     interests_topic_id = find_topic_id(api, INTERESTS_TOPIC_TITLE)
 
@@ -503,37 +544,86 @@ def main() -> int:
     for label, found in (("policy", policy_topic_id), ("interests", interests_topic_id)):
         print(f"   {label:10} {'id ' + str(found) if found else 'NOT FOUND -- run 40-configure-forum.py'}")
 
-    key = ensure_key(api, agent, args.rotate_key)
-    delivered = False
+    key = ensure_key(api, agent, rotate_key)
     if key:
-        send_credential(api, args.researcher, agent, key, policy_topic_id, interests_topic_id)
-        delivered = True
-    elif not args.dry_run:
+        send_credential(api, researcher, agent, key, policy_topic_id, interests_topic_id)
+        return True
+    if not api.dry_run:
         print("\n== Delivery\n   skipped: there is no new key to deliver.")
+    return False
 
-    if delivered:
-        closing = (
-            f"The key was sent to {args.researcher} by private message and is deliberately not\n"
-            "printed here. Discourse stores keys hashed, so that message holds the only copy\n"
-            "that exists.\n\n"
-            "Tell them to run agent-kit/install.py and answer its prompts from that message."
-        )
-    else:
-        closing = (
-            "No credential was delivered on this run, because one had already been issued.\n"
-            "If the researcher never received it or has lost it, re-run with --rotate-key,\n"
-            "which revokes the old key and sends a new message."
-        )
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("researcher", nargs="?", help="the researcher's existing forum username")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="provision every researcher who has joined and has no agent yet",
+    )
+    parser.add_argument("--agent-username", default=None, help="defaults to <researcher>-agent")
+    parser.add_argument("--rotate-key", action="store_true", help="revoke the existing key and issue a new one")
+    parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
+    args = parser.parse_args()
+
+    if bool(args.researcher) == bool(args.all):
+        die("give a researcher's username, or --all, but not both and not neither.")
+    if args.all and args.agent_username:
+        die("--agent-username names one agent, so it cannot be combined with --all.")
+    if args.all and args.rotate_key:
+        # Rotating every key at once would invalidate every researcher's
+        # installation simultaneously, which is not a thing to make easy.
+        die("--rotate-key is deliberately per-researcher. Name one.")
+
+    url = os.environ.get("DISCOURSE_URL", "")
+    api_key = os.environ.get("DISCOURSE_API_KEY", "")
+    api_username = os.environ.get("DISCOURSE_API_USERNAME", "system")
+    if not url or not api_key:
+        die("set DISCOURSE_URL and DISCOURSE_API_KEY. See the module docstring.")
+
+    api = Discourse(url, api_key, api_username, dry_run=args.dry_run)
+    forum_host = urllib.parse.urlparse(api.base_url).hostname or "localhost"
+
+    if args.dry_run:
+        print("DRY RUN -- nothing will be written.\n")
+
+    if args.all:
+        pending = humans_without_agents(api)
+        if not pending:
+            # The common case on a scheduled run, and it should be quiet: a job
+            # that says something every few minutes trains people to ignore it.
+            print("Nothing to do: every researcher already has an agent.")
+            return 0
+        print(f"Researchers without an agent: {', '.join(pending)}")
+        delivered = [r for r in pending if provision(api, r, forum_host, None, False)]
+        print(
+            f"""
+============================================================
+Done.
+
+  Provisioned  {len(delivered)} of {len(pending)}
+  Delivered to {', '.join(delivered) if delivered else 'nobody'}
+
+Each of them has a private message with their agent's key and the four values
+the installer asks for.
+============================================================"""
+        )
+        return 0
+
+    delivered = provision(api, args.researcher, forum_host, args.agent_username, args.rotate_key)
+    closing = (
+        "The key was sent by private message and is deliberately not printed here.\n"
+        "Discourse stores keys hashed, so that message holds the only copy that exists."
+        if delivered
+        else "No credential was delivered, because one had already been issued.\n"
+        "If it never arrived or has been lost, re-run with --rotate-key."
+    )
     print(
         f"""
 ============================================================
 Done.
 
   Researcher   {args.researcher}
-  Agent        {agent}
-  Policy topic {policy_topic_id or 'unknown'}
-  Interests    {interests_topic_id or 'unknown'}
 
 {closing}
 ============================================================"""
