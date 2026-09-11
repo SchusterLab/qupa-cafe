@@ -12,10 +12,10 @@
 # and save it next to this one as openrc-CIS261848.sh, which .gitignore covers.
 # This file exists to document the shape and the traps.
 #
-# Trap 1: the two expiration fields interact. A time with no date means
-#         TODAY, at that time -- possibly already past. Both blank means the
-#         credential never expires. A date with no time means 00:00 on that
-#         date, so the date you enter is the first day it does not work.
+# Trap 1: we leave both expiration fields blank, so this credential does not
+#         expire -- revoke it in Horizon when the allocation ends. If you do
+#         set an expiry: a time with no date means TODAY at that time, and a
+#         date with no time means 00:00 on that date.
 #
 # Trap 2: the secret is shown once. Download it on the success screen; there
 #         is no way back to it, only a new credential.

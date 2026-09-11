@@ -56,7 +56,7 @@ What we filled in [unverified]:
 | Name | `qupa-cafe` |
 | Description | `OpenStack CLI for the Qupa Cafe forum host (CIS261848)` |
 | Secret | blank |
-| Expiration Date | `2027-09-10` |
+| Expiration Date | blank |
 | Expiration Time | blank |
 | Roles | `member` and `reader` |
 | Access Rules | blank |
@@ -64,12 +64,13 @@ What we filled in [unverified]:
 
 Four of those are decisions rather than form-filling.
 
-**The expiration date is a decision, and the two fields interact.**
-A date with no time means **00:00 on that date**, so the day you enter is the first day the credential does not work.
-`2027-09-10` is therefore how you cover an allocation that ends on the 9th.
+**Leave both expiration fields blank**, which means the credential does not expire.
 
-Tying it to the allocation's end means the credential cannot outlive the project it exists for.
-A shorter life is better security practice, but the failure it invites is a credential that expires mid-year and produces an authentication error that never mentions expiry.
+The alternative is a date, and a date is what turns an ordinary authentication failure into a puzzle: the credential stops working one morning and the error says nothing about expiry.
+Revocation covers the same ground on demand — one click in Horizon, and it takes effect immediately — so the expiry date buys a deadline rather than a control.
+
+Revoke it when the allocation ends.
+`01-access-allocation.md` has the date in a calendar already, for a different reason.
 
 **Take `member` and `reader`, not everything offered.**
 Four roles were on offer here: `reader`, `creator`, `member`, and `load-balancer_member`.
@@ -86,7 +87,7 @@ Horizon labels it dangerous because it lets the credential mint further credenti
 
 **Leave Access Rules blank.**
 Restricting the credential to named API calls is the appealing option, and we did not take it: `scripts/10-provision.sh` spans compute, block storage, networking and DNS, so the list would be long and easy to get subtly wrong.
-A dated expiry and one-click revocation are the security story instead.
+Role scope and one-click revocation are the security story instead.
 If you want the restricted version, upstream documents the syntax — treat it as something to work out and test, not to copy.
 
 On success Horizon shows the id and secret once, with a **Download openrc file** button.
@@ -97,9 +98,9 @@ Jetstream2 documents the `openrc.sh` path only, not `clouds.yaml`.
 
 Three traps:
 
-> **An expiration *time* with no date means today.**
-> Horizon fills the date in from the clock, so a credential given only a time expires that same day — possibly at a time that has already passed.
-> Leaving *both* fields blank does the opposite: the credential never expires.
+> **If you do set an expiry, the two fields interact.**
+> A *time* with no date means today, because Horizon fills the date in from the clock — so the credential expires the same day, possibly at a moment already past.
+> A *date* with no time means 00:00 on that date, so the day you enter is the first day the credential does not work.
 > Neither is stated on the form; both are in Horizon's `identity/application_credentials` form, in the branch on `expiration_date`.
 
 > **The secret is shown once.**

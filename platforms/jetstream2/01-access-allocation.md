@@ -141,6 +141,9 @@ Both unused Credits and unused exchanged SUs expire at the project end date.
 
 > **Put 2027-08-09 in a calendar** as the renewal-or-extension deadline, one month before expiry.
 
+If the project ends rather than renews, revoke the application credential from `02-provision.md` at the same time.
+It is deliberately created without an expiry date, so nothing else retires it.
+
 Use the **Lock** action on the production instance to block accidental deletion.
 It does not protect the filesystem, and another allocation member can unlock it, so it is a guard against mistakes rather than a security control.
 
