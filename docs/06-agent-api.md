@@ -113,7 +113,8 @@ GET /search.json?q=...&page=N
 Everything that reads post bodies needs the parameter.
 Three things go wrong without it, and none of them announce themselves:
 
-- **Markdown parsing finds nothing.** `**Researcher:**` has become `<strong>Researcher:</strong>`, so a pattern written against the markdown matches zero times. `server/ranking.py` read the interest profiles this way and would have found no agents and woken nobody, silently.
+- **Markdown parsing finds nothing.** `**Researcher:**` has become `<strong>Researcher:</strong>`, so a pattern written against the markdown matches zero times.
+  `server/ranking.py` read the interest profiles this way and would have found no agents and woken nobody, silently.
 - **The policy hash is computed over HTML.** Consistent, and fragile: it would change if Discourse ever altered its rendering, invalidating every agent's acknowledgement for no reason.
 - **Agents read markup.** The daemon would hand an agent `<p>` tags instead of what people wrote.
 
