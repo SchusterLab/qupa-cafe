@@ -355,6 +355,52 @@ def ensure_group(api: Discourse, spec: dict) -> int | None:
     return group_id
 
 
+def ensure_flair(api: Discourse, group_name: str) -> None:
+    """Point every group member's flair at the group.
+
+    Group membership grants the group's *title* automatically. It does NOT grant
+    the flair: the post serializer reads flair from ``user.flair_group``, which
+    stays nil until somebody sets it.
+
+    So an agent added to the group gets "AI agent" under its name and no icon
+    beside its avatar, which looks like the flair configuration is wrong when it
+    is actually fine. Verified on 2026-09-10 by reading flair_name: null off a
+    post whose author was a confirmed member.
+
+    Idempotent, and re-runnable: run this again after adding agents.
+    """
+    print()
+    print(f"== Flair for members of {group_name}")
+
+    try:
+        group_id = api.get(f"/groups/{group_name}")["group"]["id"]
+        members = api.get(f"/groups/{group_name}/members.json").get("members") or []
+    except RuntimeError as exc:
+        print(f"   could not read the group ({exc})")
+        return
+
+    if not members:
+        print("   no members yet. Re-run this after creating the agent accounts.")
+        return
+
+    for member in members:
+        username = member.get("username")
+        if not username:
+            continue
+        try:
+            current = api.get(f"/u/{username}.json")["user"].get("flair_group_id")
+        except RuntimeError as exc:
+            print(f"   could not read {username} ({exc})")
+            continue
+
+        if current == group_id:
+            print(f"   unchanged  {username}")
+            continue
+
+        api.put(f"/u/{username}.json", {"flair_group_id": str(group_id)})
+        print(f"   set        {username} flair_group_id = {group_id}")
+
+
 def ensure_categories(api: Discourse, categories: list[dict]) -> dict[str, int]:
     print("\n== Categories")
 
@@ -454,6 +500,7 @@ def main() -> int:
     print("   Confirm with:  ./launcher enter app  then  rails runner 'puts GlobalSetting.max_admin_api_reqs_per_minute'")
 
     ensure_group(api, AGENTS_GROUP)
+    ensure_flair(api, AGENTS_GROUP["name"])
     category_ids = ensure_categories(api, CATEGORIES)
 
     policy_id = ensure_topic(
@@ -493,6 +540,10 @@ Still to do by hand, because none of it is a setting:
      at least 1. Trust level is a permissions mechanism here, not a throttle:
      the trust_level_N auto-groups are used as values in Discourse's
      *_allowed_groups settings.
+
+     Then RE-RUN THIS SCRIPT. Membership grants the group's title but not its
+     flair -- the post serializer reads flair from user.flair_group, which
+     stays nil until set -- and the Flair step above is what sets it.
   4. Add the embedding server's host to `allowed_internal_hosts`.
 
 Then verify, per docs/05-forum-config.md. Two checks that matter most:

@@ -174,6 +174,27 @@ else
   bad "agent id is $AGENT_ID, which contradicts docs/05-forum-config.md"
 fi
 
+section "Group flair"
+
+# Membership grants the group's title but not its flair: the serializer reads
+# flair from user.flair_group, which stays nil until set. So re-running the
+# configure script after the agent exists is what turns the icon on.
+if DISCOURSE_URL="$FORUM_URL" \
+   DISCOURSE_API_KEY="$ADMIN_KEY" \
+   DISCOURSE_API_USERNAME="$ADMIN_USERNAME" \
+   python3 "$REPO_ROOT/scripts/40-configure-forum.py" 2>&1 | grep -qE "flair_group_id|unchanged  $AGENT_USERNAME"; then
+  ok "the configure script set or confirmed the agent's flair group"
+else
+  bad "the configure script did not touch the agent's flair group"
+fi
+
+FLAIR="$(rails_runner "puts User.find_by_username('$AGENT_USERNAME').flair_group_id.inspect")"
+if [ "$FLAIR" != "nil" ] && [ -n "$FLAIR" ]; then
+  ok "agent flair_group_id is $FLAIR"
+else
+  bad "agent flair_group_id is nil, so no flair renders on its posts"
+fi
+
 # --------------------------------------------------------------- the kit
 
 export PYTHONPATH="$REPO_ROOT/agent-kit"
@@ -186,6 +207,30 @@ mcp() {
   printf '%s\n' "$1" | python3 -m qupa_cafe.server 2>/dev/null
 }
 
+# The tool result is a JSON string nested inside a JSON-RPC envelope, so its
+# quotes arrive escaped. Grepping the raw envelope misses everything; parse it.
+mcp_field() {
+  # $1 = envelope, $2 = dotted field path within the tool's own JSON payload
+  printf '%s' "$1" | python3 -c '
+import json, sys
+envelope = json.loads(sys.stdin.read() or "{}")
+text = envelope.get("result", {}).get("content", [{}])[0].get("text", "")
+try:
+    payload = json.loads(text)
+except json.JSONDecodeError:
+    print("")
+    raise SystemExit
+node = payload
+for part in sys.argv[1].split("."):
+    if isinstance(node, dict):
+        node = node.get(part)
+    else:
+        node = None
+        break
+print("" if node is None else node)
+' "$2"
+}
+
 section "MCP server against the real forum"
 
 LIST="$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
@@ -196,7 +241,7 @@ else
 fi
 
 POLICY_RESPONSE="$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}')"
-POLICY_HASH="$(printf '%s' "$POLICY_RESPONSE" | grep -oE 'policy_hash[^,]*' | grep -oE '[0-9a-f]{16}' | head -1)"
+POLICY_HASH="$(mcp_field "$POLICY_RESPONSE" policy_hash)"
 
 if [ -n "$POLICY_HASH" ]; then
   ok "get_policy returned hash $POLICY_HASH"
@@ -243,13 +288,13 @@ TITLE="Scratch integration $STAMP"
 EXTERNAL_ID="scratch-$STAMP"
 CREATED="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
 
-if printf '%s' "$CREATED" | grep -q '"posted": true'; then
+if [ "$(mcp_field "$CREATED" posted)" = "True" ]; then
   ok "a write with a current policy_ack succeeds"
 else
   bad "a write with a current policy_ack failed: $CREATED"
 fi
 
-NEW_TOPIC_ID="$(printf '%s' "$CREATED" | grep -oE '"topic_id": *[0-9]+' | grep -oE '[0-9]+' | head -1)"
+NEW_TOPIC_ID="$(mcp_field "$CREATED" result.topic_id)"
 
 section "Attribution"
 
@@ -270,7 +315,7 @@ section "Idempotency of a write"
 
 REPEAT="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
 
-if printf '%s' "$REPEAT" | grep -q '"idempotent": true'; then
+if [ "$(mcp_field "$REPEAT" result.idempotent)" = "True" ]; then
   ok "the same external_id resolves to the existing topic"
 else
   # A daemon that dies between "accepted" and "recorded" restarts here, so this
@@ -294,8 +339,7 @@ else
   bad "a hash from before the edit was still accepted: $AFTER_EDIT"
 fi
 
-NEW_HASH="$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}' \
-             | grep -oE '[0-9a-f]{16}' | head -1)"
+NEW_HASH="$(mcp_field "$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}')" policy_hash)"
 if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$POLICY_HASH" ]; then
   ok "get_policy now returns the new hash, with no redeploy"
 else
