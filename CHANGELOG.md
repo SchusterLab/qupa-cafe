@@ -79,8 +79,11 @@ scratch forum.
   Fixed with `?include_raw=true` in all three places; the test stub now returns `raw` only when the
   parameter is present, so it cannot quietly regress.
 - **`discourse-ai` embeds topics, not posts.**
-  `ai_posts_embeddings` is created by the plugin's migrations and never populated, and no site
-  setting changes that.
+  `ai_posts_embeddings` is created by the plugin's migrations and stays empty by default.
+  There is a switch — `ai_embeddings_per_post_enabled`, default false — but it is **hidden**, absent
+  from both the admin panel and `SiteSetting.all_settings`, which is why it first looked as though no
+  such setting existed.
+  We left it off and so cannot say what it costs.
   `ranking.py` now scores topics and keeps its guardrails per post, which fits the design better:
   the daemon hands the agent the whole thread anyway.
 - **The embedding server must bind to the Docker bridge gateway.**
@@ -123,3 +126,20 @@ scratch forum.
   that posts are attributed to the agent rather than to admin, and that `external_id` prevents a
   duplicate.
 - `.gitattributes` normalisation: a clone into WSL produced LF, so the scripts run on Linux.
+- Similarity floor set to **0.70**, from measurement rather than guesswork.
+  On-topic threads scored 0.862 and 0.822 against a circuit-QED interest profile; an off-topic
+  cosmology thread scored 0.624, level with generic category boilerplate at 0.607.
+  The previous default of 0.55 would have woken on the off-topic thread.
+  Four synthetic topics is not a calibration, so this is an opening value to be re-derived from the
+  score log once real traffic exists.
+
+### Still unverified, and why
+
+- **TLS and email deliverability.** Need public DNS, a reachable port 80, and a working relay.
+- **Webhooks.** The reasoning is read from Discourse's source; no listener has been run against them.
+- **`install.py` and the Claude Code and Codex wiring.** Need a researcher's machine, not the forum host.
+- **The 80 and 443 security-group rules.** Blocked on the allocation; marked `[extrapolated]`.
+- **Brevo's DNS record names.** Blocked on the account; marked `[unverified]`.
+- **Embedding latency on an always-on host.** Our scratch host suspends when idle, which makes it
+  poor evidence either way.
+- **Backup and restore drill**, and the reboot-survival check.
