@@ -120,11 +120,22 @@ class Config:
     listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
     poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
 
-    # UNVERIFIED. discourse-ai has renamed its embedding tables across versions.
-    # Confirm against the installed plugin before trusting this:
-    #   \dt ai_*        inside the container's psql
+    # Verified against a live forum on 2026-09-10:
+    #   ai_posts_embeddings(post_id, model_id, model_version, strategy_id,
+    #                       strategy_version, digest, embeddings, ...)
+    # with `embeddings` a pgvector column. pgvector 0.8.6 is already installed
+    # in the Discourse Postgres, so nothing needs adding.
+    #
+    # Confirm for your own version:
+    #   \d ai_posts_embeddings      inside the container's psql
     embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_posts_embeddings")
     embeddings_column: str = os.environ.get("EMBEDDINGS_COLUMN", "embeddings")
+
+    # The table is keyed on (post_id, model_id, strategy_id), so a forum with
+    # more than one embedding definition holds several rows per post. With one
+    # definition this can stay empty; set it if you ever add a second, or the
+    # similarity query will compare against whichever row comes back first.
+    embeddings_model_id: str = os.environ.get("EMBEDDINGS_MODEL_ID", "")
 
 
 CONFIG = Config()
@@ -447,15 +458,22 @@ class Ranker:
         be visible for a few seconds before its vector exists. The caller treats
         None as "not yet" and the post is reconsidered on the next pass.
         """
+        parameters: list[Any] = [str(vector), post_id]
+        model_filter = ""
+        if self.config.embeddings_model_id:
+            model_filter = "AND model_id = %s"
+            parameters.append(int(self.config.embeddings_model_id))
+
         sql = f"""
             SELECT 1 - ({self.config.embeddings_column} <=> %s::vector) AS similarity
             FROM {self.config.embeddings_table}
             WHERE post_id = %s
+            {model_filter}
             LIMIT 1
         """
         try:
             with self._connect() as conn, conn.cursor() as cur:
-                cur.execute(sql, (str(vector), post_id))
+                cur.execute(sql, tuple(parameters))
                 row = cur.fetchone()
                 return float(row[0]) if row else None
         except psycopg.Error as exc:

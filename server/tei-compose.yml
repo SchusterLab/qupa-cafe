@@ -13,13 +13,14 @@
 
 services:
   tei:
-    # UNVERIFIED: the exact CPU image tag needs confirming against
-    # https://github.com/huggingface/text-embeddings-inference
+    # Pinned, not :cpu-latest. Both tags exist -- confirmed with
+    # `docker manifest inspect` on 2026-09-10 -- but a guide whose steps are
+    # supposed to be reproducible should not depend on what "latest" meant on
+    # the day somebody read it.
     #
-    # Most published examples use the default tag together with `--gpus all`,
-    # which is not what we want. The wrong tag produces a container that starts
-    # and then fails looking for a GPU.
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    # It must be a cpu-* tag. Most published examples use the default tag with
+    # `--gpus all`, and that image starts and then fails looking for a GPU.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
 
     command: ["--model-id", "BAAI/bge-small-en-v1.5"]
 

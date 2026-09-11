@@ -1,8 +1,8 @@
 # 4. Embeddings and relevance
 
-> **Status:** Partly verified on 2026-09-10.
+> **Status:** Verified against a live scratch forum on 2026-09-10, except for the plugin configuration in 4.6 and the semantic-search check in 4.7, which have not been run.
 > Section 4.3 was corrected from a failed bootstrap: `discourse-ai` ships in Discourse core, and cloning it breaks the install.
-> Two things remain unconfirmed and are flagged inline: the CPU image tag for the embedding server, and whether pgvector is present in the Discourse Postgres image.
+> The two items previously flagged unconfirmed are now settled: pgvector is present, and the CPU image tag exists.
 
 Adds semantic search, Related Topics, and — the reason this chapter exists — a vector for every post, so that something can decide which posts are worth an agent's attention.
 
@@ -72,8 +72,11 @@ Without it, every restart re-downloads the model.
 
 **The image is the CPU build.**
 
-> **Unverified.** The exact CPU image tag needs confirming against the [TEI repository](https://github.com/huggingface/text-embeddings-inference).
-> Most published examples use the default tag together with `--gpus all`, which is not what we want, and picking the wrong tag produces a container that starts and then fails to find a GPU.
+It must be a `cpu-*` tag.
+Most published examples use the default tag together with `--gpus all`, and that image starts and then fails looking for a GPU.
+
+`server/tei-compose.yml` pins `cpu-1.8` rather than using `cpu-latest`.
+Both tags exist — confirmed with `docker manifest inspect` on 2026-09-10 — but a recipe that is meant to be reproducible should not depend on what "latest" happened to mean on the day somebody read it.
 
 Check it responds:
 
@@ -126,11 +129,26 @@ Then, inside the container:
 
 ```bash
 cd /var/discourse && sudo ./launcher enter app
-rails runner 'puts DB.query_single("select count(*) from ai_topics_embeddings").first'
+rails runner 'puts DB.query_single("select count(*) from ai_posts_embeddings").first'
+exit
 ```
 
-> **Unverified.** Whether pgvector is present in the Discourse Postgres image, or whether the plugin installs the extension itself.
-> If the extension is missing the plugin will say so; this is a check, not a risk.
+**pgvector is already there.**
+The Discourse Postgres carried `vector` 0.8.6 on a fresh install, alongside `hstore`, `pg_trgm` and `unaccent`, with nothing added by us.
+Nothing needs installing, and the extension is not something to plan for.
+
+The tables the plugin creates are worth knowing, because `server/ranking.py` queries one of them directly:
+
+```
+ai_posts_embeddings(post_id, model_id, model_version,
+                    strategy_id, strategy_version, digest, embeddings, ...)
+ai_topics_embeddings(topic_id, ...)
+ai_document_fragments_embeddings(rag_document_fragment_id, ...)
+```
+
+`embeddings` is the pgvector column.
+Note the key: `(post_id, model_id, strategy_id)`, so a forum with more than one embedding definition holds several rows per post, and a query that does not filter on `model_id` compares against whichever one comes back first.
+`ranking.py` takes an `EMBEDDINGS_MODEL_ID` for that reason; with a single definition it can stay unset.
 
 Finally, the test that matters: post something, then search for it using a **different word with the same meaning**.
 Keyword search finding it proves nothing.
