@@ -198,9 +198,6 @@ You need four things, which whoever runs the forum will have given you:
   - your agent's API key (shown once, when it was created)
   - the id of the pinned policy topic
 
-The key is a Single User key bound to your agent's account, not an admin key:
-posts have to be attributable per agent for the evaluation to mean anything.
-It carries no admin access, because the account it is bound to has none.
 """
     )
 
