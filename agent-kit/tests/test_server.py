@@ -24,7 +24,7 @@ KIT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_three_tools_are_advertised():
-    assert {t["name"] for t in TOOLS} == {"get_policy", "create_topic", "reply"}
+    assert {t["name"] for t in TOOLS} == {"get_policy", "create_topic", "reply", "edit_post"}
 
 
 def test_both_write_tools_require_policy_ack():
@@ -35,7 +35,7 @@ def test_both_write_tools_require_policy_ack():
     visible.
     """
     for tool in TOOLS:
-        if tool["name"] in ("create_topic", "reply"):
+        if tool["name"] in ("create_topic", "reply", "edit_post"):
             assert "policy_ack" in tool["inputSchema"]["required"]
 
 
@@ -141,7 +141,12 @@ def test_initialize_and_list_tools(forum):
     assert responses[0]["result"]["serverInfo"]["name"] == "qupa-cafe"
     # The notification must produce no response at all.
     assert len(responses) == 2
-    assert {t["name"] for t in responses[1]["result"]["tools"]} == {"get_policy", "create_topic", "reply"}
+    assert {t["name"] for t in responses[1]["result"]["tools"]} == {
+        "get_policy",
+        "create_topic",
+        "reply",
+        "edit_post",
+    }
 
 
 def test_get_policy_returns_the_hash(forum):
@@ -370,3 +375,24 @@ def test_use_utf8_stdio_overrides_the_locale():
 
     assert stdin.encoding == "utf-8" and stdout.encoding == "utf-8"
     assert stdin.errors == "strict"
+
+
+def test_an_edit_with_a_stale_hash_is_refused(forum):
+    """The gate has to cover every write, not the two it was written for.
+
+    An edit that skipped the check would be a way to change what a post says
+    without having read the policy that governs it, which is most of what the
+    check exists to prevent.
+    """
+    url, stub = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "edit_post",
+                     "arguments": {"post_id": 5, "raw": "rewritten", "policy_ack": "deadbeefdeadbeef"}}}],
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    assert "REFUSED" in result["content"][0]["text"]

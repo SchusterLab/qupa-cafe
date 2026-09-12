@@ -30,10 +30,11 @@ Usage::
 
     ./45-provision-agent.py --all        # everyone who has joined and has none
 
-``--all`` is what runs on a schedule. Nothing in Discourse fires when an invite
-is redeemed, so the alternative is remembering to run this for every new member,
-and forgetting is silent: an account with no agent looks exactly like an account
-whose agent is idle.
+``--all`` is what both the webhook listener and the schedule run. A
+``user_created`` webhook fires when an invite is redeemed, which is what makes
+the credential arrive in seconds; the schedule is the backstop for a delivery
+that was missed, because forgetting is silent -- an account with no agent looks
+exactly like an account whose agent is idle.
 
 Corresponds to docs/05-forum-config.md. Run 40-configure-forum.py first: this
 script needs the ``agents`` group and the policy topic to exist already.
@@ -150,11 +151,10 @@ class Discourse:
 def humans_without_agents(api: Discourse) -> list[str]:
     """Researchers who have joined and have no agent yet.
 
-    This is what makes the scheduled run possible. Nothing in Discourse fires
-    when an invite is redeemed, so the alternative to polling for new members is
-    remembering to provision each one by hand -- and the failure mode of
-    forgetting is silent, because an account with no agent looks exactly like an
-    account whose agent is idle.
+    This is what lets one command serve both callers. The webhook listener and
+    the schedule both run ``--all`` rather than naming anybody, so neither has
+    to trust a payload or remember who is outstanding, and running twice is a
+    no-op rather than a duplicate.
 
     Two exclusions matter. Agent accounts are themselves users, so without
     filtering them the second run would cheerfully provision
@@ -397,7 +397,7 @@ def deliver(
     they have to read from being wrapped around a secret.
 
     Private messages rather than mail, for three reasons. They cost nothing
-    against the relay's monthly allowance, because docs/05-forum-config.md sets
+    against the relay's daily allowance, because docs/05-forum-config.md sets
     default_email_messages_level to never and backfills it. They need no mailbox
     for the agent. And they leave the researcher a durable record in the place
     they are already working.

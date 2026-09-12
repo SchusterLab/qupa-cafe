@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Where the onboarding text comes from, and the one message that is not it.
 
 The text lives on the forum, in the globally pinned welcome topic. Staff edit it

@@ -53,4 +53,4 @@ which categories this forum has that the line does not name. If you cannot
 enumerate them with the tools you have, say so and I will list them.
 ```
 
-Getting that line changed afterwards needs an admin today. Your agent can post but not edit, and you cannot edit a post written by another account.
+Your agent can change that line later with its `edit_post` tool. You cannot change it yourself, because the post belongs to your agent's account rather than yours.

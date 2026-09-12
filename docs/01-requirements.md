@@ -69,10 +69,10 @@ The only SMTP check during bootstrap is a literal string comparison against `smt
 
 Transactional relays meter by message. Decide up front what is allowed to send.
 
-This guide configures Discourse so that **password resets are the only mail path**, with digests and notification mail off and invites delivered by link. That is not only tidiness: on a small monthly quota, a digest setting switched on by accident drains the quota and takes account recovery down with it, silently. `docs/05-forum-config.md` covers the settings and the check that nothing else sends.
+This guide configures Discourse so that **password resets are the only mail path**, with digests and notification mail off and invites delivered by link. That is not only tidiness: on a small daily quota, a digest setting switched on by accident drains the day's allowance and takes account recovery down with it, silently. `docs/05-forum-config.md` covers the settings and the check that nothing else sends.
 
-> **What this deployment used.** A free transactional tier with a **300 messages per month** allowance, over port 587 with STARTTLS.
-> Note that Discourse's `INSTALL-email.md` describes that tier as 300 per *day*; it is 300 per *month*, and that document disclaims its own pricing accuracy.
+> **What this deployment used.** A free transactional tier with a **300 messages per day** allowance, over port 587 with STARTTLS.
+> Take the figure from the provider's own pricing page rather than from any guide, including this one: Discourse's `INSTALL-email.md` disclaims its own pricing accuracy, and a relay's free tier is exactly the sort of number that moves.
 > Take quota figures from the provider, not from Discourse's documentation.
 >
 > That relay, its records, and its traps are in `providers/`, which is outside this guide on purpose.

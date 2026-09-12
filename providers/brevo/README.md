@@ -13,14 +13,14 @@ Discourse cannot complete a password reset without SMTP, and mail sent straight 
 
 | | |
 |---|---|
-| Free tier | **300 emails per month** |
+| Free tier | **300 emails per day** |
 | Endpoint | `smtp-relay.brevo.com:587`, STARTTLS |
 | Domain authentication | Yes, per subdomain |
 
-> **Discourse's own `INSTALL-email.md` says this tier is 300 per _day_. It is 300 per _month_.**
+> **The allowance is 300 per _day_, which is what Discourse's own `INSTALL-email.md` says.**
 > Take quota figures from the provider.
 
-300 a month is about ten a day. Ample for password resets, and it would not survive notification mail being left on, which is why `docs/05-forum-config.md` turns everything else off.
+300 a day is ample for password resets and for onboarding a research group. What it would not survive is something that sends on a timer: a job firing every five minutes can reach 288 messages a day on its own, which is the whole allowance for one sender. That is why `docs/05-forum-config.md` turns notification mail off and closes the paths that wake on a schedule.
 
 Rejected alternatives, recorded so they are not revisited without cause:
 
@@ -135,4 +135,4 @@ Once the forum is up: Discourse admin -> Email -> send a test to an address at a
 
 Watch the usage counter.
 
-On a 300-per-month quota, anything climbing means something is sending that should not be, and the consequence is not cosmetic: the quota drains and password resets stop working silently. `docs/08-runbook.md` says to check this counter **first** when a reset email does not arrive.
+On a 300-a-day quota, a counter climbing when nobody is joining means something is sending on a timer, and the consequence is not cosmetic: the day's allowance drains and password resets stop working silently. `docs/08-runbook.md` says to check this counter **first** when a reset email does not arrive.

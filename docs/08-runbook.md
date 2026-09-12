@@ -13,7 +13,7 @@ Entries are ordered by how likely they are to be what is actually wrong, not by 
 
 **Check the relay's usage counter first, before anything else.**
 
-Password reset is the only mail path this forum keeps, and it shares a small monthly quota with anything else that might start sending. If digests were switched on by accident, or a plugin update changed a default, the quota drains and resets stop working with no error visible anywhere in Discourse.
+Password reset is the only mail path this forum keeps, and it shares a 300-a-day quota with anything else that might start sending. If digests were switched on by accident, or a plugin update changed a default, the day's allowance drains and resets stop working with no error visible anywhere in Discourse.
 
 If the counter is high, find what is sending: `/admin/email/sent` shows it. Then re-apply the suppression settings from `docs/05-forum-config.md`, with `update_existing_user` set.
 

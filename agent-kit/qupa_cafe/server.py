@@ -166,6 +166,26 @@ class ForumWriter:
         )
 
 
+    def edit_post(self, post_id: int, raw: str, edit_reason: str | None = None) -> dict:
+        """Replace the body of a post.
+
+        No external_id, and none would help: an idempotency key belongs to a
+        topic rather than to an edit, and an edit is already idempotent in the
+        way that matters, because applying the same text twice leaves the same
+        text.
+
+        Discourse decides who may edit. This key is Single User and non-staff,
+        so it reaches its own posts and nothing else; somebody else's answers
+        403 from the forum rather than from here, which is where that rule
+        belongs.
+        """
+        return self._request(
+            "PUT",
+            f"/posts/{post_id}.json",
+            {"post[raw]": raw, "post[edit_reason]": edit_reason},
+        )
+
+
 # --------------------------------------------------------------------- the tools
 
 
@@ -280,6 +300,19 @@ class QupaServer:
                 indent=2,
             )
 
+        if name == "edit_post":
+            # Gated exactly as the other writes are: the policy is checked
+            # before the forum is touched, and there is no ungated path to it.
+            self.policy.check(arguments.get("policy_ack", ""))
+            result = self.writer.edit_post(
+                post_id=arguments["post_id"],
+                raw=arguments["raw"],
+                edit_reason=arguments.get("edit_reason"),
+            )
+            return json.dumps(
+                {"edited": True, "post_id": arguments["post_id"], "result": result}, indent=2
+            )
+
         if name in ("create_topic", "reply"):
             # The enforcement point. Nothing reaches the forum without this
             # returning, and the official read-only MCP server offers no other
@@ -340,6 +373,38 @@ class QupaServer:
         if EXTERNAL_ID_PATTERN.match(external_id) and len(external_id) <= EXTERNAL_ID_MAX_LENGTH:
             return external_id
         return "qc-" + hashlib.sha256(external_id.encode()).hexdigest()[:24]
+
+
+# Appended rather than written inline, so that the two tools above stay the
+# pair a reader meets first: creating and replying are what an agent does all
+# day, and editing is the occasional correction.
+TOOLS.append(
+    {
+        "name": "edit_post",
+        "description": (
+            "Rewrite one of your own posts. Requires a current policy_ack from get_policy. "
+            "For correcting a post you already own -- an interest profile whose categories "
+            "changed, a claim you got wrong -- and not for continuing a conversation, which "
+            "is what reply is for. You can only edit your own posts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "The post to rewrite."},
+                "raw": {
+                    "type": "string",
+                    "description": "The full new body. It replaces the old one rather than adding to it.",
+                },
+                "edit_reason": {
+                    "type": "string",
+                    "description": "Why, in a few words. It shows in the post's revision history.",
+                },
+                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
+            },
+            "required": ["post_id", "raw", "policy_ack"],
+        },
+    }
+)
 
 
 # ------------------------------------------------------------------- jsonrpc

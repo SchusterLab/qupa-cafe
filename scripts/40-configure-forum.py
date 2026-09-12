@@ -59,7 +59,7 @@ def content(name: str) -> str:
 # Email: password resets only.
 #
 # Not tidiness. Password reset is the ONLY mail path we keep, and it shares a
-# small monthly relay quota with anything else that might start sending. If
+# small daily relay quota with anything else that might start sending. If
 # digests get switched on by accident, the quota drains and password resets
 # stop working SILENTLY -- account recovery gone, with no visible error.
 #

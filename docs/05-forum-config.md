@@ -43,7 +43,7 @@ The narrative bot is a third: it ships enabled, with `disable_discourse_narrativ
 
 `Jobs::Chat::EmailNotifications` runs **every five minutes** and mails a `chat_summary` to anyone holding an unread chat mention. Its frequency is a per-user preference with no site-wide default and no site setting behind it, so the quota cannot be protected by tuning it down.
 
-Both that job and `Chat::Mailer` return early on `chat_enabled`, which makes it the switch that closes the path. On a 300-a-month allowance, a mailer that wakes every five minutes is the largest standing risk to the one mail path this guide keeps.
+Both that job and `Chat::Mailer` return early on `chat_enabled`, which makes it the switch that closes the path. A mailer that wakes every five minutes can send 288 messages in a day, which is the entire 300-a-day allowance for one recipient, so it is the largest standing risk to the one mail path this guide keeps.
 
 Nothing here needs chat. The forum's content is topics and replies, which is what the agents read and what the evaluation measures.
 
@@ -59,7 +59,7 @@ Without it, the settings look correct in the admin panel while every account cre
 
 Two independent reasons.
 
-**The quota.** On a 300-messages-per-month allowance, five researchers watching an active category could exhaust the month in an afternoon.
+**The quota.** On a 300-messages-per-day allowance, five researchers watching an active category are one busy thread away from spending the day's allowance on notifications and having none left for a password reset.
 
 **It is redundant here.** Every researcher on this forum has an agent watching it and notifying them. Notification email would duplicate, worse, a job something else already does. Turning it off removes noise rather than capability.
 
@@ -67,7 +67,7 @@ Two independent reasons.
 
 This turns a tidiness setting into a reliability one.
 
-Password reset is the only mail path left, and it shares the monthly quota with anything else that might start sending. If digests get switched on by accident, or a plugin update changes a default, the quota drains and **password resets stop working silently** — account recovery gone, with no visible error anywhere.
+Password reset is the only mail path left, and it shares the day's quota with anything else that might start sending. If digests get switched on by accident, or a plugin update changes a default, the quota drains and **password resets stop working silently** — account recovery gone, with no visible error anywhere.
 
 So the suppression settings are load-bearing. The "nothing else sends" check in section 5.8 is not optional, and `docs/08-runbook.md` carries the matching entry: if a reset email does not arrive, check the relay's usage counter before debugging anything else.
 
@@ -183,7 +183,7 @@ Its default is `-1`, which is what the other two of these settings ship as, and 
 
 `InviteRedeemer` approves a redemption outright when `must_approve_users` is false **and** `invite_only` is true. So turning approval off does not open a second, unreviewed door: with `invite_only` on there is no other way to register at all.
 
-What it buys is mail. Approval adds a `signup_after_approval` message on top of the activation message every new member already costs, which is two of a 300-a-month allowance per person.
+It also saves a message. Approval adds a `signup_after_approval` note on top of the activation mail every new member already costs, which is two rather than one per person — not a quota problem at 300 a day, but a second mail nobody reads and a second thing to go wrong.
 
 What stands in for it is the single redemption above. Approval was guarding against a link reaching somebody it was not meant for, and a link that cannot be redeemed twice addresses that more directly than a human clicking approve on a name they half-recognise.
 
@@ -219,7 +219,7 @@ The onboarding text tells them what to do first, which is not obvious and is the
 
 It carries an example prompt for it, because the profile is better written by the agent than by hand. The agent already has the forum tools and can read the template and the policy, and a profile it wrote is a statement of the researcher's work that the researcher can check before it acts on it. The prompt repeats the three constraints from 5.5 that are easy to violate silently — English, the 512-token budget, and exclusions that add rather than subtract — and it asks the agent to show a draft before posting.
 
-Delivering by private message rather than email is deliberate. It costs nothing against the relay's monthly quota, because 5.2 sets `default_email_messages_level` to never and backfills it — confirmed, a private message generates zero outbound mail, and two of them generate zero as well. It needs no mailbox for the agent, which does not have one. And it leaves the researcher a durable record where they are already working.
+Delivering by private message rather than email is deliberate. It costs nothing against the relay's quota, because 5.2 sets `default_email_messages_level` to never and backfills it — confirmed, a private message generates zero outbound mail, and two of them generate zero as well. It needs no mailbox for the agent, which does not have one. And it leaves the researcher a durable record where they are already working.
 
 Admins can read private messages, which is not a leak here: an admin issued the key and can issue another.
 
@@ -227,7 +227,19 @@ The script is idempotent, with one deliberate exception. It will not silently re
 
 ### Provisioning runs on a schedule
 
-**Nothing in Discourse fires when an invite is redeemed.** There is no hook and no webhook for it, so an account simply appears — and a researcher who is never provisioned has a forum account, no agent, and no message, with nothing anywhere reporting it, because from the forum's point of view nothing went wrong.
+**A webhook fires when an invite is redeemed, and a schedule catches what it misses.** Redemption creates a user, and `user_created` is one of Discourse's webhook events, so the credential can arrive in seconds rather than on the next poll. Measured on a real redemption: the agent account existed **3.4 seconds** after the invite was accepted and the credential message **4.5 seconds** after.
+
+The schedule stays anyway, because a webhook is a delivery and deliveries are missed: the listener restarting, the container being rebuilt, a request that fails and is not retried. A missed one is invisible from the forum's side, since a researcher with no agent looks exactly like a researcher whose agent is idle. Both paths run the same idempotent command, so whichever arrives second finds nothing to do.
+
+`server/provision-hook.py` is the listener. Three things about it are deliberate.
+
+**It ignores the payload.** The request names the user who was created and that name is never used: the listener runs `--all`, which surveys the forum itself. So a forged or malformed request can cause one extra no-op run and nothing else, and there is no argument to inject into.
+
+**It verifies the signature before parsing anything.** Discourse signs the body with the webhook's secret, and a request that does not verify is answered 403 without being read.
+
+**It runs unprivileged, on the docker bridge address.** The container can reach it and the network cannot, which needs one `ufw` rule — see 2.6, because the direction that needs allowing is the one people do not expect.
+
+Registering it needs the target in `allowed_internal_hosts`; Discourse's SSRF guard blocks private addresses for webhook targets as well as for its own requests, and `docs/04-embeddings.md` already put the bridge address there for the embedding server.
 
 That failure is silent in the worst way: an account with no agent looks exactly like an account whose agent is idle.
 

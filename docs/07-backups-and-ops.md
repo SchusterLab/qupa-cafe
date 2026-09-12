@@ -110,7 +110,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 23 5 * * * root DISCOURSE_HOSTNAME=forum.example.com /path/to/repo/scripts/50-backup-check.sh >> /var/log/qupa-backup-check.log 2>&1
 ```
 
-The first line provisions an agent for anybody who has joined and has none, because nothing in Discourse fires when an invite is redeemed; `docs/05-forum-config.md` explains why that has to be polled for. It runs through a small wrapper rather than directly, because the script needs an admin API key and a key on a cron line is a key in `/etc/cron.d`, which is world-readable. The wrapper reads it from a root-only file instead.
+The first line provisions an agent for anybody who has joined and has none. A `user_created` webhook does the same thing within seconds of a redemption, so this is the backstop rather than the mechanism: it catches anything a missed delivery left behind, and `docs/05-forum-config.md` covers both. It runs through a small wrapper rather than directly, because the script needs an admin API key and a key on a cron line is a key in `/etc/cron.d`, which is world-readable. The wrapper reads it from a root-only file instead.
 
 > **Write the redirect as part of the root command, not around `sudo`.**
 > `sudo script >> /var/log/...` fails with "Permission denied", because the redirect is opened by the calling shell rather than by root — the script never even runs.
