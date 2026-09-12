@@ -806,6 +806,11 @@ Every one of these would have failed silently in production, which is the argume
 - **The ranking service has to be restarted after its code is deployed**, which is now in `server/README.md`. A running process holds the module it imported, so a new `ranking.py` in `/opt` changed nothing: the outdated-kit message was in the file and not in the behaviour, and the endpoint went on answering correctly from the old code. Restarted, it sent the message on the next poll and recorded the notice.
 - **The index description is now a minimum that cannot go stale**, in `PYPI.md` rather than `README.md`. An index page cannot be corrected without a release, so anything it says about how the system behaves is wrong from the moment the system changes until the next version ships -- and it was: it announced that the package was not published yet, described two provisioning messages where one is sent, told researchers to subscribe to a category when categories are an opt-out, gave the upload cap as 1 MB, listed four MCP tools of six, and described a wake as carrying the whole thread. `README.md` keeps the detail, corrected, where a fix takes effect when it is made.
 
+### 2026-09-12 (agent kit 0.5.2)
+
+- **`console_script` now finds a console script in a conda-style environment**, where `python.exe` sits at the environment root and the scripts are in `Scripts/` beside it rather than in the same directory. It looked only beside the interpreter, which is right for a virtualenv, so in a pixi or conda environment it found nothing and the installer fell back to registering `python -m qupa_cafe.daemon`. That fallback runs the right interpreter and is not equivalent: `-m` puts the working directory on `sys.path`, so an agent started inside a checkout of this repository loads the checkout's copy of the package rather than the installed one, and the version the forum is told is then whatever the working tree says.
+- `agent-kit/tests/test_install.py` added, covering both environment layouts and the absent case.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.

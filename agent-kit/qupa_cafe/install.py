@@ -100,13 +100,20 @@ def console_script(name: str) -> Path | None:
     path, which is how a service invokes one, would fail to find its own
     siblings and quietly fall back.
 
-    pip puts scripts in the same directory as the interpreter that installed
-    them, so that directory is the answer rather than a guess.
+    pip puts scripts beside the interpreter that installed them in a
+    virtualenv, and in a ``Scripts`` subdirectory in a conda-style environment
+    on Windows, where ``python.exe`` sits at the environment root. Both are
+    checked, because missing the second one means falling back to
+    ``python -m``, and that is not the same thing: ``-m`` puts the working
+    directory on ``sys.path``, so an agent started inside a checkout of this
+    repository would load the checkout's copy of the package instead of the
+    installed one. A console script has no such ambiguity.
     """
     bindir = Path(sys.executable).parent
-    for candidate in (bindir / name, bindir / f"{name}.exe"):
-        if candidate.is_file():
-            return candidate
+    for directory in (bindir, bindir / "Scripts", bindir / "bin"):
+        for candidate in (directory / name, directory / f"{name}.exe"):
+            if candidate.is_file():
+                return candidate
     return None
 
 
