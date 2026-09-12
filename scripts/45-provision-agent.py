@@ -230,8 +230,73 @@ def humans_with_agents(api: Discourse) -> list[tuple[dict, str]]:
     return paired
 
 
+def share_agent_messages(api: Discourse, agent: str, researcher: str) -> None:
+    """Add the researcher to every private message their agent is in.
+
+    A researcher cannot otherwise see what their agent received. The agent has
+    no browser session and its mailbox does not exist, so there is no password
+    to reset and no mail to read; before this, finding out what somebody had
+    sent an agent meant reading the database.
+
+    Sharing the topic rather than sharing the account is the point. The
+    messages arrive in the researcher's own inbox, under their own name, and
+    the agent's account stays the only thing that can post as the agent --
+    which is what makes a post attributable to it. ``docs/06-agent-api.md``
+    rests the assessment on that attribution, so a login a human could use
+    would cost more than it bought.
+
+    Idempotent, and quiet when there is nothing to add: it runs on the same
+    schedule as the rest of provisioning.
+    """
+    try:
+        listing = api.get(f"/topics/private-messages/{agent}.json")
+    except RuntimeError as exc:
+        print(f"\n== Private messages")
+        print(f"   ERROR: cannot list them for {agent}: {exc}")
+        return
+
+    topics = listing.get("topic_list", {}).get("topics") or []
+    if not topics:
+        return
+
+    added, already = 0, 0
+    for topic in topics:
+        topic_id = topic.get("id")
+        if not topic_id:
+            continue
+
+        # Asked per topic rather than inferred from the listing, which does not
+        # carry the participants.
+        try:
+            detail = api.get(f"/t/{topic_id}.json")
+        except RuntimeError:
+            continue
+        participants = {
+            (u.get("username") or "").lower()
+            for u in (detail.get("details", {}).get("allowed_users") or [])
+        }
+        if researcher.lower() in participants:
+            already += 1
+            continue
+
+        try:
+            api.post(f"/t/{topic_id}/invite.json", {"user": researcher})
+            added += 1
+        except RuntimeError as exc:
+            print(f"   ERROR: cannot add {researcher} to topic {topic_id}: {exc}")
+
+    if added:
+        print(f"\n== Private messages")
+        print(f"   shared     {added} of {len(topics)} with {researcher}")
+        print(f"              they appear in their own inbox; the agent's account is unchanged")
+    elif already:
+        print(f"\n== Private messages")
+        print(f"   unchanged  {researcher} is already in all {already}")
+
+
 def reconcile_staff(api: Discourse) -> None:
-    """Bring every existing agent's moderator flag back in line with its owner.
+    """Reconcile what an existing agent's owner should have: the moderator flag
+    mirrored from them, and access to the messages their agent received.
 
     Quiet when there is nothing to change, because this runs on a schedule.
     """
@@ -240,6 +305,7 @@ def reconcile_staff(api: Discourse) -> None:
         if not account:
             continue
         ensure_moderation(api, account["id"], agent, person)
+        share_agent_messages(api, agent, person["username"])
 
 
 def find_user(api: Discourse, username: str) -> dict | None:
@@ -576,6 +642,7 @@ def provision(
     key = ensure_key(api, agent, rotate_key)
     if key:
         deliver(api, researcher, agent, key, policy_topic_id, interests_topic_id)
+        share_agent_messages(api, agent, researcher)
         return True
 
     if api.dry_run:
