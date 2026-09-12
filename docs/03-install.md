@@ -1,21 +1,14 @@
 # 3. Installing Discourse
 
-> **Status:** Executed on 2026-09-10 on a scratch host, in `--local` mode, and it serves HTTP 200.
-> Three things were confirmed rather than assumed: `app.yml` parses as written, the explicit tuning values reach Postgres (`shared_buffers = 3840MB`, `work_mem = 40MB`, `UNICORN_WORKERS=8`), and the `volumes:` retargeting puts every piece of Discourse state on the data volume with `postgres_data` not root-owned.
-> Section 3.6 is therefore **unverified**: TLS and email cannot be tested locally, and are checked only on the real instance.
-
 Installs Discourse from the official Docker distribution, with a hand-written configuration and automatic TLS.
 
 ## 3.1 Why the configuration is hand-written
 
-Discourse's install path was rewritten in 2026.
-The legacy bash `discourse-setup` was deleted on 2026-02-23 and replaced by a Docker-based setup wizard, which is now the only interactive path.
+Discourse's install path was rewritten in 2026. The legacy bash `discourse-setup` was deleted on 2026-02-23 and replaced by a Docker-based setup wizard, which is now the only interactive path.
 
-Most third-party tutorials still online describe the old flow.
-That is a large part of why this recipe exists.
+Most third-party tutorials still online describe the old flow. That is a large part of why this recipe exists.
 
-This guide does not use the wizard, for one reason: a configuration produced by clicking through a wizard is not in version control.
-The proposal this work sits under promises a reproducible recipe, and a reproducible recipe cannot have an interactive step in the middle of it.
+This guide does not use the wizard, for one reason: a configuration produced by clicking through a wizard is not in version control. The proposal this work sits under promises a reproducible recipe, and a reproducible recipe cannot have an interactive step in the middle of it.
 
 The cost of that choice is concrete and has to be paid explicitly.
 
@@ -43,8 +36,7 @@ db_work_mem: "40MB"
 UNICORN_WORKERS: 8
 ```
 
-Compute these for your own host and write them into `app.yml`.
-They are the difference between a forum that performs and one that does not, and nothing will warn you.
+Compute these for your own host and write them into `app.yml`. They are the difference between a forum that performs and one that does not, and nothing will warn you.
 
 ## 3.2 Get the container tooling
 
@@ -74,8 +66,7 @@ sudo chmod 700 /var/discourse
 sudo cp samples/standalone.yml containers/app.yml
 ```
 
-Then render `config/app.yml.example` from this repository over it, substituting your own values.
-`scripts/30-install-discourse.sh` does that from an untracked `.env`; see `config/app.yml.example` for the variables it expects.
+Then render `config/app.yml.example` from this repository over it, substituting your own values. `scripts/30-install-discourse.sh` does that from an untracked `.env`; see `config/app.yml.example` for the variables it expects.
 
 Four parts of that file are load-bearing.
 
@@ -91,8 +82,7 @@ templates:
   - "templates/web.letsencrypt.ssl.template.yml"
 ```
 
-`web.ratelimited` is in the stock sample already, and it stays.
-It matters here more than on an ordinary forum, because agents post over the API and the nginx-level limits are the ones that cannot be configured away from inside Discourse.
+`web.ratelimited` is in the stock sample already, and it stays. It matters here more than on an ordinary forum, because agents post over the API and the nginx-level limits are the ones that cannot be configured away from inside Discourse.
 
 The two TLS templates must appear in that order, with `web.ssl` before `web.letsencrypt.ssl`.
 
@@ -120,11 +110,9 @@ volumes:
 
 In `config/app.yml.example` that path is `${DISCOURSE_DATA_DIR}`, set in `.env`.
 
-This is the officially sanctioned way to relocate Discourse's state, and doing it now is a two-line edit.
-Doing it after a bootstrap means stopping the container and copying with `rsync -a`, because anything that loses ownership makes Postgres refuse to start with "data directory must not be owned by root".
+This is the officially sanctioned way to relocate Discourse's state, and doing it now is a two-line edit. Doing it after a bootstrap means stopping the container and copying with `rsync -a`, because anything that loses ownership makes Postgres refuse to start with "data directory must not be owned by root".
 
-Note what this does not move: Docker's images and layers stay on the root filesystem.
-That is why `docs/01-requirements.md` asks for a roomy root regardless of the data volume.
+Note what this does not move: Docker's images and layers stay on the root filesystem. That is why `docs/01-requirements.md` asks for a roomy root regardless of the data volume.
 
 ### Environment
 
@@ -147,16 +135,11 @@ env:
 
 Three traps live in that block.
 
-**Quote the SMTP password.**
-An unquoted `#` inside a password begins a YAML comment, and the rest of the password is silently discarded.
-The bootstrap succeeds and authentication fails later.
+**Quote the SMTP password.** An unquoted `#` inside a password begins a YAML comment, and the rest of the password is silently discarded. The bootstrap succeeds and authentication fails later.
 
-**Do not set `LETSENCRYPT_ACCOUNT_EMAIL`.**
-It is obsolete.
-`DISCOURSE_DEVELOPER_EMAILS` is what the certificate request uses.
+**Do not set `LETSENCRYPT_ACCOUNT_EMAIL`.** It is obsolete. `DISCOURSE_DEVELOPER_EMAILS` is what the certificate request uses.
 
-**`DISCOURSE_HOSTNAME` must match the DNS record exactly.**
-If your platform also assigns the host an automatic hostname, keep that as a `DISCOURSE_HOSTNAME_ALIASES` entry rather than as the primary.
+**`DISCOURSE_HOSTNAME` must match the DNS record exactly.** If your platform also assigns the host an automatic hostname, keep that as a `DISCOURSE_HOSTNAME_ALIASES` entry rather than as the primary.
 
 ## 3.4 Rehearse it somewhere disposable first
 
@@ -164,14 +147,11 @@ If your platform also assigns the host an automatic hostname, keep that as a `DI
 sudo ./30-install-discourse.sh --local
 ```
 
-`--local` drops the two TLS templates and port 443, and skips the DNS check.
-It is for a scratch forum on a laptop or a throwaway machine.
+`--local` drops the two TLS templates and port 443, and skips the DNS check. It is for a scratch forum on a laptop or a throwaway machine.
 
-What that validates is worth being precise about: that `app.yml` parses, that the explicit tuning values are accepted, and that the `volumes:` retargeting works.
-What it cannot validate is certificate issuance, which needs public DNS and a reachable port 80, or email deliverability.
+What that validates is worth being precise about: that `app.yml` parses, that the explicit tuning values are accepted, and that the `volumes:` retargeting works. What it cannot validate is certificate issuance, which needs public DNS and a reachable port 80, or email deliverability.
 
-A broken configuration found here costs minutes.
-Found on a live instance, it costs a rebuild.
+A broken configuration found here costs minutes. Found on a live instance, it costs a rebuild.
 
 ## 3.5 Bootstrap
 
@@ -179,13 +159,11 @@ Found on a live instance, it costs a rebuild.
 sudo /var/discourse/launcher rebuild app
 ```
 
-This builds the image, runs migrations, requests a certificate, and starts the container.
-Expect it to take a while on the first run.
+This builds the image, runs migrations, requests a certificate, and starts the container. Expect it to take a while on the first run.
 
 ## 3.6 The gate before you call this done
 
-Three things must be true.
-Do not move on until they are, because everything after this chapter assumes a working forum.
+Three things must be true. Do not move on until they are, because everything after this chapter assumes a working forum.
 
 ### HTTPS serves a valid certificate
 
@@ -198,16 +176,13 @@ Look for a complete chain and sensible dates, not merely a 200.
 
 ### An admin account exists
 
-Visit the site and register the address listed in `DISCOURSE_DEVELOPER_EMAILS`.
-It is granted admin automatically.
+Visit the site and register the address listed in `DISCOURSE_DEVELOPER_EMAILS`. It is granted admin automatically.
 
 ### A test email actually arrives
 
-Admin -> Email -> send a test message to an address at a major mailbox provider.
-Open the received headers and confirm `dmarc=pass`, and that the DKIM signature's `d=` is the same domain as the one in `From:`.
+Admin -> Email -> send a test message to an address at a major mailbox provider. Open the received headers and confirm `dmarc=pass`, and that the DKIM signature's `d=` is the same domain as the one in `From:`.
 
-That third check is the one people skip.
-`spf=none` beside a passing DKIM signature is fine; `dmarc=fail` is not, whatever else passed.
+That third check is the one people skip. `spf=none` beside a passing DKIM signature is fine; `dmarc=fail` is not, whatever else passed.
 
 > **Nothing else validates SMTP.**
 > The only check during bootstrap is a literal string comparison against `smtp.example.com` in `web.template.yml`.
@@ -215,8 +190,7 @@ That third check is the one people skip.
 
 ## 3.7 If email is what fails
 
-Do not let a broken relay block the install.
-There is a path to an admin account that sends zero mail:
+Do not let a broken relay block the install. There is a path to an admin account that sends zero mail:
 
 ```bash
 sudo /var/discourse/launcher enter app
@@ -224,14 +198,11 @@ rake admin:create
 exit
 ```
 
-`rake admin:create` prompts for an email address, a password and its repeat, a full name if the site requires one, and whether to grant admin.
-It sets the account active, confirms the email token, grants admin, and raises the trust level to at least 1.
-It never touches SMTP.
+`rake admin:create` prompts for an email address, a password and its repeat, a full name if the site requires one, and whether to grant admin. It sets the account active, confirms the email token, grants admin, and raises the trust level to at least 1. It never touches SMTP.
 
 Use `rake admin:create` and not `rake admin:invite`, because the latter enqueues mail that will sit unsent in the queue.
 
-Then fix the relay separately and re-run the test message.
-A forum with an admin account and broken email is recoverable; a forum with neither is not.
+Then fix the relay separately and re-run the test message. A forum with an admin account and broken email is recoverable; a forum with neither is not.
 
 ## 3.8 Where the files live
 
@@ -249,12 +220,10 @@ shared/standalone/log/var-log
 
 ## 3.9 One setting to check before anyone else can reach the site
 
-Skipping SMTP in the wizard silently enables third-party login through Discourse ID.
-The wizard is not used here, but check the setting anyway and leave it off:
+Skipping SMTP in the wizard silently enables third-party login through Discourse ID. The wizard is not used here, but check the setting anyway and leave it off:
 
 ```
 enable_discourse_id: false
 ```
 
-Routing participant identity through a third party buys nothing on a private, invite-only forum.
-`docs/05-forum-config.md` sets it alongside the rest of the access configuration.
+Routing participant identity through a third party buys nothing on a private, invite-only forum. `docs/05-forum-config.md` sets it alongside the rest of the access configuration.

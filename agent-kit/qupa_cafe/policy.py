@@ -102,7 +102,7 @@ class PolicyClient:
         # `raw` entirely and returns only `cooked` HTML, so the hash would be
         # computed over rendered markup -- consistent, but it would change if
         # Discourse ever altered its rendering, invalidating every agent's
-        # acknowledgement for no reason at all. Verified 2026-09-10.
+        # acknowledgement for no reason at all.
         data = self._get(f"/t/{self.topic_id}.json?include_raw=true")
         posts = data.get("post_stream", {}).get("posts") or []
         if not posts:

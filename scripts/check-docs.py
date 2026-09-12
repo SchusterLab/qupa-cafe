@@ -2,22 +2,23 @@
 """Enforce the two documentation rules from CLAUDE.md.
 
 1. ``docs/`` names no vendor. Anything host-specific belongs in ``platforms/``.
-2. Markdown prose uses semantic line breaks: one sentence per line.
+2. Markdown prose is one paragraph per line, never hard-wrapped.
 
-Rule 2 is checked heuristically, because "sentence" is not decidable. The check
-looks for sentence-ending punctuation followed by a space and a capital, which
-catches the common case of two sentences left on one line.
+Rule 2 is decidable: a paragraph is wrapped exactly when a prose line is
+followed by another prose line that does not begin a block of its own. So this
+reports the continuation line rather than guessing at sentences, and ``--fix``
+joins it back.
 
-Getting the exemptions right matters more than the pattern does. A checker that
-cries wolf on every heading and numbered list gets switched off, and then the
-rule is not enforced at all. So this skips code blocks, tables, headings, link
-definitions, and YAML frontmatter, and it strips list markers and bold labels
-before looking at what remains.
+Getting the exemptions right matters more than the pattern does. A checker
+that cries wolf gets switched off, and then the rule is not enforced at all. So
+this skips code blocks, tables, headings, link definitions and YAML
+frontmatter, and it treats consecutive list items and consecutive blockquote
+lines as deliberate rather than as wrapping.
 
 Usage::
 
     python3 scripts/check-docs.py
-    python3 scripts/check-docs.py --fix-hints    # print suggested split points
+    python3 scripts/check-docs.py --fix    # join wrapped paragraphs in place
 
 Exits non-zero if either rule is violated.
 """
@@ -38,19 +39,14 @@ VENDOR_TERMS = ["jetstream", "openstack", "access-ci", "brevo", "porkbun", "exos
 SU_PATTERN = re.compile(r"\bSUs?\b")
 
 # A sentence end, then whitespace, then something that starts a new sentence.
-SENTENCE_BREAK = re.compile(r"[.!?][\"')\]]?\s+[A-Z(\"'`]")
+THEMATIC_BREAK = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 
 # Stripped before checking, because none of these are sentence ends.
 LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+\.|\d+\))\s+")
-BOLD_LABEL = re.compile(r"^\s*\*\*[^*]+\*\*\s*")
 TABLE_ROW = re.compile(r"^\s*\|")
 LINK_DEFINITION = re.compile(r"^\s*\[[^\]]+\]:")
 HEADING = re.compile(r"^\s*#{1,6}\s")
 BLOCKQUOTE_MARKER = re.compile(r"^\s*>\s?")
-
-# Abbreviations that end in a period mid-sentence. Without these, ordinary prose
-# trips the check and the checker loses its credibility.
-ABBREVIATIONS = ["e.g.", "i.e.", "etc.", "vs.", "cf.", "Dr.", "Mr.", "Ms.", "St.", "approx."]
 
 
 def markdown_files() -> list[Path]:
@@ -77,10 +73,29 @@ def check_vendor_terms() -> list[str]:
     return problems
 
 
-def prose_lines(text: str):
-    """Yield (line number, prose) for lines the line-break rule applies to."""
+def _block_start(line: str) -> bool:
+    """Does this line begin a markdown block rather than continue a paragraph?"""
+    return bool(
+        HEADING.match(line)
+        or TABLE_ROW.match(line)
+        or LINK_DEFINITION.match(line)
+        or LIST_MARKER.match(line)
+        or BLOCKQUOTE_MARKER.match(line)
+        or THEMATIC_BREAK.match(line)
+    )
+
+
+def wrapped_lines(text: str):
+    """Yield (line number, line) for each line that continues a wrapped paragraph.
+
+    A list item and a blockquote line are prose that can itself be wrapped, so
+    they set the flag. But a line that begins its own block never counts as a
+    continuation, which is what keeps consecutive list items and the rows of a
+    quoted template from being reported.
+    """
     in_code = False
     in_frontmatter = False
+    previous_was_prose = False
 
     for number, line in enumerate(text.splitlines(), 1):
         if number == 1 and line.strip() == "---":
@@ -93,46 +108,64 @@ def prose_lines(text: str):
 
         if line.lstrip().startswith("```"):
             in_code = not in_code
+            previous_was_prose = False
             continue
         if in_code:
             continue
 
         if not line.strip():
+            previous_was_prose = False
             continue
-        if HEADING.match(line) or TABLE_ROW.match(line) or LINK_DEFINITION.match(line):
-            continue
+
         # Indented code blocks.
         if line.startswith("    ") and not LIST_MARKER.match(line):
+            previous_was_prose = False
             continue
 
-        prose = BLOCKQUOTE_MARKER.sub("", line)
-        prose = LIST_MARKER.sub("", prose)
-        prose = BOLD_LABEL.sub("", prose)
+        if _block_start(line):
+            previous_was_prose = bool(LIST_MARKER.match(line) or BLOCKQUOTE_MARKER.match(line))
+            continue
 
-        # Inline code can hold anything, including sentence-shaped text.
-        prose = re.sub(r"`[^`]*`", "CODE", prose)
-        # Link targets are not prose.
-        prose = re.sub(r"\]\([^)]*\)", "](LINK)", prose)
-
-        for abbreviation in ABBREVIATIONS:
-            prose = prose.replace(abbreviation, abbreviation.replace(".", "_"))
-
-        yield number, prose
+        if previous_was_prose:
+            yield number, line
+        previous_was_prose = True
 
 
-def check_line_breaks(show_hints: bool) -> list[str]:
+def rewrap(text: str) -> str:
+    """Join every wrapped paragraph onto one line, leaving blocks alone."""
+    wrapped = {number for number, _ in wrapped_lines(text)}
+    if not wrapped:
+        return text
+
+    out: list[str] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if number in wrapped and out:
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line)
+
+    joined = "\n".join(out)
+    return joined + "\n" if text.endswith("\n") else joined
+
+
+def check_paragraphs(fix: bool) -> list[str]:
     problems = []
 
     for path in markdown_files():
-        for number, prose in prose_lines(path.read_text(encoding="utf-8")):
-            match = SENTENCE_BREAK.search(prose)
-            if not match:
-                continue
+        text = path.read_text(encoding="utf-8")
+        found = list(wrapped_lines(text))
+        if not found:
+            continue
 
-            message = f"{path.relative_to(REPO_ROOT)}:{number}: more than one sentence on a line"
-            if show_hints:
-                message += f"\n    split after: ...{prose[max(0, match.start() - 40):match.start() + 1]}"
-            problems.append(message)
+        if fix:
+            path.write_text(rewrap(text), encoding="utf-8", newline="\n")
+            print(f"  joined {len(found)} line(s) in {path.relative_to(REPO_ROOT)}")
+            continue
+
+        for number, line in found:
+            problems.append(
+                f"{path.relative_to(REPO_ROOT)}:{number}: paragraph wrapped across lines: {line.strip()[:60]}"
+            )
 
     return problems
 
@@ -189,7 +222,7 @@ def check_references() -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fix-hints", action="store_true", help="show where to split each long line")
+    parser.add_argument("--fix", action="store_true", help="join wrapped paragraphs in place")
     args = parser.parse_args()
 
     failed = False
@@ -214,12 +247,12 @@ def main() -> int:
     else:
         print("  ok")
 
-    print("\n== semantic line breaks ==")
-    break_problems = check_line_breaks(args.fix_hints)
-    if break_problems:
-        for problem in break_problems:
+    print("\n== one paragraph per line ==")
+    wrap_problems = check_paragraphs(args.fix)
+    if wrap_problems:
+        for problem in wrap_problems:
             print(f"  {problem}")
-        print(f"  FAIL: {len(break_problems)} line(s) hold more than one sentence. See CLAUDE.md.")
+        print(f"  FAIL: {len(wrap_problems)} wrapped line(s). Run with --fix. See CLAUDE.md.")
         failed = True
     else:
         print("  ok")

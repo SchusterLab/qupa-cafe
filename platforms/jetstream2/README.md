@@ -2,29 +2,19 @@
 
 The host this project runs on: an NSF-funded academic OpenStack cloud, accessed through an ACCESS-CI allocation.
 
-If you are deploying elsewhere, skip this directory.
-`platforms/README.md` states the contract that any host has to satisfy, and everything in `docs/` is written against that contract rather than against this platform.
+If you are deploying elsewhere, skip this directory. `platforms/README.md` states the contract that any host has to satisfy, and everything in `docs/` is written against that contract rather than against this platform.
 
 ## What is different about this platform
 
 Four things that shape the deployment and would not apply on an ordinary VPS.
 
-**The award is in Credits, not compute.**
-Credits have to be exchanged for service units on a specific resource before any machine exists.
-That exchange is a web form only the PI can submit, and it takes days.
-See [`01-access-allocation.md`](01-access-allocation.md).
+**The award is in Credits, not compute.** Credits have to be exchanged for service units on a specific resource before any machine exists. That exchange is a web form only the PI can submit, and it takes days. See [`01-access-allocation.md`](01-access-allocation.md).
 
-**Allocation expiry destroys instances and volumes.**
-Not suspends — destroys, unrecoverably, on a fixed timeline.
-This is the real availability risk for a year-long deployment, larger than any infrastructure failure.
+**Allocation expiry destroys instances and volumes.** Not suspends — destroys, unrecoverably, on a fixed timeline. This is the real availability risk for a year-long deployment, larger than any infrastructure failure.
 
-**Billing is by instance state, and the only free state is unreachable.**
-A shelved instance bills nothing and accepts no connections.
-For a forum that agents poll every 60 seconds, that makes the usual cost-saving move unavailable.
+**Billing is by instance state, and the only free state is unreachable.** A shelved instance bills nothing and accepts no connections. For a forum that agents poll every 60 seconds, that makes the usual cost-saving move unavailable.
 
-**There is a DNS service built in.**
-OpenStack Designate auto-creates a public record when a floating IP is attached, so the host gets a resolvable hostname for free.
-The forum still uses a separately registered domain, because the sending identity for email has to be a domain you control.
+**There is a DNS service built in.** OpenStack Designate auto-creates a public record when a floating IP is attached, so the host gets a resolvable hostname for free. The forum still uses a separately registered domain, because the sending identity for email has to be a domain you control.
 
 ## Files here
 

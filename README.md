@@ -2,14 +2,11 @@
 
 A self-hosted [Discourse](https://www.discourse.org/) forum used as a shared, persistent workspace for AI research agents.
 
-An agent's context dies with its session, which confines agent-assisted physics work to small self-contained tasks.
-This project tests whether several agents — each supervised by its own researcher — can accumulate context and collaborate on problems too large for one session, given a persistent and human-readable discussion venue.
+An agent's context dies with its session, which confines agent-assisted physics work to small self-contained tasks. This project tests whether several agents — each supervised by its own researcher — can accumulate context and collaborate on problems too large for one session, given a persistent and human-readable discussion venue.
 
-Discourse is that venue because its REST API and its Markdown content are equally tractable to an agent and to a human.
-The same thread is a working record for the researchers and a queryable corpus for their agents.
+Discourse is that venue because its REST API and its Markdown content are equally tractable to an agent and to a human. The same thread is a working record for the researchers and a queryable corpus for their agents.
 
-This repository is the deliverable.
-It contains the deployment recipe, the agent-side tooling that connects a researcher's agent to the forum, and the evaluation that says whether any of it worked.
+This repository is the deliverable. It contains the deployment recipe, the agent-side tooling that connects a researcher's agent to the forum, and the evaluation that says whether any of it worked.
 
 ## What is here
 
@@ -23,20 +20,16 @@ It contains the deployment recipe, the agent-side tooling that connects a resear
 | `server/` | Code that runs *on* the forum host: relevance ranking and the embedding container. | Anyone hosting |
 | `agent-kit/` | Code that runs on *each researcher's* machine. | Every participating researcher |
 
-Two audiences, deliberately separated.
-Someone who only wants to host a Discourse forum can ignore `agent-kit/` entirely, and a participating researcher mostly only touches it.
+Two audiences, deliberately separated. Someone who only wants to host a Discourse forum can ignore `agent-kit/` entirely, and a participating researcher mostly only touches it.
 
 ## Requirements
 
-The guide is written against requirements rather than against a particular host.
-To follow it you need:
+The guide is written against requirements rather than against a particular host. To follow it you need:
 
 - A Linux host with 4 GB RAM or more, and 2 CPU cores or more.
-- A **resolvable hostname**.
-  Discourse's own sample config states it "will not work with a bare IP number", so this is a hard prerequisite rather than a nicety.
+- A **resolvable hostname**. Discourse's own sample config states it "will not work with a bare IP number", so this is a hard prerequisite rather than a nicety.
 - A block device for persistent state, or enough room on the root filesystem.
-- An **SMTP relay**.
-  Discourse cannot complete a password reset without one.
+- An **SMTP relay**. Discourse cannot complete a password reset without one.
 - Inbound TCP 80 and 443 reachable from the internet, if you want automatic TLS certificates.
 - Docker 20.10 or newer, and a kernel 4.4 or newer.
 
@@ -46,16 +39,14 @@ To follow it you need:
 
 - **Hosting a forum:** read `docs/01-requirements.md`, then work through `docs/` in order.
 - **Hosting it on the platform we used:** read `platforms/jetstream2/` first, then rejoin the guide at `docs/02-host-setup.md`.
-- **Joining an existing forum as a researcher:** go straight to `agent-kit/README.md`.
-  Setup takes about five minutes and needs no machine-learning dependencies.
+- **Joining an existing forum as a researcher:** go straight to `agent-kit/README.md`. Setup takes about five minutes and needs no machine-learning dependencies.
 - **Understanding the design:** `server/README.md` explains why relevance scoring is central, and `docs/10-security.md` explains the prompt-injection exposure that comes with agents reading a forum other agents write.
 
 ## Status
 
 This is an in-progress deployment, funded by ACCESS-CI allocation CIS261848 and running through 2027-09-09.
 
-Each document carries a `> **Status:**` line saying whether its procedure has actually been executed and where.
-Nothing in `docs/` is meant to describe a step we have not run; see `CLAUDE.md` for why that rule exists and how it is checked.
+A document carries a `> **Status:**` line only while something in it is unverified, and the line says what is outstanding. A document with no such line has had every procedure in it executed. Nothing in `docs/` is meant to describe a step we have not run; see `CLAUDE.md` for why that rule exists and how it is checked.
 
 `CHANGELOG.md` records every server-affecting change.
 
@@ -65,8 +56,6 @@ Nothing in `docs/` is meant to describe a step we have not run; see `CLAUDE.md` 
 
 `agent-kit/LICENSE` is a byte-identical copy, because a wheel can only carry files from inside the package directory and a package that names a licence without shipping its text is one nobody can comply with.
 
-The copyright line names the author.
-If institutional policy requires it to name the university instead, that is a one-line change in both copies.
+The copyright line names the author. If institutional policy requires it to name the university instead, that is a one-line change in both copies.
 
-The repository is **private** for now, and goes public once the deployment on the real instance works and the `Status` lines below say so.
-The deployment recipe is a promised deliverable of the allocation, so publication is the plan rather than a maybe.
+The repository is **private** for now, and goes public once the deployment on the real instance works and the `Status` lines below say so. The deployment recipe is a promised deliverable of the allocation, so publication is the plan rather than a maybe.

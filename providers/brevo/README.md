@@ -2,14 +2,12 @@
 
 The transactional email relay for `forum.qupa-cafe.com`.
 
-> **Status:** Done as far as it can be without the forum.
-> The account exists, the SMTP key is generated, and all four records are published and resolving — including both DKIM records followed through to the 2048-bit keys they point at.
-> Outstanding: a password reset that actually arrives, which needs the forum.
+> **Status:** Outstanding: a password reset that actually arrives.
+> The account exists, the SMTP key is in use by the forum, and all four records are published and resolving — including both DKIM records followed through to the 2048-bit keys they point at.
 
 ## Why a relay at all
 
-Discourse cannot complete a password reset without SMTP, and mail sent straight from a freshly allocated cloud address lands in spam.
-`docs/01-requirements.md` has the rest.
+Discourse cannot complete a password reset without SMTP, and mail sent straight from a freshly allocated cloud address lands in spam. `docs/01-requirements.md` has the rest.
 
 ## Why this one
 
@@ -22,13 +20,11 @@ Discourse cannot complete a password reset without SMTP, and mail sent straight 
 > **Discourse's own `INSTALL-email.md` says this tier is 300 per _day_. It is 300 per _month_.**
 > Take quota figures from the provider.
 
-300 a month is about ten a day.
-Ample for password resets, and it would not survive notification mail being left on, which is why `docs/05-forum-config.md` turns everything else off.
+300 a month is about ten a day. Ample for password resets, and it would not survive notification mail being left on, which is why `docs/05-forum-config.md` turns everything else off.
 
 Rejected alternatives, recorded so they are not revisited without cause:
 
-**Stanford's `smtp.stanford.edu`** authenticates with a SUNet ID and password, which would put personal Stanford credentials on an internet-facing VM — a credential far more valuable than the forum.
-Stanford's bypass policy also requires servers to sit on a University-IT-provisioned campus network, which a cloud VM does not.
+**Stanford's `smtp.stanford.edu`** authenticates with a SUNet ID and password, which would put personal Stanford credentials on an internet-facing VM — a credential far more valuable than the forum. Stanford's bypass policy also requires servers to sit on a University-IT-provisioned campus network, which a cloud VM does not.
 
 **SendGrid** withdrew its permanent free plan in May 2025.
 
@@ -50,14 +46,10 @@ None of it needs the forum, the host, or an IP address, and doing it early keeps
 > **Authenticate the subdomain you send from, not the apex.**
 > Discourse's own documentation is explicit that verifying `qupa-cafe.com` while sending as `forum.qupa-cafe.com` leaves mail misconfigured.
 
-5. **Skip the branded subdomain.**
-   It rewrites tracked links and images to a domain of yours, and this forum sends neither.
-6. For how to authenticate the domain, choose **Individual DNS records**.
-   That is what produces the four records in the next step.
-7. For how the records will be added, choose **Manual**.
-   The alternative asks Brevo to write them through a registrar integration, which Porkbun is not.
-8. Brevo shows four records on one page, all of them on the subdomain.
-   Add them in the Porkbun DNS panel for `qupa-cafe.com`.
+5. **Skip the branded subdomain.** It rewrites tracked links and images to a domain of yours, and this forum sends neither.
+6. For how to authenticate the domain, choose **Individual DNS records**. That is what produces the four records in the next step.
+7. For how the records will be added, choose **Manual**. The alternative asks Brevo to write them through a registrar integration, which Porkbun is not.
+8. Brevo shows four records on one page, all of them on the subdomain. Add them in the Porkbun DNS panel for `qupa-cafe.com`.
 
 | Kind | Name | Type | Value |
 |---|---|---|---|
@@ -115,11 +107,9 @@ dig +short @1.1.1.1 TXT _dmarc.forum.qupa-cafe.com
 dig +short @1.1.1.1 TXT b1.forum-qupa-cafe-com.dkim.brevo.com
 ```
 
-Name the resolver explicitly, as above, or `nslookup -type=TXT forum.qupa-cafe.com 1.1.1.1`.
-A stale negative answer in a local cache looks exactly like a record you forgot to add.
+Name the resolver explicitly, as above, or `nslookup -type=TXT forum.qupa-cafe.com 1.1.1.1`. A stale negative answer in a local cache looks exactly like a record you forgot to add.
 
-The last query is the one to remember.
-It follows the DKIM record through to the key itself, and a DKIM record that resolves while its target holds no key verifies in the panel and signs nothing.
+The last query is the one to remember. It follows the DKIM record through to the key itself, and a DKIM record that resolves while its target holds no key verifies in the panel and signs nothing.
 
 A correctly published zone answers like this:
 
@@ -131,13 +121,11 @@ A correctly published zone answers like this:
 | `TXT _dmarc.forum.qupa-cafe.com` | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
 | `TXT b1.forum-qupa-cafe-com.dkim.brevo.com` | `k=rsa;p=<2048-bit key>` |
 
-The DKIM lookup takes two hops, and only the second one proves anything.
-Brevo's `b1...` name is itself a CNAME onto a numbered signing host, so the key arrives from a third name again — which is why following the chain matters more than confirming that the record you typed exists.
+The DKIM lookup takes two hops, and only the second one proves anything. Brevo's `b1...` name is itself a CNAME onto a numbered signing host, so the key arrives from a third name again — which is why following the chain matters more than confirming that the record you typed exists.
 
 ## Then send a real message
 
-Once the forum is up: Discourse admin -> Email -> send a test to an address at a major mailbox provider.
-Open the received headers and confirm `dkim=pass` with `d=forum.qupa-cafe.com`, the same domain as the one in `From:`.
+Once the forum is up: Discourse admin -> Email -> send a test to an address at a major mailbox provider. Open the received headers and confirm `dkim=pass` with `d=forum.qupa-cafe.com`, the same domain as the one in `From:`.
 
 `spf=none` is expected here and is not a fault.
 
@@ -147,5 +135,4 @@ Open the received headers and confirm `dkim=pass` with `d=forum.qupa-cafe.com`, 
 
 Watch the usage counter.
 
-On a 300-per-month quota, anything climbing means something is sending that should not be, and the consequence is not cosmetic: the quota drains and password resets stop working silently.
-`docs/08-runbook.md` says to check this counter **first** when a reset email does not arrive.
+On a 300-per-month quota, anything climbing means something is sending that should not be, and the consequence is not cosmetic: the quota drains and password resets stop working silently. `docs/08-runbook.md` says to check this counter **first** when a reset email does not arrive.

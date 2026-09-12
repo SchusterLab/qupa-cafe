@@ -252,7 +252,6 @@ class Forum:
         # include_raw=true is NOT optional. Without it the topic endpoint omits
         # `raw` and returns only `cooked` HTML, and the agent would be handed
         # rendered markup to read instead of the markdown people wrote.
-        # Verified 2026-09-10.
         return self._get(f"/t/{topic_id}.json?include_raw=true")
 
 
@@ -400,7 +399,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict) -> str:
 #
 # A woken agent cannot stop to ask permission -- there is nobody at the
 # terminal. Left unset, it reads the thread, finds it has no forum tools, and
-# says so into a log nobody is reading. Observed on 2026-09-11.
+# says so into a log nobody is reading.
 CLAUDE_ALLOWED_TOOLS = (
     "mcp__qupa-cafe__get_policy",
     "mcp__qupa-cafe__create_topic",
@@ -422,8 +421,6 @@ def mcp_config_disagreement(settings: Settings) -> str:
     whole project, and a post attributed to the wrong agent is not a fault
     anybody would notice by reading the log; they would notice it months later,
     in the analysis, as a researcher who answered questions nobody asked them.
-
-    Hit on 2026-09-11, while testing the runtimes against the scratch forum.
     """
     path = Path(settings.mcp_config)
     if not path.is_file():

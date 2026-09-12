@@ -1,10 +1,6 @@
 # 1. The ACCESS allocation
 
-> **Status:** The exchange was approved, and the quotas in 1.3 were read back from the live allocation.
-> Rates come from ACCESS and Jetstream2 documentation and the exchange calculator in the allocations portal.
-
-An ACCESS award is denominated in **Credits**, which are not compute.
-Credits must be exchanged for service units on a specific resource before any machine can be created.
+An ACCESS award is denominated in **Credits**, which are not compute. Credits must be exchanged for service units on a specific resource before any machine can be created.
 
 This is the step that surprises people, because an approved allocation looks like it should be usable.
 
@@ -21,19 +17,16 @@ This is the step that surprises people, because an approved allocation looks lik
 
 ## 1.2 The exchange
 
-Behind ACCESS SSO, and only the PI can submit it.
-The [click path](https://allocations.access-ci.org/how-to):
+Behind ACCESS SSO, and only the PI can submit it. The [click path](https://allocations.access-ci.org/how-to):
 
 1. Log in to https://allocations.access-ci.org
 2. Open project **CIS261848**, then the **Credits + Resources** tab.
 3. **Add a resource to your exchange**, and select **Indiana Jetstream2 CPU**.
 4. Request **50,000** units.
-5. Request **nothing** for Indiana Jetstream2 Storage.
-   See the warning below.
+5. Request **nothing** for Indiana Jetstream2 Storage. See the warning below.
 6. Justification: one always-on `m3.quad` hosting the project's Discourse instance for twelve months, per the approved proposal.
 7. **Submit for Approval**, then confirm in the popup.
-8. Expect a few days to a week.
-   Resource providers may approve, modify, or decline.
+8. Expect a few days to a week. Resource providers may approve, modify, or decline.
 
 The two resource labels are separate dropdown entries, and picking the wrong one is the mistake the storage trap below punishes.
 
@@ -47,11 +40,9 @@ An always-on `m3.quad` costs 4 SU/hr.
 4 SU/hr x 24 x 365 = 35,040 SU/year
 ```
 
-50,000 gives roughly 40% headroom for rebuilds, a scratch instance, and any resize.
-It leaves 150,000 Credits in reserve, and it stays under the 200,000 SU threshold above which default quotas change.
+50,000 gives roughly 40% headroom for rebuilds, a scratch instance, and any resize. It leaves 150,000 Credits in reserve, and it stays under the 200,000 SU threshold above which default quotas change.
 
-The award covers a year of this instance about 5.7 times over.
-That headroom is what makes "resize on evidence" the right response to CPU contention, rather than planning capacity up front.
+The award covers a year of this instance about 5.7 times over. That headroom is what makes "resize on evidence" the right response to CPU contention, rather than planning capacity up front.
 
 ### The storage trap
 
@@ -59,11 +50,9 @@ That headroom is what makes "resize on evidence" the right response to CPU conte
 
 Every allocation gets a 1 TB storage quota by default.
 
-A storage allocation is **absolute — it replaces the default rather than adding to it**.
-Exchanging 100 Credits for 100 GB would shrink the quota from 1,000 GB to 100 GB.
+A storage allocation is **absolute — it replaces the default rather than adding to it**. Exchanging 100 Credits for 100 GB would shrink the quota from 1,000 GB to 100 GB.
 
-This is the sharpest trap in the allocation process, and it is the opposite of what "adding storage" implies.
-([quotas](https://docs.jetstream-cloud.org/general/quotas/), [storage](https://docs.jetstream-cloud.org/general/storage/))
+This is the sharpest trap in the allocation process, and it is the opposite of what "adding storage" implies. ([quotas](https://docs.jetstream-cloud.org/general/quotas/), [storage](https://docs.jetstream-cloud.org/general/storage/))
 
 The 160 GB this deployment uses across two disks fits inside the free default with room to spare.
 
@@ -88,11 +77,9 @@ With no storage exchanged it reports `gigabytes: 1000` and `volumes: 10`.
 
 `openstack quota show --usage` reports RAM in MB.
 
-Read these from the allocation rather than from this table.
-Nova and Neutron answer separately and do not agree on floating IPs: `openstack limits show --absolute` reports no Nova limit at all, while `openstack quota show` reports the Neutron quota of 50.
+Read these from the allocation rather than from this table. Nova and Neutron answer separately and do not agree on floating IPs: `openstack limits show --absolute` reports no Nova limit at all, while `openstack quota show` reports the Neutron quota of 50.
 
-The volume limit counts the boot disk.
-Booting from a volume and attaching one data volume uses two of the ten.
+The volume limit counts the boot disk. Booting from a volume and attaching one data volume uses two of the ten.
 
 ## 1.4 Cost model
 
@@ -107,8 +94,7 @@ SU burn depends on instance **state**:
 
 The only state that bills nothing is the one that accepts no connections.
 
-**This instance must never be shelved.**
-A forum that agents poll every 60 seconds cannot be intermittently unreachable, and there is no partial-saving option — stopped still bills half.
+**This instance must never be shelved.** A forum that agents poll every 60 seconds cannot be intermittently unreachable, and there is no partial-saving option — stopped still bills half.
 
 ### No GPU
 
@@ -121,21 +107,15 @@ The smallest GPU flavor, `g3.medium` (8 vCPU, 30 GB, 25% of an A100), bills **16
  4 SU/hr x 24 x 365 =  35,040 SU/year   =  17.5% of the award
 ```
 
-What it would buy: embedding a generous 200 posts a day is roughly 200 CPU-seconds across four cores with a small model, about a 0.2% duty cycle.
-The GPU would save around 198 seconds of compute per day, for four times the price.
+What it would buy: embedding a generous 200 posts a day is roughly 200 CPU-seconds across four cores with a small model, about a 0.2% duty cycle. The GPU would save around 198 seconds of compute per day, for four times the price.
 
-The stronger objection is availability rather than cost.
-GPU flavors carry a documented monthly maintenance window — first Tuesday, 7am to 7pm Eastern — during which instances may be stopped and started.
-`m3` CPU flavors have no such window.
-A GPU would introduce a guaranteed monthly outage to a service that is polled every minute.
+The stronger objection is availability rather than cost. GPU flavors carry a documented monthly maintenance window — first Tuesday, 7am to 7pm Eastern — during which instances may be stopped and started. `m3` CPU flavors have no such window. A GPU would introduce a guaranteed monthly outage to a service that is polled every minute.
 
-A GPU would become the right call only for a different design: a local LLM on the forum, so that scoring and reply drafting cost no API quota at all.
-That genuinely addresses the token-footprint problem, but it is a larger redesign, and it would want the instance shelved when idle — which this one cannot be.
+A GPU would become the right call only for a different design: a local LLM on the forum, so that scoring and reply drafting cost no API quota at all. That genuinely addresses the token-footprint problem, but it is a larger redesign, and it would want the instance shelved when idle — which this one cannot be.
 
 ### Resize on evidence
 
-If 4 vCPU turns out to be tight, `m3.medium` at 8 SU/hr is still only 35% of the award, and the resize is reversible.
-With 5.7x headroom there is no reason to over-provision in advance.
+If 4 vCPU turns out to be tight, `m3.medium` at 8 SU/hr is still only 35% of the award, and the resize is reversible. With 5.7x headroom there is no reason to over-provision in advance.
 
 ## 1.5 Expiry is the real risk
 
@@ -149,18 +129,15 @@ On allocation expiry **or overdraw**:
 | After 10 days | All instances shelved |
 | After 30 days | Instances, volumes, and images **destroyed unrecoverably** |
 
-Floating IPs are reclaimable after 90 days shelved.
-Instances shelved for over a year are deleted as abandoned.
+Floating IPs are reclaimable after 90 days shelved. Instances shelved for over a year are deleted as abandoned.
 
 Both unused Credits and unused exchanged SUs expire at the project end date.
 
 > **Put 2027-08-09 in a calendar** as the renewal-or-extension deadline, one month before expiry.
 
-If the project ends rather than renews, revoke the application credential from `02-provision.md` at the same time.
-It is deliberately created without an expiry date, so nothing else retires it.
+If the project ends rather than renews, revoke the application credential from `02-provision.md` at the same time. It is deliberately created without an expiry date, so nothing else retires it.
 
-Use the **Lock** action on the production instance to block accidental deletion.
-It does not protect the filesystem, and another allocation member can unlock it, so it is a guard against mistakes rather than a security control.
+Use the **Lock** action on the production instance to block accidental deletion. It does not protect the filesystem, and another allocation member can unlock it, so it is a guard against mistakes rather than a security control.
 
 ## 1.6 Adding collaborators
 
@@ -168,8 +145,7 @@ Each collaborator needs their own ACCESS ID first.
 
 Then, in the allocations portal: **Users + Roles**, add them by ACCESS ID, and **tick the per-resource checkbox**.
 
-Membership alone grants nothing.
-Adding someone to the project without ticking the resource is the common mistake, and it produces an account that exists and cannot do anything.
+Membership alone grants nothing. Adding someone to the project without ticking the resource is the common mistake, and it produces an account that exists and cannot do anything.
 
 Allow up to four hours for a new user to become active.
 
@@ -186,7 +162,6 @@ Record here:
 
 ## 1.8 Operational notes
 
-Planned maintenance is announced at https://jetstream.status.io.
-No recurring maintenance window applies to `m3` flavors.
+Planned maintenance is announced at https://jetstream.status.io. No recurring maintenance window applies to `m3` flavors.
 
 Public-facing web services are explicitly within the acceptable use policy.

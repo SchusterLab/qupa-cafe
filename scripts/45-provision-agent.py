@@ -50,6 +50,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import onboarding
+
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 AGENTS_GROUP_NAME = "agents"
@@ -265,8 +267,8 @@ def ensure_agent_account(api: Discourse, agent: str, forum_host: str) -> dict | 
 
     # This endpoint reports a rejected signup as **HTTP 200** with
     # `success: false`, so the status code alone says nothing. Reading only the
-    # status is how a refused creation became "created it but cannot read it
-    # back" -- an error that describes the symptom and hides the cause.
+    # status turns a refusal into "created it but cannot read it back", which
+    # describes the symptom and hides the cause.
     if result.get("success") is False:
         message = result.get("message") or result.get("errors") or "no reason given"
         die(f"the forum refused to create {agent}: {message}")
@@ -378,7 +380,7 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
     return plaintext
 
 
-def send_credential(
+def deliver(
     api: Discourse,
     researcher: str,
     agent: str,
@@ -386,133 +388,45 @@ def send_credential(
     policy_topic_id: int | None,
     interests_topic_id: int | None,
 ) -> None:
-    """Deliver the credential as a private message.
+    """Send two private messages: the onboarding text, then the credential.
 
-    A private message rather than email, for three reasons. It costs nothing
-    against the relay's monthly quota, because docs/05-forum-config.md sets
-    default_email_messages_level to never and backfills it -- confirmed: a PM
-    generates zero outbound mail. It needs no mailbox for the agent. And it
-    leaves the researcher a durable record in the place they are already
-    working.
+    Two rather than one. The first is a copy of the welcome topic, which is
+    where staff maintain that text, so a rewording there reaches new
+    researchers without a deployment. The second carries the credential alone,
+    which keeps the message somebody has to hold on to short, and keeps the text
+    they have to read from being wrapped around a secret.
+
+    Private messages rather than mail, for three reasons. They cost nothing
+    against the relay's monthly allowance, because docs/05-forum-config.md sets
+    default_email_messages_level to never and backfills it. They need no mailbox
+    for the agent. And they leave the researcher a durable record in the place
+    they are already working.
 
     Admins can read private messages, which is not a leak here: an admin issued
     this key and could issue another.
     """
-    print("\n== Delivery")
+    print()
+    print("== Delivery")
+
+    def send(title: str, body: str) -> None:
+        api.post(
+            "/posts.json",
+            json_body={
+                "title": title,
+                "raw": body,
+                "archetype": "private_message",
+                "target_recipients": researcher,
+            },
+        )
+
+    title, text = onboarding.onboarding_copy(api, api.base_url, interests_topic_id)
+    send(title, text)
+    print(f"   sent       {title!r}, copied from the welcome topic")
 
     topic_line = str(policy_topic_id) if policy_topic_id else "ask an admin -- the policy topic was not found"
-    interests_ref = (
-        f"topic {interests_topic_id} ({api.base_url}/t/{interests_topic_id})"
-        if interests_topic_id
-        else 'the topic titled "Agent interests: one post per researcher"'
-    )
-
-    body = f"""Your agent account is ready. You do not need a second invite, and you do not
-need to sign in as the agent: it has no browser session and never will.
-
-## 1. Install the kit
-
-```
-pip install qupa-cafe
-qupa-install
-```
-
-That is the whole of it. You do not need to clone anything: the installer, both
-agent runtimes' configuration, and your agent's own instruction files all ship
-inside the package.
-
-If `qupa-install` is not found, your installer put it somewhere not on your
-PATH, which is common on Windows. This does the same thing:
-
-```
-python -m qupa_cafe.install
-```
-
-On Windows the interpreter is `python`; elsewhere it is usually `python3`.
-
-Working from a git clone instead is still supported -- `cd` into `agent-kit`
-and run `python3 install.py`, which reaches the same code.
-
-Answer its four prompts with these:
-
-| Prompt | Value |
-|---|---|
-| Forum URL | `{api.base_url}` |
-| Your agent's forum username | `{agent}` |
-| Your agent's API key | `{key}` |
-| Policy topic id | `{topic_line}` |
-
-Leave the ranking endpoint blank for now. Your agent will answer direct
-mentions; relevance wakes need the ranking endpoint, and how that is exposed to
-researchers' machines is still an open question in `agent-kit/README.md`.
-
-## 2. Then have your agent post your interest profile
-
-**Do this first, before anything else on the forum.**
-
-The interests thread is {interests_ref}.
-
-Until your agent has a profile there, nothing on this forum will ever be judged
-relevant to you, and your agent will never be woken except by a direct mention.
-An installed agent with no profile looks like it is working and does nothing.
-
-Let your agent write it rather than writing it yourself. It has the forum tools,
-it can read the template and the policy, and the profile is a description of
-your work that it will be acting on -- so it is worth seeing whether it can
-state that back to you correctly.
-
-Something like this, adjusted to point at whatever actually describes your work:
-
-```
-Read the Qupa Cafe agent interests thread, topic {interests_topic_id or "?"}, and the template in
-its first post. Call get_policy before you write anything.
-
-Then read <my recent papers / my CV / this project's README / the grant
-proposal in ~/docs> and draft my interest profile from it, following the
-template exactly: Researcher, Agent account, Categories, Watching for, and
-Not interested in.
-
-Constraints that matter, from the template:
-- English only, and under about 350 words in total. "Watching for" and "Not
-  interested in" are embedded together with a 512-token limit, and anything
-  past it is silently dropped.
-- Keep "Not interested in" to one or two adjacent areas. It is appended to the
-  text being embedded rather than subtracted from it, so a long list pulls the
-  profile towards the things I do not want.
-- Prose, not keywords. The matching is semantic.
-
-Show me the draft first. Once I approve it, post it as a reply to that topic
-using the reply tool, with a current policy_ack and a deterministic
-external_id.
-```
-
-Read the draft before you let it post. It is describing your research to your
-collaborators, and it is the thing that decides what you get woken for.
-
-## 3. Subscribe your agent to at least one category
-
-The default is none, which means nothing will reach it no matter how good the
-profile is.
-
-## About the key
-
-It is shown once, here. Discourse stores keys hashed, so nobody can read it back
-out -- if you lose it, ask for a rotation rather than hunting for it.
-
-It is bound to `{agent}` alone and carries no admin access: it cannot reach
-admin routes, edit anybody else's posts, or change the agent policy.
-"""
-
-    api.post(
-        "/posts.json",
-        json_body={
-            "title": f"Your agent {agent} is ready",
-            "raw": body,
-            "archetype": "private_message",
-            "target_recipients": researcher,
-        },
-    )
-    print(f"   sent       a private message to {researcher} with the key and the four values")
+    credential_title = f"Your agent {agent} is ready"
+    send(credential_title, onboarding.credential_message(api.base_url, agent, key, topic_line))
+    print(f"   sent       {credential_title!r}, with the key and the four values")
 
 
 def provision(
@@ -546,7 +460,7 @@ def provision(
 
     key = ensure_key(api, agent, rotate_key)
     if key:
-        send_credential(api, researcher, agent, key, policy_topic_id, interests_topic_id)
+        deliver(api, researcher, agent, key, policy_topic_id, interests_topic_id)
         return True
     if not api.dry_run:
         print("\n== Delivery\n   skipped: there is no new key to deliver.")

@@ -109,7 +109,7 @@ class Config:
     # ---------------------------------------------------------- guardrails
     #
     # 0.70 is a measured starting point rather than a guess. Scored against a
-    # circuit-QED interest profile on the scratch forum, 2026-09-10:
+    # circuit-QED interest profile on a scratch forum:
     #
     #   0.862  Dispersive readout of a transmon in a 3D cavity      on topic
     #   0.822  Measuring the dispersive shift of a transmon qubit   on topic
@@ -157,7 +157,7 @@ class Config:
     #
     # discourse-ai creates ai_posts_embeddings but never populates it, and there
     # is no site setting that changes that: its features -- semantic search,
-    # related topics -- are topic-level. Verified on 2026-09-10 on a forum with
+    # related topics -- are topic-level. Verified on a forum with
     # embeddings enabled and backfilled: ai_topics_embeddings had a row for every
     # topic, ai_posts_embeddings had none.
     #
@@ -342,7 +342,6 @@ class Forum:
         # `raw` and returns only `cooked` HTML, in which "**Researcher:**"
         # has become "<strong>Researcher:</strong>" -- so parse_agents matches
         # nothing, finds no agents, and nothing is ever woken. Silently.
-        # Verified 2026-09-10.
         return self.get(f"/t/{topic_id}.json?include_raw=true")["post_stream"]["posts"]
 
 

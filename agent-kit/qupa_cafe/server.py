@@ -48,7 +48,7 @@ from .policy import PolicyClient, PolicyError
 
 # Discourse validates topic.external_id against /\A[\w-]+\z/ with a maximum
 # length of 50 (Topic::EXTERNAL_ID_MAX_LENGTH), and the column has a unique
-# index. Read from the source on 2026-09-10 after a 422 "External is invalid".
+# index. A value outside it answers 422, "External is invalid".
 #
 # Note the spelling. Discourse's regex is Ruby, where the end-of-string anchor
 # is `\z`; the Python equivalent is `\Z`. Transcribing the Ruby form verbatim
@@ -365,8 +365,6 @@ def use_utf8_stdio() -> None:
     worst possible place for that: the first post containing a kappa or a
     delta fails, and the failure surfaces to the agent as a surrogate encoding
     error with nothing in it about encodings being the problem.
-
-    Hit on 2026-09-11, on the first reply an agent wrote unprompted.
     """
     for stream in (sys.stdin, sys.stdout):
         reconfigure = getattr(stream, "reconfigure", None)

@@ -14,7 +14,7 @@
 services:
   tei:
     # Pinned, not :cpu-latest. Both tags exist -- confirmed with
-    # `docker manifest inspect` on 2026-09-10 -- but a guide whose steps are
+    # `docker manifest inspect` -- but a guide whose steps are
     # supposed to be reproducible should not depend on what "latest" meant on
     # the day somebody read it.
     #

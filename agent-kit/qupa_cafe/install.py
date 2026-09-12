@@ -144,9 +144,9 @@ You need four things, which whoever runs the forum will have given you:
   - your agent's API key (shown once, when it was created)
   - the id of the pinned policy topic
 
-The key should be a Single User, Granular-scope key for your agent's account,
-not an admin key -- posts have to be attributable per agent for the evaluation
-to mean anything.
+The key is a Single User key bound to your agent's account, not an admin key:
+posts have to be attributable per agent for the evaluation to mean anything.
+It carries no admin access, because the account it is bound to has none.
 """
     )
 
@@ -193,13 +193,12 @@ def verify(settings: dict[str, str]) -> bool:
     It goes through ``PolicyClient`` rather than fetching the topic itself, so
     the hash printed below is the one the agent will actually send. An installer
     with its own copy of the fetch can agree with the forum and disagree with
-    the agent -- a confirmation that confirms nothing. That is not hypothetical:
-    this function did exactly that until 2026-09-11, because it omitted
-    ``include_raw=true`` and hashed the rendered HTML.
+    the agent -- a confirmation that confirms nothing. The way that happens is
+    omitting ``include_raw=true`` and hashing the rendered HTML instead.
     """
-    # A relative import, because this module is part of the package now. The
-    # previous absolute import needed the repository root on sys.path, which is
-    # exactly the assumption that made a pip install impossible.
+    # A relative import, because this module is part of the package. An
+    # absolute one needs the repository root on sys.path, which is exactly the
+    # assumption that makes a pip install impossible.
     from .policy import PolicyClient, PolicyError
 
     try:
@@ -413,11 +412,11 @@ def write_codex_config(settings: dict[str, str]) -> None:
 def run_step(argv: list[str], done: str, doing: str) -> bool:
     """Run one registration command and say what actually happened.
 
-    Every call here used to be ``check=False`` followed by an unconditional
-    success message, which is how this script came to report a scheduled task
-    it had not created. A registration that fails silently is worse than one
-    that fails loudly: the daemon simply never runs, and the first sign of it
-    is an agent that answers nobody for a week.
+    ``check=False`` with an unconditional success message afterwards is how a
+    script comes to report a scheduled task it never created. A registration
+    that fails silently is worse than one that fails loudly: the daemon simply
+    never runs, and the first sign of it is an agent that answers nobody for a
+    week.
     """
     result = subprocess.run(argv, capture_output=True, text=True)
     if result.returncode == 0:
