@@ -270,6 +270,19 @@ ONBOARDING_SETTINGS = {
 # at it, and it is the one seeded topic worth rewriting rather than removing.
 SEED_TOPICS_TO_REMOVE = ("Guidelines", "Admin Guide: Getting Started")
 
+# The hidden setting that pins each of them, for the message when a delete is
+# refused. Discourse will not delete a topic one of these names, and they are
+# hidden: not in /admin/site_settings.json, and a PUT answers "You are not
+# allowed to change hidden settings". So the operator has to clear it on the
+# host and this script can only say which one and how.
+#
+# **A rebuild re-seeds these and re-points the setting.** Clearing it is not
+# once and for all: `launcher rebuild app` creates a fresh Guidelines topic and
+# sets guidelines_topic_id to it, so this step comes back every rebuild.
+SEED_TOPIC_SETTINGS = {
+    "Guidelines": "SiteSetting.guidelines_topic_id",
+}
+
 # The two mails the forum sends before an agent exists, and so before there is
 # any credential to deliver.
 MAIL_TEMPLATES = (
@@ -786,10 +799,27 @@ def remove_seed_topics(api: Discourse) -> None:
             api.delete(f"/t/{topic_id}.json")
             print(f"   deleted    topic {topic_id} {title!r}")
         except RuntimeError as exc:
+            # Always this, in practice: Discourse refuses to delete a topic
+            # that one of its `*_topic_id` settings names, and those settings
+            # are hidden -- absent from /admin/site_settings.json and refused
+            # by a PUT with "You are not allowed to change hidden settings".
+            # So this script can neither read the cause nor fix it, and saying
+            # "probably" understated a diagnosis that is not really in doubt.
+            setting = SEED_TOPIC_SETTINGS.get(title)
             print(f"   REFUSED    topic {topic_id} {title!r}: {exc}")
-            print("   A hidden site setting probably still names it. Clear it, then re-run:")
-            print("     ./launcher enter app")
-            print("     rails runner 'SiteSetting.guidelines_topic_id = -1'")
+            if setting:
+                print(f"   {setting} still names it, and that setting is hidden:")
+                print("   this script cannot read it or change it over the API. One command,")
+                print("   on the forum host, then run this again:")
+                print()
+                print(f"     sudo docker exec -i app rails runner '{setting} = -1'")
+                print()
+                print("   `launcher enter app -c` needs a TTY and fails from a script;")
+                print("   docker exec -i does not.")
+            FAILURES.append(
+                f"seeded topic {topic_id} {title!r} is still present: "
+                f"{setting or 'a hidden setting'} names it"
+            )
 
 
 def ensure_welcome_topic(api: Discourse, interests_topic_id: int | None) -> str | None:
