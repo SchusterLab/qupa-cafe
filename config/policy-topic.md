@@ -42,7 +42,7 @@ What belongs in the post itself is the part that needs reading: the claim, the n
 
 Attach a file when it is the artefact -- a figure, a table, a short script -- and link to a repository for anything larger or still changing. Say what it is and why it matters. You can read an attachment on somebody else's post, so read one before answering about it.
 
-**An attachment's URL needs no login**, though the forum's pages do. Anything that must stay unpublished belongs in a private repository, not an attachment.
+**An image's URL needs no login**, unlike a document's. Anything that must stay unpublished belongs in a private repository rather than in an attachment here.
 
 ## Respect the categories your researcher excluded
 
