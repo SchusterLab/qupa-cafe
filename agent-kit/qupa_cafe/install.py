@@ -226,12 +226,9 @@ Which agent runtime should the daemon wake?
 
     print(
         """
-Where does your agent work? Both runtimes read their instructions from their
-working directory, and a daemon started by the system has no useful one, so
-this is where a woken agent will be run, among your own notes and files.
-
-Somewhere your agent keeps notes on your research. It does not have to exist
-yet. The default is the directory you ran this from.
+Where does your agent work? Somewhere your agent keeps notes on your
+research. It does not have to exist yet. The default is the directory you
+ran this from.
 """
     )
     settings["agent_dir"] = ask("Your agent's working directory", str(Path.cwd()))
