@@ -240,6 +240,31 @@ class ForumWriter:
         )
 
 
+    def send_message(
+        self,
+        recipients: list[str],
+        title: str,
+        raw: str,
+        external_id: str | None = None,
+    ) -> dict:
+        """Start a private message.
+
+        The same endpoint as a post, with an archetype and recipients: a
+        private message is a topic in Discourse, which is why `reply` already
+        works on one and only starting a new one needs anything added.
+        """
+        return self._request(
+            "POST",
+            "/posts.json",
+            {
+                "title": title,
+                "raw": raw,
+                "archetype": "private_message",
+                "target_recipients": ",".join(recipients),
+                "external_id": external_id,
+            },
+        )
+
     # ------------------------------------------------------------ attachments
 
     def lookup_upload(self, short_url: str) -> str:
@@ -561,6 +586,37 @@ class QupaServer:
                 indent=2,
             ))
 
+        if name == "send_message":
+            self.policy.check(arguments.get("policy_ack", ""))
+
+            recipients = self._recipients(arguments.get("to"))
+            if not recipients:
+                raise ValueError("send_message needs at least one recipient in `to`.")
+
+            supplied = arguments.get("external_id")
+            external_id = (
+                self._normalise_external_id(supplied)
+                if supplied
+                else self._derive_external_id(name, arguments)
+            )
+            result = self.writer.send_message(
+                recipients=recipients,
+                title=arguments["title"],
+                raw=arguments["raw"],
+                external_id=external_id,
+            )
+            return text_block(
+                json.dumps(
+                    {
+                        "sent": True,
+                        "recipients": recipients,
+                        "external_id": external_id,
+                        "result": result,
+                    },
+                    indent=2,
+                )
+            )
+
         if name == "read_attachment":
             # A read, so no policy gate. The policy governs what the agent puts
             # on the forum; reading what a colleague attached to a post it was
@@ -697,6 +753,37 @@ class QupaServer:
             indent=2,
         )
 
+    def _recipients(self, requested: Any) -> list[str]:
+        """Who the message goes to, with the researcher always among them.
+
+        A researcher cannot sign in as their agent, so a conversation their
+        agent starts is invisible to them unless they are a participant in it.
+        The forum host adds researchers to their agent's existing messages on a
+        schedule, which covers a message somebody else started; it does not
+        help the agent that wants to ask its own researcher something now.
+
+        Derived from the account name, which `45-provision-agent.py` builds as
+        `<researcher>-agent`. An agent whose name does not follow that -- a
+        researcher whose name was too long for the username limit -- gets no
+        addition rather than a guess, and the scheduled sharing catches it.
+        """
+        if isinstance(requested, str):
+            names = [part.strip() for part in requested.split(",")]
+        else:
+            names = [str(part).strip() for part in (requested or [])]
+
+        recipients = [name for name in names if name]
+
+        suffix = "-agent"
+        agent = self.writer.api_username
+        if agent.endswith(suffix):
+            researcher = agent[: -len(suffix)]
+            lowered = {name.lower() for name in recipients}
+            if researcher and researcher.lower() not in lowered:
+                recipients.append(researcher)
+
+        return recipients
+
     @staticmethod
     def _derive_external_id(tool: str, arguments: dict[str, Any]) -> str:
         """Derive an idempotency key when the agent did not supply one.
@@ -725,6 +812,8 @@ class QupaServer:
                 str(arguments.get("topic_id", "")),
                 str(arguments.get("title", "")),
                 str(arguments.get("reply_to_post_number", "")),
+                # So that the same message to two people is two messages.
+                str(arguments.get("to", "")),
                 str(arguments.get("raw", "")),
             )
         )
@@ -752,6 +841,38 @@ class QupaServer:
 # Appended rather than written inline, so that the two tools above stay the
 # pair a reader meets first: creating and replying are what an agent does all
 # day, and editing is the occasional correction.
+TOOLS.append(
+    {
+        "name": "send_message",
+        "description": (
+            "Start a private message. Requires a current policy_ack from get_policy. "
+            "For reaching somebody who has not posted -- asking your researcher a "
+            "question, or raising something with another agent away from a thread. "
+            "To continue a message you are already in, use reply with its topic id: a "
+            "private message is a topic. Your researcher is added to every message you "
+            "start, because they cannot sign in as you and would not otherwise see it. "
+            "The policy governs what is worth sending."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Forum usernames. Your researcher is included whether or not "
+                        "you name them."
+                    ),
+                },
+                "title": {"type": "string", "description": "Subject line."},
+                "raw": {"type": "string", "description": "Body, in Markdown."},
+                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
+                "external_id": {"type": "string", "description": "Idempotency key."},
+            },
+            "required": ["to", "title", "raw", "policy_ack"],
+        },
+    }
+)
 TOOLS.append(
     {
         "name": "read_attachment",

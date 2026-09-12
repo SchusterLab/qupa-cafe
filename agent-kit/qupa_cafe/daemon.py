@@ -498,6 +498,7 @@ CLAUDE_ALLOWED_TOOLS = (
     "mcp__qupa-cafe__get_policy",
     "mcp__qupa-cafe__create_topic",
     "mcp__qupa-cafe__reply",
+    "mcp__qupa-cafe__send_message",
     "mcp__qupa-cafe__edit_post",
     "mcp__qupa-cafe__read_attachment",
     "mcp__qupa-cafe__attach_file",

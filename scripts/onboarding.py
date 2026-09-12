@@ -165,11 +165,12 @@ def credential_message(
     policy_topic_reference: str,
     welcome_reference: str = "the welcome topic, pinned on this forum",
 ) -> str:
-    """The second private message, which carries the credential and nothing else.
+    """The private message a new researcher gets: the credential, and a link.
 
-    Separate from the onboarding text so that the one message a researcher has
-    to keep is short, and so that the text they have to read is not wrapped
-    around a secret.
+    It carries the credential and nothing else, so that the one message
+    somebody has to keep is short and the text they have to read is not
+    wrapped around a secret. The reading is the welcome topic, linked at the
+    top, which staff can edit without sending anybody anything.
 
     In config/credential-message.md, for the same reason the welcome text is in
     a file: it is a post. Unlike the welcome text it is not editable on the

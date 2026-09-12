@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 import urllib.error
@@ -81,6 +82,21 @@ KEY_DESCRIPTION = "agent: {agent}"
 def die(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def redact(payload) -> str:
+    """A payload as a dry run should print it: without the key in it.
+
+    This script's whole purpose is to deliver a credential, so its payloads
+    carry one -- in the body of a private message, where no field name marks
+    it as secret. A dry run exists to be read, and what it is read into is a
+    terminal, a scrollback buffer and whatever recorded the session, so a key
+    printed once is a key to revoke.
+
+    Matched on shape rather than on a name: a Discourse API key is 64 hex
+    characters, and the message carries one in prose inside backticks.
+    """
+    return re.sub(r"[0-9a-f]{40,}", "<redacted>", str(payload))
 
 
 class Discourse:
@@ -131,13 +147,13 @@ class Discourse:
 
     def post(self, path: str, data: dict | None = None, json_body: dict | None = None):
         if self.dry_run:
-            print(f"     WOULD POST {path} {json_body or data or ''}")
+            print(f"     WOULD POST {path} {redact(json_body or data or '')}")
             return {}
         return self._request("POST", path, data=data, json_body=json_body)
 
     def put(self, path: str, data: dict | None = None):
         if self.dry_run:
-            print(f"     WOULD PUT {path} {data or ''}")
+            print(f"     WOULD PUT {path} {redact(data or '')}")
             return {}
         return self._request("PUT", path, data=data)
 
@@ -603,6 +619,11 @@ def deliver(
 
     topic_line = str(policy_topic_id) if policy_topic_id else "ask an admin -- the policy topic was not found"
     credential_title = f"Your agent {agent} is ready"
+
+    # Before the new one arrives, because after it there are two messages with
+    # the same title and nothing to say which key is live.
+    remove_previous_credential(api, researcher, credential_title)
+
     send(
         credential_title,
         onboarding.credential_message(
@@ -610,6 +631,42 @@ def deliver(
         ),
     )
     print(f"   sent       {credential_title!r}, with the key and a link to the welcome topic")
+
+
+def remove_previous_credential(api: Discourse, researcher: str, title: str) -> None:
+    """Delete any earlier message with this title before a new one is sent.
+
+    A key is only ever delivered in a message, and a rotation cannot put the
+    new one into the old message: the old one may have been read, filed or
+    forwarded already, and the point of rotating is that what it holds no
+    longer works. Leaving it there gives somebody two messages with the same
+    title, different keys and nothing to say which is live -- and the one their
+    eye falls on first is as likely to be the dead one.
+
+    So it goes. Nothing is lost: the key in it is revoked by the rotation, and
+    the rest of the message is a table this script regenerates.
+
+    Failures are reported and not fatal. A rotation that delivered a working
+    key and failed to tidy up has still done the part that matters.
+    """
+    try:
+        listing = api.get(f"/topics/private-messages/{researcher}.json")
+    except RuntimeError as exc:
+        print(f"   NOTE: cannot list {researcher}'s messages to remove the old one ({exc})")
+        return
+
+    earlier = [
+        topic
+        for topic in (listing.get("topic_list", {}).get("topics") or [])
+        if (topic.get("title") or "") == title
+    ]
+
+    for topic in earlier:
+        try:
+            api.delete(f"/t/{topic['id']}.json")
+            print(f"   deleted    the earlier credential message (topic {topic['id']})")
+        except RuntimeError as exc:
+            print(f"   NOTE: cannot delete topic {topic.get('id')} ({exc})")
 
 
 def provision(

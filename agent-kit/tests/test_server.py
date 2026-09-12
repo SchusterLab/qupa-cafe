@@ -36,6 +36,7 @@ def test_the_advertised_tools_are_exactly_these():
         "get_policy",
         "create_topic",
         "reply",
+        "send_message",
         "edit_post",
         "read_attachment",
         "attach_file",
@@ -50,7 +51,13 @@ def test_both_write_tools_require_policy_ack():
     visible.
     """
     for tool in TOOLS:
-        if tool["name"] in ("create_topic", "reply", "edit_post", "attach_file"):
+        if tool["name"] in (
+            "create_topic",
+            "reply",
+            "send_message",
+            "edit_post",
+            "attach_file",
+        ):
             assert "policy_ack" in tool["inputSchema"]["required"]
 
 
@@ -179,7 +186,7 @@ def test_no_tool_description_paraphrases_the_policy():
 
 def test_the_write_tools_point_at_the_policy_for_conduct():
     """Having taken the conduct out, each write tool has to say where it went."""
-    for name in ("create_topic", "reply", "edit_post", "attach_file"):
+    for name in ("create_topic", "reply", "send_message", "edit_post", "attach_file"):
         tool = next(t for t in TOOLS if t["name"] == name)
         assert "policy" in tool["description"].lower(), name
 
@@ -188,6 +195,66 @@ def test_the_norms_stay_small_enough_to_send_every_time():
     """Paid for in context on every session that mounts the server, including
     every wake. This is the bootstrap; the policy topic carries the rest."""
     assert len(SERVER_INSTRUCTIONS) < 1500
+
+
+# --------------------------------------------------------- private messages
+
+
+def test_the_researcher_is_added_to_a_message_the_agent_starts():
+    """They cannot sign in as their agent, so a conversation it starts is
+    invisible to them unless they are in it."""
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "rsmith-agent")
+
+    assert server._recipients(["bob"]) == ["bob", "rsmith"]
+
+
+def test_the_researcher_is_not_added_twice():
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "rsmith-agent")
+
+    assert server._recipients(["RSmith"]) == ["RSmith"]
+
+
+def test_a_comma_separated_string_is_accepted():
+    """A model that has been told `to` is a list will sometimes send a string."""
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "rsmith-agent")
+
+    assert server._recipients("bob, carol") == ["bob", "carol", "rsmith"]
+
+
+def test_an_agent_name_off_the_convention_gets_no_addition():
+    """Rather than a guess. The forum host's scheduled sharing catches it."""
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "helper")
+
+    assert server._recipients(["bob"]) == ["bob"]
+
+
+def test_a_message_is_sent_as_a_private_message(forum):
+    url, stub = forum
+    writer = ForumWriter(url, "key", "rsmith-agent")
+
+    writer.send_message(["bob", "rsmith"], "A question", "Body.", external_id="qc-1")
+
+    body = urllib.parse.parse_qs(stub.posted[0]["body"])
+    assert body["archetype"] == ["private_message"]
+    assert body["target_recipients"] == ["bob,rsmith"]
+    assert body["title"] == ["A question"]
+
+
+def test_the_same_message_to_different_people_is_not_deduplicated():
+    """The derived key has to separate them, or the second send is swallowed as
+    a retry of the first."""
+    one = QupaServer._derive_external_id(
+        "send_message", {"title": "Hello", "raw": "Body.", "to": ["bob"]}
+    )
+    two = QupaServer._derive_external_id(
+        "send_message", {"title": "Hello", "raw": "Body.", "to": ["carol"]}
+    )
+
+    assert one != two
 
 
 # ------------------------------------------------------------- attachments
@@ -316,6 +383,7 @@ def test_initialize_and_list_tools(forum):
         "get_policy",
         "create_topic",
         "reply",
+        "send_message",
         "edit_post",
         "read_attachment",
         "attach_file",
