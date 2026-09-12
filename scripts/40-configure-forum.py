@@ -822,13 +822,23 @@ def remove_seed_topics(api: Discourse) -> None:
             )
 
 
-def ensure_welcome_topic(api: Discourse, interests_topic_id: int | None) -> str | None:
+def ensure_welcome_topic(
+    api: Discourse, interests_topic_id: int | None, update: bool = False
+) -> str | None:
     """Seed the welcome topic with the onboarding text, once, and return it.
 
     This topic is the source the onboarding text is read FROM, so it is written
     only while it still holds what Discourse seeded. After that staff own it: a
     run that overwrote it would make this repository the authority again and
     silently undo an edit somebody made in a browser.
+
+    ``--update-welcome`` is the explicit way to push the tracked text anyway,
+    for when the change belongs in version control -- the same escape hatch
+    ``--update-policy`` and ``--update-interests`` provide for the other two.
+    Without it a rewrite of `config/welcome-topic.md` reaches new researchers
+    through the mails, which are rendered from this topic, and never reaches
+    the topic itself: the forum's copy quietly drifts a release behind and the
+    only way to notice is to read both.
     """
     print()
     print("== Welcome topic, which is where the onboarding text lives")
@@ -839,9 +849,24 @@ def ensure_welcome_topic(api: Discourse, interests_topic_id: int | None) -> str 
         print("   The mails and the provisioning message fall back to this repository's copy.")
         return None
 
-    if onboarding.WELCOME_MARKER in topic["raw"]:
+    if onboarding.WELCOME_MARKER in topic["raw"] and not update:
         print(f"   unchanged  topic {topic['topic_id']} carries the onboarding text, and staff own it")
+        body = onboarding.orientation(api.base_url, interests_topic_id)
+        if body.strip() != topic["raw"].strip():
+            print(f"   NOTE: it differs from config/welcome-topic.md by "
+                  f"{abs(len(body) - len(topic['raw']))} characters.")
+            print("   Pass --update-welcome to push this repository's copy over it.")
         return topic["raw"]
+
+    if update and onboarding.WELCOME_MARKER in topic["raw"]:
+        body = onboarding.orientation(api.base_url, interests_topic_id)
+        if body.strip() == topic["raw"].strip():
+            print(f"   unchanged  topic {topic['topic_id']} already matches this repository")
+            return topic["raw"]
+        api.put(f"/posts/{topic['post_id']}", {"post[raw]": body})
+        print(f"   updated    topic {topic['topic_id']} from config/welcome-topic.md")
+        print("   Anything staff had edited there by hand is now overwritten.")
+        return body
 
     body = onboarding.orientation(api.base_url, interests_topic_id)
     api.put(f"/posts/{topic['post_id']}", {"post[raw]": body})
@@ -935,6 +960,11 @@ def main() -> int:
         "--update-policy",
         action="store_true",
         help="overwrite the policy topic body with this script's copy, changing its hash",
+    )
+    parser.add_argument(
+        "--update-welcome",
+        action="store_true",
+        help="push config/welcome-topic.md over the forum's copy, which staff otherwise own",
     )
     parser.add_argument(
         "--update-interests",
@@ -1031,7 +1061,7 @@ def main() -> int:
 
     # After the topics, because the initial text names the interests topic by id
     # and that id has to exist before it can be quoted.
-    ensure_welcome_topic(api, interests_id)
+    ensure_welcome_topic(api, interests_id, args.update_welcome)
 
     # Read back rather than reused: if staff have edited the welcome topic, that
     # edit is the text the mails should carry.
