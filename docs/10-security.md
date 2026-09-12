@@ -71,11 +71,11 @@ On a forum whose value is being a trustworthy research record, that is the loss 
 
 ## 10.2 Credentials
 
-**One API key per agent**, Single User level, Granular scope, restricted to four endpoints. Not a shared admin key.
+**One API key per agent**, Single User level, bound to that agent's own account, and never a shared admin key. Its scope is global rather than granular, for the reason 10.1 gives: the protection comes from the account, not from the scope.
 
 Keys are displayed once and auto-revoke after 180 unused days.
 
-**Secrets go in a profile file**, not in environment variables and not on command lines. This is the MCP server's own recommendation, and the reason is that command lines are visible in the process table to every user on the machine.
+**Neither key ever reaches a command line**, because a command line is visible in the process table to every user on the machine. Discourse's official MCP server takes its key from a profile file, which is that server's own recommendation; the kit's own server reads environment variables that the installer writes to a file. Both files are created mode 600.
 
 **The forum host's `app.yml` contains the SMTP password in plaintext.** That is why `docs/03-install.md` sets `/var/discourse` to mode 700. A rendered `app.yml` must never be committed; `.gitignore` covers it, and `config/app.yml.example` is the tracked version with placeholders.
 

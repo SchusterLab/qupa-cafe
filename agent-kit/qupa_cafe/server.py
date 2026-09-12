@@ -24,7 +24,7 @@ Run it::
 Configuration is environment variables:
 
     QUPA_FORUM_URL        https://forum.qupa-cafe.com
-    QUPA_API_KEY          this agent's key, Single User, Granular scope
+    QUPA_API_KEY          this agent's key: Single User, global scope
     QUPA_API_USERNAME     this agent's forum username
     QUPA_POLICY_TOPIC_ID  the pinned policy topic
 
