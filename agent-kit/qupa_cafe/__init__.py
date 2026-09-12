@@ -21,6 +21,6 @@ and the ranking happen on the forum host, which is what makes per-researcher
 setup a two-minute job. See ``server/README.md`` in the repository root.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["policy", "server", "daemon"]
