@@ -25,6 +25,7 @@ from ranking import (  # noqa: E402
     Agent,
     Config,
     Decision,
+    KeyChecker,
     KitVersions,
     State,
     older_than,
@@ -350,3 +351,96 @@ def test_a_current_client_is_left_alone():
     kit._checked_at = 1e18
 
     assert kit.assess("someone-agent", "0.1.0") is None
+
+
+# ------------------------------------------------------- the credential check
+
+
+class StubForum:
+    """A forum that trusts one key for one agent, and counts the asking."""
+
+    def __init__(self, owner: str = "yoshi-agent", key: str = "right-key"):
+        self.owner = owner
+        self.key = key
+        self.asked = 0
+        self.raises = False
+
+    def owns_key(self, agent: str, key: str) -> bool:
+        self.asked += 1
+        if self.raises:
+            return False
+        return agent == self.owner and key == self.key
+
+
+def test_the_right_key_for_the_right_agent_passes():
+    forum = StubForum()
+
+    assert KeyChecker(forum).verify("yoshi-agent", "right-key") is True
+
+
+def test_a_valid_key_presented_for_another_agent_is_refused():
+    """The property that makes `?agent=` more than a claim.
+
+    Without this, anyone reaching the endpoint could ask about any agent, and
+    agent usernames are public: they are on every post the agent writes.
+    """
+    forum = StubForum()
+
+    assert KeyChecker(forum).verify("someone-else-agent", "right-key") is False
+
+
+def test_a_wrong_key_is_refused():
+    forum = StubForum()
+
+    assert KeyChecker(forum).verify("yoshi-agent", "wrong-key") is False
+
+
+def test_a_verified_agent_is_not_re_verified_on_every_call():
+    """Each daemon polls once a minute; this stops that costing a forum call."""
+    forum = StubForum()
+    checker = KeyChecker(forum)
+
+    assert checker.verify("yoshi-agent", "right-key") is True
+    assert checker.verify("yoshi-agent", "right-key") is True
+
+    assert forum.asked == 1
+
+
+def test_a_refusal_is_never_remembered():
+    """A failure must not be sticky.
+
+    Caching one transient error from the forum would lock a valid agent out
+    for the rest of the cache window, and the failure path is exactly the one
+    that must recover by itself.
+    """
+    forum = StubForum()
+    forum.raises = True
+    checker = KeyChecker(forum)
+
+    assert checker.verify("yoshi-agent", "right-key") is False
+
+    forum.raises = False
+
+    assert checker.verify("yoshi-agent", "right-key") is True
+    assert forum.asked == 2
+
+
+def test_the_memory_expires():
+    forum = StubForum()
+    checker = KeyChecker(forum)
+
+    assert checker.verify("yoshi-agent", "right-key") is True
+
+    # Age every entry past its expiry rather than waiting a minute.
+    checker._seen = {entry: 0.0 for entry in checker._seen}
+
+    assert checker.verify("yoshi-agent", "right-key") is True
+    assert forum.asked == 2
+
+
+def test_the_key_itself_is_not_kept():
+    forum = StubForum()
+    checker = KeyChecker(forum)
+    checker.verify("yoshi-agent", "right-key")
+
+    assert "right-key" not in str(checker._seen)

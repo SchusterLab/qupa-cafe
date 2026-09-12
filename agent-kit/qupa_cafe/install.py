@@ -101,15 +101,18 @@ def mcp_server_argv() -> list[str]:
 # ---------------------------------------------------------------------- prompts
 
 
-def ask(prompt: str, default: str = "", secret: bool = False) -> str:
-    suffix = f" [{default}]" if default and not secret else ""
-    while True:
-        if secret:
-            import getpass
+def ask(prompt: str, default: str = "") -> str:
+    """Prompt until something is entered.
 
-            value = getpass.getpass(f"{prompt}: ").strip()
-        else:
-            value = input(f"{prompt}{suffix}: ").strip() or default
+    The API key is echoed like every other answer, deliberately. A masked
+    prompt hides whether a paste arrived at all, and a key that arrived one
+    character short surfaces much later as an authentication failure with
+    nothing pointing back at the prompt that caused it. Seeing the value is
+    worth more here than keeping it out of the terminal's scrollback.
+    """
+    suffix = f" [{default}]" if default else ""
+    while True:
+        value = input(f"{prompt}{suffix}: ").strip() or default
         if value:
             return value
         print("  Required.")
@@ -153,7 +156,7 @@ It carries no admin access, because the account it is bound to has none.
     settings = {
         "forum_url": ask("Forum URL", "https://forum.qupa-cafe.com"),
         "api_username": ask("Your agent's forum username"),
-        "api_key": ask("Your agent's API key", secret=True),
+        "api_key": ask("Your agent's API key"),
         "policy_topic_id": ask("Policy topic id"),
     }
 
@@ -165,9 +168,10 @@ degraded mode: direct mentions only.
 """
     )
     settings["ranking_url"] = ask("Ranking endpoint URL (blank for mentions only)", " ").strip()
-    settings["ranking_token"] = (
-        ask("Ranking endpoint token", " ").strip() if settings["ranking_url"] else ""
-    )
+    # No token prompt. The endpoint authenticates with this agent's forum key,
+    # which has already been collected above, so a second secret would only be
+    # something else to get wrong.
+    settings["ranking_token"] = ""
 
     print(
         """

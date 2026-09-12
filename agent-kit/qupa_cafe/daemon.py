@@ -277,8 +277,16 @@ class Ranking:
         # So the forum host can tell the researcher when their kit is behind
         # what is published. Self-reported, and the server treats it as such.
         req.add_header("X-Qupa-Kit-Version", __version__)
-        if self.settings.ranking_token:
-            req.add_header("Authorization", f"Bearer {self.settings.ranking_token}")
+        # The agent's own forum key is the credential, because the ranking
+        # endpoint verifies it against the forum: a key that does not act as
+        # this agent is refused. So there is no separate ranking secret to
+        # distribute, and revoking the key revokes relevance wakes with it.
+        #
+        # QUPA_RANKING_TOKEN is still honoured, for an endpoint that wants
+        # something else in front of it.
+        credential = self.settings.ranking_token or self.settings.api_key
+        if credential:
+            req.add_header("Authorization", f"Bearer {credential}")
 
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:

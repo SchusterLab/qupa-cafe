@@ -147,4 +147,36 @@ hooks:
 
 run:
   - exec: echo "Beginning of custom commands"
+  # The relevance-ranking endpoint, published as a path on this hostname.
+  #
+  # `conf.d/outlets/server/` is Discourse's own extension point: the main
+  # config includes it from inside the `server` block, which is how the SSL
+  # template injects `listen 443`. Writing a file there beats patching the
+  # generated config, because there is no anchor to match and nothing to break.
+  #
+  # The service runs on the HOST, not in this container, and listens on the
+  # docker bridge address. So nginx terminates TLS for it and there is no
+  # second certificate, no second port in the security group, and no second
+  # renewal to monitor.
+  #
+  # Only /wake is proxied. /health reports how many interest profiles exist and
+  # stays reachable from the host alone.
+  - file:
+      path: /etc/nginx/conf.d/outlets/server/50-qupa-ranking.conf
+      contents: |
+        location = /qupa-ranking/wake {
+          # The credential is the agent's own forum key, sent as a bearer
+          # token, so it must never travel in clear. Refused rather than
+          # redirected: a redirect arrives after the key has been sent.
+          if ($scheme != "https") {
+            return 403;
+          }
+
+          proxy_pass http://172.17.0.1:8090/wake;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 15s;
+        }
   - exec: echo "End of custom commands"

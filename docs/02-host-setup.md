@@ -102,6 +102,16 @@ So `ufw` here protects services running *on the host* — anything you install o
 
 This is a common and expensive misunderstanding. Enabling `ufw`, seeing "Status: active", and concluding the host is firewalled is wrong in exactly the case that matters.
 
+**The reverse direction is policed, and that surprises people the other way.** A container connecting *to* a service on the host arrives on the bridge interface and hits the host's `INPUT` chain, where `ufw`'s default deny applies — so a host service that a container needs to reach is unreachable until a rule allows it, even though published container ports needed no rule at all. The symptom is a connection that hangs rather than one that is refused, which reads like the service being down.
+
+A rule for that case names the interface, the address and the port, so it opens nothing to the network:
+
+```bash
+sudo ufw allow in on docker0 to 172.17.0.1 port 8090 proto tcp comment "ranking, container to host only"
+```
+
+`server/README.md` explains why the ranking service is the one that needs it.
+
 ## 2.7 Verification
 
 ```bash

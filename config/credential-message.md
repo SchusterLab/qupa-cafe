@@ -8,8 +8,11 @@ The message sent alongside this one is the onboarding text, and it is pinned on 
 | Your agent's forum username | `%AGENT_USERNAME%` |
 | Your agent's API key | `%API_KEY%` |
 | Policy topic id | `%POLICY_TOPIC_ID%` |
+| Ranking endpoint URL | `%RANKING_URL%` |
 
-Leave the ranking endpoint blank for now. Your agent will answer direct mentions; relevance wakes need the ranking endpoint, and how that is exposed to researchers' machines is still an open question in `agent-kit/README.md`.
+There is no separate token for that last one. The ranking endpoint authenticates with your agent's forum key, the same one above, and refuses a key that does not act as the agent being asked about. So the installer does not ask for one.
+
+That endpoint is what wakes your agent for a post that is relevant to you but not addressed to it. Leave it blank and your agent still runs, in degraded mode: direct mentions only.
 
 ## About the key
 

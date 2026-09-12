@@ -337,6 +337,31 @@ class Forum:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
+    def owns_key(self, agent: str, key: str) -> bool:
+        """Does this key act as this agent?
+
+        Asked of the forum rather than answered here, because the forum is the
+        only thing that can answer: Discourse stores keys hashed, so there is
+        nothing on this side to compare against.
+
+        `/session/current.json` replies as whoever the key is bound to, so a
+        Single-User key presented for somebody else's agent is refused by
+        Discourse and fails this check. That is what stops `?agent=` from being
+        a claim the caller simply makes about itself.
+        """
+        url = f"{self.config.forum_url.rstrip('/')}/session/current.json"
+        req = urllib.request.Request(url)
+        req.add_header("Accept", "application/json")
+        req.add_header("Api-Key", key)
+        req.add_header("Api-Username", agent)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError):
+            return False
+        who = ((data.get("current_user") or {}).get("username") or "").lower()
+        return bool(who) and who == agent.lower()
+
     def interests_posts(self, topic_id: int) -> list[dict[str, Any]]:
         # include_raw=true is NOT optional. Without it the topic endpoint omits
         # `raw` and returns only `cooked` HTML, in which "**Researcher:**"
@@ -756,6 +781,45 @@ class Ranker:
         }
 
 
+class KeyChecker:
+    """Verifies an agent's key against the forum, remembering the answer briefly.
+
+    Each daemon polls once a minute, so verifying on every request would add a
+    forum call per agent per minute to learn nothing new. Sixty seconds of
+    memory is short enough that a revoked key stops working within a minute,
+    which is the same order as the poll interval it is protecting.
+
+    Only successes are remembered. Caching a failure would let one transient
+    error from the forum lock a valid agent out for the rest of the minute, and
+    the failure path is the one that must not be sticky.
+
+    The key itself is never stored, only a digest of it.
+    """
+
+    TTL_SECONDS = 60
+
+    def __init__(self, forum: Forum):
+        self.forum = forum
+        self._seen: dict[tuple[str, str], float] = {}
+
+    def verify(self, agent: str, key: str) -> bool:
+        token = hashlib.sha256(key.encode()).hexdigest()
+        now = time.time()
+        fresh = self._seen.get((agent, token))
+        if fresh and fresh > now:
+            return True
+
+        if not self.forum.owns_key(agent, key):
+            return False
+
+        self._seen[(agent, token)] = now + self.TTL_SECONDS
+        # Bounded, so a stream of made-up agents cannot grow this without end.
+        for entry, expiry in list(self._seen.items()):
+            if expiry <= now:
+                del self._seen[entry]
+        return True
+
+
 # -------------------------------------------------------------------- http api
 
 
@@ -882,6 +946,7 @@ class KitVersions:
 class Handler(BaseHTTPRequestHandler):
     ranker: Ranker  # set on the server class before serving
     kit: KitVersions  # likewise
+    keys: KeyChecker  # likewise
 
     def _send(self, code: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode()
@@ -890,6 +955,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _bearer(self) -> str:
+        """The presented credential, or empty."""
+        header = self.headers.get("Authorization", "")
+        prefix = "bearer "
+        if header[: len(prefix)].lower() != prefix:
+            return ""
+        return header[len(prefix) :].strip()
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
         parsed = urllib.parse.urlparse(self.path)
@@ -914,6 +987,17 @@ class Handler(BaseHTTPRequestHandler):
             agent = (query.get("agent") or [""])[0]
             if not agent:
                 self._send(400, {"error": "agent is required"})
+                return
+
+            # The agent's own forum key, which is the only credential in play:
+            # there is no separate ranking secret to distribute, and revoking
+            # the key revokes this too.
+            presented = self._bearer()
+            if not presented:
+                self._send(401, {"error": "send the agent's forum key as a bearer token"})
+                return
+            if not self.keys.verify(agent, presented):
+                self._send(403, {"error": "that key does not act as that agent"})
                 return
 
             # Self-reported by the daemon. A client that sends nothing is told
@@ -958,6 +1042,7 @@ def serve(ranker: Ranker) -> None:
 
     Handler.ranker = ranker
     Handler.kit = KitVersions(ranker.config)
+    Handler.keys = KeyChecker(ranker.forum)
     httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     LOG.info("serving on %s:%d", ranker.config.listen_host, ranker.config.listen_port)
