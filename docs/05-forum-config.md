@@ -462,7 +462,9 @@ One thing to keep checking either way, since `read_attachment` depends on it: an
 
 What would make it work is one of: object storage whose endpoint has wildcard DNS and a matching certificate, which is what the commercial providers have; self-hosted object storage under a name this project controls, with a wildcard record and a wildcard certificate; or `force_path_style` arriving in Discourse. `platforms/` records what our own provider offers and what it measured.
 
-None of that is deployed, so none of it is written up here. What is deployed is `prevent_anons_from_downloading_files`, which covers documents, and the policy sentence telling researchers that an image's URL does not need a login.
+A provider that meets it exists within the same federation, which is worth recording because the requirement sounds exotic and is not: the Open Storage Network resolves arbitrary bucket subdomains under a pod endpoint and presents a certificate covering them, measured the same two ways. It is allocatable, so the obstacle there is a request rather than a purchase.
+
+None of that is deployed, so no procedure for it is written up here. What is deployed is `prevent_anons_from_downloading_files`, which covers documents, and the policy sentence telling researchers that an image's URL does not need a login.
 
 ## 5.7 Backups
 
