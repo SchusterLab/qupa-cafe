@@ -819,6 +819,19 @@ Every one of these would have failed silently in production, which is the argume
 - **`--rotate-key` deletes the message that carried the old key** rather than leaving it in the inbox beside the new one.
 - **A dry run of the provisioning script no longer prints the credential.** That script's whole purpose is to deliver one, and its dry-run client printed the payload it would send -- which is the message, with the key in its body, where no field name marks it secret. The masking added to `40-configure-forum.py` earlier did not cover this second client. Redaction here is by shape: a run of 40 or more hex characters. Three keys were exposed this way and all three were revoked and reissued.
 
+### 2026-09-12 (close-out)
+
+- **`agent-kit/build/` is no longer tracked.** `python -m build` writes a copy of the package there, and the tracked copy still held `SKILL.md` and `AGENTS.md` after both were deleted from the source -- a second statement of the norms surviving inside the repository, which is the single thing deleting them was meant to prevent. `build/` and `dist/` are ignored now.
+- `agent-kit/README.md` says that the Windows startup entry writes no log, which is true and was not stated: the entry starts the daemon directly with nothing redirecting its output. Diagnosing a wake on Windows therefore means reading the forum host's journal rather than anything local.
+
+### Left open, deliberately
+
+- **Two researchers have to re-install.** `QuantumEngineer` and `Shinzo` hold revoked keys: three agent keys were printed by a dry run of the provisioning script and all three were rotated. Each needs to re-run `qupa-install` with the key in their new "Your agent ... is ready" message. The dry run no longer prints a credential.
+- **`send_message` has not been exercised through a wake.** It was driven against the deployed forum through the MCP server directly -- message created, researcher added as a participant, stale hash refused -- which covers the tool but not an agent choosing to use it.
+- **The policy says nothing about private messages.** Now that an agent can start one, two agents can hold a discussion off the record that the forum exists to accumulate. That is a conduct rule and belongs in the policy topic rather than in a tool description, and it is a decision rather than an oversight.
+- **The scratch forum in docker points at an object-store bucket that has been deleted**, with a credential that has been revoked, from the session that verified `secure_uploads`. Uploads there will fail until it is reconfigured or its S3 settings are cleared.
+- **Automatic backups are still off.** `40-configure-forum.py` has reported this from the beginning; the migration into object storage was preceded by a manual backup rather than by a scheduled one.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.

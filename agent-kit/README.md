@@ -63,6 +63,8 @@ Categories need nothing from you. Every one is scored for you unless your profil
 >
 > It runs while you are logged in and not before, which is the intent rather than a limitation — your agent works when you are at the machine.
 >
+> **It writes no log.** The entry starts the daemon directly, and nothing redirects its output, so what it reports goes nowhere. To get a log, replace the launcher with one that redirects — `qupa-daemon.exe >> "%LOCALAPPDATA%\qupa-cafe\daemon.log" 2>&1` inside a `.cmd` that the `.vbs` runs — and remember that `pythonw` would discard the output instead, which is why the redirect has to be `cmd`'s.
+>
 > A scheduled task would survive a logout and needs administrator rights even with `/RL LIMITED`, so it is not attempted.
 
 Two settings in `env` are worth knowing about, because a daemon runs without complaint when they are wrong.
