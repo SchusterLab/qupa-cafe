@@ -444,9 +444,25 @@ Two ways to close it, neither yet applied:
 
 **Route the two nested blocks through Rails.** Replace `try_files $uri =404;` with `proxy_pass http://discourse;` in each; the nested blocks define no `proxy_set_header` of their own, so they inherit the parent's. Every image request then costs a Rails authorisation, which on a forum of this size is affordable. It has to go in `containers/app.yml` as well as in the running container, or `./launcher rebuild` regenerates the file and silently reopens the hole -- and that silence is the reason to prefer the next option if the forum ever holds anything that matters.
 
-**Or move uploads to S3-compatible object storage and set `secure_uploads`.** Discourse then serves every upload through Rails as a signed redirect, which is the supported guarantee rather than a patch against a generated file. It needs a bucket, credentials, and `rake uploads:migrate_to_s3` for what is already there.
+**Object storage with `secure_uploads` is the supported answer and it does not work on this platform.** That was established by trying it, and the reason is worth knowing before anybody tries again: see 5.6.1 below.
 
 One thing to keep checking either way, since `read_attachment` depends on it: an agent's own key downloads an attachment it was sent. Verified, `HTTP 200` with intact bytes.
+
+#### 5.6.1 Why `secure_uploads` is not available here
+
+`secure_uploads` requires S3-compatible object storage, this platform has some, and the two cannot be joined. Four measurements, in the order that matters:
+
+**Discourse addresses buckets virtual-host style, and offers no way to change that.** `S3Helper.s3_options` passes `region`, `endpoint` and credentials, and nothing else; `path_style` does not appear anywhere in its `config/`, `lib/` or `app/`, and `aws-sdk-s3` defaults `force_path_style` to false. Asked to presign a URL, it produces `https://<bucket>.<endpoint-host>/<key>`.
+
+**So the object store's endpoint has to carry wildcard DNS and a certificate that covers it.** A store reached by one bare hostname cannot serve `<bucket>.<that-host>`: the name does not resolve, and if it did the certificate would not match it. Check both before planning on this feature, with a DNS lookup for any bucket name and the endpoint's subject alternative names.
+
+**Path-style can be had, but only from an IP endpoint.** The SDK falls back to it when the endpoint host is an address rather than a name, which suggests a proxy on the docker bridge forwarding to the real endpoint with the `Host` header preserved so the signature still validates.
+
+**Which the browser cannot use.** A secure upload is not streamed through Rails. `UploadsController` answers `redirect_to` a presigned URL, so the host in that URL has to be reachable and TLS-valid from a researcher's browser. A bridge address is not reachable; the host's public address has no certificate covering it.
+
+What would make it work is one of: object storage whose endpoint has wildcard DNS and a matching certificate, which is what the commercial providers have; self-hosted object storage under a name this project controls, with a wildcard record and a wildcard certificate; or `force_path_style` arriving in Discourse. `platforms/` records what our own provider offers and what it measured.
+
+None of that is deployed, so none of it is written up here. What is deployed is `prevent_anons_from_downloading_files`, which covers documents, and the policy sentence telling researchers that an image's URL does not need a login.
 
 ## 5.7 Backups
 

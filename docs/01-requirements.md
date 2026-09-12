@@ -115,4 +115,4 @@ Named so you know they exist, not instructed, because none of them was deployed 
 - **A host-level reverse proxy.** If you need port 443 for a second service on the same host, Discourse supports it through `web.socketed.template.yml`. See Discourse's [reverse proxy howto](https://meta.discourse.org/t/run-other-websites-on-the-same-machine-as-discourse/17247).
 - **Multisite.** One forum per host here.
 - **A managed Postgres or Redis.** Both run in the container.
-- **Object storage for uploads.** Uploads are on the data volume.
+- **Object storage for uploads.** Uploads are on the data volume. This was attempted rather than skipped, because `secure_uploads` needs it: Discourse addresses buckets virtual-host style with no option for path-style, so the store's endpoint must carry wildcard DNS and a certificate covering it, and ours does not. `docs/05-forum-config.md` 5.6.1 has the requirement and `platforms/` has the measurement.
