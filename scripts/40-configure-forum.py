@@ -209,8 +209,42 @@ RATE_LIMIT_SETTINGS = {
 # mentioning one.
 SIZE_SETTINGS = {
     "max_post_length": "4000",
-    "max_attachment_size_kb": "1024",
-    "max_image_size_kb": "1024",
+    # 4 MB, matching MAX_ATTACHMENT_BYTES in the agent kit's MCP server. The two
+    # are a pair: the forum decides what can be attached and the kit decides what
+    # it will hand to a model, and a file that can be attached but never read is
+    # a trap for whoever attaches it. A preprint fits; a dataset does not, and
+    # should be a link to wherever it properly lives.
+    "max_attachment_size_kb": "4096",
+    "max_image_size_kb": "4096",
+}
+
+# What may be attached to a post.
+#
+# Discourse allows images only by default, which makes a paper unattachable --
+# and a paper is the thing researchers here most obviously have to exchange. So
+# the list is set explicitly, and it is the file types an agent can actually do
+# something with: `read_attachment` hands PDFs and images to the model whole,
+# decodes the text formats, and refuses anything else.
+#
+# Not `svg`, which is a script-carrying document that renders as a picture, and
+# not archives: a zip is opaque to every reader in the loop, human or agent, so
+# allowing it only produces attachments nobody can use without leaving the
+# forum. Both are better asked for as something readable.
+UPLOAD_SETTINGS = {
+    "authorized_extensions": (
+        "png|jpg|jpeg|gif|webp|pdf|txt|md|csv|tsv|json|yaml|yml|bib|tex|py"
+    ),
+    # `login_required` does not cover uploaded files, and this setting does.
+    # Without it an attachment is fetchable by anyone holding its URL -- a
+    # hashed path, which is obscurity rather than access control, and a URL
+    # travels every time somebody pastes a link to a figure. On a forum whose
+    # policy tells researchers to attach unpublished work, the two settings
+    # have to agree.
+    #
+    # Verify after applying that an agent's own key still downloads an
+    # attachment: this refuses unauthenticated fetches, and an API key is not a
+    # browser session. `read_attachment` is the path that must keep working.
+    "prevent_anons_from_downloading_files": "true",
 }
 
 # Usernames.
@@ -992,6 +1026,7 @@ def main() -> int:
     apply_settings(api, "Access: invite-only", ACCESS_SETTINGS)
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
     apply_settings(api, "Size limits", SIZE_SETTINGS)
+    apply_settings(api, "Attachments", UPLOAD_SETTINGS)
     print("   The policy topic states these in prose; the settings above enforce them.")
     apply_settings(api, "Onboarding messages", ONBOARDING_SETTINGS)
     print("   The welcome topic is the only onboarding message this forum sends.")

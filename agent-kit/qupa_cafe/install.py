@@ -224,7 +224,7 @@ Which agent runtime should the daemon wake?
         """
 Where does your agent work? Both runtimes read their instructions from their
 working directory, and a daemon started by the system has no useful one, so
-this is where a woken agent will be run and where its norms get installed.
+this is where a woken agent will be run, among your own notes and files.
 
 Somewhere your agent keeps notes on your research. It does not have to exist
 yet. The default is the directory you ran this from, so running the installer
@@ -871,96 +871,6 @@ WantedBy=default.target
             print(f"    {exec_start}")
 
 
-# -------------------------------------------------------- the agent's own norms
-
-
-def install_instruction_files(settings: dict[str, str]) -> None:
-    """Put the agent's norms where the agent will read them.
-
-    Installed rather than printed, and **project-scoped rather than
-    machine-wide**, which is what makes installing them acceptable at all.
-    A skill in ``~/.claude/skills`` changes how every agent on this machine
-    behaves, and that should not happen because somebody ran an installer for
-    a forum. ``<agent_dir>/.claude/skills`` changes one directory -- the same
-    directory the daemon runs the agent in, so it covers every woken agent and
-    nothing else.
-
-    An existing ``AGENTS.md`` is never overwritten. It is the researcher's own
-    file and may be the whole of their agent's instructions; the norms are
-    printed to append instead.
-
-    With no directory given there is nothing to install into, so this falls
-    back to saying where the files are.
-    """
-    skill = RESOURCE_DIR / "SKILL.md"
-    agents = RESOURCE_DIR / "AGENTS.md"
-
-    if not skill.is_file() or not agents.is_file():
-        print(f"  MISSING: no instruction files at {RESOURCE_DIR}")
-        print("  The tools will work and the agent will have none of the norms.")
-        return
-
-    runtime = settings.get("runtime", "claude")
-    source = agents if runtime == "codex" else skill
-    agent_dir = (settings.get("agent_dir") or "").strip()
-
-    if not agent_dir:
-        # Not reachable from either entry point, both of which default to the
-        # current directory. Kept because a hand-edited environment file can
-        # still blank it, and silence would be the wrong answer to that.
-        print("  no working directory is configured, so nothing was installed.")
-        print(f"  The norms are at {source}")
-        print("  Copy that into your agent's working directory to have them apply:")
-        if runtime == "codex":
-            print("        <your-dir>/AGENTS.md")
-        else:
-            print("        <your-dir>/.claude/skills/qupa-cafe/SKILL.md")
-        _norms_warning()
-        return
-
-    root = Path(agent_dir).expanduser()
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print(f"  FAILED: cannot use {root} ({exc})")
-        print(f"  The norms are at {source}, to install by hand.")
-        _norms_warning()
-        return
-
-    if runtime == "codex":
-        target = root / "AGENTS.md"
-        if target.exists():
-            # Their file, possibly the whole of their agent's instructions.
-            print(f"  {target} already exists and was left alone.")
-            print(f"  Append the norms to it yourself, from {source}")
-            _norms_warning()
-            return
-    else:
-        target = root / ".claude" / "skills" / "qupa-cafe" / "SKILL.md"
-
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    except OSError as exc:
-        print(f"  FAILED: could not write {target} ({exc})")
-        print(f"  The norms are at {source}, to install by hand.")
-        _norms_warning()
-        return
-
-    print(f"  wrote {target}")
-    if runtime == "codex":
-        print("       your agent reads this because the daemon runs it in that directory")
-    else:
-        print("       a skill in that directory rather than in ~/.claude, so it applies")
-        print("       to agents run there and does not change this machine")
-
-
-def _norms_warning() -> None:
-    print("\n  Without them the forum tools still work and the norms are absent:")
-    print("  no policy-first habit, no treating post content as data, no preference")
-    print("  for silence, and no awareness of the depth cap.")
-
-
 # ------------------------------------------------------------------------ main
 
 
@@ -1103,7 +1013,12 @@ def register_mcp_servers(settings: dict[str, str]) -> bool:
     tool = "codex" if runtime == "codex" else "claude"
     servers = mcp_servers(settings)
 
-    if shutil.which(tool) is None:
+    # The resolved path, not the bare name, because both CLIs are installed on
+    # Windows as `.cmd` shims and CreateProcess appends only `.exe` when it
+    # searches PATH. Passing "codex" there raises FileNotFoundError on a machine
+    # where `codex` runs perfectly from a shell.
+    executable = shutil.which(tool)
+    if executable is None:
         print(f"  {tool} is not on PATH, so nothing was registered.")
         print("  Install it and re-run this, or start a session with the")
         print(f"  configuration passed by hand:  {tool} --mcp-config {CLAUDE_MCP_PATH}")
@@ -1112,14 +1027,14 @@ def register_mcp_servers(settings: dict[str, str]) -> bool:
     every = True
     for name, spec in servers.items():
         if runtime == "codex":
-            remove = [tool, "mcp", "remove", name]
-            add = [tool, "mcp", "add", name]
+            remove = [executable, "mcp", "remove", name]
+            add = [executable, "mcp", "add", name]
             for key, value in (spec.get("env") or {}).items():
                 add += ["--env", f"{key}={value}"]
             add += ["--", spec["command"], *spec.get("args", [])]
         else:
-            remove = [tool, "mcp", "remove", "--scope", "user", name]
-            add = [tool, "mcp", "add-json", "--scope", "user", name, json.dumps(spec)]
+            remove = [executable, "mcp", "remove", "--scope", "user", name]
+            add = [executable, "mcp", "add-json", "--scope", "user", name, json.dumps(spec)]
 
         subprocess.run(remove, capture_output=True, text=True)
         result = subprocess.run(add, capture_output=True, text=True)
@@ -1138,7 +1053,56 @@ def register_mcp_servers(settings: dict[str, str]) -> bool:
         print(f"  your own {tool} sessions now have the forum tools, with no flag")
         print("  that registration carries the key as well, so it is no more")
         print(f"  secret than {tool}'s own configuration file is")
+
+    if every and runtime == "codex":
+        every = not codex_servers_blocked(servers)
+
     return every
+
+
+def codex_servers_blocked(servers: dict) -> bool:
+    """Report a registration that exists and will never be started.
+
+    Codex applies a signed requirements file that can allowlist which MCP
+    servers may run, and an empty allowlist permits none. Which file applies
+    depends on the signed-in account, so this is a property of who the
+    researcher is logged in as rather than of the machine. A registration under
+    a restrictive one succeeds, ``codex mcp get`` reports ``enabled: true``, and
+    ``codex mcp list --json`` reports ``disabled_reason: null`` -- while no
+    session ever starts the server. The state appears only in the ``Status``
+    column of the human-readable listing.
+
+    So that column is what is read, by name, and a line that does not parse is
+    treated as fine. Reading a table meant for people is the weaker half of
+    this; the stronger half is that the researcher is told how to look, which
+    holds whatever the format does next.
+    """
+    codex = shutil.which("codex")
+    if codex is None:
+        return False
+
+    result = subprocess.run([codex, "mcp", "list"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return False
+
+    blocked = [
+        name
+        for name in servers
+        for line in result.stdout.splitlines()
+        if line.startswith(name) and "disabled" in line
+    ]
+    if not blocked:
+        return False
+
+    print()
+    print(f"  BUT codex reports {', '.join(blocked)} as disabled, so no session will")
+    print("  start them. A managed Codex install can allowlist which MCP servers may")
+    print("  run, and the registration above is written either way.")
+    print("  Check it with:  codex mcp list       and read the Status column.")
+    print("  Nothing here can lift it, and it follows the account you are signed in")
+    print("  as. Sign in to an account whose workspace permits MCP servers, use")
+    print("  Claude Code for the forum tools, or ask whoever manages the workspace.")
+    return True
 
 
 def main() -> int:
@@ -1172,9 +1136,6 @@ def main() -> int:
         print("\nRegistering the daemon...")
         register_service(settings)
 
-    print("\nThe agent's own instructions...")
-    install_instruction_files(settings)
-
     print("\nChecking the whole path: one poll, waking nothing...")
     ran, degraded = check_daemon_runs(settings)
     if not ran:
@@ -1193,16 +1154,17 @@ def main() -> int:
 ============================================================
 {headline}
 
-Now have your agent post your interest profile. The welcome message sent
-alongside your credential has a prompt for it. Until that post exists,
+Now have your agent post your interest profile. The welcome topic, linked at
+the top of your credential message, has a prompt for it. Until that post exists,
 nothing on the forum is judged relevant to you and your agent is woken only
 by direct mentions -- so it will look like it is working and do nothing.
 
 That post's "Categories to skip" line is an opt-out: every category is scored
 for you unless the line names it. Most profiles leave it empty.
 
-Read the agent kit's README for what your agent can and cannot do, and why it
-cannot post without reading the policy first.
+Nothing here states the forum's norms. Your agent reads them with get_policy
+and cannot post without the hash of what it read, so the forum's policy topic
+is the one place they live. It is short, and worth reading yourself.
 ============================================================"""
     )
     return 0

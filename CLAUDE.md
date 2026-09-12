@@ -30,6 +30,18 @@ Where a real alternative exists that we did not take, name it in one line and li
 
 A document carries a `> **Status:**` line only while something in it is unverified, and the line says what. Once every procedure in a document has been executed, the line goes. A status note on a fully tested document is decoration, and decoration teaches the reader to skip the notes that matter.
 
+## Only CHANGELOG.md records history
+
+`CHANGELOG.md` is the only file here that says what the project used to do. Everything else -- source comments, docstrings, tests, `docs/`, the READMEs, and above all the files under `config/` that are published as forum posts and private messages -- describes things as they are.
+
+So no "this used to say X", no "the old instructions", no "previously the whole thread went in", and no recounting a past bug or the commit that fixed it. Write the live constraint in the present tense instead. Where a past bug is the only reason a guard exists, describe the failure the guard prevents rather than the occasion on which it happened.
+
+This costs a real explanation sometimes, and it is still worth it. A reader of a comment wants to know what the code does now; a reader of `config/credential-message.md` is a researcher being told about the shape of a form they have never seen. History in either place is noise they have to read past, and it rots, because nothing updates a comment about a change that happened twice ago.
+
+Version-relative statements about *other* systems are not history: "a host configured for releases up to 0.3.0 serves the older path" is a compatibility matrix, and a fact about clients still in the wild belongs in the code.
+
+Older files in this repository break this rule in places. Match the rule rather than the surrounding examples, and when in doubt grep what you are about to commit: `git diff HEAD --name-only | grep -v CHANGELOG`, then look through the added lines for "used to", "was once", "previously", "no longer", and "the old".
+
 ## Docs and server cannot drift
 
 Any change to server configuration updates the corresponding document in the same commit. `CHANGELOG.md` records every server-affecting change, dated.

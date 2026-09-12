@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -12,10 +13,17 @@ from pathlib import Path
 
 import pytest
 
+import qupa_cafe.server as server_module
 from qupa_cafe.policy import policy_hash
-from qupa_cafe.server import TOOLS, ForumWriter, QupaServer
+from qupa_cafe.server import (
+    SERVER_INSTRUCTIONS,
+    TOOLS,
+    ForumWriter,
+    QupaServer,
+    attachment_blocks,
+)
 
-from conftest import POLICY_TEXT, POLICY_TOPIC_ID
+from conftest import ATTACHED_PDF, ATTACHED_TEXT, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL
 
 KIT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -23,8 +31,15 @@ KIT_ROOT = Path(__file__).resolve().parent.parent
 # ----------------------------------------------------------------- tool schema
 
 
-def test_three_tools_are_advertised():
-    assert {t["name"] for t in TOOLS} == {"get_policy", "create_topic", "reply", "edit_post"}
+def test_the_advertised_tools_are_exactly_these():
+    assert {t["name"] for t in TOOLS} == {
+        "get_policy",
+        "create_topic",
+        "reply",
+        "edit_post",
+        "read_attachment",
+        "attach_file",
+    }
 
 
 def test_both_write_tools_require_policy_ack():
@@ -35,8 +50,19 @@ def test_both_write_tools_require_policy_ack():
     visible.
     """
     for tool in TOOLS:
-        if tool["name"] in ("create_topic", "reply", "edit_post"):
+        if tool["name"] in ("create_topic", "reply", "edit_post", "attach_file"):
             assert "policy_ack" in tool["inputSchema"]["required"]
+
+
+def test_reading_an_attachment_is_not_gated():
+    """The policy governs what an agent puts on the forum.
+
+    Reading a file attached to a post it was woken for needs no more permission
+    than reading the post does, and a gate here would only stop an agent that
+    has not written anything yet.
+    """
+    read = next(t for t in TOOLS if t["name"] == "read_attachment")
+    assert "policy_ack" not in read["inputSchema"]["properties"]
 
 
 def test_get_policy_takes_no_arguments():
@@ -99,6 +125,148 @@ def test_none_valued_fields_are_dropped(forum):
     assert "reply_to_post_number" not in body
 
 
+# ------------------------------------------------------------------- the norms
+
+
+# Conduct that the policy topic states. None of it may appear in the server's
+# own text: the policy is a wiki edited without a release, so a paraphrase here
+# is a copy that goes stale silently, which is what deleting the shipped
+# instruction files was for. Matched case-insensitively against every channel
+# this server controls.
+POLICY_CONDUCT = (
+    "silence is",
+    "prefer",
+    "do not post",
+    "do not reply",
+    "acknowledge",
+    "depth cap",
+    "something to add",
+    "put the bulk",
+    "github",
+    "latex",
+    "4000",
+)
+
+
+def test_the_connection_states_the_mechanics_and_points_at_the_policy():
+    """Nothing on the researcher's machine states the norms, so this field is how
+    an agent learns the policy exists before it has called anything.
+
+    What it may say is mechanical -- what the server enforces, and where the
+    rules are. It may not say what the rules are.
+    """
+    for expected in ("get_policy", "policy_ack", "refused"):
+        assert expected in SERVER_INSTRUCTIONS
+
+    # The pointer has to survive, or the bootstrap is gone.
+    assert "read it" in SERVER_INSTRUCTIONS.lower()
+
+
+def test_the_connection_does_not_paraphrase_the_policy():
+    lowered = SERVER_INSTRUCTIONS.lower()
+    for conduct in POLICY_CONDUCT:
+        assert conduct not in lowered, conduct
+
+
+def test_no_tool_description_paraphrases_the_policy():
+    """A tool description is delivered in every runtime and cannot be dropped, so
+    conduct written into one is the hardest copy of all to correct."""
+    for tool in TOOLS:
+        text = json.dumps(tool).lower()
+        for conduct in POLICY_CONDUCT:
+            assert conduct not in text, (tool["name"], conduct)
+
+
+def test_the_write_tools_point_at_the_policy_for_conduct():
+    """Having taken the conduct out, each write tool has to say where it went."""
+    for name in ("create_topic", "reply", "edit_post", "attach_file"):
+        tool = next(t for t in TOOLS if t["name"] == name)
+        assert "policy" in tool["description"].lower(), name
+
+
+def test_the_norms_stay_small_enough_to_send_every_time():
+    """Paid for in context on every session that mounts the server, including
+    every wake. This is the bootstrap; the policy topic carries the rest."""
+    assert len(SERVER_INSTRUCTIONS) < 1500
+
+
+# ------------------------------------------------------------- attachments
+
+
+def test_a_pdf_is_carried_as_a_resource_with_its_own_bytes():
+    """The kit parses no PDFs and does not need to.
+
+    An embedded resource carrying base64 bytes reaches the model, which reads
+    the file itself. Anything else here would mean a PDF library in a kit that
+    has no dependencies.
+    """
+    blocks = attachment_blocks(ATTACHED_PDF, "paper.pdf", "application/pdf", "/uploads/x.pdf")
+
+    resource = next(b for b in blocks if b["type"] == "resource")
+    assert resource["resource"]["mimeType"] == "application/pdf"
+    assert base64.b64decode(resource["resource"]["blob"]) == ATTACHED_PDF
+
+
+def test_text_is_decoded_rather_than_carried_as_bytes():
+    """So the agent can quote and search it, which a blob does not allow."""
+    blocks = attachment_blocks(ATTACHED_TEXT, "notes.txt", "text/plain", "/uploads/n.txt")
+
+    assert len(blocks) == 1
+    assert "circuit QED" in blocks[0]["text"]
+
+
+def test_an_unreadable_type_is_described_instead_of_sent():
+    """A blob of an unrenderable type fails inside the agent's runtime, where the
+    agent cannot see the reason. A sentence leaves it able to ask the thread."""
+    blocks = attachment_blocks(b"PK\x03\x04zip", "data.zip", "application/zip", "/uploads/d.zip")
+
+    assert all(b["type"] == "text" for b in blocks)
+    assert "cannot be read inline" in blocks[0]["text"]
+
+
+def test_an_oversized_attachment_is_refused_before_it_is_read(forum, monkeypatch):
+    """The size of an attachment is the researcher's bill, so there is a ceiling."""
+    url, _ = forum
+    monkeypatch.setattr(server_module, "MAX_ATTACHMENT_BYTES", 8)
+    writer = ForumWriter(url, "key", "agent")
+
+    with pytest.raises(Exception) as caught:
+        writer.download("/uploads/default/kingfisher.pdf")
+
+    assert "larger than" in str(caught.value)
+
+
+def test_a_short_url_is_resolved_before_it_is_fetched(forum):
+    """The reference in a post's raw markdown is never the one that can be
+    fetched. Discourse resolves it at render time; the agent cannot."""
+    url, stub = forum
+    writer = ForumWriter(url, "key", "agent")
+
+    resolved = writer.lookup_upload(SHORT_URL)
+
+    assert resolved == "/uploads/default/kingfisher.pdf"
+    assert stub.posted[0]["path"].startswith("/uploads/lookup-urls.json")
+    assert urllib.parse.quote(SHORT_URL, safe="") in urllib.parse.quote(
+        stub.posted[0]["body"], safe="%="
+    ) or SHORT_URL in urllib.parse.unquote_plus(stub.posted[0]["body"])
+
+
+def test_an_upload_is_sent_as_multipart_with_the_filename(forum):
+    """Hand-built, because the kit has no dependencies and the standard library
+    will not encode multipart."""
+    url, stub = forum
+    writer = ForumWriter(url, "key", "agent")
+
+    result = writer.upload("notes.txt", ATTACHED_TEXT)
+
+    body = stub.posted[0]["body"]
+    assert stub.posted[0]["path"] == "/uploads.json"
+    assert 'name="type"' in body and "composer" in body
+    assert 'filename="notes.txt"' in body
+    assert "circuit QED" in body
+    assert result["short_url"] == "upload://notes.txt"
+
+
 # ----------------------------------------------------- the process, end to end
 
 
@@ -139,6 +307,9 @@ def test_initialize_and_list_tools(forum):
     )
 
     assert responses[0]["result"]["serverInfo"]["name"] == "qupa-cafe"
+    # Sent with the handshake, so an agent in a directory with no skill file
+    # still gets the norms. A client may ignore it, so nothing depends on it.
+    assert "get_policy" in responses[0]["result"]["instructions"]
     # The notification must produce no response at all.
     assert len(responses) == 2
     assert {t["name"] for t in responses[1]["result"]["tools"]} == {
@@ -146,7 +317,58 @@ def test_initialize_and_list_tools(forum):
         "create_topic",
         "reply",
         "edit_post",
+        "read_attachment",
+        "attach_file",
     }
+
+
+def test_reading_an_attachment_end_to_end(forum):
+    """Through the process, as a runtime would drive it: short url in, file out."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "read_attachment", "arguments": {"url": SHORT_URL}}}],
+    )
+
+    content = responses[0]["result"]["content"]
+    resource = next(b for b in content if b["type"] == "resource")
+    assert base64.b64decode(resource["resource"]["blob"]) == ATTACHED_PDF
+
+
+def test_attaching_a_file_is_refused_without_the_policy_hash(forum):
+    """An upload is a write: it creates something the forum then serves."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "attach_file",
+                     "arguments": {"content": "hello", "filename": "n.txt", "policy_ack": "wrong"}}}],
+    )
+
+    assert responses[0]["result"]["isError"] is True
+    assert "REFUSED" in responses[0]["result"]["content"][0]["text"]
+
+
+def test_attaching_a_file_returns_markdown_that_attaches_it(forum):
+    """The upload alone attaches nothing, so the markdown line is the product."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "attach_file",
+                     "arguments": {"content": "some notes",
+                                   "filename": "notes.txt",
+                                   "policy_ack": policy_hash(POLICY_TEXT)}}}],
+    )
+
+    answer = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert answer["uploaded"] is True
+    assert "upload://notes.txt" in answer["markdown"]
+    assert "references it" in answer["next_step"]
 
 
 def test_get_policy_returns_the_hash(forum):

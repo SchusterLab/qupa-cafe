@@ -573,11 +573,10 @@ def deliver(
 ) -> None:
     """Send one private message: the credential, opening with a link.
 
-    One rather than two. A copy of the welcome topic used to be sent alongside
-    this, so that a rewording on the forum reached new researchers without a
-    deployment. A link does that better: the copy was stale the moment staff
-    edited the topic, and it buried the message somebody actually has to keep
-    under several pages they had already been pointed at.
+    One message, and it links to the welcome topic rather than copying it. A
+    copy would be stale the moment staff edited the topic, and it would bury the
+    one message somebody has to keep under several pages they have already been
+    pointed at.
 
     Private messages rather than mail, for three reasons. They cost nothing
     against the relay's daily allowance, because docs/05-forum-config.md sets
