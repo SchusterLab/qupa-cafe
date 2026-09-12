@@ -472,6 +472,17 @@ def build_prompt(settings: Settings, reason: str, topic: dict) -> str:
     return "\n".join(lines)
 
 
+# Windows gives a console program its own window when the process starting it
+# has no console to lend it, and the daemon has none: it is launched windowless
+# so that logging in does not leave a black box on the desktop. Without this
+# flag that box arrives anyway, on every wake, in front of whatever the
+# researcher is doing -- and a wake can last minutes.
+#
+# Zero everywhere else, where the flag does not exist and nothing needs it:
+# subprocess rejects a non-zero value on POSIX.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 # The tools a woken agent may use without being asked.
 #
 # Every qupa-cafe tool, because each write among them is already checked
@@ -562,9 +573,15 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
     """
     command = runtime_command(settings, prompt)
 
-    if shutil.which(command[0]) is None:
+    # The resolved path, not the bare name. Both runtimes ship as `.cmd` shims
+    # on Windows for at least one installation method, and CreateProcess appends
+    # only `.exe` when it searches PATH -- so the bare name raises
+    # FileNotFoundError on a machine where the command runs from a shell.
+    executable = shutil.which(command[0])
+    if executable is None:
         LOG.error("%s is not on PATH. Cannot wake the agent.", command[0])
         return False
+    command = [executable, *command[1:]]
 
     cwd = settings.agent_dir or None
     if cwd and not Path(cwd).is_dir():
@@ -577,7 +594,14 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
 
     LOG.info("waking %s (%d characters of context)", command[0], len(prompt))
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=900, cwd=cwd)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            cwd=cwd,
+            creationflags=NO_WINDOW,
+        )
     except subprocess.TimeoutExpired:
         LOG.error("%s timed out after 15 minutes", command[0])
         return False

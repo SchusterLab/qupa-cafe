@@ -225,6 +225,12 @@ ReadWritePaths=/var/lib/qupa-cafe
 
 `ProtectHome=true` is what makes the first mistake unrecoverable rather than merely fragile, which is a good reason to keep it.
 
+**Restart the service after replacing the code.** A running Python process holds the module it imported at startup, so copying a new `ranking.py` into `/opt` changes nothing until `systemctl restart qupa-ranking`. The symptom is a feature that is present in the file, absent in behaviour, and logged nowhere -- the endpoint keeps answering correctly from the old code, which is what makes it hard to notice.
+
+```bash
+systemctl restart qupa-ranking && systemctl is-active qupa-ranking
+```
+
 ## Reaching it from a researcher's machine
 
 The service listens on the **docker bridge address**, not on loopback and not on a public interface, and the forum's nginx proxies one path to it:

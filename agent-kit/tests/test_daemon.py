@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+import subprocess
+
+import qupa_cafe.daemon as daemon
 from qupa_cafe.daemon import (
     DIRECT_TYPES,
     MENTIONED,
@@ -17,6 +21,7 @@ from qupa_cafe.daemon import (
     load_env_file,
     mcp_config_disagreement,
     runtime_command,
+    wake_agent,
 )
 
 
@@ -99,6 +104,37 @@ def test_an_outage_warns_once_not_once_per_poll():
 
     ranking.pending("agent")
     assert ranking._warned is True
+
+
+# --------------------------------------------------------------------- waking
+
+
+def test_the_wake_asks_for_no_console_window(monkeypatch, tmp_path):
+    """A wake must not put a window on the researcher's screen.
+
+    The daemon runs windowless, so Windows hands any console program it starts
+    a window of its own. On a workstation that is a black box appearing over
+    whatever somebody is doing, for as long as the agent runs.
+    """
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(tmp_path / "claude"))
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+
+    assert wake_agent(Settings(), "a prompt") is True
+    assert captured["kwargs"]["creationflags"] == daemon.NO_WINDOW
+
+
+def test_the_wake_runs_the_resolved_path():
+    """A bare name is not enough on Windows, where both runtimes can be a `.cmd`
+    shim: CreateProcess appends only `.exe` when it searches PATH."""
+    assert "shutil.which" in inspect.getsource(wake_agent)
+    assert "command = [executable, *command[1:]]" in inspect.getsource(wake_agent)
 
 
 # ------------------------------------------------------------------ prompting

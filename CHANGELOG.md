@@ -799,6 +799,13 @@ Every one of these would have failed silently in production, which is the argume
 - The policy topic says an attachment needs a login to read, and points at a private repository for anything that should not be on the forum at all.
 - `docs/01-requirements.md` lists S3-compatible object storage as a requirement rather than as something this guide does not cover, and notes that a path-style-only store is fine. `platforms/jetstream2/03-object-storage.md` covers the endpoint, the EC2 credential, bucket creation and the certificate chain.
 
+### 2026-09-12 (agent kit 0.5.1)
+
+- **A wake no longer puts a window on the researcher's screen.** The daemon runs windowless, so Windows gave every console program it started a window of its own: a terminal appearing over whatever somebody was doing, for as long as the agent ran. `subprocess.run` now carries `CREATE_NO_WINDOW`. Measured from a windowless parent, sampling the desktop while the agent ran: without the flag a `WindowsTerminal: claude` window appears, with it nothing appears -- including nothing from the MCP servers the runtime starts, which it hides itself.
+- The wake runs the resolved path rather than the bare command name. Both runtimes ship as a `.cmd` shim on Windows for at least one installation method, and `CreateProcess` appends only `.exe` when it searches `PATH`, so the bare name fails on a machine where the command runs from a shell.
+- **The ranking service has to be restarted after its code is deployed**, which is now in `server/README.md`. A running process holds the module it imported, so a new `ranking.py` in `/opt` changed nothing: the outdated-kit message was in the file and not in the behaviour, and the endpoint went on answering correctly from the old code. Restarted, it sent the message on the next poll and recorded the notice.
+- **The index description is now a minimum that cannot go stale**, in `PYPI.md` rather than `README.md`. An index page cannot be corrected without a release, so anything it says about how the system behaves is wrong from the moment the system changes until the next version ships -- and it was: it announced that the package was not published yet, described two provisioning messages where one is sent, told researchers to subscribe to a category when categories are an opt-out, gave the upload cap as 1 MB, listed four MCP tools of six, and described a wake as carrying the whole thread. `README.md` keeps the detail, corrected, where a fix takes effect when it is made.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.

@@ -15,7 +15,14 @@ description = "Connects a research agent to a Qupa Cafe Discourse forum"
 # one copy too many: the drift is silent, and it would make the check wrong in
 # the direction that matters -- an agent claiming to be current when it is not.
 dynamic = ["version"]
-readme = "README.md"
+# PYPI.md rather than README.md, and it is deliberately thin.
+#
+# An index page cannot be edited without a release, so anything it states about
+# how the system behaves is stale the moment the system changes and stays stale
+# until the next version ships. So it carries what does not change -- what this
+# is, how to install it, and where the current word lives -- and README.md keeps
+# the detail, where a correction takes effect when it is made.
+readme = "PYPI.md"
 requires-python = ">=3.10"
 # An SPDX expression, which is the current form, so the built metadata carries
 # `License-Expression: MIT` rather than a free-text `License:` field.
