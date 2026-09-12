@@ -454,7 +454,15 @@ One thing to keep checking either way, since `read_attachment` depends on it: an
 
 **Discourse addresses buckets virtual-host style, and offers no way to change that.** `S3Helper.s3_options` passes `region`, `endpoint` and credentials, and nothing else; `path_style` does not appear anywhere in its `config/`, `lib/` or `app/`, and `aws-sdk-s3` defaults `force_path_style` to false. Asked to presign a URL, it produces `https://<bucket>.<endpoint-host>/<key>`.
 
-**So the object store's endpoint has to carry wildcard DNS and a certificate that covers it.** A store reached by one bare hostname cannot serve `<bucket>.<that-host>`: the name does not resolve, and if it did the certificate would not match it. Check both before planning on this feature, with a DNS lookup for any bucket name and the endpoint's subject alternative names.
+**So an object store has to satisfy three things, and all three are cheap to check.** A bucket URL of that shape has to resolve, has to validate, and has to be understood by the server:
+
+| Requirement | How to check | What a pass looks like |
+|---|---|---|
+| Wildcard DNS on the endpoint | `nslookup anything.<endpoint>` | resolves, usually as an alias to the endpoint |
+| A certificate covering it | `openssl s_client -connect <endpoint>:443 \| openssl x509 -noout -ext subjectAltName` | a SAN of `*.<endpoint>` |
+| The server reads the bucket from the `Host` header | `curl https://probe-a.<endpoint>/probe-b/key` | `NoSuchBucket` naming **probe-a**, not `probe-b` |
+
+The third is the one that gets missed, and it is a server-side setting rather than anything a client can arrange: Ceph's `rgw_dns_name`. Without it the deployment is path-style only, the bucket is taken from the first path segment, and a virtual-host request is misread rather than refused -- an object at `original/1X/x.pdf` is looked for in a bucket called `original`. Which is a confusing failure to debug after the DNS and the certificate have been sorted out, so check it first: it needs no credentials, because the error message names the bucket the server inferred.
 
 **Path-style can be had, but only from an IP endpoint.** The SDK falls back to it when the endpoint host is an address rather than a name, which suggests a proxy on the docker bridge forwarding to the real endpoint with the `Host` header preserved so the signature still validates.
 
@@ -462,7 +470,7 @@ One thing to keep checking either way, since `read_attachment` depends on it: an
 
 What would make it work is one of: object storage whose endpoint has wildcard DNS and a matching certificate, which is what the commercial providers have; self-hosted object storage under a name this project controls, with a wildcard record and a wildcard certificate; or `force_path_style` arriving in Discourse. `platforms/` records what our own provider offers and what it measured.
 
-A provider that meets it exists within the same federation, which is worth recording because the requirement sounds exotic and is not: the Open Storage Network resolves arbitrary bucket subdomains under a pod endpoint and presents a certificate covering them, measured the same two ways. It is allocatable, so the obstacle there is a request rather than a purchase.
+A provider that meets all three exists within the same federation, which is worth recording because the requirements sound exotic and are not. Measured against an Open Storage Network pod: arbitrary bucket subdomains resolve, the certificate carries `*.<pod-endpoint>`, and a request to `probe-a.<pod>/probe-b/key` is refused as `NoSuchBucket: probe-a` -- the Host header, which is the answer that matters. It is allocatable rather than purchasable, so the obstacle there is a request. Verify the same three against whichever pod an allocation assigns, since these were measured on one.
 
 None of that is deployed, so no procedure for it is written up here. What is deployed is `prevent_anons_from_downloading_files`, which covers documents, and the policy sentence telling researchers that an image's URL does not need a login.
 

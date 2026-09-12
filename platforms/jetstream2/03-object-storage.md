@@ -32,6 +32,15 @@ https://<bucket>.js2.jetstream-cloud.org:8001/<key>
 
 Measured, by asking the running container to presign one. That name has no DNS record, and the endpoint's certificate carries exactly one subject alternative name, `js2.jetstream-cloud.org`. It therefore fails in DNS, and would fail in TLS if it did not.
 
+**And it would fail a third time if both were fixed.** This deployment has no `rgw_dns_name`, so it is path-style only: it takes the bucket from the first path segment and ignores the Host header. Signing the request Discourse would send and delivering it to the real endpoint with the bucket-prefixed `Host` -- so that only DNS and TLS were faked -- returned `NoSuchBucket` naming `original`, the first segment of `original/1X/probe.pdf`. So even wildcard DNS and a wildcard certificate would not make this endpoint serve Discourse.
+
+That check needs no credentials anywhere, because the error names the bucket the server inferred:
+
+```bash
+curl https://probe-a.<endpoint>/probe-b/key    # NoSuchBucket: probe-a = virtual-host supported
+                                               # NoSuchBucket: probe-b = path-style only
+```
+
 The SDK uses path-style when the endpoint is an IP address rather than a name, which is a real lever: presigning against `http://172.17.0.1:8002` produced `http://172.17.0.1:8002/<bucket>/<key>`. A proxy on the docker bridge forwarding to the real endpoint, `Host` header untouched so the signature still validates, would carry Discourse's own traffic.
 
 It would not carry a researcher's. A secure upload is not streamed through Rails: `UploadsController` answers `redirect_to` a presigned URL, so that host has to be reachable and TLS-valid from a browser. The bridge address is not reachable from one, and the instance's public address has no certificate covering it.
