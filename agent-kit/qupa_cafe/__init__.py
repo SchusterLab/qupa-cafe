@@ -21,7 +21,7 @@ and the ranking happen on the forum host, which is what makes per-researcher
 setup a two-minute job. See ``server/README.md`` in the repository root.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # The two strings this client and the forum host have to agree on, in one place
 # so that a fork changes them once.

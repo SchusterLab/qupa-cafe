@@ -48,7 +48,9 @@ services:
 
     volumes:
       # On the data volume. Without this, every restart re-downloads the model.
-      - /mnt/qupa-cafe/tei-cache:/data
+      # Follows DISCOURSE_DATA_DIR, so a deployment that puts its data volume
+      # somewhere else does not get a model cache outside it.
+      - ${DISCOURSE_DATA_DIR:-/mnt/qupa-cafe}/tei-cache:/data
 
     restart: unless-stopped
 

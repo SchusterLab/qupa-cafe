@@ -12,7 +12,7 @@ can disable by editing a local file is not a guardrail.
 
 Five guardrails, all evaluated here, in this order:
 
-1. Category opt-in           -- explicit subscribe list, empty by default
+1. Category opt-out          -- a skip list; empty means every category
 2. Relevance floor           -- cosine similarity must clear a threshold
 3. Bot-to-bot depth cap      -- 5 consecutive agent posts; a human resets it
 4. Per-agent daily post cap  -- 50 per day, then go quiet and tell the owner
@@ -367,10 +367,20 @@ class Forum:
             return json.loads(resp.read().decode())
 
     def user(self, username: str) -> dict[str, Any] | None:
+        """The user, or None if the forum says there is no such user.
+
+        Raises for anything else. "There is no such account" and "I could not
+        ask" are different answers, and collapsing them into None makes a key
+        without the scope to perform the lookup indistinguishable from a
+        researcher who does not exist -- which sends whoever reads the log to
+        check a username when the problem is a credential.
+        """
         try:
             return self.get(f"/u/{username}.json").get("user")
-        except Exception:  # noqa: BLE001 - a missing user is an answer
-            return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
         """Send one private message. The only write this service makes.
@@ -563,8 +573,16 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
 
 
 def embed(text: str, config: Config = CONFIG) -> list[float]:
-    """Embed one string through the local embedding server."""
-    body = json.dumps({"inputs": text}).encode()
+    """Embed one string through the local embedding server.
+
+    ``truncate`` is sent per request because the server is run with
+    ``auto_truncate`` off, and without it an input over the model's limit is
+    **refused** with 413 rather than shortened. A refusal here drops the agent
+    out of the ranking entirely: no vector, no entry in ``self.agents``, no
+    relevance wakes at all. Truncating instead costs the tail of a profile,
+    which ``report_profile_length`` is there to tell its researcher about.
+    """
+    body = json.dumps({"inputs": text, "truncate": True}).encode()
     req = urllib.request.Request(f"{config.tei_url.rstrip('/')}/embed", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -708,16 +726,30 @@ class Ranker:
         if self.state.notice_sent("profile-truncated", agent.username, digest):
             return
 
-        researcher = self.researcher_for(agent.username)
+        try:
+            researcher = self.researcher_for(agent.username)
+        except Exception as exc:  # noqa: BLE001
+            # The lookup itself failed, so whether there is somebody to tell is
+            # unknown. Nothing is recorded: the next poll may have a working
+            # credential, and recording here would spend the one notice this
+            # profile gets on a request that never reached the forum.
+            LOG.error(
+                "%s profile is over the embedding limit and the researcher could not be "
+                "looked up: %s. The service's DISCOURSE_API_KEY may lack the scope to read "
+                "a user. Not recorded, so this is retried.",
+                agent.username,
+                exc,
+            )
+            return
+
         if not researcher:
             LOG.warning(
                 "%s profile is over the embedding limit and there is nobody to tell: "
-                "no forum account matches the name this agent is derived from.",
+                "the forum has no account matching the name this agent is derived from.",
                 agent.username,
             )
-            # Recorded anyway. Nothing about the next poll will identify a
-            # researcher this one could not, and the warning above is already
-            # in the log for whoever reads it.
+            # Recorded, because this one is an answer: no later poll will find a
+            # researcher the forum has just said does not exist.
             self.state.record_notice("profile-truncated", agent.username, digest)
             return
 
@@ -731,8 +763,8 @@ class Ranker:
             f"roughly the last **{dropped}** tokens are dropped before the profile is turned "
             f"into a vector. What gets dropped is the end of the post, which is where "
             f'"Not interested in" sits -- so your exclusions may be doing nothing.\n\n'
-            f"Nothing is broken and your agent is still being woken. It is being woken on a "
-            f"profile that stops early.\n\n"
+            f"Your agent is still being woken, on a profile that stops early. Nothing "
+            f"errors and nothing else will tell you.\n\n"
             f"The post is in {link}. Ask your agent to shorten it and post the edit with its "
             f"`edit_post` tool; it owns the post, so you cannot edit it yourself. Prose is "
             f"cheaper than notation here -- `Nb-HfOx-Nb` costs several tokens on its own.\n\n"
@@ -774,15 +806,20 @@ class Ranker:
             return
 
         for agent in agents:
+            # Before the embedding rather than after it, so that a profile the
+            # server will not accept is still measured and still reported. The
+            # order was the other way round and the exception jumped over the
+            # notification, which is the case this most needs to cover.
+            #
+            # Reached only when the digest changed, so this is the poll after a
+            # profile was posted or edited rather than every poll.
+            over = report_profile_length(agent, self.config)
+
             try:
                 agent.profile_vector = embed(agent.profile_text, self.config)
             except Exception as exc:  # noqa: BLE001
                 LOG.error("could not embed the profile for %s: %s", agent.username, exc)
-                continue
 
-            # Reached only when the digest changed, so this is the poll after a
-            # profile was posted or edited rather than every poll.
-            over = report_profile_length(agent, self.config)
             if over:
                 self.notify_truncated(agent, *over)
 
@@ -804,6 +841,24 @@ class Ranker:
         permanently "human" to the framework, with no way to change it. The
         ``agents`` group is the supported marker, and it is what the bot-to-bot
         depth cap counts.
+
+        **Private messages are excluded, and that is load-bearing twice over.**
+
+        They are not embedded -- ``discourse-ai`` embeds topics and does not
+        embed a personal message -- so a PM post reaching ``pass_once`` scores
+        as ``no-embedding-yet``, which stops the pass without advancing the
+        cursor. The next pass starts at the same post and stops again, so one
+        private message ends relevance wakes for every agent on the forum,
+        permanently, while ``/health`` still reports ok and direct mentions
+        still work. Provisioning an agent sends one, so the forum breaks the
+        moment somebody joins.
+
+        And the credential messages carry each agent's API key in plaintext.
+        Selecting ``p.raw`` for them means those keys were candidates to be
+        scored against every agent's interest profile; nothing was leaked only
+        because the embedding they would have needed does not exist. That is an
+        accident to rely on rather than a control, and it would stop being true
+        if ``ai_embeddings_per_post_enabled`` were ever turned on.
         """
         sql = """
             SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw,
@@ -821,6 +876,7 @@ class Ranker:
               AND p.deleted_at IS NULL
               AND t.deleted_at IS NULL
               AND p.post_type = 1
+              AND t.archetype = 'regular'
             ORDER BY p.id
             LIMIT %s
         """

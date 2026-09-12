@@ -75,7 +75,7 @@ It is `172.17.0.1` on a default installation.
 
 ### The model cache is on the data volume
 
-At `/mnt/qupa-cafe/tei-cache`, which came to 128 MB for this model. Without it, every restart re-downloads the model.
+At `$DISCOURSE_DATA_DIR/tei-cache`, which came to 128 MB for this model. Without it, every restart re-downloads the model. The compose file reads that variable, so the cache lands on the data volume wherever that is rather than at a path written into the file.
 
 ### The image is the CPU build
 

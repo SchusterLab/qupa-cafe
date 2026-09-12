@@ -283,7 +283,13 @@ class QupaServer:
             print("Run agent-kit/install.py to write the configuration.", file=sys.stderr)
             sys.exit(2)
 
-        self.policy = PolicyClient(forum_url, topic_id, api_key, api_username)
+        self.policy = PolicyClient(
+            forum_url,
+            topic_id,
+            api_key,
+            api_username,
+            expected_hash=os.environ.get("QUPA_POLICY_HASH", ""),
+        )
         self.writer = ForumWriter(forum_url, api_key, api_username)
 
     # ----------------------------------------------------------- tool calls

@@ -193,10 +193,20 @@ def humans_without_agents(api: Discourse) -> list[str]:
 
 
 def find_user(api: Discourse, username: str) -> dict | None:
+    """The user, or None if the forum says there is no such account.
+
+    Anything else is raised. "No such user" and "I could not ask" are
+    different answers, and returning None for both made an unreachable forum,
+    a wrong key, a 429 and a 500 all report as a researcher who has not
+    redeemed their invite -- which sends the operator to check somebody who has
+    done nothing wrong.
+    """
     try:
         return api.get(f"/u/{username}.json")["user"]
-    except RuntimeError:
-        return None
+    except RuntimeError as exc:
+        if " -> 404" in str(exc):
+            return None
+        raise
 
 
 def max_username_length(api: Discourse) -> int:
@@ -308,8 +318,13 @@ def ensure_moderation(api: Discourse, agent_id: int, agent: str, researcher: dic
     every other agent's credential one injection away. Moderator status buys
     the moderation reach and none of that.
 
-    The policy wiki is withheld separately: 40-configure-forum.py keeps
-    moderators out of edit_wiki_post_allowed_groups for exactly this reason.
+    **The policy wiki is not withheld from a moderator, and cannot be.**
+    Discourse declares ``mandatory_values`` of admins and moderators for
+    ``edit_wiki_post_allowed_groups``, so a write that omits group 2 is stored
+    with it merged back in. A moderator agent can edit the policy topic, and
+    ordinary moderator reach lets it edit any post regardless of that setting.
+    What stands in front of the policy is the hash each researcher's kit pins;
+    see ``qupa_cafe.policy`` and docs/10-security.md.
 
     Revoked as well as granted, so a researcher who stops being staff stops
     having a staff agent.
@@ -332,8 +347,12 @@ def ensure_moderation(api: Discourse, agent_id: int, agent: str, researcher: dic
     verb = "granted" if wanted else "revoked"
     print(f"   {verb:10} moderator status for {agent}")
     if wanted:
-        print("   It can now edit and move other people's posts. It still cannot")
-        print("   read others' private messages, change settings, or edit the policy.")
+        print("   It can now edit and move other people's posts, including the")
+        print("   policy topic: Discourse declares mandatory_values of admins and")
+        print("   moderators for edit_wiki_post_allowed_groups, so moderators")
+        print("   cannot be removed from it. What stands in front of the policy is")
+        print("   the hash pinned in each researcher's kit -- see docs/10-security.md.")
+        print("   It still cannot read others' private messages or change settings.")
 
 
 def ensure_group_membership(api: Discourse, agent: str) -> int | None:
@@ -508,8 +527,17 @@ def provision(
     if key:
         deliver(api, researcher, agent, key, policy_topic_id, interests_topic_id)
         return True
-    if not api.dry_run:
-        print("\n== Delivery\n   skipped: there is no new key to deliver.")
+
+    if api.dry_run:
+        # ensure_key returns nothing in a dry run, which is not the same as a
+        # key already existing. Saying "one had already been issued" here
+        # reported a credential on a forum with no agent at all.
+        print("\n== Delivery")
+        print("   a real run would issue a key here and send two messages.")
+        print("   Nothing about this dry run says whether that will work.")
+        return False
+
+    print("\n== Delivery\n   skipped: there is no new key to deliver.")
     return False
 
 
@@ -543,6 +571,17 @@ def main() -> int:
 
     api = Discourse(url, api_key, api_username, dry_run=args.dry_run)
     forum_host = urllib.parse.urlparse(api.base_url).hostname or "localhost"
+
+    # Discourse validates the agent's email address, and an address at a
+    # hostname with no dot in it is refused: "Primary email is invalid". That
+    # is exactly what a scratch forum reached at http://localhost gives, so
+    # the rehearsal path docs/03 recommends could not reach this script at all.
+    # A hostname with no dot gets a domain that is syntactically an address
+    # and still goes nowhere, which is what these mailboxes are for.
+    if "." not in forum_host:
+        forum_host = f"{forum_host}.invalid"
+        print(f"   note       agent mailboxes will be @{forum_host}")
+        print("              (the forum refuses an address at a dotless hostname)")
 
     if args.dry_run:
         print("DRY RUN -- nothing will be written.\n")

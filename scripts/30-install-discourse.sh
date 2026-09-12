@@ -66,6 +66,25 @@ export DISCOURSE_HOSTNAME_ALIASES="${DISCOURSE_HOSTNAME_ALIASES:-}"
 
 if [ "$LOCAL" -eq 1 ]; then
   say "Local scratch mode"
+
+  # The relay credentials are dropped rather than rendered.
+  #
+  # --local is the rehearsal path, and the .env a reader has to hand is the one
+  # they filled in for their real forum. Rendering it writes the production
+  # hostname and the live SMTP password, in plaintext, into a scratch app.yml
+  # on a disposable host -- a copy of a credential nobody asked to make. A
+  # local forum has no relay to reach anyway, so there is nothing to lose by
+  # replacing them. Set ENV_FILE to use a scratch .env instead.
+  if [ -n "${DISCOURSE_SMTP_PASSWORD:-}" ]; then
+    printf '   dropping the SMTP credentials from this render: a scratch app.yml
+'
+    printf '   has no relay to reach and should not hold a live password.
+'
+  fi
+  export DISCOURSE_SMTP_ADDRESS="localhost"
+  export DISCOURSE_SMTP_USER_NAME="scratch"
+  export DISCOURSE_SMTP_PASSWORD="scratch"
+
   cat <<'LOCALNOTE'
    No TLS, and no DNS check. Two things this therefore does NOT validate:
    certificate issuance, which needs public DNS and port 80, and email
@@ -74,6 +93,10 @@ if [ "$LOCAL" -eq 1 ]; then
    What it does validate is that app.yml parses, that the tuning values are
    accepted, and that the volumes: retargeting works -- before any of it
    touches a live host.
+
+   Two variables worth knowing here. ENV_FILE points at a different .env, and
+   DISCOURSE_DIR at a different tooling directory, so a scratch install can sit
+   beside a real one without either touching the other.
 LOCALNOTE
 else
   say "Checking DNS for $DISCOURSE_HOSTNAME"
@@ -198,7 +221,7 @@ Scratch forum bootstrapped.
 
 Get an admin account without touching SMTP:
 
-    cd $DISCOURSE_DIR && sudo ./launcher enter app
+    sudo $DISCOURSE_DIR/launcher enter app
     rake admin:create
     exit
 
@@ -237,7 +260,7 @@ installs cleanly and fails at the first password reset, months later, silently.
 
 If email is what fails, do not let it block you -- this sends zero mail:
 
-    cd $DISCOURSE_DIR && sudo ./launcher enter app
+    sudo $DISCOURSE_DIR/launcher enter app
     rake admin:create
     exit
 

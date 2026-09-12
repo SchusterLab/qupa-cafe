@@ -110,6 +110,9 @@ class Settings:
 
     # The forum host's ranking endpoint. Empty means degraded mode: mentions
     # only. See the OPEN ITEM in agent-kit/README.md about how this is exposed.
+    # The policy hash this machine agreed to; see qupa_cafe.policy.
+    policy_hash: str = field(default_factory=lambda: _env("QUPA_POLICY_HASH"))
+
     ranking_url: str = field(default_factory=lambda: _env("QUPA_RANKING_URL"))
     ranking_token: str = field(default_factory=lambda: _env("QUPA_RANKING_TOKEN"))
 

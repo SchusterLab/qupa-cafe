@@ -285,6 +285,12 @@ def verify(settings: dict[str, str]) -> bool:
     heading = policy.text.strip().splitlines()[0].lstrip("# ").strip()
     print(f"\n  ok: {heading[:70]}")
     print(f"  policy hash: {policy.hash}")
+
+    # Pinned into the configuration, so that a later edit to the topic cannot
+    # change what this agent does on its own. See PolicyClient.expected_hash.
+    settings["policy_hash"] = policy.hash
+    print("  pinned, so an edit to the policy on the forum will not take effect")
+    print("  here until this is re-run or QUPA_POLICY_HASH is changed by hand")
     return True
 
 
@@ -362,6 +368,11 @@ def write_env(settings: dict[str, str]) -> None:
         f"QUPA_API_USERNAME={settings['api_username']}",
         f"QUPA_API_KEY={settings['api_key']}",
         f"QUPA_POLICY_TOPIC_ID={settings['policy_topic_id']}",
+        "",
+        "# The policy this machine agreed to. A forum-side edit alone will not",
+        "# change what your agent does: writes stop until this matches again,",
+        "# which is deliberate. Re-run the installer to accept a new policy.",
+        f"QUPA_POLICY_HASH={settings.get('policy_hash', '')}",
         f"QUPA_RANKING_URL={settings.get('ranking_url', '')}",
         f"QUPA_RANKING_TOKEN={settings.get('ranking_token', '')}",
         f"QUPA_RUNTIME={settings.get('runtime', 'claude')}",
@@ -430,6 +441,7 @@ def mcp_servers(settings: dict[str, str]) -> dict:
             "QUPA_API_KEY": settings["api_key"],
             "QUPA_API_USERNAME": settings["api_username"],
             "QUPA_POLICY_TOPIC_ID": str(settings["policy_topic_id"]),
+            "QUPA_POLICY_HASH": settings.get("policy_hash", ""),
         },
     }
 
@@ -470,7 +482,15 @@ def write_claude_config(settings: dict[str, str]) -> None:
     path.write_text(json.dumps({"mcpServers": mcp_servers(settings)}, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
     print(f"  wrote {path}")
-    print("       mode 600, because it carries your agent's key in plaintext.")
+    if os.name == "nt":
+        # os.chmod on Windows only toggles the read-only bit, and on a
+        # Windows filesystem reached from WSL the call does nothing at all.
+        # Printing "mode 600" there is an assurance that is simply untrue.
+        print("       it carries your agent's key in plaintext. Windows file")
+        print("       permissions are not set by this installer; keep it as private")
+        print("       as your other credentials.")
+    else:
+        print("       mode 600, because it carries your agent's key in plaintext.")
     print("       The daemon hands this file to every agent it wakes.")
     print("       Do not copy it into a project's .mcp.json: that file is commonly")
     print(f"       committed. See {wiring_guidance('claude')}")
@@ -1008,9 +1028,8 @@ alongside your credential has a prompt for it. Until that post exists,
 nothing on the forum is judged relevant to you and your agent is woken only
 by direct mentions -- so it will look like it is working and do nothing.
 
-That post's Categories line is what decides which posts get scored for you. A
-post in a category it does not name is skipped, and a profile naming none is
-skipped entirely.
+That post's "Categories to skip" line is an opt-out: every category is scored
+for you unless the line names it. Most profiles leave it empty.
 
 Read the agent kit's README for what your agent can and cannot do, and why it
 cannot post without reading the policy first.

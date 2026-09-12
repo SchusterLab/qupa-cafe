@@ -719,11 +719,16 @@ class StubEmbedder(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
+    last_embed_body: dict | None = None
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(length)
+        raw = self.rfile.read(length)
         if self.path == "/tokenize":
             self._send(200, [[{"id": i} for i in range(type(self).tokens_per_call)]])
+        elif self.path == "/embed":
+            type(self).last_embed_body = json.loads(raw or b"{}")
+            self._send(200, [[0.0] * 384])
         else:
             self._send(404, {"error": "not found"})
 
@@ -738,6 +743,7 @@ def embedder():
 
     StubEmbedder.max_input_length = 512
     StubEmbedder.tokens_per_call = 10
+    StubEmbedder.last_embed_body = None
 
     server = HTTPServer(("127.0.0.1", 0), StubEmbedder)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -946,3 +952,71 @@ def test_researcher_for_requires_the_account_to_exist(tmp_path):
     assert ranker.researcher_for("nobody-agent") is None
     assert ranker.researcher_for("not-an-agent-name") is None
     assert ranker.researcher_for("-agent") is None
+
+
+# ------------------------------------------- private messages are not candidates
+
+
+def test_new_posts_excludes_private_messages():
+    """One private message otherwise ends relevance wakes for the whole forum.
+
+    A PM topic has no embedding, so a PM post scores `no-embedding-yet`, which
+    stops the pass without advancing the cursor -- and the next pass starts at
+    the same post. Provisioning an agent sends a private message, so the forum
+    would break the moment somebody joined.
+
+    Asserted against the query text because these tests run without a
+    database. That is weaker than exercising it, and it does catch the filter
+    being dropped, which is the failure that matters.
+    """
+    import inspect
+
+    sql = inspect.getsource(ranking.Ranker.new_posts)
+
+    assert "t.archetype = 'regular'" in sql
+    assert "p.post_type = 1" in sql
+
+
+def test_the_embedding_request_asks_for_truncation(embedder):
+    """The server runs with auto_truncate off, so without this an over-long
+    profile is refused with 413 and the agent is dropped from ranking."""
+    config, stub = embedder
+
+    ranking.embed("anything at all", config)
+
+    assert stub.last_embed_body is not None
+    assert stub.last_embed_body.get("truncate") is True
+
+
+def test_a_failed_researcher_lookup_is_retried_rather_than_recorded(tmp_path):
+    """A key without the scope to read a user must not spend the one notice."""
+
+    class Raising(StubForumWriter):
+        def user(self, username):
+            raise RuntimeError("GET /u/yoshi.json -> 403")
+
+    forum = Raising()
+    ranker = a_ranker(tmp_path, forum)
+    agent = over_limit_agent()
+
+    ranker.notify_truncated(agent, 604, 512)
+
+    assert forum.sent == []
+    # Nothing recorded, so a later poll with a working credential still sends.
+    forum.__class__ = StubForumWriter
+    ranker.notify_truncated(agent, 604, 512)
+    assert len(forum.sent) == 1
+
+
+def test_a_user_the_forum_says_is_absent_is_recorded(tmp_path):
+    """404 is an answer, and no later poll will find that account."""
+    forum = StubForumWriter(known=())
+    ranker = a_ranker(tmp_path, forum)
+    agent = over_limit_agent()
+
+    ranker.notify_truncated(agent, 604, 512)
+    assert forum.sent == []
+
+    forum.known = {"yoshi"}
+    ranker.notify_truncated(agent, 604, 512)
+    assert forum.sent == []  # already answered; not asked again

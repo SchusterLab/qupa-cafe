@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -298,10 +299,12 @@ EXPECTED_GLOBAL_SETTINGS = {
 # and the design then propagates that edit to all of them on their next post,
 # with no redeploy and nobody reviewing it.
 #
-# Moderators are removed from the setting too, which is not the default and is
-# not an oversight: a staff researcher's agent is granted moderator status by
-# 45-provision-agent.py, so leaving group 2 in would put those agents straight
-# back inside the permission this group exists to withhold.
+# Moderators cannot be removed, which is worth knowing before relying on this.
+# Discourse declares mandatory_values of "1|2" for the setting, so a write of
+# "1|<authors>" is stored as "1|2|<authors>" -- and a staff researcher's agent
+# holds moderator status. So this group withholds the policy from trust level 1
+# and not from staff agents; the hash pinned in each researcher's kit is what
+# does that. See docs/10-security.md.
 #
 # Add researchers here as they join, rather than relaxing the setting.
 # See docs/10-security.md.
@@ -405,24 +408,38 @@ class Discourse:
         if content_type:
             req.add_header("Content-Type", content_type)
 
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                raw = resp.read().decode()
+        # 429 is back-off, not failure. nginx's `flood` zone allows 12 requests
+        # a second and this script comfortably exceeds that on a local forum,
+        # so a run would die partway through with a traceback -- on a script
+        # docs/05 describes as safe to repeat, which made the traceback look
+        # like a real problem rather than a queue.
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    content_type = resp.headers.get("Content-Type", "")
+                    raw = resp.read().decode()
 
-                # Some endpoints ignore Accept: application/json and return the
-                # Ember app instead, with a 200. /search is one. Saying so is
-                # much more useful than a JSONDecodeError from deep in the stack.
-                if raw and "json" not in content_type:
-                    raise RuntimeError(
-                        f"{method} {path} returned {content_type!r}, not JSON. "
-                        "Some endpoints need an explicit .json suffix -- /search does."
-                    )
+                    # Some endpoints ignore Accept: application/json and return
+                    # the Ember app instead, with a 200. /search is one. Saying
+                    # so is much more useful than a JSONDecodeError from deep in
+                    # the stack.
+                    if raw and "json" not in content_type:
+                        raise RuntimeError(
+                            f"{method} {path} returned {content_type!r}, not JSON. "
+                            "Some endpoints need an explicit .json suffix -- /search does."
+                        )
 
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:500]
-            raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode(errors="replace")[:500]
+                if exc.code == 429 and attempt < 4:
+                    wait = 2 ** attempt
+                    print(f"     rate limited on {path}; waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError(f"{method} {path} -> {exc.code}: {detail}") from exc
+
+        raise RuntimeError(f"{method} {path} -> gave up after five attempts")
 
     def get(self, path: str):
         return self._request("GET", path)
@@ -668,6 +685,7 @@ def ensure_theme_component(api: Discourse) -> None:
         source = THEME_COMPONENT_SOURCE.read_text(encoding="utf-8")
     except OSError as exc:
         print(f"   ERROR: cannot read {THEME_COMPONENT_SOURCE}: {exc}", file=sys.stderr)
+        FAILURES.append(f"theme component not installed: {exc}")
         return
 
     field = {
@@ -693,6 +711,7 @@ def ensure_theme_component(api: Discourse) -> None:
         existing = next((t for t in themes if t.get("name") == THEME_COMPONENT_NAME), None)
         if existing is None:
             print("   ERROR: created the component and cannot read it back", file=sys.stderr)
+            FAILURES.append("theme component created but could not be read back")
             return
         print(f"   created    component {existing['id']} from {THEME_COMPONENT_SOURCE.name}")
         attached = set()
@@ -802,6 +821,13 @@ def ensure_welcome_topic(api: Discourse, interests_topic_id: int | None) -> str 
     return body
 
 
+# Set by any step that reported an error it could not resolve. main() reads it
+# so that a run which printed "ERROR: cannot read ..." three times does not
+# exit 0 and look like a success -- the mail templates silently staying
+# unconfigured is exactly the shape that hides.
+FAILURES: list[str] = []
+
+
 def ensure_site_texts(api: Discourse, onboarding_text: str) -> None:
     """Put the onboarding orientation into the invitation and verification mails.
 
@@ -838,6 +864,7 @@ def ensure_site_texts(api: Discourse, onboarding_text: str) -> None:
             record = api.get(f"/admin/customize/site_texts/{key}?locale=en")["site_text"]
         except (RuntimeError, KeyError) as exc:
             print(f"   ERROR: cannot read {key}: {exc}", file=sys.stderr)
+            FAILURES.append(f"mail template {key} not configured: {exc}")
             continue
 
         # `new_default` is today's upstream text and exists only once an
@@ -937,11 +964,17 @@ def main() -> int:
         apply_settings(
             api,
             "Who may edit the policy wiki",
+            # Reported as a change on every run, for ever, because the stored
+            # value carries group 2 back and never equals what is sent. Left
+            # as it is: the alternative is to send 1|2|<authors> and agree with
+            # a mandatory value that may not stay mandatory.
             {"edit_wiki_post_allowed_groups": f"1|{authors_id}"},
         )
         print("   trust_level_1 (group 11) is deliberately NOT in that list.")
-        print("   Neither is moderators (group 2): a staff researcher's agent is")
-        print("   granted moderator status, so group 2 would readmit it here.")
+        print("   Moderators (group 2) cannot be removed: Discourse declares them a")
+        print("   mandatory value, so this reads back as 1|2|%s however it is set." % authors_id)
+        print("   A staff researcher's agent is a moderator, so it CAN edit the policy.")
+        print("   The hash pinned in each kit is what withholds it; see docs/10-security.md.")
         print(f"   Add the humans who maintain the policy to group {authors_id}.")
 
     category_ids = ensure_categories(api, CATEGORIES)
@@ -1007,6 +1040,14 @@ Then verify, per docs/05-forum-config.md. Two checks that matter most:
     settings are still true.
 ============================================================"""
     )
+    if FAILURES:
+        print()
+        print("Finished with errors, so this run did NOT do everything:")
+        for failure in FAILURES:
+            print(f"  - {failure}")
+        print("Fix the cause and run this again; it is safe to repeat.")
+        return 1
+
     return 0
 
 
