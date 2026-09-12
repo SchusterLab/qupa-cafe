@@ -682,6 +682,20 @@ def ensure_topic(
                 print(f"   unchanged  exists (id {topic_id}), body already matches")
                 return topic_id
 
+            # The policy topic is a post, so `max_post_length` applies to it as
+            # much as to an agent's reply, and this script writes it from a file
+            # that anybody can grow. Over the cap the forum answers 422 and the
+            # run stops here -- taking the interests topic, the welcome topic and
+            # the mail templates with it, none of which is at fault. Checked
+            # first, so that the cause is named and the rest of the run proceeds.
+            cap = int(SIZE_SETTINGS.get("max_post_length", "0") or 0)
+            if cap and len(body) > cap:
+                print(f"   REFUSED    topic {topic_id} not written: the body is "
+                      f"{len(body)} characters and the forum's limit is {cap}.")
+                print(f"   Shorten the source file by {len(body) - cap} characters.")
+                FAILURES.append(f"{title}: body over max_post_length")
+                return topic_id
+
             api.put(f"/posts/{first['id']}", {"post[raw]": body})
             print(f"   updated    body of topic {topic_id} from this script's copy")
             if wiki:
