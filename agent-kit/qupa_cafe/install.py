@@ -569,6 +569,95 @@ def run_step(argv: list[str], done: str, doing: str) -> bool:
     return False
 
 
+def windows_startup_entry(command: str) -> Path | None:
+    """Register the daemon at logon without needing an elevated prompt.
+
+    ``schtasks /SC ONLOGON`` wants administrator rights, and an ordinary
+    researcher does not have them -- which left the daemon unregistered, and an
+    unregistered daemon answers nothing at all: a mention or a private message
+    waits for a poll that never comes. The Startup folder needs no rights, runs
+    at logon as the researcher, and is exactly the scope wanted.
+
+    A ``.vbs`` wrapper rather than a ``.cmd``, so logging in does not leave a
+    console window sitting open.
+    """
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    target = startup / "qupa-cafe-daemon.vbs"
+    quoted = command.replace('"', '""')
+    try:
+        startup.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            'Set sh = CreateObject("WScript.Shell")' + "\n"
+            + f'sh.Run "{quoted}", 0, False' + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"  could not write a Startup entry either: {exc}")
+        return None
+    return target
+
+
+def start_daemon_now() -> bool:
+    """Start the daemon in the background, so registration is not the same as
+    waiting for the next logon.
+
+    Registering it and leaving it stopped is the shape of an install that looks
+    finished and answers nothing until the researcher next signs in. systemd's
+    own ``enable --now`` makes the same choice.
+    """
+    argv = daemon_argv()
+    root = repo_root()
+    env = os.environ.copy()
+    if root is not None:
+        env["PYTHONPATH"] = str(root)
+
+    kwargs: dict = {
+        "cwd": str(root) if root is not None else None,
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        # Detached and windowless, or it dies with this console and flashes a
+        # window on the way up.
+        kwargs["creationflags"] = 0x00000008 | 0x08000000  # DETACHED_PROCESS, CREATE_NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        subprocess.Popen(argv, **kwargs)
+    except OSError as exc:
+        print(f"  could not start it now: {exc}")
+        return False
+    return True
+
+
+def daemon_already_running() -> bool:
+    """Whether a resident daemon already holds the lock.
+
+    Asked by trying to take it: the daemon's own guard is the authority, so
+    there is nothing here that can disagree with it. Re-running the installer
+    otherwise leaves a second daemon polling the same account, which wakes the
+    agent twice for every notification.
+    """
+    from .daemon import Settings, claim_single_instance, lock_path
+
+    settings = Settings()
+    held = claim_single_instance(settings)
+    if held is False:
+        return True
+    if held is not None:
+        # Taken by this process; let it go so the daemon can have it.
+        held.close()
+        try:
+            lock_path(settings).unlink()
+        except OSError:
+            pass
+    return False
+
+
 def register_service(settings: dict[str, str]) -> None:
     system = platform.system()
     argv = daemon_argv()
@@ -689,9 +778,20 @@ WantedBy=default.target
             print("  note: a scheduled task carries no environment, so the daemon reads")
             print(f"        {ENV_PATH} itself.")
         else:
-            print("  Creating a task can need an elevated prompt. Either re-run this from one,")
-            print("  or start the daemon yourself when you want it:")
-            print(f"        {command}")
+            print("  A scheduled task needs an elevated prompt, so that was refused.")
+            print("  Falling back to the Startup folder, which needs no rights:")
+            entry = windows_startup_entry(command)
+            if entry:
+                print(f"        {entry}")
+                print("        It starts at each logon, with no window. Delete it to stop.")
+            else:
+                print("  Nothing is registered. Start the daemon yourself when you want it:")
+                print(f"        {command}")
+
+        if daemon_already_running():
+            print("  one is already running, so nothing was started on top of it")
+        elif start_daemon_now():
+            print("  started it now, so it is polling already rather than from your next logon")
 
     else:
         print(f"  unknown platform {system}; register the daemon yourself:")

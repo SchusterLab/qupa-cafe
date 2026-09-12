@@ -676,6 +676,46 @@ def _topic_for_post(forum: Forum, post_id: int) -> int | None:
     return data.get("topic_id")
 
 
+def lock_path(settings: Settings) -> Path:
+    return Path(settings.state_path).with_suffix(".lock")
+
+
+def claim_single_instance(settings: Settings):
+    """Hold a lock for the life of this process, or return None.
+
+    Two daemons polling one account both wake the agent for the same
+    notification: twice the model invocations, and two replies racing to the
+    same thread. The ledger stops a notification being acted on twice only
+    once one of them has finished writing, which is too late.
+
+    Enforced here rather than in whatever started it, because the caller is not
+    always the installer -- a logon entry, a systemd unit and somebody at a
+    prompt can all race. The lock is advisory and released when the process
+    ends, including when it is killed.
+    """
+    path = lock_path(settings)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+b")
+    except OSError:
+        # Nowhere to put a lock is not a reason to refuse to run.
+        return None
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    return handle
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -702,6 +742,19 @@ def main() -> int:
         print(disagreement, file=sys.stderr)
         print("Re-run agent-kit/install.py, which writes both from one set of answers.", file=sys.stderr)
         return 2
+
+    # A single pass is safe to run alongside a resident daemon -- that is how
+    # the installer checks its own work -- so only the loop takes the lock.
+    lock = None
+    if not args.once:
+        lock = claim_single_instance(settings)
+        if lock is False:
+            print(
+                f"Another daemon already holds {lock_path(settings)}. Not starting a second:"
+                " two of them wake the agent twice for every notification.",
+                file=sys.stderr,
+            )
+            return 0
 
     forum = Forum(settings)
     ranking = Ranking(settings)

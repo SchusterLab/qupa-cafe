@@ -362,8 +362,30 @@ class QupaServer:
         Deterministic on the content, so a retry of the same post collides with
         itself instead of creating a second one. A random key here would defeat
         the purpose entirely, which is why it is derived rather than generated.
+
+        **``reply_to_post_number`` is part of the material, and that is what
+        makes a conversation work.** Without it the key is a hash of the topic
+        and the body alone, so an agent answering "Yes, that is right." twice
+        in one thread gets the same key for both -- and the forum treats the
+        second as already done, which this server reports as success. No post
+        appears and nothing says so. Including which post is being answered
+        separates the two: a retry of one answer still collides with itself,
+        while a later answer to a later question does not.
+
+        Two identical replies to the *same* post still collapse, which is the
+        right way round: that is indistinguishable from a retry. An agent
+        holding a conversation should pass its own ``external_id``, and
+        ``SKILL.md`` says so.
         """
-        material = f"{tool}:{arguments.get('topic_id', '')}:{arguments.get('title', '')}:{arguments.get('raw', '')}"
+        material = ":".join(
+            (
+                tool,
+                str(arguments.get("topic_id", "")),
+                str(arguments.get("title", "")),
+                str(arguments.get("reply_to_post_number", "")),
+                str(arguments.get("raw", "")),
+            )
+        )
         return "qc-" + hashlib.sha256(material.encode()).hexdigest()[:24]
 
     @staticmethod

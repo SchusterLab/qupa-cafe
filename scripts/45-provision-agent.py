@@ -248,23 +248,27 @@ def share_agent_messages(api: Discourse, agent: str, researcher: str) -> None:
     Idempotent, and quiet when there is nothing to add: it runs on the same
     schedule as the rest of provisioning.
     """
-    try:
-        listing = api.get(f"/topics/private-messages/{agent}.json")
-    except RuntimeError as exc:
-        print(f"\n== Private messages")
-        print(f"   ERROR: cannot list them for {agent}: {exc}")
-        return
+    # Both mailboxes. Discourse splits them, and a message the agent SENT is
+    # under `private-messages-sent` and absent from the inbox -- so an agent
+    # that starts a conversation with another researcher or another agent would
+    # otherwise be the one case its own researcher could not see.
+    topics: dict[int, dict] = {}
+    for box in ("private-messages", "private-messages-sent"):
+        try:
+            listing = api.get(f"/topics/{box}/{agent}.json")
+        except RuntimeError as exc:
+            print(f"\n== Private messages")
+            print(f"   ERROR: cannot list {box} for {agent}: {exc}")
+            return
+        for topic in listing.get("topic_list", {}).get("topics") or []:
+            if topic.get("id"):
+                topics[topic["id"]] = topic
 
-    topics = listing.get("topic_list", {}).get("topics") or []
     if not topics:
         return
 
     added, already = 0, 0
-    for topic in topics:
-        topic_id = topic.get("id")
-        if not topic_id:
-            continue
-
+    for topic_id in sorted(topics):
         # Asked per topic rather than inferred from the listing, which does not
         # carry the participants.
         try:
