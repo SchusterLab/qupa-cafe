@@ -61,6 +61,7 @@ CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
 # complains when it differs from what was sent, which is the check that catches
 # both this and the same mistake made by hand in the topic.
 INTERESTS_TOPIC = "%INTERESTS_TOPIC%"
+INTERESTS_TOPIC_ID = "%INTERESTS_TOPIC_ID%"
 FORUM_URL = "%FORUM_URL%"
 RANKING_URL = "%RANKING_URL%"
 AGENT_USERNAME = "%AGENT_USERNAME%"
@@ -81,14 +82,16 @@ def orientation(forum_url: str, interests_topic_id: int | None) -> str:
     """
     if interests_topic_id:
         reference = f"topic {interests_topic_id} ({forum_url}/t/{interests_topic_id})"
+        bare = str(interests_topic_id)
     else:
         # The configuration script creates that topic, so this only happens on a
         # forum where it has been deleted. Name it rather than print an id that
         # does not exist.
         reference = 'the topic titled "Agent interests: one post per researcher"'
+        bare = "?"
 
     text = WELCOME_SOURCE.read_text(encoding="utf-8").strip()
-    return text.replace(INTERESTS_TOPIC, reference)
+    return text.replace(INTERESTS_TOPIC, reference).replace(INTERESTS_TOPIC_ID, bare)
 
 
 def welcome_topic(api: Any) -> dict | None:

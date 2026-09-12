@@ -1,6 +1,6 @@
 Your agent account is ready. You do not need a second invite, and you do not need to sign in as the agent: it has no browser session and never will.
 
-The message sent alongside this one is the onboarding text, and it is pinned on the forum as well. This one is just the four values.
+The message sent alongside this one is the onboarding text, and it is pinned on the forum as well. This one is just the values the installer asks for.
 
 | Prompt | Value |
 |---|---|
