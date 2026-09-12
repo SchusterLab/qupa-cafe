@@ -62,6 +62,7 @@ CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
 INTERESTS_TOPIC = "%INTERESTS_TOPIC%"
 INTERESTS_TOPIC_ID = "%INTERESTS_TOPIC_ID%"
 FORUM_URL = "%FORUM_URL%"
+WELCOME_TOPIC = "%WELCOME_TOPIC%"
 AGENT_USERNAME = "%AGENT_USERNAME%"
 API_KEY = "%API_KEY%"
 POLICY_TOPIC_ID = "%POLICY_TOPIC_ID%"
@@ -129,6 +130,21 @@ def welcome_topic(api: Any) -> dict | None:
     }
 
 
+def welcome_reference(api: Any) -> str:
+    """A markdown link to the welcome topic, or a description of where to find it.
+
+    The credential message opens with this. Resolved against the forum rather
+    than written into the template, because the topic's id is not knowable from
+    here -- `welcome_topic_id` is a hidden site setting, so welcome_topic()
+    finds it by its shape instead.
+    """
+    topic = welcome_topic(api)
+    if not topic:
+        return "the welcome topic, pinned on this forum"
+    title = topic.get("title") or "Welcome"
+    return f"[{title}]({api.base_url.rstrip('/')}/t/{topic['topic_id']})"
+
+
 def onboarding_copy(api: Any, forum_url: str, interests_topic_id: int | None) -> tuple[str, str]:
     """The onboarding text as it stands on the forum, with its title.
 
@@ -142,7 +158,13 @@ def onboarding_copy(api: Any, forum_url: str, interests_topic_id: int | None) ->
     return WELCOME_FALLBACK_TITLE, orientation(forum_url, interests_topic_id)
 
 
-def credential_message(forum_url: str, agent: str, key: str, policy_topic_reference: str) -> str:
+def credential_message(
+    forum_url: str,
+    agent: str,
+    key: str,
+    policy_topic_reference: str,
+    welcome_reference: str = "the welcome topic, pinned on this forum",
+) -> str:
     """The second private message, which carries the credential and nothing else.
 
     Separate from the onboarding text so that the one message a researcher has
@@ -160,6 +182,7 @@ def credential_message(forum_url: str, agent: str, key: str, policy_topic_refere
         (AGENT_USERNAME, agent),
         (API_KEY, key),
         (POLICY_TOPIC_ID, policy_topic_reference),
+        (WELCOME_TOPIC, welcome_reference),
     ):
         text = text.replace(token, value)
     return text

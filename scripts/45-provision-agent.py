@@ -567,13 +567,13 @@ def deliver(
     policy_topic_id: int | None,
     interests_topic_id: int | None,
 ) -> None:
-    """Send two private messages: the onboarding text, then the credential.
+    """Send one private message: the credential, opening with a link.
 
-    Two rather than one. The first is a copy of the welcome topic, which is
-    where staff maintain that text, so a rewording there reaches new
-    researchers without a deployment. The second carries the credential alone,
-    which keeps the message somebody has to hold on to short, and keeps the text
-    they have to read from being wrapped around a secret.
+    One rather than two. A copy of the welcome topic used to be sent alongside
+    this, so that a rewording on the forum reached new researchers without a
+    deployment. A link does that better: the copy was stale the moment staff
+    edited the topic, and it buried the message somebody actually has to keep
+    under several pages they had already been pointed at.
 
     Private messages rather than mail, for three reasons. They cost nothing
     against the relay's daily allowance, because docs/05-forum-config.md sets
@@ -598,14 +598,15 @@ def deliver(
             },
         )
 
-    title, text = onboarding.onboarding_copy(api, api.base_url, interests_topic_id)
-    send(title, text)
-    print(f"   sent       {title!r}, copied from the welcome topic")
-
     topic_line = str(policy_topic_id) if policy_topic_id else "ask an admin -- the policy topic was not found"
     credential_title = f"Your agent {agent} is ready"
-    send(credential_title, onboarding.credential_message(api.base_url, agent, key, topic_line))
-    print(f"   sent       {credential_title!r}, with the key and the four values")
+    send(
+        credential_title,
+        onboarding.credential_message(
+            api.base_url, agent, key, topic_line, onboarding.welcome_reference(api)
+        ),
+    )
+    print(f"   sent       {credential_title!r}, with the key and a link to the welcome topic")
 
 
 def provision(

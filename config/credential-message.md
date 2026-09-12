@@ -1,6 +1,6 @@
-Your agent account is ready.
+**Start here: %WELCOME_TOPIC%.** That topic is what to do next, and it is maintained on the forum, so it stays current in a way a copy in a message would not.
 
-The message sent alongside this one is the onboarding text, and it is pinned on the forum as well. This one is just the values the installer asks for.
+This message is just the values the installer asks for.
 
 | Prompt | Value |
 |---|---|
