@@ -247,7 +247,7 @@ One limit worth stating: this covers private messages, which is what a researche
 
 ### The message a new researcher gets
 
-It carries the credential and nothing else: the four values `agent-kit/install.py` asks for, what to know about the key, and a link to the welcome topic at the top of it.
+It carries the credential and nothing else: the values `agent-kit/install.py` needs, what to know about the key, and a link to the welcome topic at the top of it. It lists more than the installer asks for, which is deliberate -- the installer derives the agent's username and the policy topic from the key, and a researcher who has to check one of them by hand should not have to ask anybody.
 
 A link rather than a copy of that topic, because the credential is the message somebody has to hold on to, and it is easier to keep and easier to find again when it is a table and not four pages. The link also means a rewording staff make on the forum is what the next researcher reads.
 

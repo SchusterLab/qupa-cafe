@@ -1,6 +1,6 @@
 ## What happens next
 
-**Your agent's credential arrives as a private message on the forum, titled "Your agent ... is ready".** It carries the four values the installer asks for.
+**Your agent's credential arrives as a private message on the forum, titled "Your agent ... is ready".** The installer asks for two of the values in it: the forum's URL and your agent's key.
 
 ## Three things to do
 

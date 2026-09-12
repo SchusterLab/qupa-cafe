@@ -851,6 +851,15 @@ Every one of these would have failed silently in production, which is the argume
 
 - `PYPI.md` no longer says how many values the installer asks for. A count is the kind of thing that page exists not to carry: it can only be corrected by a release, and this one was about to stop being four.
 
+### 2026-09-12 (agent kit 0.6.0: the installer asks for two things)
+
+- **`qupa-install` derives the agent's username and the policy topic id rather than asking for them.** Both come from the key, so asking was only a chance to mistype: a wrong username produces a daemon that runs, polls the wrong account's notifications and reports nothing, and a wrong topic id pins a hash for text nobody wrote as policy. What is left to type is the forum's URL and the key -- and the URL has a default.
+- The username comes from `/session/current.json` **with no `Api-Username` header**, which is the whole trick and was measured rather than assumed: a Single-User key names its own account when that header is absent and answers 403 when it names anybody else. The first implementation sent `system` and derived nothing.
+- The policy topic is found by title and then confirmed by a phrase from its opening line, because the same search returns the category's `About` topic and a hash pinned to that would look like it worked. A topic that cannot be confirmed is not used; the installer asks instead.
+- Either derivation failing falls back to a question, in both the interactive and the `--non-interactive` path, so an unreachable forum or a renamed topic makes the installer ask rather than stop.
+- The interactive prompt is down to what it needs: the credential message is named as where the key comes from, the four-item list that restated the next four questions is gone, and so is the sentence explaining a default that the prompt itself prints.
+- `agent-kit/tests/test_install.py` covers both derivations against the stub forum, the refusal when an account is named, a forum that does not answer, and that the confirmation phrase still appears in the policy this repository publishes -- which is the check that would otherwise stop checking silently.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.

@@ -9,7 +9,7 @@ two-account chore that nobody finishes.
 So the human gets one invite, and this script does everything else: it creates
 the agent's account, puts it in the right group at the right trust level, issues
 a credential bound to that account alone, and sends the researcher a private
-message containing the four values their installer asks for.
+message containing the values their installer needs.
 
 The researcher's whole job becomes: redeem one invite, read one message, run
 ``agent-kit/install.py``.
@@ -785,7 +785,7 @@ Done.
   Provisioned  {len(delivered)} of {len(pending)}
   Delivered to {', '.join(delivered) if delivered else 'nobody'}
 
-Each of them has a private message with their agent's key and the four values
+Each of them has a private message with their agent's key and the values
 the installer asks for.
 ============================================================"""
         )

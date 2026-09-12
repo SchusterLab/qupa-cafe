@@ -28,8 +28,12 @@ import os
 import platform
 import shutil
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import (
     LEGACY_RANKING_PATH,
@@ -140,6 +144,83 @@ def mcp_server_argv() -> list[str]:
 # ---------------------------------------------------------------------- prompts
 
 
+# The pinned wiki topic the policy lives in, as `40-configure-forum.py` titles
+# it, and a phrase from its opening line. The title finds candidates and the
+# phrase confirms one: pinning the wrong topic would give an agent a hash for
+# text nobody wrote as policy, and it would look like it worked.
+POLICY_TOPIC_TITLE = "Agent policy"
+POLICY_MARKER = "authority on how agents behave"
+
+
+def forum_get(forum_url: str, path: str, key: str, username: str | None = None) -> Any:
+    """One authenticated GET against the forum, or None if it does not answer.
+
+    ``Api-Username`` is sent only when given. A Single-User key identifies its
+    own account when the header is absent, and answers 403 when the header
+    names anybody else -- so leaving it off is what makes the key usable before
+    the account name is known.
+    """
+    request = urllib.request.Request(f"{forum_url.rstrip('/')}{path}")
+    request.add_header("Api-Key", key)
+    if username:
+        request.add_header("Api-Username", username)
+    request.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode()
+            return json.loads(body) if body else {}
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        return None
+
+
+def whoami(forum_url: str, key: str) -> str | None:
+    """Which account the key acts as.
+
+    A Single-User key is bound to one account, and the forum will say which --
+    so this is one fewer thing to type and one fewer thing to mistype. A
+    username entered by hand and wrong produces a daemon that runs, polls the
+    wrong account's notifications and reports nothing.
+
+    Asked without ``Api-Username``, which is the whole trick: a Single-User
+    key names its own account when that header is absent, and a request naming
+    the wrong account is refused outright. Measured against the deployed forum
+    -- no header answers 200 with the username, `system` answers 403.
+    """
+    answer = forum_get(forum_url, "/session/current.json", key)
+    if not answer:
+        return None
+    return (answer.get("current_user") or {}).get("username")
+
+
+def find_policy_topic(forum_url: str, key: str, username: str | None = None) -> str | None:
+    """The id of the policy topic, found the way the forum's own scripts title it.
+
+    Confirmed rather than guessed: the first candidate whose opening post
+    carries the policy's opening phrase. A search can return the category's
+    "About" topic, and a hash pinned to that would be a hash of the wrong text.
+    """
+    query = urllib.parse.quote(f"{POLICY_TOPIC_TITLE} in:pinned")
+    found = forum_get(forum_url, f"/search.json?q={query}", key, username or None)
+    if not found:
+        return None
+
+    for topic in (found.get("topics") or [])[:10]:
+        if POLICY_TOPIC_TITLE.lower() not in (topic.get("title") or "").lower():
+            continue
+        full = forum_get(
+            forum_url, f"/t/{topic['id']}.json?include_raw=true", key, username or None
+        )
+        if not full:
+            continue
+        posts = (full.get("post_stream") or {}).get("posts") or []
+        if not posts:
+            continue
+        raw = posts[0].get("raw") or ""
+        if POLICY_MARKER in raw:
+            return str(topic["id"])
+    return None
+
+
 def ask(prompt: str, default: str = "") -> str:
     """Prompt until something is entered.
 
@@ -169,9 +250,32 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "runtime": os.environ.get("QUPA_RUNTIME", "claude"),
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
         }
-        missing = [k for k in ("forum_url", "api_key", "api_username", "policy_topic_id") if not settings[k]]
+        missing = [k for k in ("forum_url", "api_key") if not settings[k]]
         if missing:
             print(f"ERROR: --non-interactive needs {', '.join('QUPA_' + m.upper() for m in missing)}", file=sys.stderr)
+            sys.exit(2)
+
+        # Derived here too, so that automation needs the same two values a
+        # person does. Still overridable: an explicit variable wins, which is
+        # what a test against a forum with renamed topics needs.
+        if not settings["api_username"]:
+            settings["api_username"] = whoami(settings["forum_url"], settings["api_key"]) or ""
+        if not settings["policy_topic_id"] and settings["api_username"]:
+            settings["policy_topic_id"] = (
+                find_policy_topic(
+                    settings["forum_url"], settings["api_key"], settings["api_username"]
+                )
+                or ""
+            )
+
+        underivable = [k for k in ("api_username", "policy_topic_id") if not settings[k]]
+        if underivable:
+            print(
+                "ERROR: the forum did not answer for "
+                + ", ".join("QUPA_" + name.upper() for name in underivable)
+                + "; set them explicitly.",
+                file=sys.stderr,
+            )
             sys.exit(2)
 
         # Not in the missing list, because it is not a question. An explicit
@@ -191,22 +295,38 @@ def collect(non_interactive: bool) -> dict[str, str]:
 Qupa Cafe agent kit
 ===================
 
-You need four things, which whoever runs the forum will have given you:
-
-  - the forum's URL
-  - your agent's username on the forum
-  - your agent's API key (shown once, when it was created)
-  - the id of the pinned policy topic
-
+Your agent's key is in the private message you were sent when your account
+was set up, titled "Your agent ... is ready". It is shown only there.
 """
     )
 
     settings = {
         "forum_url": ask("Forum URL", "https://forum.qupa-cafe.com"),
-        "api_username": ask("Your agent's forum username"),
         "api_key": ask("Your agent's API key"),
-        "policy_topic_id": ask("Policy topic id"),
     }
+
+    # Both of these the forum can answer, so asking would only be a chance to
+    # get them wrong. Each falls back to a question if the forum does not
+    # answer -- an unreachable host, or a policy topic somebody has renamed --
+    # because an installer that cannot proceed is worse than one that asks.
+    print()
+    agent = whoami(settings["forum_url"], settings["api_key"])
+    if agent:
+        print(f"  The key acts as {agent}.")
+        settings["api_username"] = agent
+    else:
+        print("  The forum did not say which account the key acts as.")
+        settings["api_username"] = ask("Your agent's forum username")
+
+    topic = find_policy_topic(
+        settings["forum_url"], settings["api_key"], settings["api_username"]
+    )
+    if topic:
+        print(f"  The policy is topic {topic}.")
+        settings["policy_topic_id"] = topic
+    else:
+        print("  The policy topic could not be found by its title.")
+        settings["policy_topic_id"] = ask("Policy topic id")
 
     # Neither of these is a prompt. The endpoint is at a known path on the
     # forum's own hostname, and it authenticates with the agent's forum key,
@@ -226,9 +346,8 @@ Which agent runtime should the daemon wake?
 
     print(
         """
-Where does your agent work? Somewhere your agent keeps notes on your
-research. It does not have to exist yet. The default is the directory you
-ran this from.
+Where does your agent work? Somewhere it keeps notes on your research; it
+does not have to exist yet.
 """
     )
     settings["agent_dir"] = ask("Your agent's working directory", str(Path.cwd()))
