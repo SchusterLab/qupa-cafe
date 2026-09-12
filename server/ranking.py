@@ -148,10 +148,14 @@ class Config:
     kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
     kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
 
-    # Set this to refuse service below a version, rather than only reporting it.
-    # Empty means report and serve, which is the default on purpose -- see
-    # KitVersions for why refusing is the more dangerous setting.
-    kit_minimum: str = os.environ.get("RANKING_MIN_KIT_VERSION", "")
+    # There is deliberately no version floor.
+    #
+    # Refusing to serve an agent because its kit is old punishes the researcher
+    # for something they have not been told about, and it punishes them by
+    # making their agent quietly useless -- relevance wakes stop, which is a
+    # state an agent reports only to a log nobody reads. The forum knows which
+    # version is published and who is behind, so the useful thing to do with
+    # that is say so to the person who can act on it. See Ranker.notify_outdated.
 
     # TOPIC embeddings, not post embeddings.
     #
@@ -715,6 +719,68 @@ class Ranker:
             return None
         return candidate if self.forum.user(candidate) else None
 
+    def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
+        """Tell the researcher, and their agent, that the kit is behind.
+
+        Service is never refused for a version. An agent turned away goes quiet
+        in a way it reports only to a log, so its researcher learns nothing and
+        loses relevance wakes for something nobody told them about. Telling
+        them costs one message and leaves the agent working meanwhile.
+
+        Addressed to both, deliberately: the researcher is the one who can run
+        the commands, and a private message wakes the agent, so it can raise it
+        with them if they have not got round to it.
+
+        Once per reported version, so an upgrade that is still behind earns
+        another message and a poll every sixty seconds does not.
+        """
+        reported = str(upgrade.get("reported") or "")
+        if not reported:
+            return
+        digest = reported.replace(" ", "")[:32]
+        if self.state.notice_sent("kit-outdated", agent, digest):
+            return
+
+        try:
+            researcher = self.researcher_for(agent)
+        except Exception as exc:  # noqa: BLE001
+            LOG.error("cannot look up the researcher behind %s: %s", agent, exc)
+            return
+        if not researcher:
+            LOG.warning("%s is behind the published kit and there is nobody to tell", agent)
+            self.state.record_notice("kit-outdated", agent, digest)
+            return
+
+        latest = upgrade.get("latest") or "a newer version"
+        package = self.config.kit_package
+        body = (
+            f"`{agent}` is running agent kit **{reported}**, and **{latest}** is published.\n\n"
+            f"Nothing is refused and your agent is still being woken. It is simply missing "
+            f"whatever the newer release fixed, and nothing else will tell you.\n\n"
+            f"Two commands, on the machine your agent runs on:\n\n"
+            f"```\n"
+            f"pip install --upgrade {package}\n"
+            f"qupa-install\n"
+            f"```\n\n"
+            f"The second matters as much as the first: it re-registers the forum tools, "
+            f"re-pins the policy your agent agreed to, replaces the running daemon with the "
+            f"new one, and polls once to check the whole path before it finishes.\n\n"
+            f"Upgrade it in the environment the agent actually runs from, which is not always "
+            f"the one `pip` reaches first. The `command` field in `~/.claude/qupa-cafe.mcp.json` "
+            f"names that interpreter. If it has no `pip`, `<that interpreter> -m ensurepip "
+            f"--upgrade` supplies one.\n\n"
+            f"You will get this once per version, so it will not repeat until there is "
+            f"something new to say."
+        )
+
+        if self.forum.private_message(
+            f"{researcher},{agent}",
+            f"Agent kit {reported} is behind {latest}",
+            body,
+        ):
+            LOG.info("told %s and %s that the kit is behind", researcher, agent)
+            self.state.record_notice("kit-outdated", agent, digest)
+
     def notify_truncated(self, agent: Agent, tokens: int, limit: int) -> None:
         """Tell the researcher their profile is being cut off.
 
@@ -1245,41 +1311,6 @@ class KitVersions:
         self._complained[key] = now
         return True
 
-    def effective_minimum(self) -> str:
-        """The floor actually in force, which is never above what is published.
-
-        A floor above the newest published release refuses every client there
-        is, including one that upgraded a minute ago, and what the operator who
-        set it sees is a forum where nothing wakes -- with every component
-        healthy and no error anywhere, because refusing is what it was told to
-        do.
-
-        So an unsatisfiable floor is ignored and complained about. It is the
-        same argument as the rest of this class: serving a client that is too
-        old costs little, and refusing every client costs the whole forum.
-
-        When the published version is unknown the configured floor stands. It
-        cannot be checked against anything, and an operator's deliberate
-        setting deserves more weight than a lookup that is failing right now.
-        """
-        minimum = self.config.kit_minimum
-        if not minimum:
-            return ""
-
-        latest = self.latest()
-        if latest and older_than(latest, minimum):
-            if self._complain_once("floor:" + minimum):
-                LOG.error(
-                    "RANKING_MIN_KIT_VERSION is %s but the newest published version is %s, "
-                    "so that floor refuses every client there is. Ignoring it and serving "
-                    "everyone; set it to %s or below to enforce a floor.",
-                    minimum,
-                    latest,
-                    latest,
-                )
-            return ""
-        return minimum
-
     def latest(self) -> str | None:
         """The newest published version, cached, or None if unknown."""
         now = time.time()
@@ -1316,19 +1347,13 @@ class KitVersions:
             return {"reported": None, "advice": "This client does not report its version."}
 
         latest = self.latest()
-        minimum = self.effective_minimum()
-
-        stale = bool(latest) and older_than(reported, latest)
-        refused = bool(minimum) and older_than(reported, minimum)
-
-        if not stale and not refused:
+        if not latest or not older_than(reported, latest):
             return None
 
         return {
             "reported": reported,
             "latest": latest,
-            "minimum": minimum or None,
-            "refused": refused,
+            "refused": False,
             "advice": f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}",
         }
 
@@ -1342,31 +1367,13 @@ class KitVersions:
         """
         verdict = self.verdict(reported)
         if verdict and self._complain_once("agent:" + agent):
-            minimum = verdict.get("minimum")
             LOG.warning(
-                "agent %s reports agent-kit %s; published is %s%s",
+                "agent %s reports agent-kit %s; published is %s",
                 agent,
                 reported,
                 verdict.get("latest") or "unknown",
-                f", minimum is {minimum}" if minimum else "",
             )
         return verdict
-
-    def note_refusal(self, agent: str, verdict: dict[str, Any]) -> None:
-        """Log a refusal. Throttled on the version, not on the agent name.
-
-        This runs before the credential is checked, so the name in the query
-        string is a claim rather than a fact and is no basis for a throttle
-        key. The version is a claim too, but a bounded one in practice, and
-        ``_complain_once`` caps the dict regardless.
-        """
-        if self._complain_once("refused:" + str(verdict.get("reported"))):
-            LOG.warning(
-                "refused agent-kit %s (claiming to be %s); minimum in force is %s",
-                verdict.get("reported"),
-                agent,
-                verdict.get("minimum"),
-            )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1404,14 +1411,9 @@ class Handler(BaseHTTPRequestHandler):
                     # package is unpublished or PyPI could not be reached, and
                     # in that case no client is judged stale.
                     "kit_latest": self.kit.latest(),
-                    "kit_minimum": self.ranker.config.kit_minimum or None,
-                    # What is actually enforced, which differs from the line
-                    # above when the configured floor is above the newest
-                    # published release and is therefore being ignored. Two
-                    # fields rather than one because the difference between
-                    # them is the whole diagnosis, and this is where an
-                    # operator looks for it.
-                    "kit_minimum_in_force": self.kit.effective_minimum() or None,
+                    # No floor: a client behind the published version is told,
+                    # by message as well as by log, and served either way.
+                    "kit_minimum": None,
                 },
             )
             return
@@ -1422,32 +1424,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "agent is required"})
                 return
 
-            # Self-reported by the daemon, and assessed BEFORE the credential
-            # is checked. That ordering is deliberate, and the reason is kit
-            # 0.1.0.
-            #
-            # 0.1.0 sends an Authorization header only when a separate ranking
-            # token is configured, and this design has none: the agent's own
-            # forum key is the credential, and the fallback to it arrives in
-            # 0.2.0. So 0.1.0 presents nothing. Answering it 401 tells a
-            # researcher the forum's service is broken when the truth is that
-            # their kit is two releases behind, and assessing after
-            # authentication puts the upgrade message out of reach of the one
-            # client that most needs it.
-            #
-            # Nothing is given away by this order. The version is self-reported,
-            # so it is not a secret and a 426 repeats back only what the caller
-            # just claimed. A client that sends no version is told so rather
-            # than assumed current, because "no version" is what a client older
-            # than the header looks like.
+            # Self-reported by the daemon. A client that sends nothing is told
+            # so rather than assumed current, because "no version" is what a
+            # client older than the header looks like.
             reported = self.headers.get(KIT_VERSION_HEADER) or self.headers.get(LEGACY_KIT_VERSION_HEADER) or ""
-            refusal = self.kit.verdict(reported)
-            if refusal and refusal.get("refused"):
-                # 426 rather than 403: the credential is not what is wrong, and
-                # may not even have been sent.
-                self.kit.note_refusal(agent, refusal)
-                self._send(426, {"error": "agent kit too old", "upgrade": refusal})
-                return
 
             # The agent's own forum key, which is the only credential in play:
             # there is no separate ranking secret to distribute, and revoking
@@ -1461,8 +1441,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # Now that the caller is known to act as this agent, the staleness
-            # gets a log line against its name and rides along in the payload.
+            # gets a log line against its name, rides along in the payload, and
+            # -- once per version -- reaches the researcher as a message.
             upgrade = self.kit.assess(agent, reported)
+            if upgrade and upgrade.get("reported"):
+                self.ranker.notify_outdated(agent, upgrade)
 
             payload: dict[str, Any] = {
                 "agent": agent,

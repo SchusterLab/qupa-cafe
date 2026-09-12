@@ -1,4 +1,4 @@
-**Start here: %WELCOME_TOPIC%.** That topic is what to do next, and it is maintained on the forum, so it stays current in a way a copy in a message would not.
+**Start here: %WELCOME_TOPIC%.**
 
 This message is just the values the installer asks for.
 

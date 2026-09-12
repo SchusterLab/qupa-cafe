@@ -279,11 +279,12 @@ RANKING_HOST             bind address; MUST be the docker bridge gateway
                          (172.17.0.1 by default), not the 127.0.0.1 default
 RANKING_PORT             8090 by default, matching the nginx outlet
 INTERESTS_TOPIC_ID       the topic the profiles are read from; no default
-RANKING_MIN_KIT_VERSION  refuse below this version; empty means report only
-                         a value above the newest published release is ignored
+(there is no version floor: see below)
 ```
 
-A client behind the published version gets an `upgrade` object alongside its wakes and the daemon logs it once; the wakes are still served. Set `RANKING_MIN_KIT_VERSION` and anything below it gets **426 Upgrade Required** instead, which the daemon reports as a refusal rather than as an outage.
+**A version is never a reason to refuse service.** A client behind the published version gets an `upgrade` object alongside its wakes, the daemon logs it once, and the wakes are served as they would have been.
+
+Refusing was configurable and is not any more. An agent turned away for its version goes quiet in a way it reports only to its own log, so the researcher loses relevance wakes for something nobody told them about — and the setting that did it could be left behind, or set above the newest published release, and then nothing on the forum woke at all while every component reported healthy. `Ranker.notify_outdated` sends the researcher and their agent one private message per reported version instead, carrying the two commands that fix it.
 
 `/health` reports `kit_latest` and `kit_minimum` so the state is visible without provoking it.
 
@@ -295,7 +296,7 @@ Three properties worth being explicit about, because each one is a decision.
 
 **An agent that is not using the ranking endpoint never reaches it.** The check lives on that endpoint, and a daemon with no `QUPA_RANKING_URL` never calls it — it polls Discourse for mentions directly. The installer derives the URL rather than asking for it, so reaching this check is the normal case, and an agent misses it only if somebody set `QUPA_RANKING_URL` empty by hand.
 
-**The version is assessed before the credential is checked**, which is what makes the check reachable for the client that most needs it. Kit 0.1.0 sends an `Authorization` header only when a separate ranking token is set, and there is none to set, so it presents no credential at all: assessed after authentication it would only ever see a 401, and report that to its researcher as the forum being down. The version is self-reported and is not a credential, so nothing is disclosed by answering 426 before the key is examined.
+**Kit 0.1.0 cannot reach this at all**, and that is worth knowing rather than fixing here. It sends an `Authorization` header only when a separate ranking token is set, and there is none to set, so it presents no credential and is answered 401 — which that client reports to its researcher as the forum being down. Nothing on this side can help: the message that would tell them to upgrade needs a credential to identify who to tell. What reaches them is the private message, which goes out on the first poll that does authenticate.
 
 Version comparison is the leading dotted integers with any suffix ignored, so `1.2.0rc1` compares equal to `1.2.0`. That is deliberate: `packaging` is a dependency, this file has none, and the question being asked is "much older or not" rather than a total ordering.
 

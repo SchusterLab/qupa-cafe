@@ -638,9 +638,9 @@ def daemon_already_running() -> bool:
     """Whether a resident daemon already holds the lock.
 
     Asked by trying to take it: the daemon's own guard is the authority, so
-    there is nothing here that can disagree with it. Re-running the installer
-    otherwise leaves a second daemon polling the same account, which wakes the
-    agent twice for every notification.
+    there is nothing here that can disagree with it. Starting one on top of
+    another leaves two daemons polling the same account, which wakes the agent
+    twice for every notification.
     """
     from .daemon import Settings, claim_single_instance, lock_path
 
@@ -656,6 +656,80 @@ def daemon_already_running() -> bool:
         except OSError:
             pass
     return False
+
+
+def stop_running_daemon() -> bool:
+    """Stop a resident daemon, so an upgrade actually takes effect.
+
+    An upgrade that leaves the old process running is the worst of both: the
+    files on disk are new, the installer reports success, and the thing doing
+    the polling is still the version that was just replaced -- for as long as
+    the machine stays logged in. Nothing would say so.
+
+    Asked of the platform's own service manager first, because that is what
+    will restart it. Where there is no service manager, the daemon is signalled
+    directly through the lock file it holds.
+    """
+    system = platform.system()
+
+    if system == "Linux" and shutil.which("systemctl"):
+        result = subprocess.run(
+            ["systemctl", "--user", "stop", "qupa-cafe-daemon"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  stopped the running daemon, so the new one replaces it")
+            return True
+
+    if system == "Darwin" and shutil.which("launchctl"):
+        subprocess.run(
+            ["launchctl", "unload", str(Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist")],
+            capture_output=True,
+            text=True,
+        )
+        print("  unloaded the running daemon, so the new one replaces it")
+        return True
+
+    # Windows, or a daemon started by hand: find the process and end it.
+    #
+    # The match has to be narrow. Anything whose command line merely mentions
+    # the module matches a loose pattern -- a shell running an installer, an
+    # editor with the file open, the very command asking the question -- and
+    # killing those is far worse than leaving an old daemon up. So: the image
+    # has to be a Python interpreter, the module has to appear after `-m`, and
+    # this process and its parent are never candidates.
+    stopped = False
+    mine = {os.getpid(), os.getppid()}
+    module = "qupa_cafe" + ".daemon"
+
+    if system == "Windows":
+        script = (
+            "$mine = @(" + ",".join(str(p) for p in mine) + ");"
+            "Get-CimInstance Win32_Process |"
+            " Where-Object { $_.Name -like 'python*' -and"
+            f" $_.CommandLine -like '*-m {module}*' -and"
+            " $mine -notcontains $_.ProcessId } |"
+            " ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True
+        )
+        killed = [line for line in (result.stdout or "").split() if line.strip().isdigit()]
+        if killed:
+            print(f"  stopped {len(killed)} running daemon(s), so the new one replaces it")
+            stopped = True
+    elif shutil.which("pkill"):
+        result = subprocess.run(
+            ["pkill", "-f", f"-m {module}"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print("  stopped the running daemon, so the new one replaces it")
+            stopped = True
+
+    if not stopped:
+        print("  nothing was running to replace")
+    return stopped
 
 
 def register_service(settings: dict[str, str]) -> None:
@@ -746,51 +820,47 @@ WantedBy=default.target
         run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
     elif system == "Windows":
-        # schtasks rather than a service: a service needs administrator rights,
-        # and this only ever needs to run as the logged-in researcher.
-        task_name = "QupaCafeDaemon"
-
+        # The Startup folder, and no attempt at a scheduled task.
+        #
+        # `schtasks /SC ONLOGON` registers outside the user's profile, so it
+        # wants an elevated prompt -- which an ordinary researcher does not
+        # have. Trying it first only produced `ERROR: Access is denied` in the
+        # middle of an otherwise successful install, which reads like a failure
+        # and is not one. The Startup folder needs no rights at all.
+        #
+        # What it costs: the daemon starts at interactive logon, so not at boot
+        # and not while nobody is signed in, and there is no restart-on-failure.
+        # That is the right trade for a thing that polls a forum on behalf of
+        # the person sitting at the machine.
+        #
         # From a checkout, run from the kit's directory rather than relying on
         # PYTHONPATH being set in the user environment: `python -m` puts the
-        # working directory on the import path, and schtasks has no way to set
-        # a working directory of its own.
-        #
-        # An installed console script needs none of that, and wrapping it in
-        # `cmd /c cd` to a directory that may not exist would only break it.
+        # working directory on the import path.
         if root is not None:
             command = f'cmd /c cd /d "{root}" && "{sys.executable}" -m qupa_cafe.daemon'
         else:
             command = " ".join(f'"{a}"' for a in argv)
 
-        registered = run_step(
-            [
-                "schtasks", "/Create", "/F",
-                "/TN", task_name,
-                "/SC", "ONLOGON",
-                "/TR", command,
-                "/RL", "LIMITED",
-            ],
-            f"registered scheduled task {task_name}",
-            f"register scheduled task {task_name}",
-        )
-
-        if registered:
-            print("  note: a scheduled task carries no environment, so the daemon reads")
-            print(f"        {ENV_PATH} itself.")
+        entry = windows_startup_entry(command)
+        if entry:
+            print(f"  wrote {entry}")
+            print("       it starts at each logon, unelevated and with no window.")
+            print("       Delete that file to stop it starting.")
+            print(f"       It reads {ENV_PATH} itself, so it needs no environment.")
         else:
-            print("  A scheduled task needs an elevated prompt, so that was refused.")
-            print("  Falling back to the Startup folder, which needs no rights:")
-            entry = windows_startup_entry(command)
-            if entry:
-                print(f"        {entry}")
-                print("        It starts at each logon, with no window. Delete it to stop.")
-            else:
-                print("  Nothing is registered. Start the daemon yourself when you want it:")
-                print(f"        {command}")
+            print("  Nothing is registered. Start the daemon yourself when you want it:")
+            print(f"        {command}")
 
-        if daemon_already_running():
-            print("  one is already running, so nothing was started on top of it")
-        elif start_daemon_now():
+        # Stop whatever is running before starting the new one, and do it
+        # unconditionally rather than only when the lock is held.
+        #
+        # A daemon from a release before that lock existed holds nothing, so
+        # asking the lock whether one is running answers no for exactly the
+        # case this is here to handle: an upgrade replacing an older daemon.
+        # stop_running_daemon asks the service manager and the process list,
+        # which can see an old one.
+        stop_running_daemon()
+        if start_daemon_now():
             print("  started it now, so it is polling already rather than from your next logon")
 
     else:

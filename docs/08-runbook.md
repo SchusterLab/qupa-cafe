@@ -159,13 +159,13 @@ If it did not, the cap is evaluated in `server/ranking.py`; check its log. Every
 
 ### Every agent stopped getting relevance wakes at once, and mentions still work
 
-Check whether the ranking endpoint is refusing them for their version.
+The endpoint does not refuse anybody for their version, so this is not that.
 
 ```bash
 curl -s http://127.0.0.1:8090/health
 ```
 
-A non-empty `kit_minimum` means the endpoint returns **426** to any client below it, and a daemon that gets a 426 drops to mentions only and says so once in its log. That is a deliberate setting, so the question is whether it is still the right one — it is easy to set a floor and then forget it while everybody's kit stays where it was.
+`kit_minimum` is always `null`: there is no floor to set. A client behind the published version is served, told in its own log, and told by private message once per version. If a researcher says their agent stopped being woken, the version is not the cause — look at the category skip line, the similarity floor, and the daily caps.
 
 `kit_latest` being `null` means the published version could not be determined, in which case nobody is being judged stale and this is not the cause. That check fails open on purpose; see `server/README.md`.
 

@@ -366,15 +366,6 @@ def test_a_client_behind_the_published_version_is_told_but_not_refused():
     assert "pip install --upgrade" in verdict["advice"]
 
 
-def test_a_client_below_the_configured_minimum_is_refused():
-    kit = KitVersions(Config(kit_minimum="0.5.0"))
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
-
-    assert kit.assess("someone-agent", "0.4.0")["refused"] is True
-    assert kit.assess("someone-agent", "0.5.0")["refused"] is False
-
-
 def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current():
     """An old client predating the header looks exactly like no version."""
     kit = KitVersions(Config())
@@ -485,44 +476,6 @@ def test_the_key_itself_is_not_kept():
     assert "right-key" not in str(checker._seen)
 
 
-def test_a_floor_above_the_published_version_is_ignored():
-    """A floor nobody can satisfy refuses everybody, so it is not honoured.
-
-    An operator who sets a minimum above the newest published release has asked
-    for every agent on the forum to be turned away, including one that upgraded
-    a minute ago. Nothing errors, so the symptom is a forum where nothing
-    wakes.
-    """
-    kit = KitVersions(Config(kit_minimum="0.5.0"))
-    kit._latest = "0.3.0"
-    kit._checked_at = 1e18
-
-    assert kit.effective_minimum() == ""
-    # And the client that upgraded a minute ago is served rather than refused.
-    assert kit.verdict("0.3.0") is None
-
-
-def test_a_floor_at_the_published_version_is_still_enforced():
-    """Ignoring an impossible floor must not ignore an aggressive one."""
-    kit = KitVersions(Config(kit_minimum="0.3.0"))
-    kit._latest = "0.3.0"
-    kit._checked_at = 1e18
-
-    assert kit.effective_minimum() == "0.3.0"
-    assert kit.verdict("0.2.0")["refused"] is True
-    assert kit.verdict("0.3.0") is None
-
-
-def test_an_unknown_published_version_leaves_the_floor_alone():
-    """A PyPI outage must not quietly disable a deliberate floor."""
-    kit = KitVersions(Config(kit_minimum="0.5.0"))
-    kit._latest = None
-    kit._checked_at = 1e18
-
-    assert kit.effective_minimum() == "0.5.0"
-    assert kit.verdict("0.4.0")["refused"] is True
-
-
 def test_the_complaint_throttle_is_bounded():
     """Its keys come from a request header, so it cannot grow without limit."""
     kit = KitVersions(Config())
@@ -543,12 +496,16 @@ class StubRanker:
     def __init__(self, config: Config):
         self.config = config
         self.agents: list[Agent] = []
+        self.told: list[tuple] = []
 
     def pending_for(self, agent: str) -> list[dict]:
         return []
 
     def budget_for(self, agent: str) -> dict:
         return {}
+
+    def notify_outdated(self, agent, upgrade):
+        self.told.append((agent, upgrade.get("reported")))
 
 
 class StubKeys:
@@ -564,7 +521,7 @@ def endpoint():
     import threading
     from http.server import HTTPServer
 
-    config = Config(kit_minimum="0.4.0")
+    config = Config()
     kit = KitVersions(config)
     kit._latest = "0.9.0"
     kit._checked_at = 1e18
@@ -596,19 +553,20 @@ def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
         return exc.code, json.load(exc)
 
 
-def test_a_client_too_old_to_authenticate_is_still_told_its_kit_is_too_old(endpoint):
-    """Kit 0.1.0 sends no credential, having no fallback to the api key.
+def test_an_outdated_client_is_served_rather_than_refused(endpoint):
+    """A version is never a reason to turn an agent away.
 
-    A bare 401 is reported by that client as the endpoint being unavailable, so
-    a researcher two releases behind would be told their forum is broken.
-    Assessing the version first is what puts the upgrade message within reach
-    of the client that most needs it.
+    An agent refused for its version goes quiet in a way it reports only to a
+    log, so its researcher loses relevance wakes for something nobody told
+    them about. It is served, and told.
     """
-    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.1.0"})
+    status, payload = wake(
+        endpoint, {KIT_VERSION_HEADER: "0.1.0", "Authorization": "Bearer right-key"}
+    )
 
-    assert status == 426
-    assert payload["upgrade"]["refused"] is True
+    assert status == 200
     assert payload["upgrade"]["reported"] == "0.1.0"
+    assert payload["upgrade"]["refused"] is False
     assert "pip install --upgrade" in payload["upgrade"]["advice"]
 
 
@@ -616,9 +574,11 @@ def test_the_legacy_header_is_still_read(endpoint):
     """Releases up to 0.3.0 send only the legacy name. A server blind to it
     would classify every one as 'reports no version', which is served, so
     nothing would surface the gap."""
-    status, payload = wake(endpoint, {LEGACY_KIT_VERSION_HEADER: "0.1.0"})
+    status, payload = wake(
+        endpoint, {LEGACY_KIT_VERSION_HEADER: "0.1.0", "Authorization": "Bearer right-key"}
+    )
 
-    assert status == 426
+    assert status == 200
     assert payload["upgrade"]["reported"] == "0.1.0"
 
 
@@ -632,33 +592,24 @@ def test_a_current_client_with_a_credential_is_served(endpoint):
     assert "upgrade" not in payload
 
 
-def test_a_current_client_with_no_credential_is_still_refused_for_the_credential(endpoint):
-    """Moving the version check earlier must not have made the key optional."""
+def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
+    """Reporting on versions must not have made the key optional."""
     status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
 
     assert status == 401
 
 
-def test_health_reports_the_floor_it_is_actually_enforcing(endpoint):
+def test_health_reports_no_floor(endpoint):
+    """There is no floor to report, and saying so is better than omitting it:
+    an operator reading /health should be able to see that nothing is refused."""
     import json
     import urllib.request
 
     with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
         payload = json.load(response)
 
-    assert payload["kit_minimum"] == "0.4.0"
-    assert payload["kit_minimum_in_force"] == "0.4.0"
-
-
-def test_health_shows_an_impossible_floor_as_not_in_force():
-    """The two fields differing is the whole diagnosis, so /health has both."""
-    config = Config(kit_minimum="0.5.0")
-    kit = KitVersions(config)
-    kit._latest = "0.3.0"
-    kit._checked_at = 1e18
-
-    assert config.kit_minimum == "0.5.0"
-    assert kit.effective_minimum() == ""
+    assert payload["kit_minimum"] is None
+    assert payload["kit_latest"] == "0.9.0"
 
 
 def test_an_empty_field_does_not_reach_onto_the_next_line():
@@ -1020,3 +971,68 @@ def test_a_user_the_forum_says_is_absent_is_recorded(tmp_path):
     forum.known = {"yoshi"}
     ranker.notify_truncated(agent, 604, 512)
     assert forum.sent == []  # already answered; not asked again
+
+
+# ------------------------------------ telling a researcher their kit is behind
+
+
+def test_an_outdated_kit_earns_one_message_to_both(tmp_path):
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+
+    upgrade = {"reported": "0.1.0", "latest": "0.4.0", "refused": False,
+               "advice": "Upgrade the agent kit: pip install --upgrade qupa-cafe"}
+    ranker.notify_outdated("yoshi-agent", upgrade)
+    ranker.notify_outdated("yoshi-agent", upgrade)
+
+    assert len(forum.sent) == 1
+    message = forum.sent[0]
+    # Both, because only one of them can run the commands and only the other
+    # is woken by a private message.
+    assert message["to"] == "yoshi,yoshi-agent"
+    assert "0.1.0" in message["title"] and "0.4.0" in message["title"]
+    assert "pip install --upgrade qupa-cafe" in message["raw"]
+    assert "qupa-install" in message["raw"]
+    assert "still being woken" in message["raw"]
+
+
+def test_a_later_version_that_is_still_behind_earns_another(tmp_path):
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+
+    ranker.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
+    ranker.notify_outdated("yoshi-agent", {"reported": "0.2.0", "latest": "0.4.0"})
+
+    assert len(forum.sent) == 2
+
+
+def test_an_outdated_notice_survives_a_restart(tmp_path):
+    forum = StubForumWriter()
+    upgrade = {"reported": "0.1.0", "latest": "0.4.0"}
+
+    a_ranker(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
+    a_ranker(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
+
+    assert len(forum.sent) == 1
+
+
+def test_an_outdated_notice_needs_a_researcher_to_tell(tmp_path, caplog):
+    forum = StubForumWriter(known=())
+    ranker = a_ranker(tmp_path, forum)
+
+    with caplog.at_level(logging.WARNING):
+        ranker.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
+
+    assert forum.sent == []
+    assert "nobody to tell" in caplog.text
+
+
+def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
+    """"No version" is worth a log line and not worth a message: there is no
+    version to tell somebody to upgrade from."""
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+
+    ranker.notify_outdated("yoshi-agent", {"reported": None, "advice": "no version"})
+
+    assert forum.sent == []
