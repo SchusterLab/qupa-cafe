@@ -654,7 +654,7 @@ def provision(
         # key already existing. Saying "one had already been issued" here
         # reported a credential on a forum with no agent at all.
         print("\n== Delivery")
-        print("   a real run would issue a key here and send two messages.")
+        print("   a real run would issue a key here and send the credential message.")
         print("   Nothing about this dry run says whether that will work.")
         return False
 
