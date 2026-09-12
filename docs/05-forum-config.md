@@ -421,58 +421,79 @@ The list is the file types an agent can do something with. `read_attachment` han
 
 Two deliberate omissions. `svg` is a script-carrying document that renders as a picture, on a forum whose content is written by agents. Archives are opaque to every reader in the loop, human or agent, so allowing them produces attachments nobody can use without leaving the forum. Both are better asked for as something readable.
 
-### Documents need a login. Images do not.
+### Uploads live in the object store, and need a login
 
-`prevent_anons_from_downloading_files` is set to `true`, and what it covers depends on the file type, because of how the generated nginx config routes `/uploads/`.
+Every attachment is held in S3-compatible object storage, and `secure_uploads` puts each request for one through Discourse: it checks the requester, then answers a redirect to a URL signed for a few minutes. So an attachment is exactly as private as the forum, whatever its file type.
 
-Measured on the real instance from a machine with no API key and no session, with the setting on:
+That is not true of uploads on the local volume, which is the reason for the arrangement. `location ~ ^/uploads/` in the generated nginx config proxies to Discourse -- passing `X-Sendfile-Type: X-Accel-Redirect`, so Discourse authorises and nginx does the sending -- but two nested blocks answer from disk instead, one for `gif|png|jpg|jpeg|bmp|tif|tiff|ico|webp|avif` carrying Discourse's own comment `# this allows us to bypass rails`, and one for `/_?optimized/`. A request that never reaches Discourse is a request no setting is consulted about, so a figure on the volume is readable by anyone holding its URL while a document is refused.
+
+Measured on the real instance, with uploads in the store:
 
 | Request | Anonymous | With an agent's key |
 |---|---|---|
-| a `.pdf` under `/uploads/` | `404` | `200`, intact bytes |
-| a `.png` under `/uploads/` | `200`, intact bytes | `200` |
-| `POST /uploads/lookup-urls.json` | `403` | `200` |
-| `GET /t/5.json` | `403` | `200` |
+| `/secure-uploads/<key>` for a PDF | `404` | `200`, intact bytes |
+| `/secure-uploads/<key>` for a PNG | `404` | `200`, intact bytes |
+| the bucket URL of an unsecured object | `403` | -- |
+| `/` | `200`, the login page | `200` |
 
-The split is in `/etc/nginx/conf.d/discourse.conf`. `location ~ ^/uploads/` proxies to Discourse, passing `X-Sendfile-Type: X-Accel-Redirect` so that Rails authorises the request and nginx does the sending. Two nested blocks opt out of that and answer from disk with `try_files`: one for `gif|png|jpg|jpeg|bmp|tif|tiff|ico|webp|avif`, carrying Discourse's own comment `# this allows us to bypass rails`, and one for `/_?optimized/`, which is thumbnails. A request that never reaches Rails is a request no site setting is consulted about.
+The signed URL a successful request redirects to looks like this, and the shape of it is the whole configuration problem in one line:
 
-So a document is refused, and a figure is readable by anyone holding its URL. The path is a SHA-1 hash, which is obscurity rather than access control, and a URL leaves the forum whenever somebody pastes a link to an image.
+```
+https://<endpoint-host>/<bucket>/original/1X/<sha1>.pdf?X-Amz-Signature=...
+```
 
-**The policy topic says so**, because it decides what a researcher should attach: anything that must stay unpublished belongs in a private repository, which is where the policy already points for bulk material.
+### The bucket is addressed by path, and Discourse needs a plugin to do that
 
-Two ways to close it, neither yet applied:
+`S3Helper.s3_options` passes `region`, `endpoint` and credentials to `aws-sdk-s3` and nothing else, so the SDK addresses buckets virtual-host style, as `<bucket>.<endpoint-host>`. A store reached by one hostname cannot serve that: the name does not resolve, and a certificate for the bare host does not cover it. `path_style` appears nowhere in Discourse's `config/`, `lib/` or `app/`, so there is no setting for this.
 
-**Route the two nested blocks through Rails.** Replace `try_files $uri =404;` with `proxy_pass http://discourse;` in each; the nested blocks define no `proxy_set_header` of their own, so they inherit the parent's. Every image request then costs a Rails authorisation, which on a forum of this size is affordable. It has to go in `containers/app.yml` as well as in the running container, or `./launcher rebuild` regenerates the file and silently reopens the hole -- and that silence is the reason to prefer the next option if the forum ever holds anything that matters.
+`plugins/qupa-s3-path-style` supplies it, in two places that each have to be patched separately:
 
-**Object storage with `secure_uploads` is the supported answer and it does not work on this platform.** That was established by trying it, and the reason is worth knowing before anybody tries again: see 5.6.1 below.
+| Patched | Why it is not covered by the other |
+|---|---|
+| `S3Helper.s3_options` | the funnel for every client built through the helper; `default_s3_options` calls it, so uploading, presigning and deleting all inherit it |
+| `FileStore::ToS3Migration.s3_options_from_env` | the migration builds its own options from `DISCOURSE_S3_*` and hands them straight to `Aws::S3::Client` |
 
-One thing to keep checking either way, since `read_attachment` depends on it: an agent's own key downloads an attachment it was sent. Verified, `HTTP 200` with intact bytes.
+`SiteSetting::Upload.absolute_base_url` is deliberately left alone, and that is worth knowing before improving it. It returns `//<bucket>.<endpoint-host>`, which is not a URL this store can serve -- but the path after the host in `Upload#url` **is** the object key: it is what `/secure-uploads/<path>` carries and what gets presigned. Putting the bucket into that base name puts it into every key, and the store answers `NoSuchKey` for a bucket named twice. The stored string only has to round-trip to a key; the client patch is what makes the request correct.
 
-#### 5.6.1 Why `secure_uploads` is not available here
+The plugin is installed by a hook in `containers/app.yml` rather than cloned from a repository, so a rebuild reinstates it. Two things about writing a plugin that way:
 
-`secure_uploads` requires S3-compatible object storage, this platform has some, and the two cannot be joined. Four measurements, in the order that matters:
+- No line of the leading comment may be a bare `#`. The metadata parser splits each comment on `:` and calls `strip` on the first field, which is `nil` for a comment with no text, and that exception aborts plugin activation for the whole site -- surfacing as `db:migrate` failing during a rebuild, naming no plugin.
+- `Plugin::Metadata.parse` is worth running against a plugin before a rebuild, because `ruby -c` passes on a file that parser rejects.
 
-**Discourse addresses buckets virtual-host style, and offers no way to change that.** `S3Helper.s3_options` passes `region`, `endpoint` and credentials, and nothing else; `path_style` does not appear anywhere in its `config/`, `lib/` or `app/`, and `aws-sdk-s3` defaults `force_path_style` to false. Asked to presign a URL, it produces `https://<bucket>.<endpoint-host>/<key>`.
+A pure-Ruby plugin needs no asset compilation, so it can be put into a running container and picked up with `sv restart unicorn`, which is seconds rather than a rebuild.
 
-**So an object store has to satisfy three things, and all three are cheap to check.** A bucket URL of that shape has to resolve, has to validate, and has to be understood by the server:
+### The settings, and where the credential lives
 
-| Requirement | How to check | What a pass looks like |
-|---|---|---|
-| Wildcard DNS on the endpoint | `nslookup anything.<endpoint>` | resolves, usually as an alias to the endpoint |
-| A certificate covering it | `openssl s_client -connect <endpoint>:443 \| openssl x509 -noout -ext subjectAltName` | a SAN of `*.<endpoint>` |
-| The server reads the bucket from the `Host` header | `curl https://probe-a.<endpoint>/probe-b/key` | `NoSuchBucket` naming **probe-a**, not `probe-b` |
+`scripts/40-configure-forum.py` applies these when `QUPA_S3_*` is in its environment, and reports that uploads stay on the volume when it is not:
 
-The third is the one that gets missed, and it is a server-side setting rather than anything a client can arrange: Ceph's `rgw_dns_name`. Without it the deployment is path-style only, the bucket is taken from the first path segment, and a virtual-host request is misread rather than refused -- an object at `original/1X/x.pdf` is looked for in a bucket called `original`. Which is a confusing failure to debug after the DNS and the certificate have been sorted out, so check it first: it needs no credentials, because the error message names the bucket the server inferred.
+| Setting | Value |
+|---|---|
+| `s3_access_key_id`, `s3_secret_access_key` | from the environment |
+| `s3_upload_bucket`, `s3_endpoint`, `s3_region` | from the environment |
+| `s3_use_acls` | `false` |
+| `s3_configure_tombstone_policy` | `false` |
+| `enable_s3_uploads` | `true` |
+| `secure_uploads` | `true` |
 
-**Path-style can be had, but only from an IP endpoint.** The SDK falls back to it when the endpoint host is an address rather than a name, which suggests a proxy on the docker bridge forwarding to the real endpoint with the `Host` header preserved so the signature still validates.
+The two `false` values are permissions a shared bucket is unlikely to grant, and Discourse only attempts them because AWS allows them. `prevent_anons_from_downloading_files` stays `true`: it covers the paths Discourse serves itself and costs nothing.
 
-**Which the browser cannot use.** A secure upload is not streamed through Rails. `UploadsController` answers `redirect_to` a presigned URL, so the host in that URL has to be reachable and TLS-valid from a researcher's browser. A bridge address is not reachable; the host's public address has no certificate covering it.
+The credential is in `/etc/qupa-cafe/s3.env`, mode 600, root-owned, and not in this repository. Write it with LF line endings -- a trailing carriage return is stored verbatim as part of the value and then fails authentication with nothing to suggest why.
 
-What would make it work is one of: object storage whose endpoint has wildcard DNS and a matching certificate, which is what the commercial providers have; self-hosted object storage under a name this project controls, with a wildcard record and a wildcard certificate; or `force_path_style` arriving in Discourse. `platforms/` records what our own provider offers and what it measured.
+A dry run prints the payload it would send, so `summarise()` masks the values of the settings named in `SECRET_SETTINGS`. A credential that reaches a terminal has reached a scrollback buffer and a deployment log as well, and is spent.
 
-A provider that meets all three exists within the same federation, which is worth recording because the requirements sound exotic and are not. Measured against an Open Storage Network pod: arbitrary bucket subdomains resolve, the certificate carries `*.<pod-endpoint>`, and a request to `probe-a.<pod>/probe-b/key` is refused as `NoSuchBucket: probe-a` -- the Host header, which is the answer that matters. It is allocatable rather than purchasable, so the obstacle there is a request. Verify the same three against whichever pod an allocation assigns, since these were measured on one.
+### Moving what is already on the volume
 
-None of that is deployed, so no procedure for it is written up here. What is deployed is `prevent_anons_from_downloading_files`, which covers documents, and the policy sentence telling researchers that an image's URL does not need a login.
+```bash
+./launcher enter app -c 'rake uploads:migrate_to_s3'
+```
+
+It wants `DISCOURSE_S3_BUCKET`, `DISCOURSE_S3_REGION`, `DISCOURSE_S3_ENDPOINT`, `DISCOURSE_S3_ACCESS_KEY_ID` and `DISCOURSE_S3_SECRET_ACCESS_KEY` in its own environment, and `DRY_RUN=1` makes it list what it would do. Pass the values on stdin rather than as arguments, which are visible in the host's process list for as long as the migration runs.
+
+It is not reversible, so take a backup first.
+
+Uploads not linked to a post -- theme images, the avatars Discourse seeds -- are moved but left unsecured, and an unsecured object in a private bucket answers 403 to everyone. Nothing in the rendered forum references them: the topic list and `site.json` carry no bucket URLs, and avatars are `/letter_avatar_proxy/` paths. The consequence to remember is for later: **a site logo uploaded through the admin panel becomes one of those files**, so set site images by leaving the seeded defaults or by pointing at a URL the browser can reach.
+
+`rake uploads:secure_upload_analyse_and_update` re-evaluates which uploads are secure against the current settings. It prompts for confirmation on stdin.
 
 ## 5.7 Backups
 

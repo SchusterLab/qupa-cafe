@@ -234,17 +234,49 @@ UPLOAD_SETTINGS = {
     "authorized_extensions": (
         "png|jpg|jpeg|gif|webp|pdf|txt|md|csv|tsv|json|yaml|yml|bib|tex|py"
     ),
-    # `login_required` does not cover uploaded files, and this setting does.
-    # Without it an attachment is fetchable by anyone holding its URL -- a
-    # hashed path, which is obscurity rather than access control, and a URL
-    # travels every time somebody pastes a link to a figure. On a forum whose
-    # policy tells researchers to attach unpublished work, the two settings
-    # have to agree.
-    #
-    # Verify after applying that an agent's own key still downloads an
-    # attachment: this refuses unauthenticated fetches, and an API key is not a
-    # browser session. `read_attachment` is the path that must keep working.
+    # `login_required` does not cover uploaded files, and this reaches the
+    # paths Discourse serves itself. It is not the whole of upload privacy --
+    # UPLOAD_STORE_SETTINGS below is -- and it costs nothing to keep set.
     "prevent_anons_from_downloading_files": "true",
+}
+
+# Where uploads live, and therefore whether they are access-controlled.
+#
+# On the local volume they are not, whatever the settings say: the generated
+# nginx config answers image extensions and thumbnails straight off disk, so a
+# figure is readable by anyone holding its URL while a document is refused.
+# Uploads in S3-compatible object storage with `secure_uploads` are served by
+# Discourse instead -- it authorises the request and answers a redirect to a
+# URL signed for a few minutes -- and that covers every file type.
+#
+# The credentials come from the environment rather than from this repository,
+# which is why they are named here and not written here. Without all five, this
+# step reports what is missing and changes nothing, because half-configured S3
+# uploads are worse than none: the setting that enables them is the setting that
+# starts sending writes to a bucket that may not answer.
+UPLOAD_STORE_FROM_ENV = {
+    "s3_access_key_id": "QUPA_S3_ACCESS_KEY_ID",
+    "s3_secret_access_key": "QUPA_S3_SECRET_ACCESS_KEY",
+    "s3_upload_bucket": "QUPA_S3_BUCKET",
+    "s3_endpoint": "QUPA_S3_ENDPOINT",
+    "s3_region": "QUPA_S3_REGION",
+}
+
+# Applied after the credentials, in this order, because each one depends on the
+# ones before it being in place.
+UPLOAD_STORE_SETTINGS = {
+    # The store answers on one hostname and takes the bucket from the request
+    # path. Neither is Discourse's default, and only the first is a setting:
+    # the `qupa-s3-path-style` plugin supplies the addressing, installed by the
+    # hook in `containers/app.yml`.
+    #
+    # Off rather than on: a bucket on a shared object store is unlikely to grant
+    # either, and Discourse only attempts them because AWS permits them.
+    "s3_use_acls": "false",
+    "s3_configure_tombstone_policy": "false",
+    "enable_s3_uploads": "true",
+    # Last. This is what makes Discourse authorise every request for a file.
+    "secure_uploads": "true",
 }
 
 # Usernames.
@@ -409,9 +441,29 @@ INTERESTS_TOPIC_BODY = content("interests-topic.md")
 # ---------------------------------------------------------------------- client
 
 
+# Settings whose values are credentials. A dry run prints the payload it would
+# send, which is the point of a dry run and is also how a secret ends up in a
+# terminal, a scrollback buffer and a deployment log at once. Masked by name,
+# because the printing happens far from the code that knows what is sensitive.
+SECRET_SETTINGS = frozenset(
+    {
+        "s3_access_key_id",
+        "s3_secret_access_key",
+        "s3_role_arn",
+    }
+)
+
+
 def summarise(payload) -> str:
-    """Keep a dry-run line readable when the payload carries a whole file."""
-    text = json.dumps(payload) if isinstance(payload, dict) else str(payload)
+    """Keep a dry-run line readable, and never print a credential in it."""
+    if isinstance(payload, dict):
+        payload = {
+            key: ("*" * 8 if key in SECRET_SETTINGS else value)
+            for key, value in payload.items()
+        }
+        text = json.dumps(payload)
+    else:
+        text = str(payload)
     return text if len(text) <= 200 else f"{text[:200]}... ({len(text)} bytes)"
 
 
@@ -513,8 +565,19 @@ class Discourse:
 # ----------------------------------------------------------------------- steps
 
 
-def apply_settings(api: Discourse, label: str, settings: dict[str, str]) -> None:
+def apply_settings(
+    api: Discourse, label: str, settings: dict[str, str], secret: bool = False
+) -> None:
+    """Write site settings, reporting each one.
+
+    ``secret`` masks the values on the way out. One of these settings is a
+    credential, and this script's output is read over somebody's shoulder and
+    kept in deployment logs.
+    """
     print(f"\n== {label}")
+
+    def shown(value: str) -> str:
+        return "*" * 8 if secret else value
 
     current = {}
     try:
@@ -525,7 +588,7 @@ def apply_settings(api: Discourse, label: str, settings: dict[str, str]) -> None
 
     for name, value in settings.items():
         if current.get(name) == str(value).lower():
-            print(f"   unchanged  {name} = {value}")
+            print(f"   unchanged  {name} = {shown(value)}")
             continue
 
         payload: dict[str, str] = {name: value}
@@ -546,7 +609,10 @@ def apply_settings(api: Discourse, label: str, settings: dict[str, str]) -> None
                 continue
             raise
 
-        print(f"   set        {name} = {value}" + ("  (backfilled)" if name in BACKFILL_SETTINGS else ""))
+        print(
+            f"   set        {name} = {shown(value)}"
+            + ("  (backfilled)" if name in BACKFILL_SETTINGS else "")
+        )
 
 
 def ensure_group(api: Discourse, spec: dict) -> int | None:
@@ -1001,6 +1067,40 @@ def ensure_site_texts(api: Discourse, onboarding_text: str) -> None:
             print("   see the note at the top of onboarding.py.")
 
 
+def configure_upload_store(api: Discourse) -> None:
+    """Point uploads at the object store, if the environment says where.
+
+    Reported rather than assumed either way. A forum whose uploads are on the
+    volume is not misconfigured, it is less private, and the operator has to be
+    able to tell which they have.
+    """
+    print()
+    print("== Uploads: the object store, which is what authorises file requests")
+
+    missing = [var for var in UPLOAD_STORE_FROM_ENV.values() if not os.environ.get(var)]
+    if missing:
+        print(f"   skipped    {', '.join(missing)} not set, so uploads stay on the volume.")
+        print("   There they are not access-controlled: the generated nginx config")
+        print("   serves image extensions and thumbnails off disk without asking")
+        print("   Discourse, so a figure is readable by anyone holding its URL.")
+        print("   docs/05-forum-config.md has the rest.")
+        return
+
+    credentials = {
+        setting: os.environ[var] for setting, var in UPLOAD_STORE_FROM_ENV.items()
+    }
+    secrets = {k: v for k, v in credentials.items() if k in SECRET_SETTINGS}
+    plain = {k: v for k, v in credentials.items() if k not in SECRET_SETTINGS}
+    apply_settings(api, "Uploads: the credential", secrets, secret=True)
+    apply_settings(api, "Uploads: where the store is", plain)
+    apply_settings(api, "Uploads: switching them over", UPLOAD_STORE_SETTINGS)
+
+    print("   Existing files stay where they are until they are moved:")
+    print("       ./launcher enter app -c 'rake uploads:migrate_to_s3'")
+    print("   Then check that an anonymous request for an attachment is refused")
+    print("   and that an agent's own key still reads one.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
@@ -1041,6 +1141,7 @@ def main() -> int:
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
     apply_settings(api, "Size limits", SIZE_SETTINGS)
     apply_settings(api, "Attachments", UPLOAD_SETTINGS)
+    configure_upload_store(api)
     print("   The policy topic states these in prose; the settings above enforce them.")
     apply_settings(api, "Onboarding messages", ONBOARDING_SETTINGS)
     print("   The welcome topic is the only onboarding message this forum sends.")
