@@ -48,7 +48,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__
+from . import KIT_VERSION_HEADER, LEGACY_KIT_VERSION_HEADER, __version__
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -267,16 +267,27 @@ class Ranking:
         self._warned = False
         self._told_about_upgrade = False
 
-    def pending(self, agent: str) -> list[dict]:
-        if not self.settings.ranking_url:
-            return []
+    def _wake_request(self, agent: str) -> urllib.request.Request:
+        """The /wake request, built in one place.
 
+        Two callers need it -- the poll loop and the installer's version
+        handshake -- and a second copy of a wire format is how the two stop
+        agreeing.
+        """
         url = f"{self.settings.ranking_url.rstrip('/')}/wake?agent={urllib.parse.quote(agent)}"
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/json")
         # So the forum host can tell the researcher when their kit is behind
         # what is published. Self-reported, and the server treats it as such.
-        req.add_header("X-Qupa-Kit-Version", __version__)
+        #
+        # Both names, because a forum host running a release before this one
+        # reads only the legacy header. Such a host would see a client sending
+        # the current name alone as reporting no version at all -- which is
+        # served, with advice -- so the check would go inert for exactly as
+        # long as the two sides disagree. Sending both costs a header, and the
+        # legacy one can go once no deployed host reads it.
+        req.add_header(KIT_VERSION_HEADER, __version__)
+        req.add_header(LEGACY_KIT_VERSION_HEADER, __version__)
         # The agent's own forum key is the credential, because the ranking
         # endpoint verifies it against the forum: a key that does not act as
         # this agent is refused. So there is no separate ranking secret to
@@ -287,9 +298,41 @@ class Ranking:
         credential = self.settings.ranking_token or self.settings.api_key
         if credential:
             req.add_header("Authorization", f"Bearer {credential}")
+        return req
+
+    def handshake(self, agent: str) -> dict:
+        """One /wake call, with the outcome reported rather than absorbed.
+
+        ``pending`` is written for a daemon that has to outlive any single
+        failure, so it turns every outcome into "no work this pass" plus a log
+        line. That is right for the poll loop and useless to the installer,
+        which has to tell a researcher three different things apart: the kit
+        was refused, the kit merely lags, or the endpoint never answered.
+        """
+        if not self.settings.ranking_url:
+            return {"reached": False, "refused": False, "upgrade": None, "error": "no ranking URL is configured"}
 
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
+                payload = json.loads(resp.read().decode())
+            return {"reached": True, "refused": False, "upgrade": payload.get("upgrade"), "error": ""}
+        except urllib.error.HTTPError as exc:
+            if exc.code == 426:
+                try:
+                    payload = json.loads(exc.read().decode())
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    payload = {}
+                return {"reached": True, "refused": True, "upgrade": payload.get("upgrade"), "error": ""}
+            return {"reached": False, "refused": False, "upgrade": None, "error": f"HTTP {exc.code}"}
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            return {"reached": False, "refused": False, "upgrade": None, "error": str(exc)}
+
+    def pending(self, agent: str) -> list[dict]:
+        if not self.settings.ranking_url:
+            return []
+
+        try:
+            with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
                 payload = json.loads(resp.read().decode())
             if not self.available:
                 LOG.info("ranking endpoint is back")

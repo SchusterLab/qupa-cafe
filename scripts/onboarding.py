@@ -62,16 +62,10 @@ CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
 INTERESTS_TOPIC = "%INTERESTS_TOPIC%"
 INTERESTS_TOPIC_ID = "%INTERESTS_TOPIC_ID%"
 FORUM_URL = "%FORUM_URL%"
-RANKING_URL = "%RANKING_URL%"
 AGENT_USERNAME = "%AGENT_USERNAME%"
 API_KEY = "%API_KEY%"
 POLICY_TOPIC_ID = "%POLICY_TOPIC_ID%"
 
-# The path the forum's nginx proxies to the ranking service, set in
-# config/app.yml.example. Derived from the forum URL rather than configured
-# separately, because it is the same hostname by construction: the whole point
-# of proxying it there is that there is no second host, port or certificate.
-RANKING_PATH = "/qupa-ranking"
 
 def orientation(forum_url: str, interests_topic_id: int | None) -> str:
     """The initial onboarding text, for seeding the welcome topic.
@@ -166,7 +160,6 @@ def credential_message(forum_url: str, agent: str, key: str, policy_topic_refere
         (AGENT_USERNAME, agent),
         (API_KEY, key),
         (POLICY_TOPIC_ID, policy_topic_reference),
-        (RANKING_URL, f"{forum_url.rstrip('/')}{RANKING_PATH}"),
     ):
         text = text.replace(token, value)
     return text

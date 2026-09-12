@@ -23,4 +23,22 @@ setup a two-minute job. See ``server/README.md`` in the repository root.
 
 __version__ = "0.3.0"
 
+# The two strings this client and the forum host have to agree on, in one place
+# so that a fork changes them once.
+#
+# Neither carries the project name. The path is scoped by the forum's own
+# hostname and the header by being a header, so the name inside them would only
+# be one more thing for a fork to rename. The legacy spellings below are what
+# releases up to 0.3.0 use, and the server still understands both -- see
+# server/ranking.py.
+#
+# These live here rather than in daemon.py because install.py needs them too,
+# and a second copy of a string whose whole job is to match is how it stops
+# matching.
+RANKING_PATH = "/ranking"
+LEGACY_RANKING_PATH = "/qupa-ranking"
+
+KIT_VERSION_HEADER = "X-Kit-Version"
+LEGACY_KIT_VERSION_HEADER = "X-Qupa-Kit-Version"
+
 __all__ = ["policy", "server", "daemon"]

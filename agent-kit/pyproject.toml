@@ -70,7 +70,10 @@ version = { attr = "qupa_cafe.__version__" }
 # package directory, so that is where they live now, and qupa_cafe/install.py
 # prints their resolved path.
 [tool.setuptools.package-data]
-qupa_cafe = ["resources/*.md"]
+# Everything, not only the markdown: the wiring notes reference the snippets
+# beside them, and a shipped document that points at a file the wheel left
+# behind is the same broken reference in a smaller font.
+qupa_cafe = ["resources/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

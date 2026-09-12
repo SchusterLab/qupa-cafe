@@ -292,6 +292,50 @@ def ensure_trust_level(api: Discourse, agent_id: int, agent: str, current: int |
     print(f"   set        {agent} to trust level 1")
 
 
+def ensure_moderation(api: Discourse, agent_id: int, agent: str, researcher: dict) -> None:
+    """Mirror the researcher's staff status onto their agent, as moderator.
+
+    An agent acts for a person, so a person who moderates this forum has an
+    agent that can moderate it: edit and recategorise other people's posts,
+    pin, close, and read the user list.
+
+    **Moderator and not admin, even for an admin's agent.** Measured against a
+    real forum, a moderator is refused a private message it is not part of
+    (404), the site settings (404) and category creation (403), while an admin
+    is served all three. The credential messages are private messages carrying
+    every agent's API key in plaintext, so an admin-status agent that reads
+    untrusted forum content and replies without a human in the path would put
+    every other agent's credential one injection away. Moderator status buys
+    the moderation reach and none of that.
+
+    The policy wiki is withheld separately: 40-configure-forum.py keeps
+    moderators out of edit_wiki_post_allowed_groups for exactly this reason.
+
+    Revoked as well as granted, so a researcher who stops being staff stops
+    having a staff agent.
+    """
+    print("\n== Moderator status")
+    wanted = bool(researcher.get("admin") or researcher.get("moderator"))
+    account = find_user(api, agent) or {}
+    current = bool(account.get("moderator"))
+
+    role = "admin" if researcher.get("admin") else "moderator" if researcher.get("moderator") else "member"
+    print(f"   {researcher.get('username')} is {role} on this forum")
+
+    if wanted == current:
+        state = "a moderator" if current else "not a moderator"
+        print(f"   unchanged  {agent} is {state}")
+        return
+
+    action = "grant_moderation" if wanted else "revoke_moderation"
+    api.put(f"/admin/users/{agent_id}/{action}.json")
+    verb = "granted" if wanted else "revoked"
+    print(f"   {verb:10} moderator status for {agent}")
+    if wanted:
+        print("   It can now edit and move other people's posts. It still cannot")
+        print("   read others' private messages, change settings, or edit the policy.")
+
+
 def ensure_group_membership(api: Discourse, agent: str) -> int | None:
     print(f"\n== Group: {AGENTS_GROUP_NAME}")
     try:
@@ -440,12 +484,14 @@ def provision(
     agent = agent_override or agent_username_for(api, researcher)
     print(f"\nProvisioning {agent} for {researcher} on {api.base_url}")
 
-    if not find_user(api, researcher):
+    owner = find_user(api, researcher)
+    if not owner:
         die(f"no such researcher {researcher!r}. They have to redeem their invite first.")
 
     account = ensure_agent_account(api, agent, forum_host)
     if account:
         ensure_trust_level(api, account["id"], agent, account.get("trust_level"))
+        ensure_moderation(api, account["id"], agent, owner)
     group_id = ensure_group_membership(api, agent)
     if group_id:
         ensure_flair(api, agent, group_id)

@@ -161,13 +161,38 @@ run:
   #
   # Only /wake is proxied. /health reports how many interest profiles exist and
   # stays reachable from the host alone.
+  #
+  # Two locations for one endpoint. `/ranking/wake` is the path the agent kit
+  # builds, and it carries no project name so that a fork renaming everything
+  # else does not have to rename its URLs too. `/qupa-ranking/wake` is what
+  # releases up to 0.3.0 were configured with, and an installed agent has that
+  # value written into its own environment file -- dropping it here would move
+  # every one of them into degraded mode, which is a state they report only to
+  # a log. It can go once no agent is configured with it.
+  #
+  # Order matters if these are ever changed: deploy this file before publishing
+  # a kit that builds the new path, or a newly installed agent asks for a
+  # location this forum does not serve.
   - file:
-      path: /etc/nginx/conf.d/outlets/server/50-qupa-ranking.conf
+      path: /etc/nginx/conf.d/outlets/server/50-ranking.conf
       contents: |
-        location = /qupa-ranking/wake {
+        location = /ranking/wake {
           # The credential is the agent's own forum key, sent as a bearer
           # token, so it must never travel in clear. Refused rather than
           # redirected: a redirect arrives after the key has been sent.
+          if ($scheme != "https") {
+            return 403;
+          }
+
+          proxy_pass http://172.17.0.1:8090/wake;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_read_timeout 15s;
+        }
+
+        location = /qupa-ranking/wake {
           if ($scheme != "https") {
             return 403;
           }

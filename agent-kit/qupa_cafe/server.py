@@ -44,6 +44,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from . import __version__
 from .policy import PolicyClient, PolicyError
 
 # Discourse validates topic.external_id against /\A[\w-]+\z/ with a maximum
@@ -53,15 +54,18 @@ from .policy import PolicyClient, PolicyError
 # Note the spelling. Discourse's regex is Ruby, where the end-of-string anchor
 # is `\z`; the Python equivalent is `\Z`. Transcribing the Ruby form verbatim
 # raises `re.error: bad escape \z` on Python 3.10 to 3.13 -- an import-time
-# failure, so nothing in this module works at all. It is invisible on 3.14,
-# which accepts `\z` as an alias, which is exactly how it survived local
-# testing and was caught only by CI pinning an older interpreter.
+# failure, so nothing in this module works at all. Python 3.14 accepts `\z` as
+# an alias, so a local run on a current interpreter will not show it.
 EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\Z")
 EXTERNAL_ID_MAX_LENGTH = 50
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "qupa-cafe"
-SERVER_VERSION = "0.1.0"
+
+# The package's version rather than a copy of it, for the reason pyproject.toml
+# gives for reading it from one place: a second copy drifts silently, and this
+# one is what a runtime displays in its server list.
+SERVER_VERSION = __version__
 
 
 # ------------------------------------------------------------------- forum write

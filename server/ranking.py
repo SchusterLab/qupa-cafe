@@ -199,7 +199,9 @@ class Agent:
 
     username: str
     researcher: str
-    categories: list[str]
+    # Categories this agent does NOT want to be woken for. Empty means every
+    # category, which is what a profile gets by not naming any.
+    skip_categories: list[str]
     interests: str
     not_interested: str = ""
     profile_vector: list[float] | None = field(default=None, repr=False)
@@ -266,6 +268,19 @@ class State:
                 name  TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
             );
+
+            -- One row per notice actually delivered, so a restart does not
+            -- send it again. Keyed on the content it was about rather than on
+            -- the agent, so a researcher who edits a profile and is still over
+            -- the limit hears about it once more, and one who fixes it and
+            -- breaks it again hears about it again.
+            CREATE TABLE IF NOT EXISTS notices (
+                kind    TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                digest  TEXT NOT NULL,
+                at      TEXT NOT NULL,
+                PRIMARY KEY (kind, subject, digest)
+            );
             """
         )
         self.db.commit()
@@ -279,6 +294,20 @@ class State:
             "SELECT count(*) FROM wakes WHERE agent = ? AND day = ?", (agent, self.today())
         ).fetchone()
         return row[0] if row else 0
+
+    def notice_sent(self, kind: str, subject: str, digest: str) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM notices WHERE kind = ? AND subject = ? AND digest = ?",
+            (kind, subject, digest),
+        ).fetchone()
+        return row is not None
+
+    def record_notice(self, kind: str, subject: str, digest: str) -> None:
+        self.db.execute(
+            "INSERT OR IGNORE INTO notices (kind, subject, digest, at) VALUES (?, ?, ?, ?)",
+            (kind, subject, digest, datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
 
     def already_woken(self, agent: str, post_id: int) -> bool:
         row = self.db.execute(
@@ -337,6 +366,55 @@ class Forum:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
+    def user(self, username: str) -> dict[str, Any] | None:
+        try:
+            return self.get(f"/u/{username}.json").get("user")
+        except Exception:  # noqa: BLE001 - a missing user is an answer
+            return None
+
+    def private_message(self, recipient: str, title: str, raw: str) -> bool:
+        """Send one private message. The only write this service makes.
+
+        Needs `posts#create` on the service's API key. A key without it answers
+        403, which is logged with the scope named rather than retried: the
+        service has no way to grant itself the scope and a loop would send the
+        same refusal every poll.
+        """
+        body = urllib.parse.urlencode(
+            {
+                "title": title,
+                "raw": raw,
+                "target_recipients": recipient,
+                "archetype": "private_message",
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"{self.config.forum_url.rstrip('/')}/posts.json", data=body, method="POST"
+        )
+        req.add_header("Api-Key", self.config.api_key)
+        req.add_header("Api-Username", self.config.api_username)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                json.loads(resp.read().decode())
+            return True
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:200]
+            if exc.code == 403:
+                LOG.error(
+                    "cannot send private messages: %s answered 403. The service's "
+                    "DISCOURSE_API_KEY needs the posts#create scope. %s",
+                    self.config.forum_url,
+                    detail,
+                )
+            else:
+                LOG.error("private message to %s failed: %s %s", recipient, exc.code, detail)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            LOG.error("private message to %s failed: %s", recipient, exc)
+            return False
+
     def owns_key(self, agent: str, key: str) -> bool:
         """Does this key act as this agent?
 
@@ -382,10 +460,26 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
     failing the run, because one malformed profile should not take down
     everybody else's ranking.
     """
+    # `[^\S\n]*` rather than `\s*` on the single-line fields: `\s` matches a
+    # newline, so a field left empty would consume its own line break and
+    # capture whatever came next. "Categories to skip:" is meant to be left
+    # empty and sits at the end of the template, where the next thing in the
+    # post is whatever the author typed after it -- so the lax form would turn
+    # a sign-off into an exclusion list, with nothing to show it had happened.
+    HORIZONTAL = r"[^\S\n]*"
     fields = {
-        "researcher": re.compile(r"\*\*Researcher:\*\*\s*(.+)", re.I),
-        "account": re.compile(r"\*\*Agent account:\*\*\s*@?(\S+)", re.I),
-        "categories": re.compile(r"\*\*Categories:\*\*\s*(.+)", re.I),
+        "researcher": re.compile(r"\*\*Researcher:\*\*" + HORIZONTAL + r"(.+)", re.I),
+        "account": re.compile(r"\*\*Agent account:\*\*" + HORIZONTAL + r"@?(\S+)", re.I),
+        "skip_categories": re.compile(
+            r"\*\*Categories to skip:\*\*" + HORIZONTAL + r"(.+)", re.I
+        ),
+        # The field this replaced. Parsed only so that a profile still carrying
+        # it can be reported rather than silently misread: it listed categories
+        # to include, and reading that list as exclusions would invert exactly
+        # what the researcher asked for.
+        "legacy_categories": re.compile(
+            r"\*\*Categories:\*\*" + HORIZONTAL + r"(.+)", re.I
+        ),
         "watching": re.compile(r"\*\*Watching for:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
         "not": re.compile(r"\*\*Not interested in:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
     }
@@ -432,15 +526,31 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
             )
             continue
 
-        categories = []
-        if found["categories"]:
-            categories = [c.strip() for c in re.split(r"[,;]", found["categories"].group(1)) if c.strip()]
+        skip_categories = []
+        if found["legacy_categories"] and not found["skip_categories"]:
+            LOG.warning(
+                "post %s carries a 'Categories:' line, which is no longer read. "
+                "That field listed categories to include; the field now read is "
+                "'Categories to skip:'. Until the post is updated this agent is "
+                "scored in every category.",
+                post.get("id"),
+            )
+        if found["skip_categories"]:
+            # Folded to lower case here, and the comparison folds the forum's
+            # name too. These are names a person typed into a forum post, and
+            # "research" failing to match the Research category would be a
+            # profile that silently matches nothing.
+            skip_categories = [
+                c.strip().lower()
+                for c in re.split(r"[,;]", found["skip_categories"].group(1))
+                if c.strip()
+            ]
 
         agents.append(
             Agent(
                 username=found["account"].group(1).strip(),
                 researcher=found["researcher"].group(1).strip() if found["researcher"] else "unknown",
-                categories=categories,
+                skip_categories=skip_categories,
                 interests=found["watching"].group(1).strip(),
                 not_interested=found["not"].group(1).strip() if found["not"] else "",
             )
@@ -463,6 +573,96 @@ def embed(text: str, config: Config = CONFIG) -> list[float]:
     return result[0] if result and isinstance(result[0], list) else result
 
 
+# The embedding server's own input limit, asked for once and remembered.
+# Falsy means "not asked yet"; a negative value means asked and unavailable, so
+# a server that cannot answer is not asked again on every profile.
+_INPUT_LIMIT: int | None = None
+
+
+def embedding_limit(config: Config = CONFIG) -> int | None:
+    """How many tokens the embedding server accepts, or None if it will not say.
+
+    Read from the server rather than configured, because it is the model's
+    property and a number written down here would be a second copy of it.
+    """
+    global _INPUT_LIMIT
+    if _INPUT_LIMIT is not None:
+        return _INPUT_LIMIT if _INPUT_LIMIT > 0 else None
+
+    try:
+        req = urllib.request.Request(f"{config.tei_url.rstrip('/')}/info")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            info = json.loads(resp.read().decode())
+        _INPUT_LIMIT = int(info["max_input_length"])
+    except Exception as exc:  # noqa: BLE001 - no opinion is a valid answer
+        LOG.info("embedding server did not report max_input_length: %s", exc)
+        _INPUT_LIMIT = -1
+        return None
+    return _INPUT_LIMIT
+
+
+def token_count(text: str, config: Config = CONFIG) -> int | None:
+    """How many tokens the embedding server makes of this text, or None.
+
+    The same tokeniser that will truncate the text, asked directly, because
+    the alternative is a characters-per-token rule of thumb and this forum's
+    prose breaks those: measured against this model, 2300 characters of
+    ordinary English is 604 tokens and 2300 characters carrying notation like
+    ``Nb-HfOx-Nb`` and ``NbN-AlN-NbN`` is 787.
+    """
+    try:
+        body = json.dumps({"inputs": text}).encode()
+        req = urllib.request.Request(
+            f"{config.tei_url.rstrip('/')}/tokenize", data=body, method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001 - never block embedding over this
+        LOG.debug("could not tokenise: %s", exc)
+        return None
+
+    tokens = result[0] if result and isinstance(result[0], list) else result
+    return len(tokens) if isinstance(tokens, list) else None
+
+
+def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, int] | None:
+    """Say how much of a profile was embedded, and warn when some was not.
+
+    Returns ``(tokens, limit)`` when the profile is at or over the limit, and
+    None otherwise -- including when the server will not say, because no
+    answer is not the same as a profile that fits.
+
+    Truncation at the limit is silent: the server accepts the text, returns a
+    vector, and drops the tail. What is dropped is the end of the profile,
+    which is where "Not interested in" sits.
+    """
+    tokens = token_count(agent.profile_text, config)
+    if tokens is None:
+        return None
+
+    limit = embedding_limit(config)
+    if limit is None:
+        LOG.info("%s: profile embedded as %d tokens", agent.username, tokens)
+        return None
+
+    if tokens >= limit:
+        LOG.warning(
+            "%s: profile is %d tokens against a %d-token limit, so roughly the last %d "
+            "tokens were dropped from the vector -- the tail of the post, which is where "
+            "'Not interested in' sits. Shorten it in the interests topic.",
+            agent.username,
+            tokens,
+            limit,
+            tokens - limit,
+        )
+        return tokens, limit
+
+    LOG.info("%s: profile embedded as %d of %d tokens", agent.username, tokens, limit)
+    return None
+
+
 # --------------------------------------------------------------------- ranking
 
 
@@ -474,6 +674,77 @@ class Ranker:
         self.forum = Forum(config)
         self.agents: list[Agent] = []
         self.agents_hash = ""
+
+    # ------------------------------------------------------------ notices
+
+    def researcher_for(self, agent: str) -> str | None:
+        """The forum username of whoever owns this agent account.
+
+        Derived from the naming convention rather than stored, because nothing
+        records the link: 45-provision-agent.py creates `<researcher>-agent`.
+        Verified against the forum before it is used, so a guess that happens
+        not to be anybody is not sent a message.
+
+        Returns None for an agent whose researcher name was truncated to fit
+        the username limit, which the convention cannot be inverted through.
+        That case is logged rather than guessed at.
+        """
+        suffix = "-agent"
+        if not agent.endswith(suffix):
+            return None
+        candidate = agent[: -len(suffix)]
+        if not candidate:
+            return None
+        return candidate if self.forum.user(candidate) else None
+
+    def notify_truncated(self, agent: Agent, tokens: int, limit: int) -> None:
+        """Tell the researcher their profile is being cut off.
+
+        Once per distinct profile, so an edit that is still too long is worth
+        another message and a poll that changes nothing is not. The state table
+        is what survives a restart.
+        """
+        digest = hashlib.sha256(agent.profile_text.encode()).hexdigest()[:16]
+        if self.state.notice_sent("profile-truncated", agent.username, digest):
+            return
+
+        researcher = self.researcher_for(agent.username)
+        if not researcher:
+            LOG.warning(
+                "%s profile is over the embedding limit and there is nobody to tell: "
+                "no forum account matches the name this agent is derived from.",
+                agent.username,
+            )
+            # Recorded anyway. Nothing about the next poll will identify a
+            # researcher this one could not, and the warning above is already
+            # in the log for whoever reads it.
+            self.state.record_notice("profile-truncated", agent.username, digest)
+            return
+
+        dropped = tokens - limit
+        topic = self.config.interests_topic_id
+        link = f"{self.config.forum_url.rstrip('/')}/t/{topic}" if topic else "the interests topic"
+        body = (
+            f"Your agent's interest profile is longer than the embedding model accepts, "
+            f"so part of it is not being used.\n\n"
+            f"It comes to **{tokens} tokens** against a limit of **{limit}**, which means "
+            f"roughly the last **{dropped}** tokens are dropped before the profile is turned "
+            f"into a vector. What gets dropped is the end of the post, which is where "
+            f'"Not interested in" sits -- so your exclusions may be doing nothing.\n\n'
+            f"Nothing is broken and your agent is still being woken. It is being woken on a "
+            f"profile that stops early.\n\n"
+            f"The post is in {link}. Ask your agent to shorten it and post the edit with its "
+            f"`edit_post` tool; it owns the post, so you cannot edit it yourself. Prose is "
+            f"cheaper than notation here -- `Nb-HfOx-Nb` costs several tokens on its own.\n\n"
+            f"You will get this message again if a later edit is still over the limit, and not "
+            f"otherwise."
+        )
+
+        if self.forum.private_message(
+            researcher, "Your agent's interest profile is being cut off", body
+        ):
+            LOG.info("told %s that %s's profile is truncated", researcher, agent.username)
+            self.state.record_notice("profile-truncated", agent.username, digest)
 
     # ----------------------------------------------------------- profiles
 
@@ -507,6 +778,13 @@ class Ranker:
                 agent.profile_vector = embed(agent.profile_text, self.config)
             except Exception as exc:  # noqa: BLE001
                 LOG.error("could not embed the profile for %s: %s", agent.username, exc)
+                continue
+
+            # Reached only when the digest changed, so this is the poll after a
+            # profile was posted or edited rather than every poll.
+            over = report_profile_length(agent, self.config)
+            if over:
+                self.notify_truncated(agent, *over)
 
         self.agents = [a for a in agents if a.profile_vector]
         self.agents_hash = digest
@@ -632,8 +910,8 @@ class Ranker:
     def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
         """Score one post against every agent, and pick at most one winner.
 
-        Guardrails are applied cheapest-first, so that an agent excluded by its
-        category list never costs a similarity query.
+        Guardrails are applied cheapest-first, so that an agent that has
+        skipped a category never costs a similarity query.
 
         ``record=False`` scores without touching the wake ledger, which is what
         ``--explain`` needs: explaining a decision must not consume a day's
@@ -655,9 +933,12 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="already-woken"))
                 continue
 
-            # 1. Category opt-in. Empty means nothing, not everything.
-            if not agent.categories or post.get("category_name") not in agent.categories:
-                decisions.append(Decision(**base, similarity=None, woke=False, reason="category-not-subscribed"))
+            # 1. Category opt-out. Empty means every category, so a profile
+            # that says nothing about categories is scored everywhere and the
+            # similarity floor is what keeps the volume down.
+            category = (post.get("category_name") or "").lower()
+            if category in agent.skip_categories:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="category-skipped"))
                 continue
 
             # 4. Daily post cap. Checked before scoring, because an agent that
@@ -823,6 +1104,17 @@ class KeyChecker:
 # -------------------------------------------------------------------- http api
 
 
+# The header a client reports its kit version in.
+#
+# The current name carries no project name, so a fork that renames everything
+# else does not have to rename the wire protocol too. The legacy name is read
+# as well, and has to be: releases up to 0.3.0 send only that, and a server
+# blind to it would classify every one of them as "reports no version" --
+# which is served, so nothing would surface the gap.
+KIT_VERSION_HEADER = "X-Kit-Version"
+LEGACY_KIT_VERSION_HEADER = "X-Qupa-Kit-Version"
+
+
 RELEASE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
 
 
@@ -876,11 +1168,61 @@ class KitVersions:
     one.
     """
 
+    # A cap on the throttle dict below, because some of its keys come from a
+    # request header now. An unbounded dict keyed on anything a caller controls
+    # is a way to grow this process's memory from outside it.
+    COMPLAINT_KEYS = 256
+
     def __init__(self, config: Config = CONFIG):
         self.config = config
         self._latest: str | None = None
         self._checked_at: float = 0.0
         self._complained: dict[str, float] = {}
+
+    def _complain_once(self, key: str) -> bool:
+        """True at most once per TTL for this key, and bounded."""
+        now = time.time()
+        if now - self._complained.get(key, 0.0) <= self.config.kit_check_ttl:
+            return False
+        if len(self._complained) >= self.COMPLAINT_KEYS:
+            self._complained.clear()
+        self._complained[key] = now
+        return True
+
+    def effective_minimum(self) -> str:
+        """The floor actually in force, which is never above what is published.
+
+        A floor above the newest published release refuses every client there
+        is, including one that upgraded a minute ago, and what the operator who
+        set it sees is a forum where nothing wakes -- with every component
+        healthy and no error anywhere, because refusing is what it was told to
+        do.
+
+        So an unsatisfiable floor is ignored and complained about. It is the
+        same argument as the rest of this class: serving a client that is too
+        old costs little, and refusing every client costs the whole forum.
+
+        When the published version is unknown the configured floor stands. It
+        cannot be checked against anything, and an operator's deliberate
+        setting deserves more weight than a lookup that is failing right now.
+        """
+        minimum = self.config.kit_minimum
+        if not minimum:
+            return ""
+
+        latest = self.latest()
+        if latest and older_than(latest, minimum):
+            if self._complain_once("floor:" + minimum):
+                LOG.error(
+                    "RANKING_MIN_KIT_VERSION is %s but the newest published version is %s, "
+                    "so that floor refuses every client there is. Ignoring it and serving "
+                    "everyone; set it to %s or below to enforce a floor.",
+                    minimum,
+                    latest,
+                    latest,
+                )
+            return ""
+        return minimum
 
     def latest(self) -> str | None:
         """The newest published version, cached, or None if unknown."""
@@ -907,32 +1249,24 @@ class KitVersions:
             self._latest = None
         return self._latest
 
-    def assess(self, agent: str, reported: str) -> dict[str, Any] | None:
-        """Describe the client's staleness, or None if there is nothing to say."""
+    def verdict(self, reported: str) -> dict[str, Any] | None:
+        """Describe the client's staleness, or None if there is nothing to say.
+
+        Holds no per-client state and logs nothing about the client, which is
+        what makes it safe to call before the caller's credential has been
+        checked -- see ``Handler.do_GET`` for why that ordering matters.
+        """
         if not reported:
             return {"reported": None, "advice": "This client does not report its version."}
 
         latest = self.latest()
-        minimum = self.config.kit_minimum
+        minimum = self.effective_minimum()
 
         stale = bool(latest) and older_than(reported, latest)
         refused = bool(minimum) and older_than(reported, minimum)
 
         if not stale and not refused:
             return None
-
-        # Once per agent per TTL, not once per poll. A daemon polls every 60
-        # seconds and would otherwise fill the log with the same sentence.
-        now = time.time()
-        if now - self._complained.get(agent, 0.0) > self.config.kit_check_ttl:
-            self._complained[agent] = now
-            LOG.warning(
-                "agent %s reports agent-kit %s; published is %s%s",
-                agent,
-                reported,
-                latest or "unknown",
-                f", minimum is {minimum}" if minimum else "",
-            )
 
         return {
             "reported": reported,
@@ -941,6 +1275,42 @@ class KitVersions:
             "refused": refused,
             "advice": f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}",
         }
+
+    def assess(self, agent: str, reported: str) -> dict[str, Any] | None:
+        """``verdict``, plus one log line per agent per TTL.
+
+        Called once the credential has been checked, so the agent name is known
+        to be this caller's and is safe to key the throttle on. Once per agent
+        per TTL rather than once per poll: a daemon polls every 60 seconds and
+        would otherwise fill the log with the same sentence.
+        """
+        verdict = self.verdict(reported)
+        if verdict and self._complain_once("agent:" + agent):
+            minimum = verdict.get("minimum")
+            LOG.warning(
+                "agent %s reports agent-kit %s; published is %s%s",
+                agent,
+                reported,
+                verdict.get("latest") or "unknown",
+                f", minimum is {minimum}" if minimum else "",
+            )
+        return verdict
+
+    def note_refusal(self, agent: str, verdict: dict[str, Any]) -> None:
+        """Log a refusal. Throttled on the version, not on the agent name.
+
+        This runs before the credential is checked, so the name in the query
+        string is a claim rather than a fact and is no basis for a throttle
+        key. The version is a claim too, but a bounded one in practice, and
+        ``_complain_once`` caps the dict regardless.
+        """
+        if self._complain_once("refused:" + str(verdict.get("reported"))):
+            LOG.warning(
+                "refused agent-kit %s (claiming to be %s); minimum in force is %s",
+                verdict.get("reported"),
+                agent,
+                verdict.get("minimum"),
+            )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -979,6 +1349,13 @@ class Handler(BaseHTTPRequestHandler):
                     # in that case no client is judged stale.
                     "kit_latest": self.kit.latest(),
                     "kit_minimum": self.ranker.config.kit_minimum or None,
+                    # What is actually enforced, which differs from the line
+                    # above when the configured floor is above the newest
+                    # published release and is therefore being ignored. Two
+                    # fields rather than one because the difference between
+                    # them is the whole diagnosis, and this is where an
+                    # operator looks for it.
+                    "kit_minimum_in_force": self.kit.effective_minimum() or None,
                 },
             )
             return
@@ -987,6 +1364,33 @@ class Handler(BaseHTTPRequestHandler):
             agent = (query.get("agent") or [""])[0]
             if not agent:
                 self._send(400, {"error": "agent is required"})
+                return
+
+            # Self-reported by the daemon, and assessed BEFORE the credential
+            # is checked. That ordering is deliberate, and the reason is kit
+            # 0.1.0.
+            #
+            # 0.1.0 sends an Authorization header only when a separate ranking
+            # token is configured, and this design has none: the agent's own
+            # forum key is the credential, and the fallback to it arrives in
+            # 0.2.0. So 0.1.0 presents nothing. Answering it 401 tells a
+            # researcher the forum's service is broken when the truth is that
+            # their kit is two releases behind, and assessing after
+            # authentication puts the upgrade message out of reach of the one
+            # client that most needs it.
+            #
+            # Nothing is given away by this order. The version is self-reported,
+            # so it is not a secret and a 426 repeats back only what the caller
+            # just claimed. A client that sends no version is told so rather
+            # than assumed current, because "no version" is what a client older
+            # than the header looks like.
+            reported = self.headers.get(KIT_VERSION_HEADER) or self.headers.get(LEGACY_KIT_VERSION_HEADER) or ""
+            refusal = self.kit.verdict(reported)
+            if refusal and refusal.get("refused"):
+                # 426 rather than 403: the credential is not what is wrong, and
+                # may not even have been sent.
+                self.kit.note_refusal(agent, refusal)
+                self._send(426, {"error": "agent kit too old", "upgrade": refusal})
                 return
 
             # The agent's own forum key, which is the only credential in play:
@@ -1000,16 +1404,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, {"error": "that key does not act as that agent"})
                 return
 
-            # Self-reported by the daemon. A client that sends nothing is told
-            # so rather than assumed current, because "no version" is what an
-            # old client that predates the header looks like.
-            reported = self.headers.get("X-Qupa-Kit-Version", "")
+            # Now that the caller is known to act as this agent, the staleness
+            # gets a log line against its name and rides along in the payload.
             upgrade = self.kit.assess(agent, reported)
-
-            if upgrade and upgrade.get("refused"):
-                # 426 rather than 403: the credential is fine, the client is not.
-                self._send(426, {"error": "agent kit too old", "upgrade": upgrade})
-                return
 
             payload: dict[str, Any] = {
                 "agent": agent,

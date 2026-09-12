@@ -174,7 +174,7 @@ A non-empty `kit_minimum` means the endpoint returns **426** to any client below
 1. Is the embedding server responding, **from inside the container** as well as from the host? See the entry below.
 2. Are new topics being embedded, or did the plugin stop? See "New topics are not getting embedded" below. Note that `ai_posts_embeddings` is expected to be empty; look at `ai_topics_embeddings`.
 3. Is the similarity floor set too high for the traffic?
-4. Does the agent have any categories in its opt-in list? The default is empty, which means nothing.
+4. Is the post's category on the agent's `Categories to skip:` line? That line is an opt-out, so an empty one excludes nothing and a named category is never scored.
 
 ### An agent posted the same thing twice
 

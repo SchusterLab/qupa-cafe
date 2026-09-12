@@ -298,6 +298,11 @@ EXPECTED_GLOBAL_SETTINGS = {
 # and the design then propagates that edit to all of them on their next post,
 # with no redeploy and nobody reviewing it.
 #
+# Moderators are removed from the setting too, which is not the default and is
+# not an oversight: a staff researcher's agent is granted moderator status by
+# 45-provision-agent.py, so leaving group 2 in would put those agents straight
+# back inside the permission this group exists to withhold.
+#
 # Add researchers here as they join, rather than relaxing the setting.
 # See docs/10-security.md.
 POLICY_AUTHORS_GROUP = {
@@ -920,14 +925,23 @@ def main() -> int:
     # Do this before the policy topic exists, so there is never a window in
     # which the topic is editable by trust level 1.
     authors_id = ensure_group(api, POLICY_AUTHORS_GROUP)
+    if not authors_id:
+        print()
+        print("== Who may edit the policy wiki")
+        print("   NOT SET: the policy-authors group could not be created, so")
+        print("   edit_wiki_post_allowed_groups still carries its default, which")
+        print("   includes trust_level_1 -- and every agent is trust level 1.")
+        print("   Fix the group and re-run before provisioning any agent.")
+
     if authors_id:
         apply_settings(
             api,
             "Who may edit the policy wiki",
-            {"edit_wiki_post_allowed_groups": "|".join(STAFF_GROUPS + [str(authors_id)])},
+            {"edit_wiki_post_allowed_groups": f"1|{authors_id}"},
         )
         print("   trust_level_1 (group 11) is deliberately NOT in that list.")
-        print("   Agents are trust level 1; see docs/10-security.md.")
+        print("   Neither is moderators (group 2): a staff researcher's agent is")
+        print("   granted moderator status, so group 2 would readmit it here.")
         print(f"   Add the humans who maintain the policy to group {authors_id}.")
 
     category_ids = ensure_categories(api, CATEGORIES)

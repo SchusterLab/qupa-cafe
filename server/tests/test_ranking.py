@@ -14,23 +14,34 @@ module level. The agent kit has no such dependency.
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import ranking  # noqa: E402
 from ranking import (  # noqa: E402
+    KIT_VERSION_HEADER,
+    LEGACY_KIT_VERSION_HEADER,
     Agent,
     Config,
     Decision,
+    Handler,
     KeyChecker,
     KitVersions,
+    Ranker,
     State,
+    embedding_limit,
     older_than,
     parse_agents,
     release_tuple,
+    report_profile_length,
+    token_count,
 )
 
 
@@ -44,10 +55,10 @@ def post(number: int, raw: str) -> dict:
 WELL_FORMED = """\
 **Researcher:** Yoshiki Sunada
 **Agent account:** @yoshi-agent
-**Categories:** Research, Meta
 **Watching for:** Circuit QED, dispersive readout, and anything about
 coupling a transmon to a resonator.
 **Not interested in:** Cosmology.
+**Categories to skip:** Site Feedback, Meta
 """
 
 
@@ -58,7 +69,9 @@ def test_a_well_formed_profile_parses():
     agent = agents[0]
     assert agent.username == "yoshi-agent"
     assert agent.researcher == "Yoshiki Sunada"
-    assert agent.categories == ["Research", "Meta"]
+    # Folded to lower case, so that a profile naming "site feedback" matches
+    # the Site Feedback category rather than silently matching nothing.
+    assert agent.skip_categories == ["site feedback", "meta"]
     assert "dispersive readout" in agent.interests
     assert agent.not_interested == "Cosmology."
 
@@ -87,28 +100,54 @@ def test_a_profile_with_no_account_is_skipped_not_fatal():
 
 
 def test_a_profile_with_no_interests_is_skipped():
-    broken = "**Agent account:** @someone\n**Categories:** Research\n"
+    broken = "**Agent account:** @someone\n**Categories to skip:** Meta\n"
     agents = parse_agents([post(1, "t"), post(2, broken)])
     assert agents == []
 
 
-def test_no_categories_means_no_categories():
-    """Empty means nothing, not everything.
+def test_naming_no_categories_skips_none_of_them():
+    """The line is an opt-out, so saying nothing means every category.
 
-    This is the category opt-in guardrail, and getting the default backwards
-    would subscribe every agent to the whole forum.
+    Getting this default backwards is the difference between an agent that is
+    scored everywhere and one that is scored nowhere, and neither errors.
     """
-    without = WELL_FORMED.replace("**Categories:** Research, Meta\n", "")
+    without = WELL_FORMED.replace("**Categories to skip:** Site Feedback, Meta\n", "")
     agents = parse_agents([post(1, "t"), post(2, without)])
 
-    assert agents[0].categories == []
+    assert agents[0].skip_categories == []
 
 
 def test_categories_split_on_commas_and_semicolons():
-    variant = WELL_FORMED.replace("Research, Meta", "Research; Meta ; Policy")
+    variant = WELL_FORMED.replace("Site Feedback, Meta", "Site Feedback; Meta ; Policy")
     agents = parse_agents([post(1, "t"), post(2, variant)])
 
-    assert agents[0].categories == ["Research", "Meta", "Policy"]
+    assert agents[0].skip_categories == ["site feedback", "meta", "policy"]
+
+
+def test_the_replaced_field_is_not_read_as_exclusions(caplog):
+    """A profile still carrying `Categories:` listed categories to INCLUDE.
+
+    Reading that list as exclusions would invert exactly what its researcher
+    asked for, so it is ignored and reported instead.
+    """
+    legacy = WELL_FORMED.replace(
+        "**Categories to skip:** Site Feedback, Meta", "**Categories:** Research, Meta"
+    )
+    agents = parse_agents([post(1, "t"), post(2, legacy)])
+
+    assert agents[0].skip_categories == []
+    assert "no longer read" in caplog.text
+
+
+def test_both_fields_present_prefers_the_current_one(caplog):
+    both = WELL_FORMED.replace(
+        "**Categories to skip:** Site Feedback, Meta",
+        "**Categories:** Research\n**Categories to skip:** Site Feedback",
+    )
+    agents = parse_agents([post(1, "t"), post(2, both)])
+
+    assert agents[0].skip_categories == ["site feedback"]
+    assert "no longer read" not in caplog.text
 
 
 def test_blockquoted_profiles_parse():
@@ -444,3 +483,466 @@ def test_the_key_itself_is_not_kept():
     checker.verify("yoshi-agent", "right-key")
 
     assert "right-key" not in str(checker._seen)
+
+
+def test_a_floor_above_the_published_version_is_ignored():
+    """A floor nobody can satisfy refuses everybody, so it is not honoured.
+
+    An operator who sets a minimum above the newest published release has asked
+    for every agent on the forum to be turned away, including one that upgraded
+    a minute ago. Nothing errors, so the symptom is a forum where nothing
+    wakes.
+    """
+    kit = KitVersions(Config(kit_minimum="0.5.0"))
+    kit._latest = "0.3.0"
+    kit._checked_at = 1e18
+
+    assert kit.effective_minimum() == ""
+    # And the client that upgraded a minute ago is served rather than refused.
+    assert kit.verdict("0.3.0") is None
+
+
+def test_a_floor_at_the_published_version_is_still_enforced():
+    """Ignoring an impossible floor must not ignore an aggressive one."""
+    kit = KitVersions(Config(kit_minimum="0.3.0"))
+    kit._latest = "0.3.0"
+    kit._checked_at = 1e18
+
+    assert kit.effective_minimum() == "0.3.0"
+    assert kit.verdict("0.2.0")["refused"] is True
+    assert kit.verdict("0.3.0") is None
+
+
+def test_an_unknown_published_version_leaves_the_floor_alone():
+    """A PyPI outage must not quietly disable a deliberate floor."""
+    kit = KitVersions(Config(kit_minimum="0.5.0"))
+    kit._latest = None
+    kit._checked_at = 1e18
+
+    assert kit.effective_minimum() == "0.5.0"
+    assert kit.verdict("0.4.0")["refused"] is True
+
+
+def test_the_complaint_throttle_is_bounded():
+    """Its keys come from a request header, so it cannot grow without limit."""
+    kit = KitVersions(Config())
+
+    for n in range(KitVersions.COMPLAINT_KEYS * 3):
+        kit._complain_once(f"refused:{n}")
+
+    assert len(kit._complained) <= KitVersions.COMPLAINT_KEYS
+
+
+# ------------------------------------------ the version gate over real HTTP
+
+
+class StubRanker:
+    """Enough Ranker for the handler. Nothing is pending, which is not the
+    point of these tests."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.agents: list[Agent] = []
+
+    def pending_for(self, agent: str) -> list[dict]:
+        return []
+
+    def budget_for(self, agent: str) -> dict:
+        return {}
+
+
+class StubKeys:
+    """A key check that would pass, so a refusal cannot come from here."""
+
+    def verify(self, agent: str, presented: str) -> bool:
+        return True
+
+
+@pytest.fixture
+def endpoint():
+    """The real Handler, over real HTTP, with a floor of 0.4.0 in force."""
+    import threading
+    from http.server import HTTPServer
+
+    config = Config(kit_minimum="0.4.0")
+    kit = KitVersions(config)
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    Handler.ranker = StubRanker(config)
+    Handler.kit = kit
+    Handler.keys = StubKeys()
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    yield f"http://127.0.0.1:{server.server_port}"
+
+    server.shutdown()
+    server.server_close()
+
+
+def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
+    import json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(f"{base}/wake?agent=yoshi-agent", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.load(exc)
+
+
+def test_a_client_too_old_to_authenticate_is_still_told_its_kit_is_too_old(endpoint):
+    """Kit 0.1.0 sends no credential, having no fallback to the api key.
+
+    A bare 401 is reported by that client as the endpoint being unavailable, so
+    a researcher two releases behind would be told their forum is broken.
+    Assessing the version first is what puts the upgrade message within reach
+    of the client that most needs it.
+    """
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.1.0"})
+
+    assert status == 426
+    assert payload["upgrade"]["refused"] is True
+    assert payload["upgrade"]["reported"] == "0.1.0"
+    assert "pip install --upgrade" in payload["upgrade"]["advice"]
+
+
+def test_the_legacy_header_is_still_read(endpoint):
+    """Releases up to 0.3.0 send only the legacy name. A server blind to it
+    would classify every one as 'reports no version', which is served, so
+    nothing would surface the gap."""
+    status, payload = wake(endpoint, {LEGACY_KIT_VERSION_HEADER: "0.1.0"})
+
+    assert status == 426
+    assert payload["upgrade"]["reported"] == "0.1.0"
+
+
+def test_a_current_client_with_a_credential_is_served(endpoint):
+    status, payload = wake(
+        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
+    )
+
+    assert status == 200
+    assert payload["agent"] == "yoshi-agent"
+    assert "upgrade" not in payload
+
+
+def test_a_current_client_with_no_credential_is_still_refused_for_the_credential(endpoint):
+    """Moving the version check earlier must not have made the key optional."""
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
+
+    assert status == 401
+
+
+def test_health_reports_the_floor_it_is_actually_enforcing(endpoint):
+    import json
+    import urllib.request
+
+    with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
+        payload = json.load(response)
+
+    assert payload["kit_minimum"] == "0.4.0"
+    assert payload["kit_minimum_in_force"] == "0.4.0"
+
+
+def test_health_shows_an_impossible_floor_as_not_in_force():
+    """The two fields differing is the whole diagnosis, so /health has both."""
+    config = Config(kit_minimum="0.5.0")
+    kit = KitVersions(config)
+    kit._latest = "0.3.0"
+    kit._checked_at = 1e18
+
+    assert config.kit_minimum == "0.5.0"
+    assert kit.effective_minimum() == ""
+
+
+def test_an_empty_field_does_not_reach_onto_the_next_line():
+    """`Categories to skip:` is meant to be left empty, and sits last.
+
+    A pattern matching any whitespace after the label would consume the line
+    break and take whatever the author wrote next, so a sign-off underneath an
+    empty field would become an exclusion list with nothing to show it.
+    """
+    profile = (
+        "**Researcher:** Someone\n"
+        "**Agent account:** @someone-agent\n"
+        "**Watching for:** superconducting qubits and dispersive readout.\n"
+        "**Not interested in:** Cosmology.\n"
+        "**Categories to skip:**\n"
+        "\n"
+        "Thanks for reading!\n"
+    )
+    agents = parse_agents([post(1, "template"), post(2, profile)])
+
+    assert agents[0].skip_categories == []
+    assert agents[0].researcher == "Someone"
+
+
+def test_the_skip_line_parses_at_the_end_of_the_template():
+    """It is the last field, so nothing follows it to terminate the match."""
+    agents = parse_agents([post(1, "template"), post(2, WELL_FORMED)])
+
+    assert agents[0].skip_categories == ["site feedback", "meta"]
+    assert agents[0].not_interested == "Cosmology."
+
+
+# ------------------------------------------------- the embedding input limit
+
+
+class StubEmbedder(BaseHTTPRequestHandler):
+    """Just enough of the embedding server to answer /info and /tokenize.
+
+    ``tokens_per_call`` is what /tokenize claims, so a test can put a profile
+    over the limit without composing one.
+    """
+
+    max_input_length: int | None = 512
+    tokens_per_call = 10
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/info" and type(self).max_input_length is not None:
+            self._send(200, {"max_input_length": type(self).max_input_length,
+                             "model_id": "stub"})
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        if self.path == "/tokenize":
+            self._send(200, [[{"id": i} for i in range(type(self).tokens_per_call)]])
+        else:
+            self._send(404, {"error": "not found"})
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.fixture
+def embedder():
+    import threading
+    from http.server import HTTPServer
+
+    StubEmbedder.max_input_length = 512
+    StubEmbedder.tokens_per_call = 10
+
+    server = HTTPServer(("127.0.0.1", 0), StubEmbedder)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    # The limit is remembered across calls, so each test starts unasked.
+    ranking._INPUT_LIMIT = None
+
+    yield Config(tei_url=f"http://127.0.0.1:{server.server_port}"), StubEmbedder
+
+    server.shutdown()
+    server.server_close()
+    ranking._INPUT_LIMIT = None
+
+
+def profile(text: str) -> Agent:
+    return Agent(
+        username="yoshi-agent",
+        researcher="Yoshiki Sunada",
+        skip_categories=[],
+        interests=text,
+    )
+
+
+def test_the_limit_is_read_from_the_server(embedder):
+    config, _ = embedder
+    assert embedding_limit(config) == 512
+
+
+def test_the_limit_is_asked_for_once(embedder):
+    config, stub = embedder
+    assert embedding_limit(config) == 512
+    # A server that stopped answering must not change the remembered answer.
+    stub.max_input_length = None
+    assert embedding_limit(config) == 512
+
+
+def test_a_server_that_will_not_say_is_not_asked_repeatedly(embedder):
+    config, stub = embedder
+    stub.max_input_length = None
+
+    assert embedding_limit(config) is None
+    # Now answering would still not be consulted: the miss is remembered too,
+    # so this cannot become a request per profile.
+    stub.max_input_length = 512
+    assert embedding_limit(config) is None
+
+
+def test_token_count_asks_the_tokeniser(embedder):
+    config, stub = embedder
+    stub.tokens_per_call = 37
+
+    assert token_count("anything", config) == 37
+
+
+def test_a_profile_over_the_limit_is_warned_about(embedder, caplog):
+    """Truncation is silent at the server, so this is the only notice of it."""
+    config, stub = embedder
+    stub.tokens_per_call = 604
+
+    with caplog.at_level(logging.WARNING):
+        report_profile_length(profile("long"), config)
+
+    assert "604 tokens against a 512-token limit" in caplog.text
+    assert "Not interested in" in caplog.text
+
+
+def test_a_profile_inside_the_limit_is_reported_not_warned(embedder, caplog):
+    config, stub = embedder
+    stub.tokens_per_call = 200
+
+    with caplog.at_level(logging.INFO):
+        report_profile_length(profile("short"), config)
+
+    assert "200 of 512 tokens" in caplog.text
+    assert "WARNING" not in caplog.text
+
+
+def test_a_tokeniser_that_fails_says_nothing_and_breaks_nothing(embedder, caplog):
+    """Never block a profile over a report about it."""
+    config, _ = embedder
+    unreachable = Config(tei_url="http://127.0.0.1:1")
+
+    with caplog.at_level(logging.INFO):
+        report_profile_length(profile("x"), unreachable)
+
+    assert "tokens" not in caplog.text
+
+
+# ------------------------------------- telling a researcher about truncation
+
+
+class StubForumWriter:
+    """Records private messages instead of sending them."""
+
+    def __init__(self, known=("yoshi",), refuse=False):
+        self.known = set(known)
+        self.refuse = refuse
+        self.sent = []
+
+    def user(self, username):
+        return {"username": username} if username in self.known else None
+
+    def private_message(self, recipient, title, raw):
+        if self.refuse:
+            return False
+        self.sent.append({"to": recipient, "title": title, "raw": raw})
+        return True
+
+
+def a_ranker(tmp_path, forum, interests_topic_id=11):
+    """A Ranker with its forum and state swapped, and nothing else built."""
+    config = Config(
+        state_db=str(tmp_path / "state.sqlite3"),
+        score_log=str(tmp_path / "scores.jsonl"),
+        interests_topic_id=interests_topic_id,
+        forum_url="https://forum.example.com",
+    )
+    ranker = Ranker.__new__(Ranker)
+    ranker.config = config
+    ranker.state = State(config.state_db)
+    ranker.forum = forum
+    ranker.agents = []
+    ranker.agents_hash = ""
+    return ranker
+
+
+def over_limit_agent(text="x" * 40):
+    return Agent(
+        username="yoshi-agent",
+        researcher="Yoshiki Sunada",
+        skip_categories=[],
+        interests=text,
+    )
+
+
+def test_the_researcher_is_told_once(tmp_path):
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+    agent = over_limit_agent()
+
+    ranker.notify_truncated(agent, 604, 512)
+    ranker.notify_truncated(agent, 604, 512)
+
+    assert len(forum.sent) == 1
+    message = forum.sent[0]
+    assert message["to"] == "yoshi"
+    assert "604 tokens" in message["raw"]
+    assert "512" in message["raw"]
+    assert "92" in message["raw"]  # 604 - 512, the tokens dropped
+    assert "Not interested in" in message["raw"]
+    assert "/t/11" in message["raw"]
+
+
+def test_an_edit_that_is_still_too_long_is_told_again(tmp_path):
+    """Keyed on the profile, so a fix-and-rebreak is heard about twice."""
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+
+    ranker.notify_truncated(over_limit_agent("first version"), 600, 512)
+    ranker.notify_truncated(over_limit_agent("second version"), 590, 512)
+
+    assert len(forum.sent) == 2
+
+
+def test_a_notice_survives_a_restart(tmp_path):
+    forum = StubForumWriter()
+    agent = over_limit_agent()
+
+    a_ranker(tmp_path, forum).notify_truncated(agent, 604, 512)
+    # A second Ranker over the same state database is a restart.
+    a_ranker(tmp_path, forum).notify_truncated(agent, 604, 512)
+
+    assert len(forum.sent) == 1
+
+
+def test_an_unidentifiable_researcher_is_logged_not_guessed_at(tmp_path, caplog):
+    """A truncated agent username cannot be inverted to its researcher."""
+    forum = StubForumWriter(known=())
+    ranker = a_ranker(tmp_path, forum)
+
+    with caplog.at_level(logging.WARNING):
+        ranker.notify_truncated(over_limit_agent(), 604, 512)
+
+    assert forum.sent == []
+    assert "nobody to tell" in caplog.text
+
+
+def test_a_refused_send_is_not_recorded_as_sent(tmp_path):
+    """A key without posts#create must not silence the next attempt."""
+    forum = StubForumWriter(refuse=True)
+    ranker = a_ranker(tmp_path, forum)
+    agent = over_limit_agent()
+
+    ranker.notify_truncated(agent, 604, 512)
+    assert ranker.state.notice_sent("profile-truncated", "yoshi-agent", "") is False
+
+    forum.refuse = False
+    ranker.notify_truncated(agent, 604, 512)
+    assert len(forum.sent) == 1
+
+
+def test_researcher_for_requires_the_account_to_exist(tmp_path):
+    ranker = a_ranker(tmp_path, StubForumWriter(known=("yoshi",)))
+
+    assert ranker.researcher_for("yoshi-agent") == "yoshi"
+    assert ranker.researcher_for("nobody-agent") is None
+    assert ranker.researcher_for("not-an-agent-name") is None
+    assert ranker.researcher_for("-agent") is None
