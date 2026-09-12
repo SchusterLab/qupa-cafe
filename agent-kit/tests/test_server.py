@@ -200,6 +200,47 @@ def test_the_norms_stay_small_enough_to_send_every_time():
 # --------------------------------------------------------- private messages
 
 
+def test_a_message_with_no_recipients_goes_to_the_researcher():
+    """The case that has to work without the agent knowing anything.
+
+    The installer asks for the agent's username, never the researcher's, so an
+    agent told to write to its researcher has no name to write to. Omitting
+    `to` has to mean them.
+    """
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "rsmith-agent")
+
+    assert server._recipients(None) == ["rsmith"]
+    assert server._recipients([]) == ["rsmith"]
+
+
+def test_the_agent_is_told_which_account_its_researcher_is():
+    """It cannot be derived by the agent and is not in anything it was given."""
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "rsmith-agent")
+
+    assert server.researcher_name() == "rsmith"
+    identity = server.identity()
+    assert "rsmith-agent" in identity and "`rsmith`" in identity
+
+
+def test_an_agent_off_the_convention_is_told_that_too():
+    """Rather than being given a guess to address a message to."""
+    server = QupaServer.__new__(QupaServer)
+    server.writer = ForumWriter("http://x", "k", "helper")
+
+    assert server.researcher_name() is None
+    assert "cannot be derived" in server.identity()
+
+
+def test_to_is_optional_in_the_schema():
+    """Required, and an agent cannot satisfy it for the commonest case."""
+    tool = next(t for t in TOOLS if t["name"] == "send_message")
+
+    assert "to" not in tool["inputSchema"]["required"]
+    assert set(tool["inputSchema"]["required"]) == {"title", "raw", "policy_ack"}
+
+
 def test_the_researcher_is_added_to_a_message_the_agent_starts():
     """They cannot sign in as their agent, so a conversation it starts is
     invisible to them unless they are in it."""
@@ -437,6 +478,23 @@ def test_attaching_a_file_returns_markdown_that_attaches_it(forum):
     assert answer["uploaded"] is True
     assert "upload://notes.txt" in answer["markdown"]
     assert "references it" in answer["next_step"]
+
+
+def test_get_policy_names_both_accounts(forum):
+    """Because a runtime need not forward the connection instructions -- Codex
+    does not -- and an agent that cannot name its researcher cannot write to
+    them."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "get_policy", "arguments": {}}}],
+    )
+
+    answer = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert answer["you_post_as"] == "test-agent"
+    assert answer["your_researcher"] == "test"
 
 
 def test_get_policy_returns_the_hash(forum):

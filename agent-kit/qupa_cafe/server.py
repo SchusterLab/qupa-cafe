@@ -578,6 +578,11 @@ class QupaServer:
                     "policy": policy.text,
                     "policy_hash": policy.hash,
                     "topic_id": policy.topic_id,
+                    # Here as well as in the connection instructions, because a
+                    # runtime may not forward those -- Codex does not -- and an
+                    # agent that cannot name its researcher cannot write to them.
+                    "you_post_as": self.writer.api_username,
+                    "your_researcher": self.researcher_name(),
                     "note": (
                         "Pass policy_hash as policy_ack on every write. If the policy is "
                         "edited, your next write is refused and you should call this again."
@@ -591,7 +596,11 @@ class QupaServer:
 
             recipients = self._recipients(arguments.get("to"))
             if not recipients:
-                raise ValueError("send_message needs at least one recipient in `to`.")
+                raise ValueError(
+                    "send_message found nobody to write to: `to` was empty and the "
+                    "researcher behind this agent cannot be derived from its account "
+                    "name. Name the recipient explicitly."
+                )
 
             supplied = arguments.get("external_id")
             external_id = (
@@ -677,6 +686,10 @@ class QupaServer:
 
         raise ValueError(f"Unknown tool: {name}")
 
+    def instructions(self) -> str:
+        """What the client is told on connecting, with this agent's accounts in it."""
+        return f"{SERVER_INSTRUCTIONS}{chr(10)}{chr(10)}{self.identity()}"
+
     # ------------------------------------------------------------ attachments
 
     def read_attachment(self, reference: str) -> list[dict]:
@@ -753,6 +766,45 @@ class QupaServer:
             indent=2,
         )
 
+    def researcher_name(self) -> str | None:
+        """The account this agent works for, or None if it cannot be derived.
+
+        `45-provision-agent.py` builds the agent's account as
+        `<researcher>-agent`, and that convention is the only link between the
+        two: nothing on the forum records the pairing, and the installer asks
+        for the agent's username rather than the researcher's -- so this is
+        what the agent has instead of being told.
+
+        None for a name off the convention, which happens when a researcher's
+        name was too long for the username limit. A guess would address a
+        message to somebody who may not exist.
+        """
+        suffix = "-agent"
+        agent = self.writer.api_username
+        if not agent.endswith(suffix):
+            return None
+        return agent[: -len(suffix)] or None
+
+    def identity(self) -> str:
+        """The two account names, as a sentence for the agent to read.
+
+        Mechanical, and not otherwise knowable: an agent can see its own
+        account name in the tools it is given, and has no way at all to learn
+        its researcher's.
+        """
+        researcher = self.researcher_name()
+        if researcher:
+            return (
+                f"You post as `{self.writer.api_username}`, and the researcher you work "
+                f"for is `{researcher}`. A message you start reaches them whether or not "
+                f"you name them."
+            )
+        return (
+            f"You post as `{self.writer.api_username}`. Which account belongs to the "
+            f"researcher you work for cannot be derived from that, so name them "
+            f"explicitly when you write to them."
+        )
+
     def _recipients(self, requested: Any) -> list[str]:
         """Who the message goes to, with the researcher always among them.
 
@@ -774,13 +826,9 @@ class QupaServer:
 
         recipients = [name for name in names if name]
 
-        suffix = "-agent"
-        agent = self.writer.api_username
-        if agent.endswith(suffix):
-            researcher = agent[: -len(suffix)]
-            lowered = {name.lower() for name in recipients}
-            if researcher and researcher.lower() not in lowered:
-                recipients.append(researcher)
+        researcher = self.researcher_name()
+        if researcher and researcher.lower() not in {name.lower() for name in recipients}:
+            recipients.append(researcher)
 
         return recipients
 
@@ -849,9 +897,10 @@ TOOLS.append(
             "For reaching somebody who has not posted -- asking your researcher a "
             "question, or raising something with another agent away from a thread. "
             "To continue a message you are already in, use reply with its topic id: a "
-            "private message is a topic. Your researcher is added to every message you "
-            "start, because they cannot sign in as you and would not otherwise see it. "
-            "The policy governs what is worth sending."
+            "private message is a topic. Leave `to` out to write to your researcher, "
+            "who is added to every message you start in any case, because they cannot "
+            "sign in as you and would not otherwise see it. get_policy returns both "
+            "account names if you need them. The policy governs what is worth sending."
         ),
         "inputSchema": {
             "type": "object",
@@ -860,8 +909,8 @@ TOOLS.append(
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Forum usernames. Your researcher is included whether or not "
-                        "you name them."
+                        "Forum usernames. Optional: omitted, the message goes to your "
+                        "researcher, who is included whether or not you name them."
                     ),
                 },
                 "title": {"type": "string", "description": "Subject line."},
@@ -869,7 +918,7 @@ TOOLS.append(
                 "policy_ack": {"type": "string", "description": "The hash from get_policy."},
                 "external_id": {"type": "string", "description": "Idempotency key."},
             },
-            "required": ["to", "title", "raw", "policy_ack"],
+            "required": ["title", "raw", "policy_ack"],
         },
     }
 )
@@ -1029,7 +1078,7 @@ def main() -> int:
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                    "instructions": SERVER_INSTRUCTIONS,
+                    "instructions": server.instructions(),
                 },
             )
 

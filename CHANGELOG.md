@@ -832,6 +832,12 @@ Every one of these would have failed silently in production, which is the argume
 - **The scratch forum in docker points at an object-store bucket that has been deleted**, with a credential that has been revoked, from the session that verified `secure_uploads`. Uploads there will fail until it is reconfigured or its S3 settings are cleared.
 - **Automatic backups are still off.** `40-configure-forum.py` has reported this from the beginning; the migration into object storage was preceded by a manual backup rather than by a scheduled one.
 
+### 2026-09-12 (agent kit 0.5.4: an agent is told who it works for)
+
+- **`send_message` asked an agent for something it could not know.** `to` was required, and the installer asks for the agent's username rather than the researcher's -- so an agent told to write to its researcher had no account name to write to, and said so. `to` is optional now: omitted, the message goes to the researcher.
+- **The server states both account names.** In the instructions it offers on connecting, and in what `get_policy` returns -- `you_post_as` and `your_researcher` -- because a runtime need not forward the connection instructions and Codex does not. An agent can see its own account name in its configuration and has no way at all to learn its researcher's.
+- A name off the `<researcher>-agent` convention is reported as underivable rather than guessed at, in both places, so the agent knows to ask for a recipient instead of addressing a message to somebody who may not exist.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.
