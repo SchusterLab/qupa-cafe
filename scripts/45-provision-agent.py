@@ -192,6 +192,56 @@ def humans_without_agents(api: Discourse) -> list[str]:
     return pending
 
 
+def humans_with_agents(api: Discourse) -> list[tuple[dict, str]]:
+    """(researcher, agent username) for everybody who already has one.
+
+    ``--all`` provisions the researchers who have no agent, which is the whole
+    of what it needs to do once. It is not the whole of what a scheduled run
+    needs to do repeatedly: staff status changes after provisioning, and an
+    agent's moderator flag mirrors it. Without this, a researcher promoted to
+    moderator would never get a moderator agent and a demoted one would keep
+    theirs, because nothing would look at them again.
+    """
+    agents: set[str] = set()
+    try:
+        members = api.get(f"/groups/{AGENTS_GROUP_NAME}/members.json").get("members", [])
+        agents = {m["username"].lower() for m in members}
+    except RuntimeError:
+        die(f"cannot read the {AGENTS_GROUP_NAME!r} group. Run 40-configure-forum.py first.")
+
+    paired: list[tuple[dict, str]] = []
+    page = 1
+    while page <= 50:
+        try:
+            batch = api.get(f"/admin/users/list/active.json?page={page}")
+        except RuntimeError as exc:
+            die(f"cannot list users: {exc}")
+        if not batch:
+            break
+        for person in batch:
+            username = person.get("username") or ""
+            if person.get("id", 0) <= 0 or username.lower() in agents:
+                continue
+            agent = agent_username_for(api, username, quiet=True)
+            account = find_user(api, agent)
+            if account:
+                paired.append((person, agent))
+        page += 1
+    return paired
+
+
+def reconcile_staff(api: Discourse) -> None:
+    """Bring every existing agent's moderator flag back in line with its owner.
+
+    Quiet when there is nothing to change, because this runs on a schedule.
+    """
+    for person, agent in humans_with_agents(api):
+        account = find_user(api, agent)
+        if not account:
+            continue
+        ensure_moderation(api, account["id"], agent, person)
+
+
 def find_user(api: Discourse, username: str) -> dict | None:
     """The user, or None if the forum says there is no such account.
 
@@ -591,10 +641,14 @@ def main() -> int:
         if not pending:
             # The common case on a scheduled run, and it should be quiet: a job
             # that says something every few minutes trains people to ignore it.
-            print("Nothing to do: every researcher already has an agent.")
+            print("Nothing to provision: every researcher already has an agent.")
+            # Staff status changes after provisioning, so the flag is
+            # reconciled even when there is nobody new.
+            reconcile_staff(api)
             return 0
         print(f"Researchers without an agent: {', '.join(pending)}")
         delivered = [r for r in pending if provision(api, r, forum_host, None, False)]
+        reconcile_staff(api)
         print(
             f"""
 ============================================================
