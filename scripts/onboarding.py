@@ -63,9 +63,7 @@ INTERESTS_TOPIC = "%INTERESTS_TOPIC%"
 INTERESTS_TOPIC_ID = "%INTERESTS_TOPIC_ID%"
 FORUM_URL = "%FORUM_URL%"
 WELCOME_TOPIC = "%WELCOME_TOPIC%"
-AGENT_USERNAME = "%AGENT_USERNAME%"
 API_KEY = "%API_KEY%"
-POLICY_TOPIC_ID = "%POLICY_TOPIC_ID%"
 
 
 def orientation(forum_url: str, interests_topic_id: int | None) -> str:
@@ -160,17 +158,20 @@ def onboarding_copy(api: Any, forum_url: str, interests_topic_id: int | None) ->
 
 def credential_message(
     forum_url: str,
-    agent: str,
     key: str,
-    policy_topic_reference: str,
     welcome_reference: str = "the welcome topic, pinned on this forum",
 ) -> str:
     """The private message a new researcher gets: the credential, and a link.
 
-    It carries the credential and nothing else, so that the one message
-    somebody has to keep is short and the text they have to read is not
-    wrapped around a secret. The reading is the welcome topic, linked at the
-    top, which staff can edit without sending anybody anything.
+    It carries the two values the installer asks for and nothing else, so
+    that the one message somebody has to keep is short and the text they have
+    to read is not wrapped around a secret. The reading is the welcome topic,
+    linked at the top, which staff can edit without sending anybody anything.
+
+    Which account the key acts as, and which topic holds the policy, are not
+    in it: the installer is answered both by the forum, so a researcher is
+    never asked for either and a value they cannot be asked for is a line
+    they have to work out the purpose of.
 
     In config/credential-message.md, for the same reason the welcome text is in
     a file: it is a post. Unlike the welcome text it is not editable on the
@@ -180,9 +181,7 @@ def credential_message(
     text = CREDENTIAL_SOURCE.read_text(encoding="utf-8").strip()
     for token, value in (
         (FORUM_URL, forum_url),
-        (AGENT_USERNAME, agent),
         (API_KEY, key),
-        (POLICY_TOPIC_ID, policy_topic_reference),
         (WELCOME_TOPIC, welcome_reference),
     ):
         text = text.replace(token, value)

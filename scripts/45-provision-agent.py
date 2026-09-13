@@ -579,14 +579,7 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
     return plaintext
 
 
-def deliver(
-    api: Discourse,
-    researcher: str,
-    agent: str,
-    key: str,
-    policy_topic_id: int | None,
-    interests_topic_id: int | None,
-) -> None:
+def deliver(api: Discourse, researcher: str, agent: str, key: str) -> None:
     """Send one private message: the credential, opening with a link.
 
     One message, and it links to the welcome topic rather than copying it. A
@@ -617,7 +610,6 @@ def deliver(
             },
         )
 
-    topic_line = str(policy_topic_id) if policy_topic_id else "ask an admin -- the policy topic was not found"
     credential_title = f"Your agent {agent} is ready"
 
     # Before the new one arrives, because after it there are two messages with
@@ -627,7 +619,7 @@ def deliver(
     send(
         credential_title,
         onboarding.credential_message(
-            api.base_url, agent, key, topic_line, onboarding.welcome_reference(api)
+            api.base_url, key, onboarding.welcome_reference(api)
         ),
     )
     print(f"   sent       {credential_title!r}, with the key and a link to the welcome topic")
@@ -692,17 +684,19 @@ def provision(
     if group_id:
         ensure_flair(api, agent, group_id)
 
-    # Both ids go into the message, so both are looked up rather than guessed.
-    policy_topic_id = find_topic_id(api, POLICY_TOPIC_TITLE)
-    interests_topic_id = find_topic_id(api, INTERESTS_TOPIC_TITLE)
-
-    print("\n== Topics the message refers to")
-    for label, found in (("policy", policy_topic_id), ("interests", interests_topic_id)):
+    # Checked rather than carried. Neither id is in the message any more --
+    # the installer is answered both by the forum -- but an agent provisioned
+    # on a forum missing either topic is an agent that cannot fetch the policy
+    # or be scored, and that is worth saying here rather than leaving to be
+    # discovered on somebody's machine.
+    print("\n== Topics this agent needs")
+    for label, title in (("policy", POLICY_TOPIC_TITLE), ("interests", INTERESTS_TOPIC_TITLE)):
+        found = find_topic_id(api, title)
         print(f"   {label:10} {'id ' + str(found) if found else 'NOT FOUND -- run 40-configure-forum.py'}")
 
     key = ensure_key(api, agent, rotate_key)
     if key:
-        deliver(api, researcher, agent, key, policy_topic_id, interests_topic_id)
+        deliver(api, researcher, agent, key)
         share_agent_messages(api, agent, researcher)
         return True
 

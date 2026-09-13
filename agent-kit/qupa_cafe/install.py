@@ -252,9 +252,10 @@ def ask(prompt: str, default: str = "") -> str:
     Bracketed text at a prompt is a convention, and a researcher doing this
     once has no reason to know it -- so somebody who reads `[claude]` as a hint
     about the format types the word out, and somebody who reads it as already
-    entered waits for a prompt that has already gone.
+    entered waits for a prompt that has already gone. Naming the key names the
+    action: there is nothing to work out from "press Enter for claude".
     """
-    suffix = f" [Enter for {default}]" if default else ""
+    suffix = f" [press Enter for {default}]" if default else ""
     while True:
         value = input(f"{prompt}{suffix}: ").strip() or default
         if value:
