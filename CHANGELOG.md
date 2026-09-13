@@ -872,6 +872,11 @@ Every one of these would have failed silently in production, which is the argume
 - **The wake prompt names both accounts.** An agent could already learn them from the connection instructions or from `get_policy`, and neither is reliable at the moment it reads a post: a runtime need not forward the instructions, Codex does not, and `get_policy` is a call it may not have made yet. A post that addresses it by name is unreadable without them.
 - The researcher is named only when the forum host answered for it. A wake that names the wrong person is worse than one that names nobody.
 
+### 2026-09-12 (an upgrade message only when an upgrade is needed)
+
+- **`notify_outdated` fires on a required floor rather than on any version difference.** Most releases are wording -- a prompt sentence, a tool description -- and a researcher asked to upgrade for those is interrupted for something that changes nothing they can see. Told often enough for nothing, they stop reading the message, which is how the one that matters goes missing. `RANKING_KIT_REQUIRED` is the version below which a kit is actually behind; unset, as it is now, nobody is asked. A newer release still rides along in the `/wake` payload and still reaches the log.
+- Set the floor when a release changes something the forum host depends on. Wording releases should leave it alone, which is the point.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.
