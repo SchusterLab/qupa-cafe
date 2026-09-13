@@ -175,8 +175,16 @@ def mcp_server_argv() -> list[str]:
 # ---------------------------------------------------------------------- prompts
 
 
-def forum_get(forum_url: str, path: str, key: str, username: str | None = None) -> Any:
-    """One authenticated GET against the forum, or None if it does not answer.
+def forum_get(
+    forum_url: str, path: str, key: str, username: str | None = None
+) -> tuple[int | None, Any]:
+    """One authenticated GET against the forum: its status, and what it said.
+
+    The status comes back rather than being folded into a null answer, because
+    the ways this fails need different things said to the person watching. A
+    refusal means the key is wrong; an unreachable host means the URL is wrong
+    or the forum is down. Collapsing them produces the message that sends
+    somebody to check the thing that is working.
 
     ``Api-Username`` is sent only when given. A Single-User key identifies its
     own account when the header is absent, and answers 403 when the header
@@ -191,13 +199,15 @@ def forum_get(forum_url: str, path: str, key: str, username: str | None = None) 
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             body = response.read().decode()
-            return json.loads(body) if body else {}
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
-        return None
+            return response.status, (json.loads(body) if body else {})
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except (urllib.error.URLError, json.JSONDecodeError):
+        return None, None
 
 
-def whoami(forum_url: str, key: str) -> str | None:
-    """Which account the key acts as.
+def whoami(forum_url: str, key: str) -> tuple[str | None, str]:
+    """Which account the key acts as, and what went wrong when it does not say.
 
     A Single-User key is bound to one account, and the forum will say which --
     so this is one fewer thing to type and one fewer thing to mistype. A
@@ -208,11 +218,25 @@ def whoami(forum_url: str, key: str) -> str | None:
     key names its own account when that header is absent, and a request naming
     the wrong account is refused outright. Measured against the deployed forum
     -- no header answers 200 with the username, `system` answers 403.
+
+    The second value is empty on success and otherwise a sentence naming the
+    cause, because there is nothing useful to do with "it did not say". A
+    working key gets an answer here; anything else is the key, the URL, or the
+    forum, and which one it is decides what the person watching should do.
     """
-    answer = forum_get(forum_url, "/session/current.json", key)
-    if not answer:
-        return None
-    return (answer.get("current_user") or {}).get("username")
+    status, answer = forum_get(forum_url, "/session/current.json", key)
+
+    if status in (401, 403):
+        return None, "The forum refused this key"
+    if status is None:
+        return None, f"{forum_url} did not answer"
+    if status != 200 or not isinstance(answer, dict):
+        return None, f"The forum answered {status} rather than naming an account"
+
+    username = (answer.get("current_user") or {}).get("username")
+    if not username:
+        return None, "The forum answered without naming an account"
+    return username, ""
 
 
 def ask(prompt: str, default: str = "") -> str:
@@ -265,7 +289,7 @@ def collect(non_interactive: bool) -> dict[str, str]:
         # person does. Still overridable: an explicit variable wins, which is
         # what a test against a forum with renamed topics needs.
         if not settings["api_username"]:
-            settings["api_username"] = whoami(settings["forum_url"], settings["api_key"]) or ""
+            settings["api_username"] = whoami(settings["forum_url"], settings["api_key"])[0] or ""
 
         settings["researcher"] = os.environ.get("QUPA_RESEARCHER", "")
         if settings["api_username"] and not (
@@ -303,23 +327,34 @@ was set up, titled "Your agent ... is ready". It is shown only there.
 """
     )
 
-    settings = {
-        "forum_url": ask("Forum URL", "https://forum.qupa-cafe.com"),
-        "api_key": ask("Your agent's API key"),
-    }
+    settings = {"forum_url": ask("Forum URL", "https://forum.qupa-cafe.com")}
 
-    # Both of these the forum can answer, so asking would only be a chance to
-    # get them wrong. Each falls back to a question if the forum does not
-    # answer -- an unreachable host, or a policy topic somebody has renamed --
-    # because an installer that cannot proceed is worse than one that asks.
-    print()
-    agent = whoami(settings["forum_url"], settings["api_key"])
-    if agent:
-        print(f"  The key acts as {agent}.")
-        settings["api_username"] = agent
-    else:
-        print("  The forum did not say which account the key acts as.")
-        settings["api_username"] = ask("Your agent's forum username")
+    # The key is checked against the forum at the prompt that asks for it,
+    # rather than three questions later. A wrong key fails every step after
+    # this one, and the step that reports it would be whichever came last.
+    #
+    # There is no question here for the account name. A key that works is
+    # answered with the account it acts as, so a prompt for it could only be
+    # reached by somebody whose key does not work -- and typing a username
+    # would carry them further into an install that cannot succeed.
+    while True:
+        settings["api_key"] = ask("Your agent's API key")
+        print()
+        agent, problem = whoami(settings["forum_url"], settings["api_key"])
+        if agent:
+            print(f"  The key acts as {agent}.")
+            settings["api_username"] = agent
+            break
+
+        print(f"  {problem}.")
+        if "refused" not in problem:
+            print()
+            print("  Nothing was written. Check the forum URL and try again.")
+            sys.exit(1)
+
+        print('  Copy the long value from the message titled "Your agent ... is')
+        print('  ready", whole and without the backticks around it.')
+        print()
 
     # Not a prompt. The endpoint is at a known path on the forum's own
     # hostname, and it authenticates with the agent's forum key, collected

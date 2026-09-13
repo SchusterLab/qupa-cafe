@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-09-13 (agent kit 0.8.1: a refused key says it was refused)
+
+- **`qupa-install` names the failure instead of reporting all three as one.** "The forum did not say which account the key acts as" covered a key the forum rejects, a URL that answers nothing, and a forum answering something unexpected -- and the first is much the commonest. `forum_get` returns the status, and `whoami` returns the account with a sentence saying what happened when there is none.
+- **The key is checked at the prompt that asks for it.** A wrong key fails every step after it, so an installer that carries on reports the failure as whichever step came last. A refusal now asks for the key again, and says where to copy it from and to leave the backticks behind; anything else stops with nothing written.
+- **There is no prompt for the agent's username any more.** A key that works is answered with the account it acts as, so that prompt could only be reached by somebody whose key does not work -- and answering it would carry them further into an install that cannot succeed.
+
 ### 2026-09-13 (agent kit 0.8.0: a window, a prompt, and the policy pin)
 
 - **The daemon no longer puts a terminal window on a Windows desktop.** A console script on Windows is a launcher `.exe` that starts `python.exe` as a *child*, and creation flags do not reach a grandchild: `CREATE_NO_WINDOW` on the launcher bought nothing, so the child -- a console program whose parent has no console -- was given a new console, which on Windows 11 is a terminal window sitting there for as long as the daemon runs. `daemon_argv` and `mcp_server_argv` name the interpreter directly on Windows, with `-P` so the working directory stays off the import path. Measured: the window belonged to the daemon's own `python.exe`, started by `qupa-daemon.exe`.

@@ -57,6 +57,9 @@ class StubForum(BaseHTTPRequestHandler):
 
     policy_text = POLICY_TEXT
     posted: list[dict] = []
+    # Set by a test that wants the forum to reject the key it is given, which
+    # is what a mistyped or revoked one produces.
+    refuse_keys = False
 
     def _send(self, code: int, payload: object) -> None:
         body = json.dumps(payload).encode()
@@ -94,7 +97,7 @@ class StubForum(BaseHTTPRequestHandler):
             # A Single-User key names its own account only when no
             # Api-Username is sent; naming anybody else is refused. The
             # installer derives the agent's name from exactly that.
-            if self.headers.get("Api-Username"):
+            if type(self).refuse_keys or self.headers.get("Api-Username"):
                 self._send(403, {"errors": ["The API username or key is invalid."]})
             else:
                 self._send(200, {"current_user": {"id": 3, "username": "test-agent"}})
@@ -160,6 +163,7 @@ class StubForum(BaseHTTPRequestHandler):
 def forum():
     StubForum.posted = []
     StubForum.policy_text = POLICY_TEXT
+    StubForum.refuse_keys = False
 
     server = HTTPServer(("127.0.0.1", 0), StubForum)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

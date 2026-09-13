@@ -93,20 +93,43 @@ def test_the_agent_name_comes_from_the_key(forum):
     daemon that polls the wrong account's notifications and reports nothing."""
     url, _ = forum
 
-    assert install.whoami(url, "any-key") == "test-agent"
+    assert install.whoami(url, "any-key") == ("test-agent", "")
 
 
-def test_naming_an_account_is_refused_and_reported_as_unknown(forum):
+def test_naming_an_account_is_refused(forum):
     """Which is why the header is left off: a Single-User key names its own
     account only when nothing else is named."""
     url, _ = forum
 
-    assert install.forum_get(url, "/session/current.json", "k", "somebody") is None
+    status, _body = install.forum_get(url, "/session/current.json", "k", "somebody")
+
+    assert status == 403
 
 
-def test_a_forum_that_does_not_answer_derives_nothing(forum):
-    """So the installer asks instead of proceeding on a guess."""
-    assert install.whoami("http://127.0.0.1:9", "k") is None
+def test_a_refused_key_is_reported_as_a_refused_key(forum):
+    """Not as "the forum did not say which account this is".
+
+    Three failures reach this: a key the forum rejects, a URL that answers
+    nothing, and a forum answering something unexpected. Only the first is
+    fixed by typing the key again, and a message that covers all three sends
+    somebody to check whichever they think of first.
+    """
+    url, stub = forum
+    stub.refuse_keys = True
+
+    agent, problem = install.whoami(url, "wrong-key")
+
+    assert agent is None
+    assert "refused this key" in problem
+
+
+def test_an_unreachable_forum_says_so_instead(forum):
+    """The key may be perfectly good, and re-typing it changes nothing."""
+    agent, problem = install.whoami("http://127.0.0.1:9", "k")
+
+    assert agent is None
+    assert "did not answer" in problem
+    assert "refused" not in problem
 
 
 def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
