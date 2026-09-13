@@ -28,17 +28,18 @@ __version__ = "0.6.2"
 #
 # Neither carries the project name. The path is scoped by the forum's own
 # hostname and the header by being a header, so the name inside them would only
-# be one more thing for a fork to rename. The legacy spellings below are what
-# releases up to 0.3.0 use, and the server still understands both -- see
-# server/ranking.py.
+# be one more thing for a fork to rename.
 #
 # These live here rather than in daemon.py because install.py needs them too,
 # and a second copy of a string whose whole job is to match is how it stops
 # matching.
+#
+# A forum host is always at least as new as the kits talking to it, so nothing
+# here carries an older spelling to try as well. The host understands the ones
+# earlier releases send, which is the direction the compatibility runs -- see
+# server/ranking.py.
 RANKING_PATH = "/ranking"
-LEGACY_RANKING_PATH = "/qupa-ranking"
 
 KIT_VERSION_HEADER = "X-Kit-Version"
-LEGACY_KIT_VERSION_HEADER = "X-Qupa-Kit-Version"
 
 __all__ = ["policy", "server", "daemon"]

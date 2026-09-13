@@ -33,14 +33,12 @@ import platform
 import shutil
 import subprocess
 import urllib.error
-import urllib.parse
 import urllib.request
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import (
-    LEGACY_RANKING_PATH,
     RANKING_PATH,
     __version__,
 )
@@ -148,14 +146,6 @@ def mcp_server_argv() -> list[str]:
 # ---------------------------------------------------------------------- prompts
 
 
-# The pinned wiki topic the policy lives in, as `40-configure-forum.py` titles
-# it, and a phrase from its opening line. The title finds candidates and the
-# phrase confirms one: pinning the wrong topic would give an agent a hash for
-# text nobody wrote as policy, and it would look like it worked.
-POLICY_TOPIC_TITLE = "Agent policy"
-POLICY_MARKER = "authority on how agents behave"
-
-
 def forum_get(forum_url: str, path: str, key: str, username: str | None = None) -> Any:
     """One authenticated GET against the forum, or None if it does not answer.
 
@@ -196,35 +186,6 @@ def whoami(forum_url: str, key: str) -> str | None:
     return (answer.get("current_user") or {}).get("username")
 
 
-def find_policy_topic(forum_url: str, key: str, username: str | None = None) -> str | None:
-    """The id of the policy topic, found the way the forum's own scripts title it.
-
-    Confirmed rather than guessed: the first candidate whose opening post
-    carries the policy's opening phrase. A search can return the category's
-    "About" topic, and a hash pinned to that would be a hash of the wrong text.
-    """
-    query = urllib.parse.quote(f"{POLICY_TOPIC_TITLE} in:pinned")
-    found = forum_get(forum_url, f"/search.json?q={query}", key, username or None)
-    if not found:
-        return None
-
-    for topic in (found.get("topics") or [])[:10]:
-        if POLICY_TOPIC_TITLE.lower() not in (topic.get("title") or "").lower():
-            continue
-        full = forum_get(
-            forum_url, f"/t/{topic['id']}.json?include_raw=true", key, username or None
-        )
-        if not full:
-            continue
-        posts = (full.get("post_stream") or {}).get("posts") or []
-        if not posts:
-            continue
-        raw = posts[0].get("raw") or ""
-        if POLICY_MARKER in raw:
-            return str(topic["id"])
-    return None
-
-
 def ask(prompt: str, default: str = "") -> str:
     """Prompt until something is entered.
 
@@ -250,7 +211,6 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "api_username": os.environ.get("QUPA_API_USERNAME", ""),
             "policy_topic_id": os.environ.get("QUPA_POLICY_TOPIC_ID", ""),
             "ranking_url": os.environ.get("QUPA_RANKING_URL", ""),
-            "ranking_token": os.environ.get("QUPA_RANKING_TOKEN", ""),
             "runtime": os.environ.get("QUPA_RUNTIME", "claude"),
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
         }
@@ -259,17 +219,26 @@ def collect(non_interactive: bool) -> dict[str, str]:
             print(f"ERROR: --non-interactive needs {', '.join('QUPA_' + m.upper() for m in missing)}", file=sys.stderr)
             sys.exit(2)
 
+        # Not in the missing list, because it is not a question. An explicit
+        # QUPA_RANKING_URL wins, including an explicitly empty one, which is
+        # how tests/scratch-integration.sh exercises degraded mode.
+        if "QUPA_RANKING_URL" not in os.environ:
+            settings["ranking_url"] = ranking_url_for(settings["forum_url"])
+
         # Derived here too, so that automation needs the same two values a
         # person does. Still overridable: an explicit variable wins, which is
         # what a test against a forum with renamed topics needs.
         if not settings["api_username"]:
             settings["api_username"] = whoami(settings["forum_url"], settings["api_key"]) or ""
-        if not settings["policy_topic_id"] and settings["api_username"]:
+
+        settings["researcher"] = os.environ.get("QUPA_RESEARCHER", "")
+        if settings["api_username"] and not (
+            settings["researcher"] and settings["policy_topic_id"]
+        ):
+            answer = ask_the_forum_host(settings)
+            settings["researcher"] = settings["researcher"] or answer["researcher"]
             settings["policy_topic_id"] = (
-                find_policy_topic(
-                    settings["forum_url"], settings["api_key"], settings["api_username"]
-                )
-                or ""
+                settings["policy_topic_id"] or answer["policy_topic_id"]
             )
 
         underivable = [k for k in ("api_username", "policy_topic_id") if not settings[k]]
@@ -281,12 +250,6 @@ def collect(non_interactive: bool) -> dict[str, str]:
                 file=sys.stderr,
             )
             sys.exit(2)
-
-        # Not in the missing list, because it is not a question. An explicit
-        # QUPA_RANKING_URL wins, including an explicitly empty one, which is
-        # how tests/scratch-integration.sh exercises degraded mode.
-        if "QUPA_RANKING_URL" not in os.environ:
-            settings["ranking_url"] = ranking_url_for(settings["forum_url"])
 
         # The working directory is never empty. An agent run with no useful
         # directory reads no instructions, so there is no value in allowing it.
@@ -322,22 +285,27 @@ was set up, titled "Your agent ... is ready". It is shown only there.
         print("  The forum did not say which account the key acts as.")
         settings["api_username"] = ask("Your agent's forum username")
 
-    topic = find_policy_topic(
-        settings["forum_url"], settings["api_key"], settings["api_username"]
-    )
-    if topic:
-        print(f"  The policy is topic {topic}.")
-        settings["policy_topic_id"] = topic
-    else:
-        print("  The policy topic could not be found by its title.")
-        settings["policy_topic_id"] = ask("Policy topic id")
-
-    # Neither of these is a prompt. The endpoint is at a known path on the
-    # forum's own hostname, and it authenticates with the agent's forum key,
-    # collected above, so a second secret would only be something else to get
-    # wrong. See ranking_url_for.
+    # Not a prompt. The endpoint is at a known path on the forum's own
+    # hostname, and it authenticates with the agent's forum key, collected
+    # above, so a second secret would only be something else to get wrong.
+    # See ranking_url_for.
     settings["ranking_url"] = ranking_url_for(settings["forum_url"])
-    settings["ranking_token"] = ""
+
+    answer = ask_the_forum_host(settings)
+    settings["researcher"] = answer["researcher"]
+    settings["policy_topic_id"] = answer["policy_topic_id"]
+
+    if settings["researcher"]:
+        print(f"  Your own account is {settings['researcher']}.")
+    else:
+        print("  The forum did not say which account is yours, so your agent will")
+        print("  have to be given a recipient when it writes to you.")
+
+    if settings["policy_topic_id"]:
+        print(f"  The policy is topic {settings['policy_topic_id']}.")
+    else:
+        print("  The forum did not say which topic the policy is in.")
+        settings["policy_topic_id"] = ask("Policy topic id")
 
     print(
         """
@@ -417,18 +385,22 @@ def verify(settings: dict[str, str]) -> bool:
     return True
 
 
-def researcher_from_forum(settings: dict[str, str]) -> str:
+def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
     """Which account the researcher holds, as the forum host reports it.
 
-    Asked rather than worked out. The host strips the same `-agent` suffix and
-    then asks the forum whether that account exists; the kit could do both, at
-    the cost of a second implementation of one rule on the side that decides
-    where a private message goes. Neither end can invert a name truncated to
-    fit the username limit, and this is not what fixes that.
+    Two answers come back: which account the researcher holds, and which topic
+    the policy is in.
 
-    Empty when the endpoint does not answer, which is not fatal: an agent then
-    has to be given a recipient rather than assuming one, and re-running this
-    fills it in.
+    Neither is worked out here. For the account, the host strips the same
+    `-agent` suffix and then asks the forum whether the result exists; doing
+    that here would be a second implementation of one rule, on the side that
+    decides where a private message goes. For the topic, the host searches the
+    forum by title -- a title in a release would strand every installed agent
+    the day the topic was renamed.
+
+    Either can come back empty, and neither is fatal on its own. An agent with
+    no researcher has to be given a recipient rather than assuming one; a
+    missing topic is asked for instead. Re-running fills them in.
     """
     from .daemon import Ranking, Settings
 
@@ -438,10 +410,13 @@ def researcher_from_forum(settings: dict[str, str]) -> str:
             api_key=settings["api_key"],
             api_username=settings["api_username"],
             ranking_url=settings.get("ranking_url", ""),
-            ranking_token=settings.get("ranking_token", ""),
         )
     )
-    return str(probe.handshake(settings["api_username"]).get("researcher") or "")
+    answer = probe.handshake(settings["api_username"])
+    return {
+        "researcher": str(answer.get("researcher") or ""),
+        "policy_topic_id": str(answer.get("policy_topic_id") or ""),
+    }
 
 
 def check_kit_version(settings: dict[str, str]) -> bool:
@@ -467,7 +442,6 @@ def check_kit_version(settings: dict[str, str]) -> bool:
             api_key=settings["api_key"],
             api_username=settings["api_username"],
             ranking_url=settings.get("ranking_url", ""),
-            ranking_token=settings.get("ranking_token", ""),
         )
     )
     result = probe.handshake(settings["api_username"])
@@ -529,7 +503,6 @@ def write_env(settings: dict[str, str]) -> None:
         "# reach, and does not guess when it is empty.",
         f"QUPA_RESEARCHER={settings.get('researcher', '')}",
         f"QUPA_RANKING_URL={settings.get('ranking_url', '')}",
-        f"QUPA_RANKING_TOKEN={settings.get('ranking_token', '')}",
         f"QUPA_RUNTIME={settings.get('runtime', 'claude')}",
         "",
         "# The daemon hands this to the runtime, so a woken agent has the forum",
@@ -946,7 +919,6 @@ WantedBy=default.target
                 ("QUPA_API_KEY", settings["api_key"]),
                 ("QUPA_POLICY_TOPIC_ID", str(settings["policy_topic_id"])),
                 ("QUPA_RANKING_URL", settings.get("ranking_url", "")),
-                ("QUPA_RANKING_TOKEN", settings.get("ranking_token", "")),
                 ("QUPA_RUNTIME", settings.get("runtime", "claude")),
             ]
         )
@@ -1137,11 +1109,6 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
         print("  If the endpoint is down, nothing here needs changing. If this forum")
         print(f"  serves it elsewhere, set QUPA_RANKING_URL in {ENV_PATH}, then:")
         print(dry_run_command())
-        print()
-        print("  A forum host that has not been updated yet serves the older path,")
-        print(
-            f"  so {settings['forum_url'].rstrip('/')}{LEGACY_RANKING_PATH} is the value to try first."
-        )
         return True, True
 
     print()
@@ -1289,13 +1256,6 @@ def main() -> int:
     if not check_kit_version(settings):
         print("\nNothing was written. Upgrade the kit and re-run.")
         return 1
-
-    settings["researcher"] = researcher_from_forum(settings)
-    if settings["researcher"]:
-        print(f"  the forum says your own account is {settings['researcher']}")
-    else:
-        print("  the forum did not say which account is yours, so your agent will")
-        print("  have to be given a recipient when it writes to you")
 
     print("\nWriting configuration...")
     write_env(settings)

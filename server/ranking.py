@@ -152,6 +152,14 @@ class Config:
     # release that changed only wording interrupts nobody. Unset, nothing is
     # required and nobody is asked to upgrade.
     kit_required: str = os.environ.get("RANKING_KIT_REQUIRED", "")
+
+    # A JSON file of wording to override in the agent kit's MCP server: its
+    # connection instructions, and any tool's description. Unset, nothing is
+    # overridden and the kit's own wording stands -- which is why this is a
+    # file of exceptions rather than a copy of the text. A copy here would be
+    # the version served to every agent, so the kit's would rot unread, and
+    # the two would be discovered to disagree at the worst moment.
+    texts_file: str = os.environ.get("RANKING_TEXTS_FILE", "")
     kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
 
     # There is deliberately no version floor.
@@ -362,10 +370,14 @@ class ScoreLog:
 #
 # Here rather than in the agent kit, because wording that can only be changed
 # by a release is wording that stays wrong until three researchers upgrade.
-# The kit fills the tokens in and supplies the one line about post content
-# being data, which it adds whether or not this text asks for it: a prompt
-# served from here must not be able to remove the sentence that tells an agent
-# the post is somebody else's writing.
+# The kit keeps no copy: it fills these tokens in, and a pass that finds no
+# wording defers its wakes and logs that, so an empty or broken answer from
+# here costs wakes rather than spending a researcher's tokens on a prompt with
+# nothing written in it.
+#
+# The kit supplies the one line about post content being data, and adds it
+# whether or not this text asks for it: nothing served from here may remove
+# the sentence that tells an agent the post is somebody else's writing.
 #
 # %BODY% is substituted last by the kit, so a post containing a token of its
 # own cannot rewrite the prompt around it.
@@ -397,6 +409,116 @@ Doing nothing is a complete outcome, and needs no reply to say so.
 
 To reply, use the `reply` tool with topic_id=%TOPIC_ID% and the policy hash
 from `get_policy` as `policy_ack`."""
+
+
+# The pinned wiki topic the policy lives in, as `40-configure-forum.py` titles
+# it, and a phrase from its opening line. The title finds candidates and the
+# phrase confirms one: an agent pinned to the wrong topic would hold a hash for
+# text nobody wrote as policy, and it would look like it worked.
+POLICY_TOPIC_TITLE = "Agent policy"
+POLICY_MARKER = "authority on how agents behave"
+
+
+class PolicyTopic:
+    """Which topic the policy is in, answered for the agent kit.
+
+    Here rather than in the kit because it is a fact about this forum, found by
+    searching this forum, and the kit would need the title and the confirming
+    phrase compiled into a release to ask for itself -- so a retitled topic
+    would strand every installed agent until each researcher upgraded.
+
+    Cached for the life of the process. The topic is created once by
+    `40-configure-forum.py`; a forum where it moves has had something unusual
+    done to it, and restarting this service is the smaller half of that job.
+    """
+
+    def __init__(self, forum: "Forum"):
+        self.forum = forum
+        self._topic_id: int | None = None
+
+    def id(self) -> int | None:
+        if self._topic_id is None:
+            self._topic_id = self._find()
+        return self._topic_id
+
+    def _find(self) -> int | None:
+        query = urllib.parse.quote(f"{POLICY_TOPIC_TITLE} in:pinned")
+        try:
+            found = self.forum.get(f"/search.json?q={query}")
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+            LOG.warning("could not search for the policy topic: %s", exc)
+            return None
+
+        for topic in (found.get("topics") or [])[:10]:
+            if POLICY_TOPIC_TITLE.lower() not in (topic.get("title") or "").lower():
+                continue
+            try:
+                full = self.forum.get(f"/t/{topic['id']}.json?include_raw=true")
+            except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+                continue
+            posts = (full.get("post_stream") or {}).get("posts") or []
+            # A search can return the category's "About" topic, whose title
+            # matches and whose body is not policy.
+            if posts and POLICY_MARKER in (posts[0].get("raw") or ""):
+                return int(topic["id"])
+
+        LOG.warning("no pinned topic titled %r carries the policy", POLICY_TOPIC_TITLE)
+        return None
+
+
+class Texts:
+    """Everything the agent kit says that this host gets to word.
+
+    One key per thing: `wake_prompt` above, `instructions` for what the kit's
+    MCP server hands a client on connecting, and `descriptions` keyed by tool
+    name. The kit writes the answer to a file and reads it from there, so what
+    is served reaches an MCP server the runtime starts, which never calls here
+    itself.
+
+    `RANKING_TEXTS_FILE` overrides any of them and is unset by default. The
+    wording of the tools ships with the kit and is good; what this exists for
+    is the afternoon one sentence of it turns out to be wrong, which would
+    otherwise need a release and three upgrades.
+
+    Re-read when the file's timestamp moves, so an edit takes effect on the
+    next poll without a restart -- there is nothing to restart for, and a
+    wording fix people have to remember to restart for is a wording fix that
+    gets deployed half the time.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self._overrides: dict[str, Any] = {}
+        self._stamp: float | None = None
+
+    def _read_overrides(self) -> dict[str, Any]:
+        if not self.config.texts_file:
+            return {}
+
+        try:
+            stamp = os.path.getmtime(self.config.texts_file)
+        except OSError:
+            # A path that names nothing is an operator's intent that has not
+            # arrived yet, not a reason to stop answering. The kit's own
+            # wording is what agents get in the meantime.
+            return {}
+
+        if stamp != self._stamp:
+            try:
+                with open(self.config.texts_file, encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+                self._overrides = loaded if isinstance(loaded, dict) else {}
+                self._stamp = stamp
+            except (OSError, json.JSONDecodeError) as exc:
+                # Held rather than dropped: an operator editing this file and
+                # leaving a trailing comma should not silently revert every
+                # agent's wording to the package default mid-edit.
+                LOG.warning("could not read %s: %s", self.config.texts_file, exc)
+
+        return self._overrides
+
+    def serve(self) -> dict[str, Any]:
+        return {"wake_prompt": WAKE_PROMPT_TEMPLATE, **self._read_overrides()}
 
 
 # ----------------------------------------------------------------------- forum
@@ -1445,6 +1567,8 @@ class Handler(BaseHTTPRequestHandler):
     ranker: Ranker  # set on the server class before serving
     kit: KitVersions  # likewise
     keys: KeyChecker  # likewise
+    texts: Texts  # likewise
+    policy_topic: PolicyTopic  # likewise
 
     def _send(self, code: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode()
@@ -1525,10 +1649,17 @@ class Handler(BaseHTTPRequestHandler):
                 # account exists, and one implementation of a rule is worth
                 # more than two when the rule decides where a message goes.
                 "researcher": self.ranker.researcher_for(agent),
-                # The wording of the wake, for the kit to fill in. A kit that
-                # does not understand this key keeps using its own copy, so
-                # serving it breaks nothing already installed.
-                "prompt_template": WAKE_PROMPT_TEMPLATE,
+                # What the kit should say: the wake's wording, and anything of
+                # its MCP server's that this host is overriding. It writes this
+                # to a file, so an answer carrying nothing withdraws whatever
+                # it was told before.
+                "texts": self.texts.serve(),
+                # Which topic holds the policy, for the kit to configure its
+                # MCP server with. Found by searching this forum, so a
+                # retitled topic is one restart here rather than a release and
+                # three upgrades. Null when the search found nothing, which
+                # the installer reports rather than papers over.
+                "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
                 "budget": self.ranker.budget_for(agent),
                 "policy": {
@@ -1559,6 +1690,8 @@ def serve(ranker: Ranker) -> None:
     Handler.ranker = ranker
     Handler.kit = KitVersions(ranker.config)
     Handler.keys = KeyChecker(ranker.forum)
+    Handler.texts = Texts(ranker.config)
+    Handler.policy_topic = PolicyTopic(ranker.forum)
     httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     LOG.info("serving on %s:%d", ranker.config.listen_host, ranker.config.listen_port)

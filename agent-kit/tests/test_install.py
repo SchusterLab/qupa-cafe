@@ -8,7 +8,7 @@ import pytest
 
 import qupa_cafe.install as install
 
-from conftest import POLICY_TEXT, POLICY_TOPIC_ID
+from conftest import POLICY_TOPIC_ID
 
 
 def test_a_console_script_is_found_in_a_conda_layout(monkeypatch, tmp_path):
@@ -72,30 +72,20 @@ def test_naming_an_account_is_refused_and_reported_as_unknown(forum):
     assert install.forum_get(url, "/session/current.json", "k", "somebody") is None
 
 
-def test_the_policy_topic_is_found_by_title_and_confirmed_by_its_text(forum):
-    """Confirmed, because a search also returns the category's About topic, and
-    a hash pinned to that would be a hash of text nobody wrote as policy."""
-    url, _ = forum
-
-    assert install.find_policy_topic(url, "any-key") == str(POLICY_TOPIC_ID)
-
-
 def test_a_forum_that_does_not_answer_derives_nothing(forum):
     """So the installer asks instead of proceeding on a guess."""
     assert install.whoami("http://127.0.0.1:9", "k") is None
-    assert install.find_policy_topic("http://127.0.0.1:9", "k") is None
 
 
-def test_the_marker_matches_the_policy_this_repository_publishes():
-    """The marker is what confirms a found topic really is the policy.
+def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
+    """Nothing here searches for it.
 
-    If it drifts from the text staff publish, derivation stops finding the
-    topic and every install quietly falls back to asking for its id -- which
-    works, and hides that a check stopped checking.
+    A search needs the topic's title, and a title compiled into a release
+    strands every installed agent the day somebody renames the topic. The
+    forum host answers instead, and an unanswered install asks.
     """
-    published = Path(__file__).resolve().parents[2] / "config" / "policy-topic.md"
-    if not published.is_file():
-        pytest.skip("not a checkout, so the published policy text is not here")
+    monkeypatch.setattr(
+        install, "ask_the_forum_host", lambda s: {"researcher": "rsmith", "policy_topic_id": "42"}
+    )
 
-    assert install.POLICY_MARKER in published.read_text(encoding="utf-8")
-    assert install.POLICY_MARKER in POLICY_TEXT
+    assert "find_policy_topic" not in dir(install)

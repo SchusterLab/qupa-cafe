@@ -48,7 +48,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, texts
 from .policy import PolicyClient, PolicyError
 
 # Discourse validates topic.external_id against /\A[\w-]+\z/ with a maximum
@@ -687,8 +687,15 @@ class QupaServer:
         raise ValueError(f"Unknown tool: {name}")
 
     def instructions(self) -> str:
-        """What the client is told on connecting, with this agent's accounts in it."""
-        return f"{SERVER_INSTRUCTIONS}{chr(10)}{chr(10)}{self.identity()}"
+        """What the client is told on connecting, with this agent's accounts in it.
+
+        The prose is the forum host's to correct: ``qupa_cafe.texts`` holds
+        whatever it last served, and the constant below is what stands when it
+        has served nothing. The identity is appended here either way, because
+        it is this machine's and the host does not know it.
+        """
+        said = texts.instructions(SERVER_INSTRUCTIONS)
+        return f"{said}{chr(10)}{chr(10)}{self.identity()}"
 
     # ------------------------------------------------------------ attachments
 
@@ -1079,7 +1086,9 @@ def main() -> int:
             )
 
         elif method == "tools/list":
-            respond(request_id, {"tools": TOOLS})
+            # Descriptions the forum host has replaced, if any. Names and
+            # schemas are this version's contract and are never served.
+            respond(request_id, {"tools": texts.describe(TOOLS)})
 
         elif method == "tools/call":
             params = message.get("params") or {}

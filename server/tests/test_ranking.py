@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -34,8 +35,10 @@ from ranking import (  # noqa: E402
     Handler,
     KeyChecker,
     KitVersions,
+    PolicyTopic,
     Ranker,
     State,
+    Texts,
     embedding_limit,
     older_than,
     parse_agents,
@@ -552,6 +555,13 @@ class StubRanker:
         self.told.append((agent, upgrade.get("reported")))
 
 
+class StubPolicyTopic:
+    """The forum search is not what these tests are about."""
+
+    def id(self) -> int:
+        return 42
+
+
 class StubKeys:
     """A key check that would pass, so a refusal cannot come from here."""
 
@@ -573,6 +583,8 @@ def endpoint():
     Handler.ranker = StubRanker(config)
     Handler.kit = kit
     Handler.keys = StubKeys()
+    Handler.texts = Texts(config)
+    Handler.policy_topic = StubPolicyTopic()
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -629,6 +641,56 @@ def test_the_legacy_header_is_still_read(endpoint):
     assert payload["upgrade"]["reported"] == "0.1.0"
 
 
+def test_the_kit_is_told_which_topic_the_policy_is_in(endpoint):
+    """So that nothing in the kit has to know this forum's topic titles.
+
+    A kit that searched for the topic itself would carry the title and the
+    confirming phrase in a release, and a retitled topic would strand every
+    installed agent until each researcher upgraded.
+    """
+    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
+
+    assert payload["policy_topic_id"] == 42
+
+
+def test_the_policy_topic_is_confirmed_rather_than_matched_on_its_title():
+    """A search for the title also returns the category's "About" topic, and an
+    agent pinned to that would hold a hash for text nobody wrote as policy."""
+
+    class SearchStub:
+        def get(self, path):
+            if path.startswith("/search.json"):
+                return {"topics": [{"id": 5, "title": "About the Agent policy category"},
+                                   {"id": 9, "title": "Agent policy (pinned, wiki)"}]}
+            if path.startswith("/t/5."):
+                return {"post_stream": {"posts": [{"raw": "Discuss the policy here."}]}}
+            return {"post_stream": {"posts": [{"raw": "This topic is the only authority on how agents behave."}]}}
+
+    assert PolicyTopic(SearchStub()).id() == 9
+
+
+def test_the_marker_matches_the_policy_this_repository_publishes():
+    """The marker is what confirms a found topic really is the policy.
+
+    If it drifts from the text staff publish, the search stops finding the
+    topic and every install falls back to asking for its id -- which works,
+    and hides that a check stopped checking.
+    """
+    published = Path(__file__).resolve().parents[2] / "config" / "policy-topic.md"
+    if not published.is_file():
+        pytest.skip("not a checkout, so the published policy text is not here")
+
+    assert ranking.POLICY_MARKER in published.read_text(encoding="utf-8")
+
+
+def test_no_policy_topic_is_an_answer_rather_than_a_guess():
+    class SearchStub:
+        def get(self, path):
+            return {"topics": []}
+
+    assert PolicyTopic(SearchStub()).id() is None
+
+
 def test_a_current_client_with_a_credential_is_served(endpoint):
     status, payload = wake(
         endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
@@ -652,10 +714,87 @@ def test_the_wake_is_worded_here(endpoint):
     )
 
     assert status == 200
-    template = payload["prompt_template"]
+    template = payload["texts"]["wake_prompt"]
     for token in ("%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%TITLE%", "%TOPIC_ID%",
                   "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%"):
         assert token in template, token
+
+
+def test_the_wake_wording_sends_the_agent_to_the_policy(endpoint):
+    """A write is refused without the hash `get_policy` returns, so a prompt
+    that does not name it costs the agent a turn finding that out."""
+    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
+    template = payload["texts"]["wake_prompt"]
+
+    assert "get_policy" in template
+    assert "policy_ack" in template
+
+
+def test_the_wake_wording_says_how_to_reach_the_rest(endpoint):
+    """The wake carries one post, so an agent that needs the thread or an
+    attachment has to be told what fetches them."""
+    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
+    template = payload["texts"]["wake_prompt"]
+
+    assert "discourse_read_topic" in template
+    assert "read_attachment" in template
+
+
+def test_the_wake_wording_offers_doing_nothing(endpoint):
+    """Without this an agent woken by a guess treats the wake as an obligation.
+
+    Note what it does not say: whether to post. That is conduct and lives in
+    the policy. This says only that finishing silently is a complete outcome,
+    which is a fact about the daemon rather than about the forum.
+    """
+    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
+
+    assert "Doing nothing is a complete outcome" in payload["texts"]["wake_prompt"]
+
+
+def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
+    """The afternoon a sentence in a tool description turns out to be wrong.
+
+    A file of exceptions rather than a copy of the text: the kit's wording is
+    what agents get unless something here names the piece to replace, so
+    nothing on this host rots unread.
+    """
+    override = tmp_path / "texts.json"
+    override.write_text(
+        json.dumps({"descriptions": {"reply": "Answer a thread."}}), encoding="utf-8"
+    )
+    texts = Texts(Config(texts_file=str(override)))
+
+    served = texts.serve()
+
+    assert served["descriptions"] == {"reply": "Answer a thread."}
+    assert "%BODY%" in served["wake_prompt"]
+
+
+def test_nothing_is_overridden_by_default():
+    served = Texts(Config(texts_file="")).serve()
+
+    assert set(served) == {"wake_prompt"}
+
+
+def test_an_override_file_that_is_not_there_yet_is_not_an_outage(tmp_path):
+    served = Texts(Config(texts_file=str(tmp_path / "absent.json"))).serve()
+
+    assert set(served) == {"wake_prompt"}
+
+
+def test_a_half_edited_override_file_keeps_the_last_good_one(tmp_path):
+    """An operator mid-edit should not revert every agent's wording to the
+    package default for as long as the file has a trailing comma in it."""
+    override = tmp_path / "texts.json"
+    override.write_text(json.dumps({"instructions": "Read the policy."}), encoding="utf-8")
+    texts = Texts(Config(texts_file=str(override)))
+    assert texts.serve()["instructions"] == "Read the policy."
+
+    override.write_text('{"instructions": "Read the policy.",}', encoding="utf-8")
+    os.utime(override, (1e9, 1e9))
+
+    assert texts.serve()["instructions"] == "Read the policy."
 
 
 def test_the_wake_wording_states_no_conduct(endpoint):
@@ -665,7 +804,7 @@ def test_the_wake_wording_states_no_conduct(endpoint):
     status, payload = wake(
         endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
     )
-    template = payload["prompt_template"].lower()
+    template = payload["texts"]["wake_prompt"].lower()
 
     assert status == 200
     for conduct in ("silence is", "prefer", "acknowledge", "depth cap",

@@ -17,6 +17,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+@pytest.fixture(autouse=True)
+def no_served_wording(tmp_path, monkeypatch):
+    """Point the wording file somewhere empty, for every test.
+
+    The kit reads what the forum host last said from a file under the home
+    directory. Left alone, a developer's own installed kit would word these
+    tests' prompts, so the suite would pass or fail according to what the real
+    forum happens to be serving today.
+    """
+    monkeypatch.setenv("QUPA_TEXTS", str(tmp_path / "texts.json"))
+
+
 POLICY_TEXT = (
     "This topic is the **only** authority on how agents behave on this forum."
     "\n\nPost because you have something to add."
