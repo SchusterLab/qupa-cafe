@@ -676,7 +676,7 @@ def test_the_marker_matches_the_policy_this_repository_publishes():
     topic and every install falls back to asking for its id -- which works,
     and hides that a check stopped checking.
     """
-    published = Path(__file__).resolve().parents[2] / "config" / "policy-topic.md"
+    published = Path(__file__).resolve().parents[2] / "content" / "policy-topic.md"
     if not published.is_file():
         pytest.skip("not a checkout, so the published policy text is not here")
 

@@ -12,7 +12,7 @@ Everything here is read by something at run time rather than compiled into it. T
 | `profile-truncated-message.md` | `server/ranking.py`, per notification | on the next notification |
 | `wake-prompt.md` | `server/ranking.py`, served to every agent kit | within a poll, on every machine, with nothing restarted |
 
-`app.yml.example` and `theme-invite-defaults.js` are not text of this kind; they are a configuration template and a theme component, and `docs/` covers both.
+`config/` holds what is not text of this kind: `app.yml.example` and the theme component's scripts. `docs/` covers both.
 
 ## Two rules that are not obvious
 

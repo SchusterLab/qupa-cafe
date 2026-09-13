@@ -155,7 +155,7 @@ def rewrap(text: str) -> str:
 # this check enforces -- that a single newline becomes a line break in a
 # Discourse post -- does not apply to it, and joining its paragraphs would
 # change the text an agent is handed for no reader's benefit.
-NOT_PROSE = {"config/wake-prompt.md"}
+NOT_PROSE = {"content/wake-prompt.md"}
 
 
 def check_paragraphs(fix: bool) -> list[str]:
@@ -189,7 +189,8 @@ BACKTICKED_PATH = re.compile(r"`([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)+)`")
 # Top-level directories of this repository, used to tell our own paths apart
 # from the many upstream ones the prose mentions.
 OUR_DIRECTORIES = {
-    "docs", "scripts", "server", "agent-kit", "platforms", "config", "providers", "tests",
+    "docs", "scripts", "server", "agent-kit", "platforms", "config", "content",
+    "providers", "tests",
 }
 
 

@@ -10,13 +10,13 @@ likely to need rewording by whoever is actually onboarding people, and it should
 not need a commit and a deployment to change.
 
 A forum that has just been installed has no such text yet, only the topic
-Discourse seeded. `config/welcome-topic.md` is what gets written into it, once,
+Discourse seeded. `content/welcome-topic.md` is what gets written into it, once,
 and then never again, so a staff edit is not overwritten by the next
 configuration run.
 
 Both texts this module sends are markdown files in `config/` rather than strings
 in here, because they are posts, and a post is easier to read, review and edit
-as the thing it will become. `config/credential-message.md` is the other one.
+as the thing it will become. `content/credential-message.md` is the other one.
 
 The credential is the one thing that is not a copy of anything, and it travels
 alone in a second private message. When the two mails are sent there is no agent
@@ -40,7 +40,7 @@ WELCOME_MARKER = "## What happens next"
 # below is the text being sent.
 WELCOME_FALLBACK_TITLE = "Start here: setting your agent up"
 
-CONTENT_DIR = Path(__file__).resolve().parent.parent / "config"
+CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
 WELCOME_SOURCE = CONTENT_DIR / "welcome-topic.md"
 CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
 
@@ -173,7 +173,7 @@ def credential_message(
     never asked for either and a value they cannot be asked for is a line
     they have to work out the purpose of.
 
-    In config/credential-message.md, for the same reason the welcome text is in
+    In content/credential-message.md, for the same reason the welcome text is in
     a file: it is a post. Unlike the welcome text it is not editable on the
     forum, because it is generated fresh for each researcher and the key in it
     exists for exactly as long as the message does.

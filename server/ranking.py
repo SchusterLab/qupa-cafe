@@ -398,7 +398,7 @@ class ScoreLog:
 # rather than by whoever is comfortable in Python.
 CONTENT_DIR = Path(
     os.environ.get("RANKING_CONTENT_DIR")
-    or Path(__file__).resolve().parent.parent / "config"
+    or Path(__file__).resolve().parent.parent / "content"
 )
 
 WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or CONTENT_DIR / "wake-prompt.md")
@@ -482,7 +482,7 @@ class PolicyTopic:
 class Texts:
     """Everything the agent kit says that this host gets to word.
 
-    One key per thing: `wake_prompt` from `config/wake-prompt.md`,
+    One key per thing: `wake_prompt` from `content/wake-prompt.md`,
     `instructions` for what the kit's
     MCP server hands a client on connecting, and `descriptions` keyed by tool
     name. The kit writes the answer to a file and reads it from there, so what

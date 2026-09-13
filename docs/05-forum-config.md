@@ -110,7 +110,9 @@ These two settings are ceilings, not defaults, and they are deliberately left wh
 
 That default cannot be reached from any setting. Discourse computes it in the frontend as the smaller of the ceiling and 100 for staff, or 10 for everyone else, so the only lever the settings expose is the ceiling itself, and lowering the ceiling would take the choice away rather than change the default.
 
-`config/theme-invite-defaults.js` is therefore installed as a theme component, which overrides the one getter that produces that number. A theme component rather than an edit inside the container: a theme lives in the database and survives `./launcher rebuild`, and an edit to the image's source does not.
+`config/theme-invite-defaults.js` is therefore installed as one script of a theme component, which overrides the one getter that produces that number. A theme component rather than an edit inside the container: a theme lives in the database and survives `./launcher rebuild`, and an edit to the image's source does not.
+
+The component is **"Qupa Cafe front-end defaults"** and carries one script per front-end behaviour no setting provides -- this one and `config/theme-username-headroom.js` from 5.3. `ensure_theme_component` writes every script on every run, because a `PUT` carrying a subset of the fields is how a script that was installed once stops being installed.
 
 It fails soft on purpose. If a future Discourse renames the getter, the form goes back to pre-filling 100 and nothing breaks, so this is worth re-checking after an upgrade rather than trusting forever.
 
@@ -134,7 +136,7 @@ The third is not optional. The forum switches to it the moment somebody writes a
 
 The first of the two provisioning messages is a copy of that post, title and all, so it is the same text rather than a second version of it.
 
-**`config/welcome-topic.md` is the initial copy**, and it is markdown rather than a string inside a script because it is the post being made. It sits beside the other deployment inputs, which is where somebody setting a forum up will look for the text their forum is about to publish.
+**`content/welcome-topic.md` is the initial copy**, and it is markdown rather than a string inside a script because it is the post being made. It sits beside the other deployment inputs, which is where somebody setting a forum up will look for the text their forum is about to publish.
 
 One placeholder is filled in when it is written, and nothing else is: `%INTERESTS_TOPIC%` becomes `topic 11 (https://forum.example.com/t/11)`, or the topic's title if that topic has been deleted.
 
@@ -302,6 +304,12 @@ One limit to know before choosing usernames.
 So 5.6 raises it to **30**, for headroom rather than for the name that happened to fail first. Discourse refuses to set the limit below the longest existing username, so it can be raised freely and lowered only carefully.
 
 `45-provision-agent.py` reads the limit from the site rather than assuming it, and if a name still will not fit it shortens it and says what it used. `--agent-username` overrides that when the shortened form reads badly.
+
+**A shortened agent name cannot be inverted, which is what makes this worth preventing rather than handling.** Nothing gets from `verylongresearchernam-agent` back to the account that owns it, so the forum host cannot tell that agent who its researcher is, and a private message the agent starts has nobody to address. The ranking endpoint answers `researcher` empty in that case and the agent has to be given a recipient.
+
+So the registration form stops ten characters short of the ceiling. `config/theme-username-headroom.js` defines the `maxUsernameLength` the signup and invite templates already bind their input's `maxlength` to — nothing in Discourse defines it, so without this the attribute is absent — and wraps `UsernameValidationHelper.basicUsernameValidation`, which is the half that actually decides and is shared by both forms. Ten rather than the six `-agent` costs, because four spare characters cost a researcher nothing.
+
+It is a guardrail on the page and not a rule of the forum: a request that skips the page can still create a longer name, and the script still shortens one when it meets it. What it buys is that nobody reaches that path by filling in the form in good faith.
 
 The refusal is worth knowing about in its own right: **`POST /users.json` reports a rejected signup as HTTP 200** with `success: false`, so code that checks only the status code sails straight past the reason and reports something further downstream instead.
 
@@ -529,6 +537,7 @@ Backups land under the data volume, at `shared/standalone/backups/default`. `doc
 - With a second account watching a category, post to it and confirm **no notification mail is generated**. Check `/admin/email/skipped` — the message should appear there as suppressed, not as failed.
 - Request a password reset for a real account and confirm the mail arrives. This is the only mail path kept, so it is the one that must not silently break.
 - Open the invite dialog as an admin and confirm **Max uses** is pre-filled with 1, and that it still accepts a larger number. That is the theme component working; the number reverting to 100 is how its failure looks.
+- Open an invite link and type a username **longer than `max_username_length` minus ten** into it. The field should stop accepting characters at that point, and pasting a longer one should be refused with a sentence about the `-agent` suffix. Both halves of `theme-username-headroom.js` are being checked here: the attribute stops the typing and the validator stops the paste, and either working alone looks like success until the other is needed.
 - Confirm the invitation and verification mails carry the onboarding text. Building them without sending is enough: render each mailer and read the body.
 - Confirm that **editing the welcome topic changes the mail**. Append a line to it, re-run the configuration script, and read the verification mail template back. That is the check that the onboarding text is really sourced from the forum rather than from the repository, and it is worth repeating after an upgrade, because the topic is found by a heuristic rather than by an id.
 - Read the **sent** mail log and confirm every type listed is one you chose. The suppression settings in 5.1 cover notification mail; a plugin that ships its own mailer is a separate path and will not appear in any of them. A type nobody recognises is a quota leak, and the log is where it shows up before the usage counter does.

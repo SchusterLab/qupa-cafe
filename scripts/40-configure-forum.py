@@ -40,7 +40,7 @@ import onboarding
 
 # --------------------------------------------------------------------- config
 
-CONTENT_DIR = Path(__file__).resolve().parent.parent / "config"
+CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
 
 
 def content(name: str) -> str:
@@ -48,7 +48,7 @@ def content(name: str) -> str:
 
     The topic bodies are markdown files rather than strings in here because they
     are posts, and a post is easier to read, review and edit as the thing it
-    will become. config/welcome-topic.md is the same idea.
+    will become. content/welcome-topic.md is the same idea.
     """
     path = CONTENT_DIR / name
     try:
@@ -296,14 +296,21 @@ USERNAME_SETTINGS = {
     "max_username_length": "30",
 }
 
-# The theme component that pre-fills the invite form's "max uses" with 1.
+# The theme component: the front-end behaviour this forum needs and no site
+# setting provides.
 #
-# In the repository as a .js file rather than as a string in here, so that it
-# reads as the JavaScript it is. The comment at its head explains why the value
-# cannot be a site setting.
-THEME_COMPONENT_NAME = "Qupa Cafe invite defaults"
-THEME_COMPONENT_FIELD = "discourse/api-initializers/qupa-invite-defaults.js"
-THEME_COMPONENT_SOURCE = Path(__file__).resolve().parent.parent / "config" / "theme-invite-defaults.js"
+# One component carrying one script per thing it changes. In the repository as
+# .js files rather than as strings in here, so that they read as the JavaScript
+# they are, and each one's head comment explains why it cannot be a setting.
+#
+# A component rather than an edit inside the container, because a theme lives in
+# the database and survives `./launcher rebuild`.
+THEME_COMPONENT_NAME = "Qupa Cafe front-end defaults"
+THEME_COMPONENT_SOURCES = {
+    "discourse/api-initializers/qupa-invite-defaults.js": "theme-invite-defaults.js",
+    "discourse/api-initializers/qupa-username-headroom.js": "theme-username-headroom.js",
+}
+THEME_SOURCE_DIR = Path(__file__).resolve().parent.parent / "config"
 
 # Theme.targets and ThemeField.types, read off the running forum rather than
 # guessed: extra_js is target 6 and js is type 6, and they are different enums.
@@ -796,31 +803,35 @@ def ensure_topic(
 
 
 def ensure_theme_component(api: Discourse) -> None:
-    """Install the component that pre-fills the invite form's "max uses" with 1.
+    """Install the component, with one script per front-end behaviour.
 
     A theme component rather than an edit inside the container, because a theme
     lives in the database and so survives `./launcher rebuild`. An edit to the
     image's source is lost by the next one, silently and at the worst moment.
 
-    Attached to every whole theme rather than only to the default, so that the
-    pre-fill does not depend on which theme a user happens to have selected.
+    Attached to every whole theme rather than only to the default, so that none
+    of it depends on which theme a user happens to have selected.
     """
     print()
     print(f"== Theme component: {THEME_COMPONENT_NAME}")
 
-    try:
-        source = THEME_COMPONENT_SOURCE.read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"   ERROR: cannot read {THEME_COMPONENT_SOURCE}: {exc}", file=sys.stderr)
-        FAILURES.append(f"theme component not installed: {exc}")
-        return
-
-    field = {
-        "name": THEME_COMPONENT_FIELD,
-        "target": THEME_TARGET_EXTRA_JS,
-        "value": source,
-        "type_id": THEME_TYPE_JS,
-    }
+    fields = []
+    for field_name, source_name in THEME_COMPONENT_SOURCES.items():
+        path = THEME_SOURCE_DIR / source_name
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"   ERROR: cannot read {path}: {exc}", file=sys.stderr)
+            FAILURES.append(f"theme component not installed: {exc}")
+            return
+        fields.append(
+            {
+                "name": field_name,
+                "target": THEME_TARGET_EXTRA_JS,
+                "value": source,
+                "type_id": THEME_TYPE_JS,
+            }
+        )
 
     themes = api.get("/admin/themes.json").get("themes", [])
     existing = next((t for t in themes if t.get("name") == THEME_COMPONENT_NAME), None)
@@ -829,7 +840,7 @@ def ensure_theme_component(api: Discourse) -> None:
     if existing is None:
         api.post(
             "/admin/themes.json",
-            json_body={"theme": {"name": THEME_COMPONENT_NAME, "component": True, "theme_fields": [field]}},
+            json_body={"theme": {"name": THEME_COMPONENT_NAME, "component": True, "theme_fields": fields}},
         )
         if api.dry_run:
             print(f"     WOULD PUT /admin/themes/<new>.json parent_theme_ids={parents}")
@@ -840,18 +851,23 @@ def ensure_theme_component(api: Discourse) -> None:
             print("   ERROR: created the component and cannot read it back", file=sys.stderr)
             FAILURES.append("theme component created but could not be read back")
             return
-        print(f"   created    component {existing['id']} from {THEME_COMPONENT_SOURCE.name}")
+        print(f"   created    component {existing['id']} with {len(fields)} script(s)")
         attached = set()
     else:
-        installed = next(
-            (f.get("value") for f in existing.get("theme_fields") or [] if f.get("name") == field["name"]),
-            None,
-        )
-        if installed == source:
-            print(f"   unchanged  component {existing['id']} carries this copy of the script")
+        on_forum = {
+            f.get("name"): f.get("value") for f in existing.get("theme_fields") or []
+        }
+        stale = [f for f in fields if on_forum.get(f["name"]) != f["value"]]
+        if not stale:
+            print(f"   unchanged  component {existing['id']} carries this copy of {len(fields)} script(s)")
         else:
-            api.put(f"/admin/themes/{existing['id']}.json", json_body={"theme": {"theme_fields": [field]}})
-            print(f"   updated    component {existing['id']} from {THEME_COMPONENT_SOURCE.name}")
+            # Every field, not only the stale ones: a PUT carrying a subset is
+            # how a script that was installed once stops being installed.
+            api.put(f"/admin/themes/{existing['id']}.json", json_body={"theme": {"theme_fields": fields}})
+            print(
+                f"   updated    component {existing['id']}: "
+                + ", ".join(sorted(f["name"].rsplit("/", 1)[-1] for f in stale))
+            )
 
         # The serializer may not carry the parents. Unknown means "set them",
         # since the PUT is idempotent and a detached component does nothing at
@@ -949,7 +965,7 @@ def ensure_welcome_topic(
     ``--update-welcome`` is the explicit way to push the tracked text anyway,
     for when the change belongs in version control -- the same escape hatch
     ``--update-policy`` and ``--update-interests`` provide for the other two.
-    Without it a rewrite of `config/welcome-topic.md` reaches new researchers
+    Without it a rewrite of `content/welcome-topic.md` reaches new researchers
     through the mails, which are rendered from this topic, and never reaches
     the topic itself: the forum's copy quietly drifts a release behind and the
     only way to notice is to read both.
@@ -967,7 +983,7 @@ def ensure_welcome_topic(
         print(f"   unchanged  topic {topic['topic_id']} carries the onboarding text, and staff own it")
         body = onboarding.orientation(api.base_url, interests_topic_id)
         if body.strip() != topic["raw"].strip():
-            print(f"   NOTE: it differs from config/welcome-topic.md by "
+            print(f"   NOTE: it differs from content/welcome-topic.md by "
                   f"{abs(len(body) - len(topic['raw']))} characters.")
             print("   Pass --update-welcome to push this repository's copy over it.")
         return topic["raw"]
@@ -978,7 +994,7 @@ def ensure_welcome_topic(
             print(f"   unchanged  topic {topic['topic_id']} already matches this repository")
             return topic["raw"]
         api.put(f"/posts/{topic['post_id']}", {"post[raw]": body})
-        print(f"   updated    topic {topic['topic_id']} from config/welcome-topic.md")
+        print(f"   updated    topic {topic['topic_id']} from content/welcome-topic.md")
         print("   Anything staff had edited there by hand is now overwritten.")
         return body
 
@@ -1112,7 +1128,7 @@ def main() -> int:
     parser.add_argument(
         "--update-welcome",
         action="store_true",
-        help="push config/welcome-topic.md over the forum's copy, which staff otherwise own",
+        help="push content/welcome-topic.md over the forum's copy, which staff otherwise own",
     )
     parser.add_argument(
         "--update-interests",
