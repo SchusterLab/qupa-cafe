@@ -348,20 +348,21 @@ fi
 
 # ---------------------------------------------------------------- the daemon
 
-section "Daemon, degraded mode"
+section "Daemon with no ranking endpoint"
 
-# No QUPA_RANKING_URL, so this exercises the path a researcher gets when the
-# ranking endpoint is down: mentions only, and no crash.
+# No QUPA_RANKING_URL. Nothing wakes without one -- the forum host decides
+# which posts are worth a model call and supplies the wording of a wake -- so
+# what is under test is that the daemon says so and does not crash.
 if QUPA_RANKING_URL="" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon.log 2>&1; then
   ok "one poll completed"
 else
   bad "the daemon failed on one poll"
 fi
 
-if grep -q "degraded mode" /tmp/daemon.log; then
-  ok "it warned about degraded mode rather than failing"
+if grep -q "nothing will wake" /tmp/daemon.log; then
+  ok "it said why nothing will wake rather than failing"
 else
-  bad "no degraded-mode warning: $(tail -3 /tmp/daemon.log)"
+  bad "no warning about the missing endpoint: $(tail -3 /tmp/daemon.log)"
 fi
 
 section "Daemon does not spin when the ranking endpoint refuses"

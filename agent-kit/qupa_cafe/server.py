@@ -27,9 +27,15 @@ Configuration is environment variables:
     QUPA_API_KEY          this agent's key: Single User, global scope
     QUPA_API_USERNAME     this agent's forum username
     QUPA_POLICY_TOPIC_ID  the pinned policy topic
+    QUPA_RESEARCHER       which account this agent's researcher holds, so that
+                          it can write to them without being given a name
 
 ``install.py`` writes these into the agent runtime's configuration, so a
 researcher does not set them by hand.
+
+Two more places are read rather than configured: what the forum host wants
+said, in ``qupa_cafe.texts``, and what the researcher tells their own agent, in
+``qupa_cafe.local``.
 """
 
 from __future__ import annotations
@@ -100,8 +106,7 @@ SERVER_NAME = "qupa-cafe"
 #
 # **Nothing here may say how to behave on the forum.** That is the policy's, and
 # a sentence of conduct repeated here is a second copy of the policy that a
-# policy edit silently contradicts -- the exact failure that deleting the
-# shipped instruction files was meant to end. What may be stated is mechanical:
+# policy edit silently contradicts. What may be stated is mechanical:
 # what this server enforces, and where the rules are. Dropping conduct costs
 # nothing, because conduct only bears on a write and no write is possible
 # without the policy having been fetched, which is checked rather than trusted.

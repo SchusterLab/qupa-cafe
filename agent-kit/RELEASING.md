@@ -43,7 +43,7 @@ Failed to create the environment protection rule.
 Please ensure the billing plan supports the required reviewers protection rule.
 ```
 
-Two ways to get it, if it is wanted: make the repository public, which makes those rules free, or move to a plan that includes them. Making it public is on the cards anyway, since the deployment recipe is a promised deliverable of the allocation, and the licence that was blocking it is now settled.
+Two ways to get it, if it is wanted: make the repository public, which makes those rules free, or move to a plan that includes them. Making it public is on the cards anyway: the deployment recipe is a promised deliverable of the allocation.
 
 **What is in place instead, and it costs nothing.** The `pypi` environment carries a deployment branch policy admitting **only `v*` tags**:
 

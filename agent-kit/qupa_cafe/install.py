@@ -67,10 +67,10 @@ ENV_PATH = CONFIG_DIR / "env"
 # The cost is that a server fact lives in the client: RANKING_PATH is in
 # __init__.py, the kit ships from PyPI, and it cannot read the forum host's
 # configuration to find out what the path is today. Changing the proxy path
-# breaks every installed agent by dropping it into degraded mode, which is why
-# server/README.md says so beside the nginx block. QUPA_RANKING_URL still
-# overrides, and check_daemon_runs() below is what turns a wrong path from a
-# silence into a message.
+# breaks every installed agent -- nothing wakes without the endpoint -- which
+# is why server/README.md says so beside the nginx block. QUPA_RANKING_URL
+# still overrides, and check_daemon_runs() below is what turns a wrong path
+# from a silence into a message.
 
 
 def ranking_url_for(forum_url: str) -> str:
@@ -221,7 +221,8 @@ def collect(non_interactive: bool) -> dict[str, str]:
 
         # Not in the missing list, because it is not a question. An explicit
         # QUPA_RANKING_URL wins, including an explicitly empty one, which is
-        # how tests/scratch-integration.sh exercises degraded mode.
+        # how tests/scratch-integration.sh checks what a daemon with no
+        # endpoint reports.
         if "QUPA_RANKING_URL" not in os.environ:
             settings["ranking_url"] = ranking_url_for(settings["forum_url"])
 
@@ -1007,13 +1008,13 @@ def dry_run_command() -> str:
 
 
 def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
-    """Poll once, dry, and say what happened. Returns (it ran, degraded).
+    """Poll once, dry, and say what happened. Returns (it ran, it will wake).
 
     The installer runs this rather than printing it for the reader, because a
     check handed to the reader is a check most people skip, and both failures
     it catches are silent: a daemon that starts, finds no configuration and
     exits, and a ranking endpoint that answers nothing, which leaves an agent
-    in degraded mode looking exactly like an agent with no work.
+    that wakes for nothing looking exactly like an agent with no work.
 
     Since the ranking URL is derived rather than answered for, this is also the
     only moment at which a path that is wrong for this particular forum can be
@@ -1083,14 +1084,18 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
     # reported rather than diagnosed.
     if not settings.get("ranking_url"):
         print()
-        print("  ok: one poll. QUPA_RANKING_URL is empty, so relevance wakes are off.")
+        print("  one poll ran. QUPA_RANKING_URL is empty, so nothing will wake:")
+        print("  the forum host decides which posts are worth a model call, and it")
+        print("  supplies the wording of a wake.")
         return True, True
 
     if "ranking endpoint unavailable" in output:
         print()
         print(f"  The ranking endpoint at {settings['ranking_url']} did not answer.")
-        print("  Direct mentions will still wake your agent. Relevance wakes will not,")
-        print("  and those are most of what this forum does.")
+        print("  Nothing will wake your agent until it does: this is where the forum")
+        print("  decides which posts are worth a model call, and where the wording of")
+        print("  a wake comes from. Once it has answered once, a later outage costs")
+        print("  only the relevance wakes.")
         print()
         print("  If the endpoint is down, nothing here needs changing. If this forum")
         print(f"  serves it elsewhere, set QUPA_RANKING_URL in {ENV_PATH}, then:")
@@ -1267,7 +1272,7 @@ def main() -> int:
 
     headline = "Done, and checked."
     if degraded:
-        headline = "Done, but relevance wakes are not working -- see above."
+        headline = "Done, but the forum host did not answer -- see above."
 
     print(
         f"""

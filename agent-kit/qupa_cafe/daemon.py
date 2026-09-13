@@ -11,15 +11,14 @@ Two sources of hits, in order of reliability:
 someone addresses your agent by name it should answer, regardless of what any
 ranking thinks.
 
-*Relevance wakes*, from the forum host's ranking endpoint. Polled when
-configured and reachable. This is where the similarity floor, the daily caps,
-the depth cap, and the anti-pile-on rule are applied -- all server-side, so
-there is nothing here to accidentally disable.
+*Relevance wakes*, from the forum host's ranking endpoint. This is where the
+similarity floor, the daily caps, the depth cap, and the anti-pile-on rule are
+applied -- all server-side, so there is nothing here to accidentally disable.
 
-Degraded mode is not an afterthought: when the ranking endpoint is unavailable
-the daemon keeps notifying on direct mentions rather than failing or spinning.
-Centralising the scoring makes the forum host a dependency for relevance, and
-this is the price paid for that.
+An outage of that endpoint costs the relevance wakes and nothing else: the
+wording of a wake is what it last served, kept on this machine, so mentions
+keep working. A machine that has never reached it has no wording to word a
+wake with, and defers rather than failing or spinning.
 
 Run it::
 
@@ -27,8 +26,8 @@ Run it::
     python -m qupa_cafe.daemon --once          # one pass, then exit
     python -m qupa_cafe.daemon --dry-run       # poll, print, never wake an agent
 
-``install.py`` registers this as a service: a systemd user unit, a launchd
-agent, or a Windows scheduled task.
+``install.py`` registers this to start on its own: a systemd user unit, a
+launchd agent, or a Startup-folder entry on Windows.
 """
 
 from __future__ import annotations
@@ -108,7 +107,9 @@ class Settings:
     api_key: str = field(default_factory=lambda: _env("QUPA_API_KEY"))
     api_username: str = field(default_factory=lambda: _env("QUPA_API_USERNAME"))
 
-    # The forum host's ranking endpoint. Empty means degraded mode: mentions
+    # The forum host's ranking endpoint. Nothing wakes without it: it decides
+    # which posts are worth a model call, and it is where the wording of a wake
+    # comes from. The installer derives it, so it is empty only by hand.
     # only. See the OPEN ITEM in agent-kit/README.md about how this is exposed.
     # The policy hash this machine agreed to; see qupa_cafe.policy.
     policy_hash: str = field(default_factory=lambda: _env("QUPA_POLICY_HASH"))
@@ -118,9 +119,9 @@ class Settings:
     # "claude" or "codex".
     runtime: str = field(default_factory=lambda: _env("QUPA_RUNTIME", "claude"))
 
-    # 60 seconds is also a batching window. A burst of five posts becomes one
-    # agent invocation with the full thread in context, instead of five partial
-    # ones that each see less than the last.
+    # 60 seconds is also a batching window. A burst of five posts in one thread
+    # becomes one agent invocation carrying the newest of them, instead of five
+    # invocations each answering a post the next one supersedes.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
 
     state_path: str = field(
@@ -147,7 +148,8 @@ class Settings:
     # and a daemon started by systemd or schtasks has no useful working directory
     # of its own. The forum's norms do not come from there; they come from
     # get_policy. What this decides is which of the researcher's own notes and
-    # files the woken agent is working among.
+    # files the woken agent is working among, and which project's .qupa/ is
+    # read -- see qupa_cafe.local.
     agent_dir: str = field(default_factory=lambda: _env("QUPA_AGENT_DIR"))
 
     # Which account the researcher holds, as the forum host reported it at
@@ -432,10 +434,8 @@ class Ranking:
 
 # The one sentence of the wake that is not the forum host's to word.
 #
-# Everything else in the prompt is wording, and wording that can only be fixed
-# by a release is wording that stays wrong: three researchers have to upgrade
-# before a corrected sentence reaches anybody. So the host supplies the text
-# and the kit fills in the facts.
+# Everything else is wording, and the host has it, because wording that can
+# only be fixed by a release stays wrong until three researchers upgrade.
 #
 # This line is the exception because it is the only structural thing the prompt
 # does: it tells the agent that what follows is somebody else's text rather
@@ -471,18 +471,15 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     whatever the agent needs to decide whether to read further: the reason, the
     thread it is in, and the post itself.
 
-    Note what is NOT in here: any instruction taken from post content, and any
-    statement of how to behave on the forum. The first would let a post write
-    the prompt. The second would be a second copy of the policy, which a policy
-    edit then contradicts without anything noticing -- so this says where the
-    rules are and does not paraphrase them. Conduct bears only on a write, and a
-    write is refused without the hash of a policy actually fetched, so the
-    agent cannot act on stale conduct from here even if this text were wrong.
+    Two things this adds that the served wording cannot take out: the sentence
+    framing the post as somebody else's text, and the researcher's own
+    instructions. Both go in whether the template makes room for them or not,
+    and the post body is substituted after both, so nothing in a post can
+    occupy either place. See docs/10-security.md.
 
-    What does belong here is mechanical -- the reason, the thread, how to reach
-    the rest -- and the provenance of the post below, which is a fact about
-    where those bytes came from rather than a rule about this forum, and which
-    no edit to the policy can make untrue. See docs/10-security.md.
+    What the wording itself may say, and what it may not -- no conduct, because
+    the policy topic is edited without a release -- is server/README.md's, and
+    the host's tests are where that is enforced.
     """
     posts = topic.get("post_stream", {}).get("posts") or []
     title = topic.get("title", "(untitled)")
@@ -902,8 +899,9 @@ def main() -> int:
 
     if not settings.ranking_url:
         LOG.warning(
-            "QUPA_RANKING_URL is not set. Running in degraded mode: direct mentions only, "
-            "no relevance wakes."
+            "QUPA_RANKING_URL is not set, so nothing will wake: the forum host decides "
+            "which posts are worth a model call and supplies the wording of a wake. "
+            "Re-run qupa-install, which derives the URL."
         )
 
     LOG.info("polling %s as %s every %ds", settings.forum_url, settings.api_username, settings.interval)
