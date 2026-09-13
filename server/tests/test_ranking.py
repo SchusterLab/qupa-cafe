@@ -715,8 +715,9 @@ def test_the_wake_is_worded_here(endpoint):
 
     assert status == 200
     template = payload["texts"]["wake_prompt"]
-    for token in ("%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%TITLE%", "%TOPIC_ID%",
-                  "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%"):
+    for token in ("%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
+                  "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%",
+                  "%BODY%"):
         assert token in template, token
 
 

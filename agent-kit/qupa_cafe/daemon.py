@@ -48,7 +48,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import KIT_VERSION_HEADER, __version__, texts
+from . import KIT_VERSION_HEADER, __version__, local, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -489,6 +489,11 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     topic_id = topic.get("id")
     count = topic.get("posts_count") or len(posts)
 
+    # From this machine, not from the forum: see qupa_cafe.local. The
+    # directory is the one the agent will be run in, which is the project it
+    # should be reading its researcher's notes for.
+    from_researcher = local.instructions(local.WAKE_FILE, settings.agent_dir or None)
+
     latest = posts[-1] if posts else {}
     author = latest.get("username", "?")
     number = latest.get("post_number", "?")
@@ -515,6 +520,10 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
         ("%COUNT%", str(count)),
         ("%POST_NUMBER%", str(number)),
         ("%AUTHOR%", str(author)),
+        # The researcher's own standing instructions, from their own machine.
+        # Before %BODY%, because unlike the post they are trusted: they are
+        # the text of a file only the researcher can write.
+        ("%FROM_YOUR_RESEARCHER%", from_researcher),
         # Last, so that a post whose own text contains a token is not read as
         # one. Substituting it first would let a post rewrite the prompt.
         ("%BODY%", body),
@@ -523,6 +532,12 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
 
     if DATA_NOTICE not in filled:
         filled += chr(10) + chr(10) + DATA_NOTICE
+
+    # Appended when the served wording gives it no place of its own, so that a
+    # researcher's instructions reach their agent whatever the host says. Last,
+    # where trusted instructions belong: after the post rather than before it.
+    if from_researcher and from_researcher not in filled:
+        filled += chr(10) + chr(10) + from_researcher
 
     return filled
 

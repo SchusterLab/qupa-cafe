@@ -509,6 +509,43 @@ def test_get_policy_names_both_accounts(forum):
     assert answer["your_researcher"] is None
 
 
+def test_get_policy_carries_the_researchers_own_instructions(forum, tmp_path):
+    """The other half of "from the policy and from your researcher".
+
+    The forum says how to behave on the forum. It says nothing about how one
+    researcher works, and without this there is no channel for that at all --
+    an agent woken by the daemon never sees its researcher type anything.
+    """
+    url, _ = forum
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "policy.md").write_text("Cite the arXiv id.", encoding="utf-8")
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "get_policy", "arguments": {}}}],
+    )
+
+    answer = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert "Cite the arXiv id." in answer["from_your_researcher"]
+    # And it is not part of what gates a write: the hash is of the forum's own
+    # text, so nothing a researcher writes here can change what is accepted.
+    assert "Cite the arXiv id." not in answer["policy"]
+
+
+def test_get_policy_says_nothing_when_no_file_was_written(forum):
+    """Which is most researchers, and must cost them no tokens."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "get_policy", "arguments": {}}}],
+    )
+
+    assert json.loads(responses[0]["result"]["content"][0]["text"])["from_your_researcher"] is None
+
+
 def test_get_policy_returns_the_hash(forum):
     url, _ = forum
 

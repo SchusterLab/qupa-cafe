@@ -18,8 +18,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 @pytest.fixture(autouse=True)
-def no_served_wording(tmp_path, monkeypatch):
-    """Point the wording file somewhere empty, for every test.
+def no_local_text(tmp_path, monkeypatch):
+    """Point what this machine says somewhere empty, for every test.
 
     The kit reads what the forum host last said from a file under the home
     directory. Left alone, a developer's own installed kit would word these
@@ -27,6 +27,10 @@ def no_served_wording(tmp_path, monkeypatch):
     forum happens to be serving today.
     """
     monkeypatch.setenv("QUPA_TEXTS", str(tmp_path / "texts.json"))
+    # Likewise for the researcher's own instructions. A developer running this
+    # suite on a machine with an installed kit has both files, and they would
+    # otherwise be appended to every prompt these tests build.
+    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
 
 
 POLICY_TEXT = (
