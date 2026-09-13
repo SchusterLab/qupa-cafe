@@ -12,7 +12,7 @@ a credential bound to that account alone, and sends the researcher a private
 message containing the values their installer needs.
 
 The researcher's whole job becomes: redeem one invite, read one message, run
-``agent-kit/install.py``.
+``qupa-install``.
 
 Idempotent. Re-running reports what already exists and changes nothing, with one
 deliberate exception described under ``--rotate-key``.

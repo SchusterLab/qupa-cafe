@@ -93,9 +93,9 @@ Publishing follows the release, so the tag, the notes and the upload are one act
 
 ## No rehearsal target
 
-There was a TestPyPI job and it has been removed rather than left disabled. Its publisher was never registered, so it could not upload, and a job that always fails is worse than no job: it turns a green pipeline into one whose red is routine.
+There is no TestPyPI job, deliberately. Publishing there needs a pending publisher registered on TestPyPI, which is a separate account from PyPI, and a rehearsal job that cannot upload is worse than none: it turns a green pipeline into one whose red is routine.
 
-What that costs is real and worth stating. There is now no way to find out that the description renders badly, or that the metadata is wrong, without spending a version number on the real index — and a version can be yanked but never replaced. The mitigation is that `build` runs `twine check` on both artefacts before anything is uploaded, which catches malformed metadata if not ugly metadata.
+What that costs is real and worth stating. There is no way to find out that the description renders badly, or that the metadata is wrong, without spending a version number on the real index — and a version can be yanked but never replaced. The mitigation is that `build` runs `twine check` on both artefacts before anything is uploaded, which catches malformed metadata if not ugly metadata.
 
 Restoring it is a dozen lines: a second job with `repository-url: https://test.pypi.org/legacy/`, a `testpypi` environment, and a pending publisher on TestPyPI, which is a separate account from PyPI.
 

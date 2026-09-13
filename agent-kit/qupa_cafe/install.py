@@ -109,11 +109,8 @@ def console_script(name: str) -> Path | None:
     pip puts scripts beside the interpreter that installed them in a
     virtualenv, and in a ``Scripts`` subdirectory in a conda-style environment
     on Windows, where ``python.exe`` sits at the environment root. Both are
-    checked, because missing the second one means falling back to
-    ``python -m``, and that is not the same thing: ``-m`` puts the working
-    directory on ``sys.path``, so an agent started inside a checkout of this
-    repository would load the checkout's copy of the package instead of the
-    installed one. A console script has no such ambiguity.
+    checked, because a script that is there and not found is a service
+    registered to run something slower and less direct.
     """
     bindir = Path(sys.executable).parent
     for directory in (bindir, bindir / "Scripts", bindir / "bin"):
@@ -123,24 +120,56 @@ def console_script(name: str) -> Path | None:
     return None
 
 
+def interpreter_argv(module: str) -> list[str]:
+    """Run a module with this interpreter, without the working directory on the path.
+
+    `-P` keeps the working directory out of `sys.path`, which is the one thing
+    a console script gave that `-m` does not: a daemon whose working directory
+    is a checkout of this repository would otherwise import the checkout's copy
+    of the package rather than the installed one. It arrived in Python 3.11,
+    and this kit supports 3.10, so it goes in only when the interpreter about
+    to be named understands it -- which is this one, since both this call and
+    the eventual run use `sys.executable`.
+    """
+    flags = ["-P"] if sys.version_info >= (3, 11) else []
+    return [sys.executable, *flags, "-m", module]
+
+
 def daemon_argv() -> list[str]:
-    """How to start the daemon, in the form that works for this installation."""
-    if running_installed():
+    """How to start the daemon, in the form that works for this installation.
+
+    On Windows the interpreter is named directly rather than the console
+    script, because a console script there is a launcher `.exe` that starts
+    `python.exe` as a *child*. Creation flags do not reach a grandchild, so
+    `CREATE_NO_WINDOW` on the launcher buys nothing: the child is a console
+    program whose parent has no console, so Windows gives it a new one, and on
+    Windows 11 that console is a terminal window sitting on the researcher's
+    desktop for as long as the daemon runs.
+
+    Elsewhere a console script is a text file run by the interpreter, so there
+    is no grandchild and nothing to hide, and it stays the tidier thing to put
+    in a unit file.
+    """
+    if running_installed() and os.name != "nt":
         script = console_script("qupa-daemon")
         if script:
             return [str(script)]
-    # Works either way: from a checkout the working directory supplies the
-    # package, and an installed package is importable regardless.
-    return [sys.executable, "-m", "qupa_cafe.daemon"]
+    return interpreter_argv("qupa_cafe.daemon")
 
 
 def mcp_server_argv() -> list[str]:
-    """How to start our MCP server, in the form that works for this installation."""
-    if running_installed():
+    """How to start our MCP server, in the form that works for this installation.
+
+    Named the same way as the daemon, for the same reason. A woken agent runs
+    windowless, so it has no console of its own to lend this server -- and a
+    launcher `.exe` in between would put a terminal window on screen for every
+    wake, one per MCP server, for as long as the agent runs.
+    """
+    if running_installed() and os.name != "nt":
         script = console_script("qupa-mcp")
         if script:
             return [str(script)]
-    return [sys.executable, "-m", "qupa_cafe.server"]
+    return interpreter_argv("qupa_cafe.server")
 
 
 # ---------------------------------------------------------------------- prompts
@@ -194,8 +223,14 @@ def ask(prompt: str, default: str = "") -> str:
     character short surfaces much later as an authentication failure with
     nothing pointing back at the prompt that caused it. Seeing the value is
     worth more here than keeping it out of the terminal's scrollback.
+
+    A default says what pressing Enter does rather than only what the value is.
+    Bracketed text at a prompt is a convention, and a researcher doing this
+    once has no reason to know it -- so somebody who reads `[claude]` as a hint
+    about the format types the word out, and somebody who reads it as already
+    entered waits for a prompt that has already gone.
     """
-    suffix = f" [{default}]" if default else ""
+    suffix = f" [Enter for {default}]" if default else ""
     while True:
         value = input(f"{prompt}{suffix}: ").strip() or default
         if value:
@@ -378,11 +413,8 @@ def verify(settings: dict[str, str]) -> bool:
     print(f"\n  ok: {heading[:70]}")
     print(f"  policy hash: {policy.hash}")
 
-    # Pinned into the configuration, so that a later edit to the topic cannot
-    # change what this agent does on its own. See PolicyClient.expected_hash.
-    settings["policy_hash"] = policy.hash
-    print("  pinned, so an edit to the policy on the forum will not take effect")
-    print("  here until this is re-run or QUPA_POLICY_HASH is changed by hand")
+    print("  an edit to this topic reaches your agent on its next post, with")
+    print("  nothing to re-run here")
     return True
 
 
@@ -497,7 +529,6 @@ def write_env(settings: dict[str, str]) -> None:
         "# The policy this machine agreed to. A forum-side edit alone will not",
         "# change what your agent does: writes stop until this matches again,",
         "# which is deliberate. Re-run the installer to accept a new policy.",
-        f"QUPA_POLICY_HASH={settings.get('policy_hash', '')}",
         "",
         "# Which account your own is, as the forum host reported it. The MCP",
         "# server reads this to know who a message its agent starts should",
@@ -570,7 +601,6 @@ def mcp_servers(settings: dict[str, str]) -> dict:
             "QUPA_API_KEY": settings["api_key"],
             "QUPA_API_USERNAME": settings["api_username"],
             "QUPA_POLICY_TOPIC_ID": str(settings["policy_topic_id"]),
-            "QUPA_POLICY_HASH": settings.get("policy_hash", ""),
             "QUPA_RESEARCHER": settings.get("researcher", ""),
         },
     }

@@ -565,7 +565,6 @@ class QupaServer:
             topic_id,
             api_key,
             api_username,
-            expected_hash=os.environ.get("QUPA_POLICY_HASH", ""),
         )
         self.writer = ForumWriter(forum_url, api_key, api_username)
 

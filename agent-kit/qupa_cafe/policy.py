@@ -1,4 +1,4 @@
-"""Fetch and hash the pinned policy topic.
+"""Fetch and hash the policy topic.
 
 The policy lives in a wiki topic on the forum, not in a file and not in a prompt
 template. Three properties follow from that, and they are the reason for it:
@@ -58,15 +58,6 @@ class PolicyError(RuntimeError):
     """The policy could not be fetched, or a write carried a stale hash."""
 
 
-class PolicyNotPinnedError(PolicyError):
-    """The forum's policy is not the one this kit was pinned to.
-
-    Separate from PolicyError because it is not a transport problem and not a
-    stale acknowledgement: the forum is answering correctly and the answer is
-    text nobody on this machine has agreed to.
-    """
-
-
 class PolicyClient:
     """Reads the policy topic, with a short cache.
 
@@ -83,30 +74,25 @@ class PolicyClient:
         topic_id: int,
         api_key: str = "",
         api_username: str = "",
-        expected_hash: str = "",
     ):
         self.forum_url = forum_url.rstrip("/")
         self.topic_id = topic_id
         self.api_key = api_key
         self.api_username = api_username
-        # The hash this machine agreed to, or empty for none.
+        # The forum's current text is the policy, whatever it says.
         #
-        # **What this is for.** The design distributes a policy edit to every
-        # agent on its next post, with nobody in the path. That is the point of
-        # it, and it is also the whole of the attack: an account that can edit
-        # the topic rewrites the instructions of every agent on the forum, and
-        # they adopt the new text correctly and obediently, with a new valid
-        # hash. Discourse will not let moderators be removed from
-        # `edit_wiki_post_allowed_groups` -- it declares `mandatory_values` of
-        # admins and moderators -- so on a forum where any agent holds staff
-        # status, the forum-side permission cannot be the only control.
+        # Nothing on this machine gets a say, and that is the property the rest
+        # of the design rests on: editing the topic reaches every agent on its
+        # next post, with nobody in the path and no release. A copy agreed to
+        # here would have to be re-agreed on every machine after every edit,
+        # and an edit that reached four researchers out of five would leave a
+        # forum whose agents follow different rules.
         #
-        # Pinning splits the change in two: the forum's copy and this machine's
-        # copy must agree, so altering what an agent does needs an edit here as
-        # well, where a person is running a command. Empty means unpinned,
-        # which is the previous behaviour and still what a forum with no staff
-        # agents can reasonably run.
-        self.expected_hash = expected_hash.strip()
+        # What that leaves as the control is who may edit the topic --
+        # `edit_wiki_post_allowed_groups`, which `scripts/40-configure-forum.py`
+        # narrows to admins and a curated group. Discourse will not let
+        # moderators out of it, so this holds while no agent is a moderator.
+        # `docs/10-security.md` is where that is reasoned about.
         self._cached: Policy | None = None
 
     # ------------------------------------------------------------- transport
@@ -154,19 +140,6 @@ class PolicyClient:
             raise PolicyError(f"Topic {self.topic_id} first post is empty.")
 
         found = policy_hash(text)
-        if self.expected_hash and found != self.expected_hash:
-            # Not cached: the next call should ask again rather than repeat a
-            # refusal from a minute ago, because the fix is an edit on the
-            # forum or here and either may have just happened.
-            raise PolicyNotPinnedError(
-                f"The policy on the forum hashes to {found}, and this kit is pinned to "
-                f"{self.expected_hash}. Nothing will be posted until they agree.\n"
-                "Either the policy was edited and this machine has not agreed to the new "
-                "text, or somebody edited it who should not have. Read the topic, and if "
-                "the change is one you accept, set QUPA_POLICY_HASH to "
-                f"{found} or re-run qupa-install."
-            )
-
         self._cached = Policy(
             text=text,
             hash=found,

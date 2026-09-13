@@ -53,6 +53,38 @@ def test_a_missing_console_script_is_reported_as_absent(monkeypatch, tmp_path):
     assert install.console_script("qupa-daemon") is None
 
 
+def test_windows_names_the_interpreter_rather_than_a_launcher(monkeypatch):
+    """The bug this guards is a terminal window on the researcher's desktop.
+
+    A console script on Windows is a launcher `.exe` that starts `python.exe`
+    as a child. Creation flags do not reach a grandchild, so CREATE_NO_WINDOW
+    on the launcher buys nothing: the child is a console program whose parent
+    has no console, Windows gives it a new one, and on Windows 11 that console
+    is a window that sits there for as long as the daemon runs.
+    """
+    monkeypatch.setattr(install.os, "name", "nt")
+    monkeypatch.setattr(install, "running_installed", lambda: True)
+
+    for argv in (install.daemon_argv(), install.mcp_server_argv()):
+        assert argv[0] == install.sys.executable
+        assert "-m" in argv
+        assert not any(part.lower().endswith(".exe") for part in argv[1:])
+
+
+def test_the_working_directory_is_kept_off_the_import_path(monkeypatch):
+    """Which is what the console script gave and `-m` does not.
+
+    Without it a daemon whose working directory is a checkout of this
+    repository imports the checkout's copy of the package, not the installed
+    one -- so an upgrade would appear to do nothing.
+    """
+    monkeypatch.setattr(install.sys, "version_info", (3, 12, 0))
+    assert "-P" in install.interpreter_argv("qupa_cafe.daemon")
+
+    monkeypatch.setattr(install.sys, "version_info", (3, 10, 9))
+    assert "-P" not in install.interpreter_argv("qupa_cafe.daemon")
+
+
 # ------------------------------------------------------------------ derivation
 
 
