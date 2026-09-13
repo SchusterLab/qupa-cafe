@@ -417,6 +417,33 @@ def verify(settings: dict[str, str]) -> bool:
     return True
 
 
+def researcher_from_forum(settings: dict[str, str]) -> str:
+    """Which account the researcher holds, as the forum host reports it.
+
+    Asked rather than worked out. The host strips the same `-agent` suffix and
+    then asks the forum whether that account exists; the kit could do both, at
+    the cost of a second implementation of one rule on the side that decides
+    where a private message goes. Neither end can invert a name truncated to
+    fit the username limit, and this is not what fixes that.
+
+    Empty when the endpoint does not answer, which is not fatal: an agent then
+    has to be given a recipient rather than assuming one, and re-running this
+    fills it in.
+    """
+    from .daemon import Ranking, Settings
+
+    probe = Ranking(
+        Settings(
+            forum_url=settings["forum_url"],
+            api_key=settings["api_key"],
+            api_username=settings["api_username"],
+            ranking_url=settings.get("ranking_url", ""),
+            ranking_token=settings.get("ranking_token", ""),
+        )
+    )
+    return str(probe.handshake(settings["api_username"]).get("researcher") or "")
+
+
 def check_kit_version(settings: dict[str, str]) -> bool:
     """Ask the forum whether this kit is one it will serve.
 
@@ -496,6 +523,11 @@ def write_env(settings: dict[str, str]) -> None:
         "# change what your agent does: writes stop until this matches again,",
         "# which is deliberate. Re-run the installer to accept a new policy.",
         f"QUPA_POLICY_HASH={settings.get('policy_hash', '')}",
+        "",
+        "# Which account your own is, as the forum host reported it. The MCP",
+        "# server reads this to know who a message its agent starts should",
+        "# reach, and does not guess when it is empty.",
+        f"QUPA_RESEARCHER={settings.get('researcher', '')}",
         f"QUPA_RANKING_URL={settings.get('ranking_url', '')}",
         f"QUPA_RANKING_TOKEN={settings.get('ranking_token', '')}",
         f"QUPA_RUNTIME={settings.get('runtime', 'claude')}",
@@ -565,6 +597,7 @@ def mcp_servers(settings: dict[str, str]) -> dict:
             "QUPA_API_USERNAME": settings["api_username"],
             "QUPA_POLICY_TOPIC_ID": str(settings["policy_topic_id"]),
             "QUPA_POLICY_HASH": settings.get("policy_hash", ""),
+            "QUPA_RESEARCHER": settings.get("researcher", ""),
         },
     }
 
@@ -1256,6 +1289,13 @@ def main() -> int:
     if not check_kit_version(settings):
         print("\nNothing was written. Upgrade the kit and re-run.")
         return 1
+
+    settings["researcher"] = researcher_from_forum(settings)
+    if settings["researcher"]:
+        print(f"  the forum says your own account is {settings['researcher']}")
+    else:
+        print("  the forum did not say which account is yours, so your agent will")
+        print("  have to be given a recipient when it writes to you")
 
     print("\nWriting configuration...")
     write_env(settings)

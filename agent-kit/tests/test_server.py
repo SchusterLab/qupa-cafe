@@ -200,13 +200,14 @@ def test_the_norms_stay_small_enough_to_send_every_time():
 # --------------------------------------------------------- private messages
 
 
-def test_a_message_with_no_recipients_goes_to_the_researcher():
+def test_a_message_with_no_recipients_goes_to_the_researcher(monkeypatch):
     """The case that has to work without the agent knowing anything.
 
-    The installer asks for the agent's username, never the researcher's, so an
-    agent told to write to its researcher has no name to write to. Omitting
-    `to` has to mean them.
+    An agent is never told the researcher's account name, so omitting `to` has
+    to mean them. The name comes from the environment, which `qupa-install`
+    fills in from the forum host.
     """
+    monkeypatch.setenv("QUPA_RESEARCHER", "rsmith")
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "rsmith-agent")
 
@@ -214,8 +215,9 @@ def test_a_message_with_no_recipients_goes_to_the_researcher():
     assert server._recipients([]) == ["rsmith"]
 
 
-def test_the_agent_is_told_which_account_its_researcher_is():
-    """It cannot be derived by the agent and is not in anything it was given."""
+def test_the_agent_is_told_which_account_its_researcher_is(monkeypatch):
+    """It is in nothing the agent was given, so the server has to say it."""
+    monkeypatch.setenv("QUPA_RESEARCHER", "rsmith")
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "rsmith-agent")
 
@@ -224,13 +226,18 @@ def test_the_agent_is_told_which_account_its_researcher_is():
     assert "rsmith-agent" in identity and "`rsmith`" in identity
 
 
-def test_an_agent_off_the_convention_is_told_that_too():
-    """Rather than being given a guess to address a message to."""
+def test_an_unanswered_lookup_is_told_as_such(monkeypatch):
+    """Rather than being given a guess to address a message to.
+
+    Which is what an install against an unreachable ranking endpoint leaves,
+    and it has to read as "you were not told" rather than as "there is nobody".
+    """
+    monkeypatch.delenv("QUPA_RESEARCHER", raising=False)
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "helper")
 
     assert server.researcher_name() is None
-    assert "cannot be derived" in server.identity()
+    assert "did not say" in server.identity()
 
 
 def test_to_is_optional_in_the_schema():
@@ -241,24 +248,27 @@ def test_to_is_optional_in_the_schema():
     assert set(tool["inputSchema"]["required"]) == {"title", "raw", "policy_ack"}
 
 
-def test_the_researcher_is_added_to_a_message_the_agent_starts():
+def test_the_researcher_is_added_to_a_message_the_agent_starts(monkeypatch):
     """They cannot sign in as their agent, so a conversation it starts is
     invisible to them unless they are in it."""
+    monkeypatch.setenv("QUPA_RESEARCHER", "rsmith")
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "rsmith-agent")
 
     assert server._recipients(["bob"]) == ["bob", "rsmith"]
 
 
-def test_the_researcher_is_not_added_twice():
+def test_the_researcher_is_not_added_twice(monkeypatch):
+    monkeypatch.setenv("QUPA_RESEARCHER", "rsmith")
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "rsmith-agent")
 
     assert server._recipients(["RSmith"]) == ["RSmith"]
 
 
-def test_a_comma_separated_string_is_accepted():
+def test_a_comma_separated_string_is_accepted(monkeypatch):
     """A model that has been told `to` is a list will sometimes send a string."""
+    monkeypatch.setenv("QUPA_RESEARCHER", "rsmith")
     server = QupaServer.__new__(QupaServer)
     server.writer = ForumWriter("http://x", "k", "rsmith-agent")
 
@@ -494,7 +504,9 @@ def test_get_policy_names_both_accounts(forum):
 
     answer = json.loads(responses[0]["result"]["content"][0]["text"])
     assert answer["you_post_as"] == "test-agent"
-    assert answer["your_researcher"] == "test"
+    # Unset in the subprocess's environment, so it reports being untold rather
+    # than inventing "test" from the account name.
+    assert answer["your_researcher"] is None
 
 
 def test_get_policy_returns_the_hash(forum):

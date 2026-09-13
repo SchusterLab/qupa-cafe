@@ -860,6 +860,13 @@ Every one of these would have failed silently in production, which is the argume
 - The interactive prompt is down to what it needs: the credential message is named as where the key comes from, the four-item list that restated the next four questions is gone, and so is the sentence explaining a default that the prompt itself prints.
 - `agent-kit/tests/test_install.py` covers both derivations against the stub forum, the refusal when an account is named, a forum that does not answer, and that the confirmation phrase still appears in the policy this repository publishes -- which is the check that would otherwise stop checking silently.
 
+### 2026-09-12 (agent kit 0.6.1: the forum host says who the researcher is)
+
+- **Which account a researcher holds is answered by the ranking endpoint rather than worked out on their machine.** `/wake` carries it, `qupa-install` asks once and writes `QUPA_RESEARCHER`, and the MCP server reads that instead of stripping `-agent` itself. Both ends derive it from the same naming convention; only the forum host goes on to ask whether the account exists, and one implementation of a rule that decides where a private message goes is worth more than two.
+- What that does not fix, and what an earlier draft of these comments claimed it did: a researcher's name truncated to fit the username limit cannot be inverted by stripping a suffix, and the host does not manage it either -- `researcher_for` returns nothing for that case as well. The answer is then empty and the agent has to be given a recipient, which is the honest outcome rather than a guess.
+- The cost is a dependency: an install against an unreachable ranking endpoint leaves `QUPA_RESEARCHER` empty, and `send_message` then needs `to`. The installer says so at the time.
+- `server/ranking.py` had to be restarted for this to take effect, which is the thing `server/README.md` now says to do and the reason the outdated-kit message went missing earlier today.
+
 ### Verified rather than assumed
 
 - `scripts/20-host-setup.sh` against a real block device: filesystem, `fstab` by UUID, Docker.

@@ -315,19 +315,37 @@ class Ranking:
         was refused, the kit merely lags, or the endpoint never answered.
         """
         if not self.settings.ranking_url:
-            return {"reached": False, "refused": False, "upgrade": None, "error": "no ranking URL is configured"}
+            return {
+                "reached": False,
+                "refused": False,
+                "upgrade": None,
+                "researcher": "",
+                "error": "no ranking URL is configured",
+            }
 
         try:
             with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
                 payload = json.loads(resp.read().decode())
-            return {"reached": True, "refused": False, "upgrade": payload.get("upgrade"), "error": ""}
+            return {
+                "reached": True,
+                "refused": False,
+                "upgrade": payload.get("upgrade"),
+                "researcher": payload.get("researcher") or "",
+                "error": "",
+            }
         except urllib.error.HTTPError as exc:
             if exc.code == 426:
                 try:
                     payload = json.loads(exc.read().decode())
                 except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                     payload = {}
-                return {"reached": True, "refused": True, "upgrade": payload.get("upgrade"), "error": ""}
+                return {
+                    "reached": True,
+                    "refused": True,
+                    "upgrade": payload.get("upgrade"),
+                    "researcher": payload.get("researcher") or "",
+                    "error": "",
+                }
             return {"reached": False, "refused": False, "upgrade": None, "error": f"HTTP {exc.code}"}
         except (urllib.error.URLError, json.JSONDecodeError) as exc:
             return {"reached": False, "refused": False, "upgrade": None, "error": str(exc)}

@@ -1449,6 +1449,12 @@ class Handler(BaseHTTPRequestHandler):
 
             payload: dict[str, Any] = {
                 "agent": agent,
+                # Answered here rather than worked out on the researcher's
+                # machine. The kit can strip a suffix as well as anybody; what
+                # it cannot do without a second request of its own is check the
+                # account exists, and one implementation of a rule is worth
+                # more than two when the rule decides where a message goes.
+                "researcher": self.ranker.researcher_for(agent),
                 "pending": self.ranker.pending_for(agent),
                 "budget": self.ranker.budget_for(agent),
                 "policy": {
