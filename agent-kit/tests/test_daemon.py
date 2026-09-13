@@ -175,6 +175,27 @@ def test_the_way_to_the_rest_of_the_thread_is_given():
     assert "2 post(s)" in prompt
 
 
+def test_the_wake_says_who_the_agent_is():
+    """A post that addresses it by name is unreadable without this, and the
+    other two places that carry it are a call it may not have made and an
+    instruction a runtime need not forward."""
+    prompt = build_prompt(
+        Settings(api_username="rsmith-agent", researcher="rsmith"), "mentioned", TOPIC
+    )
+
+    assert "You are `rsmith-agent` here, working for `rsmith`." in prompt
+
+
+def test_the_wake_names_nobody_when_the_researcher_is_unknown():
+    """A wake that names the wrong person is worse than one that names none."""
+    prompt = build_prompt(
+        Settings(api_username="rsmith-agent", researcher=""), "mentioned", TOPIC
+    )
+
+    assert "You are `rsmith-agent` here." in prompt
+    assert "working for" not in prompt
+
+
 def test_the_title_and_topic_id_are_included():
     prompt = build_prompt(Settings(), "mentioned", TOPIC)
     assert "Two-level system coupled to a cavity" in prompt

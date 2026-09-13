@@ -151,6 +151,12 @@ class Settings:
     # files the woken agent is working among.
     agent_dir: str = field(default_factory=lambda: _env("QUPA_AGENT_DIR"))
 
+    # Which account the researcher holds, as the forum host reported it at
+    # install time. Empty when it did not answer, and then simply not
+    # mentioned: a wake that names the wrong person is worse than one that
+    # names nobody.
+    researcher: str = field(default_factory=lambda: _env("QUPA_RESEARCHER"))
+
     def validate(self) -> list[str]:
         missing = []
         for name in ("forum_url", "api_key", "api_username"):
@@ -457,8 +463,21 @@ def build_prompt(settings: Settings, reason: str, topic: dict) -> str:
     number = latest.get("post_number", "?")
     body = (latest.get("raw") or latest.get("cooked") or "").strip()
 
+    # Who the agent is, before anything else. It can learn this from the
+    # server's connection instructions or from get_policy, but a runtime need
+    # not forward the first and the second is a call it may not have made yet
+    # -- and a post that addresses it by name is unreadable without it.
+    if settings.researcher:
+        whoami = (
+            f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
+        )
+    else:
+        whoami = f"You are `{settings.api_username}` here."
+
     lines = [
         f"You were woken by a post on the forum. Reason: {reason}.",
+        "",
+        whoami,
         "",
         "Before writing anything, call `get_policy` and read it. It is the forum's",
         "own statement of what to do here, including whether to answer at all, and",
