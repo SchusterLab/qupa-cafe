@@ -69,18 +69,5 @@ packages = ["qupa_cafe"]
 [tool.setuptools.dynamic]
 version = { attr = "qupa_cafe.__version__" }
 
-# The agent's own instruction files ship with the package.
-#
-# They used to live in claude-code/ and codex/, outside the package, and the
-# setup instructions said to copy them out of a git checkout -- which a
-# `pip install` does not have. A wheel can only carry files from inside the
-# package directory, so that is where they live now, and qupa_cafe/install.py
-# prints their resolved path.
-[tool.setuptools.package-data]
-# Everything, not only the markdown: the wiring notes reference the snippets
-# beside them, and a shipped document that points at a file the wheel left
-# behind is the same broken reference in a smaller font.
-qupa_cafe = ["resources/*"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]

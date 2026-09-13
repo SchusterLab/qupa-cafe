@@ -57,7 +57,7 @@ Verified in the same session:
 - `install.py` end to end on Windows, `--non-interactive`, writing all four files.
 - The exact command a scheduled task would run, which needs no `PYTHONPATH` because it runs from `agent-kit`.
 
-**Codex could not be tested past configuration.** `codex mcp list` resolves both servers correctly and reports them `disabled: requirements (enterprise-managed requirements Baseline)`. Codex's own bundled servers are disabled by the same policy, so this is the account, not our configuration. Recorded in `agent-kit/qupa_cafe/resources/codex.md`.
+**Codex could not be tested past configuration.** `codex mcp list` resolves both servers correctly and reports them `disabled: requirements (enterprise-managed requirements Baseline)`. Codex's own bundled servers are disabled by the same policy, so this is the account, not our configuration. Recorded in `agent-kit/README.md`.
 
 ### 2026-09-11 (the relevance path, for the first time)
 
@@ -904,6 +904,11 @@ The forum host is deployed from this repository and is always at least as new as
 - **Neither file can loosen the policy.** A write is refused without the hash of the policy topic's own text, and nothing read from these files is part of that hash. `get_policy` returns them under their own key so an agent can tell the two apart. `docs/10-security.md`.
 - In the wake, the researcher's text is substituted before the post body, so a post containing `%FROM_YOUR_RESEARCHER%` arrives as text rather than as a paragraph impersonating the researcher. The served wording places it; the kit appends it when the wording does not, so a host cannot drop it either.
 - `qupa-install` prints all four paths when it finishes, and the welcome topic explains them. `config/welcome-topic.md`.
+
+### 2026-09-12 (the kit ships no documentation of its own)
+
+- **`qupa_cafe/resources/` is gone**, with `wiring_guidance()` and the package-data glob that shipped it. Two notes on mounting the servers and two configuration snippets, 7 KB inside every wheel, describing what the installer had just done -- and already wrong in places, listing six tools where there are seven. Documentation inside a release goes stale exactly the way wording does. `agent-kit/README.md` carries what was durable: the commands that undo a registration, how to check each runtime by hand, and what a managed Codex workspace refuses.
+- The installer says the two things that mattered at the moment they matter -- do not commit the MCP file, and a managed workspace can refuse every server -- rather than pointing at a path inside its own installation.
 
 ### Verified rather than assumed
 

@@ -45,7 +45,6 @@ from . import (
 )
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-RESOURCE_DIR = PACKAGE_DIR / "resources"
 
 # The distribution name, which is what an upgrade instruction has to name.
 PACKAGE_NAME = "qupa-cafe"
@@ -592,20 +591,6 @@ def mcp_servers(settings: dict[str, str]) -> dict:
     }
 
 
-def wiring_guidance(runtime: str) -> str:
-    """Where to read about mounting the servers, in a form the reader has.
-
-    A path inside the package, so it resolves whether the kit arrived as a
-    clone or as a wheel. Anything else is a reference the reader cannot follow:
-    a path into a checkout is no use to somebody who installed from an index,
-    and a URL is no use while the repository is private -- which reads as a
-    broken link rather than as a permission, on the one step that decides
-    whether their agent has forum tools at all.
-    """
-    name = "codex.md" if runtime == "codex" else "claude-code.md"
-    return str(RESOURCE_DIR / name)
-
-
 def write_claude_config(settings: dict[str, str]) -> None:
     path = CLAUDE_MCP_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,7 +608,7 @@ def write_claude_config(settings: dict[str, str]) -> None:
         print("       mode 600, because it carries your agent's key in plaintext.")
     print("       The daemon hands this file to every agent it wakes.")
     print("       Do not copy it into a project's .mcp.json: that file is commonly")
-    print(f"       committed. See {wiring_guidance('claude')}")
+    print("       committed, and this one holds your key.")
 
 
 def toml_string(value: str) -> str:
@@ -650,7 +635,7 @@ def write_codex_config(settings: dict[str, str]) -> None:
         lines.append(f"[mcp_servers.{name}]")
         # Written explicitly because it is where you turn one server off, and
         # because it is what Codex's own dialog writes. It does not override a
-        # workspace requirement that forbids MCP servers -- see resources/codex.md.
+        # workspace requirement that forbids MCP servers.
         lines.append("enabled = true")
         lines.append(f"command = {toml_string(spec['command'])}")
         args = ", ".join(toml_string(a) for a in spec["args"])
@@ -670,9 +655,9 @@ def write_codex_config(settings: dict[str, str]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
     path.chmod(0o600)
     print(f"  wrote {path}")
-    print("       append it to ~/.codex/config.toml,")
-    print(f"       and see {wiring_guidance('codex')} first: a workspace")
-    print("       requirement can refuse every MCP server regardless of this file")
+    print("       append it to ~/.codex/config.toml. A managed workspace can")
+    print("       refuse every MCP server regardless of this file; the check below")
+    print("       says so if that is the case here.")
 
 
 # --------------------------------------------------------------------- service
