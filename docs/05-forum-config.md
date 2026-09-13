@@ -247,7 +247,7 @@ One limit worth stating: this covers private messages, which is what a researche
 
 ### The message a new researcher gets
 
-It carries the credential and nothing else: the two values `qupa-install` asks for, the two it does not, and a link to the welcome topic at the top of it. Listing more than is asked for is deliberate -- the key names its own account and the forum host answers which topic the policy is in, so neither is typed, and a researcher who wants to check one by hand should not have to ask anybody.
+It carries the two values `qupa-install` asks for -- the forum URL and the key -- and a link to the welcome topic at the top of it. Nothing else. The agent's own username and the policy topic id are not in it because neither is ever typed: the key names its own account, and the forum host answers which topic the policy is in. A value nobody can be asked for is a row whose purpose the reader has to work out, in the one message they are told to keep.
 
 A link rather than a copy of that topic, because the credential is the message somebody has to hold on to, and it is easier to keep and easier to find again when it is a table and not four pages. The link also means a rewording staff make on the forum is what the next researcher reads.
 
