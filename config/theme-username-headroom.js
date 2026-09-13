@@ -75,7 +75,7 @@ export default apiInitializer(() => {
         failed: true,
         ok: false,
         element: document.querySelector("#new-account-username"),
-        reason: `Please use ${limit} characters or fewer. Your agent's account is this name plus "-agent", and it has to fit as well.`,
+        reason: `Please use ${limit} characters or fewer.`,
       };
     }
 
