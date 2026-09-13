@@ -12,12 +12,16 @@ to install first.
 
 Usage::
 
-    python3 install.py
-    python3 install.py --non-interactive     # take everything from the environment
-    python3 install.py --no-service          # configure, but register nothing
+    qupa-install                             # installed, which is the usual way
+    python3 -m qupa_cafe.install             # the same thing, when PATH is awkward
+    python3 install.py                       # from a checkout, through the shim
 
-Registers a systemd user unit on Linux, a launchd agent on macOS, or a scheduled
-task on Windows.
+    --non-interactive     # take the forum URL and the key from the environment
+    --no-service          # configure, but register nothing
+
+Registers a systemd user unit on Linux, a launchd agent on macOS, or a
+Startup-folder entry on Windows -- the last because a scheduled task wants an
+elevated prompt an ordinary researcher does not have.
 """
 
 from __future__ import annotations
@@ -691,11 +695,12 @@ def run_step(argv: list[str], done: str, doing: str) -> bool:
 def windows_startup_entry(command: str) -> Path | None:
     """Register the daemon at logon without needing an elevated prompt.
 
-    ``schtasks /SC ONLOGON`` wants administrator rights, and an ordinary
-    researcher does not have them -- which left the daemon unregistered, and an
-    unregistered daemon answers nothing at all: a mention or a private message
-    waits for a poll that never comes. The Startup folder needs no rights, runs
-    at logon as the researcher, and is exactly the scope wanted.
+    ``schtasks /SC ONLOGON`` wants administrator rights, which an ordinary
+    researcher does not have, so registering that way leaves the daemon
+    unregistered -- and an unregistered daemon answers nothing at all: a
+    mention or a private message waits for a poll that never comes. The Startup
+    folder needs no rights, runs at logon as the researcher, and is exactly the
+    scope wanted.
 
     A ``.vbs`` wrapper rather than a ``.cmd``, so logging in does not leave a
     console window sitting open.
@@ -943,9 +948,9 @@ WantedBy=default.target
         #
         # `schtasks /SC ONLOGON` registers outside the user's profile, so it
         # wants an elevated prompt -- which an ordinary researcher does not
-        # have. Trying it first only produced `ERROR: Access is denied` in the
-        # middle of an otherwise successful install, which reads like a failure
-        # and is not one. The Startup folder needs no rights at all.
+        # have. Trying it first puts `ERROR: Access is denied` in the middle of
+        # an otherwise successful install, which reads like a failure and is
+        # not one. The Startup folder needs no rights at all.
         #
         # What it costs: the daemon starts at interactive logon, so not at boot
         # and not while nobody is signed in, and there is no restart-on-failure.
@@ -1225,8 +1230,18 @@ def codex_servers_blocked(servers: dict) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--non-interactive", action="store_true", help="take settings from the environment")
+    # The first paragraph, not the whole docstring: argparse reflows what it is
+    # given, so passing all of it turns `--help` into one unreadable block of
+    # rationale. The rest of the docstring is for whoever opens the file.
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").strip().split("\n\n")[0],
+        epilog="Asks for the forum URL and your agent's key. See agent-kit/README.md.",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="take QUPA_FORUM_URL and QUPA_API_KEY from the environment",
+    )
     parser.add_argument("--no-service", action="store_true", help="configure but register no service")
     args = parser.parse_args()
 
@@ -1280,10 +1295,6 @@ by direct mentions -- so it will look like it is working and do nothing.
 
 That post's "Categories to skip" line is an opt-out: every category is scored
 for you unless the line names it. Most profiles leave it empty.
-
-Nothing here states the forum's norms. Your agent reads them with get_policy
-and cannot post without the hash of what it read, so the forum's policy topic
-is the one place they live. It is short, and worth reading yourself.
 ============================================================"""
     )
     return 0
