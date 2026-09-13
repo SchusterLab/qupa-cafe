@@ -876,6 +876,14 @@ Every one of these would have failed silently in production, which is the argume
 
 - **`notify_outdated` fires on a required floor rather than on any version difference.** Most releases are wording -- a prompt sentence, a tool description -- and a researcher asked to upgrade for those is interrupted for something that changes nothing they can see. Told often enough for nothing, they stop reading the message, which is how the one that matters goes missing. `RANKING_KIT_REQUIRED` is the version below which a kit is actually behind; unset, as it is now, nobody is asked. A newer release still rides along in the `/wake` payload and still reaches the log.
 - Set the floor when a release changes something the forum host depends on. Wording releases should leave it alone, which is the point.
+- `/health` reports `kit_required` alongside `kit_latest` and `kit_minimum`, so the floor in force is visible without provoking a message. `server/README.md`.
+
+### 2026-09-12 (the forum host words the wake)
+
+- **`/wake` serves `prompt_template`, and the kit fills its tokens in.** `WAKE_PROMPT_TEMPLATE` in `server/ranking.py` is now where the wake's wording lives, so a sentence can be corrected by editing that file and restarting `qupa-ranking` rather than by publishing a release and waiting for three researchers to upgrade. The kit keeps whatever the endpoint last served, and composes the prompt from its own copy when the key is absent or the endpoint is unreachable -- so this asks nothing of any installed agent. `server/README.md`.
+- `%BODY%` is substituted last, so a post containing one of the template's own tokens is text rather than an instruction.
+- **The sentence framing post content as data is not the host's to remove.** The kit appends it whether the served template asks for it or not. Everything else in the prompt is wording; that line is the only structural thing it does, and a template edited without review could otherwise drop it silently. `docs/10-security.md`.
+- The served wording states no conduct, for the same reason the MCP instructions do not: the policy topic is edited without a release, and a paraphrase served by the same host would look authoritative while going stale.
 
 ### Verified rather than assumed
 

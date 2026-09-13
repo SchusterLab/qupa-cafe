@@ -363,7 +363,48 @@ def test_a_client_behind_the_published_version_is_told_but_not_refused():
     assert verdict is not None
     assert verdict["latest"] == "0.9.0"
     assert verdict["refused"] is False
+
+
+def test_not_being_the_newest_is_not_being_behind():
+    """With nothing required, a version difference asks nothing of anybody.
+
+    Most releases are wording, and a researcher told to upgrade for those is
+    interrupted for something that changes nothing they can see. Told often
+    enough for nothing, they stop reading, which is how the message that
+    matters goes missing.
+    """
+    kit = KitVersions(Config(kit_required=""))
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    verdict = kit.assess("someone-agent", "0.1.0")
+
+    assert verdict["behind"] is False
+    assert verdict["required"] is None
+    assert "pip install --upgrade" not in verdict["advice"]
+
+
+def test_a_client_below_what_is_required_is_told_how_to_upgrade():
+    kit = KitVersions(Config(kit_required="0.6.0"))
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    verdict = kit.assess("someone-agent", "0.1.0")
+
+    assert verdict["behind"] is True
+    assert verdict["required"] == "0.6.0"
+    assert verdict["refused"] is False
     assert "pip install --upgrade" in verdict["advice"]
+
+
+def test_a_client_above_what_is_required_is_behind_on_nothing():
+    kit = KitVersions(Config(kit_required="0.6.0"))
+    kit._latest = "0.9.0"
+    kit._checked_at = 1e18
+
+    verdict = kit.assess("someone-agent", "0.7.0")
+
+    assert verdict["behind"] is False
 
 
 def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current():
@@ -504,6 +545,9 @@ class StubRanker:
     def budget_for(self, agent: str) -> dict:
         return {}
 
+    def researcher_for(self, agent: str) -> str:
+        return agent.removesuffix("-agent")
+
     def notify_outdated(self, agent, upgrade):
         self.told.append((agent, upgrade.get("reported")))
 
@@ -517,7 +561,7 @@ class StubKeys:
 
 @pytest.fixture
 def endpoint():
-    """The real Handler, over real HTTP, with a floor of 0.4.0 in force."""
+    """The real Handler, over real HTTP, refusing no version."""
     import threading
     from http.server import HTTPServer
 
@@ -567,7 +611,10 @@ def test_an_outdated_client_is_served_rather_than_refused(endpoint):
     assert status == 200
     assert payload["upgrade"]["reported"] == "0.1.0"
     assert payload["upgrade"]["refused"] is False
-    assert "pip install --upgrade" in payload["upgrade"]["advice"]
+    # Nothing is required here, so the difference rides along in the payload
+    # and reaches the log, and no private message is sent for it.
+    assert payload["upgrade"]["behind"] is False
+    assert Handler.ranker.told == []
 
 
 def test_the_legacy_header_is_still_read(endpoint):
@@ -592,6 +639,40 @@ def test_a_current_client_with_a_credential_is_served(endpoint):
     assert "upgrade" not in payload
 
 
+def test_the_wake_is_worded_here(endpoint):
+    """The wording of a wake travels with the answer to /wake.
+
+    Held here rather than in the kit so that a sentence can be corrected
+    without waiting for every researcher to upgrade. The tokens are the
+    contract with the kit: it fills them in, and one it does not recognise
+    reaches the model as literal text.
+    """
+    status, payload = wake(
+        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
+    )
+
+    assert status == 200
+    template = payload["prompt_template"]
+    for token in ("%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%TITLE%", "%TOPIC_ID%",
+                  "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%"):
+        assert token in template, token
+
+
+def test_the_wake_wording_states_no_conduct(endpoint):
+    """A prompt that paraphrased the policy would be a second copy of a rule
+    that is edited on the forum, and this one is served by the same host that
+    serves the policy -- which makes the copy look authoritative."""
+    status, payload = wake(
+        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
+    )
+    template = payload["prompt_template"].lower()
+
+    assert status == 200
+    for conduct in ("silence is", "prefer", "acknowledge", "depth cap",
+                    "something to add", "put the bulk", "github"):
+        assert conduct not in template, conduct
+
+
 def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
     """Reporting on versions must not have made the key optional."""
     status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
@@ -610,6 +691,8 @@ def test_health_reports_no_floor(endpoint):
 
     assert payload["kit_minimum"] is None
     assert payload["kit_latest"] == "0.9.0"
+    # And nothing required, so nobody is being messaged about a version.
+    assert payload["kit_required"] is None
 
 
 def test_an_empty_field_does_not_reach_onto_the_next_line():
