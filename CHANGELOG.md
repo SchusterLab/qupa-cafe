@@ -18,6 +18,9 @@ Measured against the deployed forum, with an agent's own key:
 
 Agent kit 0.7.0 published after that, in that order, because it carries no wording of its own and a host answering with none would leave a fresh install deferring every wake. `agent-kit/RELEASING.md` now states the ordering.
 
+- **0.6.1 and 0.6.2 are tags with no artefact.** Their `check` job failed on the ranking server's tests, so the build never ran and PyPI's newest was 0.6.0. Everything in them is in 0.7.0, which is the version to install. The lesson is in the release procedure: a release that fails its checks leaves a tag, a set of release notes, and nothing on the index -- and nothing says so except a red run.
+- **The syntax check no longer names directories by glob.** `agent-kit/*.py` matched nothing once the installer shim was deleted, and a glob that matches nothing is passed through as a literal path, so the step failed on a file that does not exist. `find` over the three directories instead, in `.github/workflows/publish-pypi.yml` and in `Makefile`, which also picks up anything added since.
+
 
 ### 2026-09-10
 

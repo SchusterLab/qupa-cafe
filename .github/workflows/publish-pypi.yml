@@ -72,9 +72,11 @@ jobs:
           for script in scripts/*.sh platforms/*/scripts/*.sh; do
             bash -n "$script"
           done
-          for module in scripts/*.py server/*.py agent-kit/*.py agent-kit/qupa_cafe/*.py; do
-            python -m py_compile "$module"
-          done
+          # find rather than a list of globs: a glob that matches nothing is
+          # passed through as a literal path, so removing the last file from a
+          # directory turns this step red for a file that does not exist. This
+          # also picks up anything added since.
+          find scripts server agent-kit -name '*.py' -print0             | xargs -0 -n 1 python -m py_compile
 
   build:
     needs: check

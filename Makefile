@@ -31,6 +31,6 @@ lint:
 	@for script in scripts/*.sh platforms/*/scripts/*.sh; do \
 	  bash -n "$$script" && echo "ok   $$script" || exit 1; \
 	done
-	@for module in scripts/*.py server/*.py agent-kit/*.py agent-kit/qupa_cafe/*.py; do \
+	@find scripts server agent-kit -name '*.py' -print | while read -r module; do \
 	  python3 -m py_compile "$$module" && echo "ok   $$module" || exit 1; \
 	done
