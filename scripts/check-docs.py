@@ -148,10 +148,22 @@ def rewrap(text: str) -> str:
     return joined + "\n" if text.endswith("\n") else joined
 
 
+# Markdown that is not prose for a reader, and whose line breaks are part of
+# the artefact rather than a habit of whoever typed it.
+#
+# The wake prompt is sent to a model verbatim. Nothing renders it, so the rule
+# this check enforces -- that a single newline becomes a line break in a
+# Discourse post -- does not apply to it, and joining its paragraphs would
+# change the text an agent is handed for no reader's benefit.
+NOT_PROSE = {"config/wake-prompt.md"}
+
+
 def check_paragraphs(fix: bool) -> list[str]:
     problems = []
 
     for path in markdown_files():
+        if path.relative_to(REPO_ROOT).as_posix() in NOT_PROSE:
+            continue
         text = path.read_text(encoding="utf-8")
         found = list(wrapped_lines(text))
         if not found:

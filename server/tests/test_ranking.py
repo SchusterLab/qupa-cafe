@@ -772,6 +772,109 @@ def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
     assert "%BODY%" in served["wake_prompt"]
 
 
+def test_the_messages_this_service_sends_are_files_in_config():
+    """They are posts, like the policy topic and the credential message.
+
+    A private message written to a researcher is edited by whoever writes to
+    researchers, and a string in a Python file is edited by whoever is
+    comfortable in Python. Those are not reliably the same person.
+    """
+    outdated = ranking.message(
+        "kit-outdated-message.md",
+        AGENT="sunada-agent",
+        REPORTED="0.5.5",
+        LATEST="0.8.2",
+        PACKAGE="qupa-cafe",
+    )
+
+    assert "`sunada-agent` is running agent kit **0.5.5**" in outdated
+    assert "pip install --upgrade qupa-cafe" in outdated
+    assert "%" not in outdated, "a placeholder was left unfilled"
+
+
+def test_the_truncation_message_carries_the_numbers():
+    body = ranking.message(
+        "profile-truncated-message.md",
+        TOKENS="640",
+        LIMIT="512",
+        DROPPED="128",
+        INTERESTS_TOPIC="topic 11",
+    )
+
+    assert "**640 tokens**" in body and "**512**" in body and "**128**" in body
+    assert "topic 11" in body
+    assert "%" not in body
+
+
+def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path):
+    """Nobody wants `%TOKENS%` in their inbox, and a notice nobody gets is the
+    silence these messages exist to break -- so the caller logs it and nothing
+    is recorded as notified, which means the next poll tries again."""
+    monkeypatch.setattr(ranking, "CONTENT_DIR", tmp_path)
+
+    with pytest.raises(OSError):
+        ranking.message("kit-outdated-message.md", AGENT="a")
+
+
+def test_the_wake_is_worded_by_a_file_in_config(tmp_path, monkeypatch):
+    """Edited like the policy topic and the welcome topic, because it is the
+    same kind of thing: prose somebody reads, in the directory those live in."""
+    written = tmp_path / "wake-prompt.md"
+    written.write_text("First wording. %BODY%", encoding="utf-8")
+    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
+
+    texts = Texts(Config(texts_file=""))
+    assert texts.serve()["wake_prompt"] == "First wording. %BODY%"
+
+    # An edit takes effect on the next poll, with nothing restarted.
+    written.write_text("Second wording. %BODY%", encoding="utf-8")
+    os.utime(written, (1e9, 1e9))
+    assert texts.serve()["wake_prompt"] == "Second wording. %BODY%"
+
+
+def test_a_service_with_no_wake_prompt_refuses_to_start(tmp_path, monkeypatch):
+    """Serving agents a wake with no wording is a forum that has gone quiet
+    while every component reports itself healthy. The agents defer and say so
+    in their own logs, which nobody is reading. This says it once, to whoever
+    is standing there."""
+    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", tmp_path / "absent.md")
+
+    with pytest.raises(RuntimeError) as refused:
+        Texts(Config(texts_file=""))
+
+    assert "wake prompt" in str(refused.value)
+
+
+def test_a_half_saved_edit_keeps_the_last_good_wording(tmp_path, monkeypatch):
+    """After the first read, a bad one costs nobody their wakes."""
+    written = tmp_path / "wake-prompt.md"
+    written.write_text("Good wording. %BODY%", encoding="utf-8")
+    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
+    texts = Texts(Config(texts_file=""))
+
+    written.write_text("   ", encoding="utf-8")
+    os.utime(written, (1e9, 1e9))
+
+    assert texts.serve()["wake_prompt"] == "Good wording. %BODY%"
+
+
+def test_the_wording_this_repository_ships_fills_in(tmp_path):
+    """Every token the kit substitutes, and no other.
+
+    A token the kit does not recognise reaches the model as literal text, so
+    the set is a contract between this file and a released kit.
+    """
+    import re
+
+    served = Texts(Config(texts_file="")).serve()["wake_prompt"]
+    known = {
+        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
+        "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%",
+    }
+
+    assert set(re.findall(r"%[A-Z_]+%", served)) == known
+
+
 def test_nothing_is_overridden_by_default():
     served = Texts(Config(texts_file="")).serve()
 
@@ -1053,7 +1156,10 @@ def over_limit_agent(text="x" * 40):
     )
 
 
-def test_the_researcher_is_told_once(tmp_path):
+def test_the_agent_is_told_once(tmp_path):
+    """The agent, because the post belongs to its account: `edit_post` is its
+    tool and nobody else's, and a private message wakes it -- so the message
+    and the ability to act on it arrive together."""
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
     agent = over_limit_agent()
@@ -1063,7 +1169,7 @@ def test_the_researcher_is_told_once(tmp_path):
 
     assert len(forum.sent) == 1
     message = forum.sent[0]
-    assert message["to"] == "yoshi"
+    assert message["to"] == "yoshi-agent"
     assert "604 tokens" in message["raw"]
     assert "512" in message["raw"]
     assert "92" in message["raw"]  # 604 - 512, the tokens dropped
@@ -1093,16 +1199,19 @@ def test_a_notice_survives_a_restart(tmp_path):
     assert len(forum.sent) == 1
 
 
-def test_an_unidentifiable_researcher_is_logged_not_guessed_at(tmp_path, caplog):
-    """A truncated agent username cannot be inverted to its researcher."""
+def test_an_unknown_researcher_does_not_stop_the_agent_being_told(tmp_path):
+    """Nothing in this path asks who the researcher is.
+
+    An agent name that cannot be inverted to a researcher -- a long one,
+    shortened to fit the username limit -- would otherwise mean an agent whose
+    profile is being cut off is told nothing at all.
+    """
     forum = StubForumWriter(known=())
     ranker = a_ranker(tmp_path, forum)
 
-    with caplog.at_level(logging.WARNING):
-        ranker.notify_truncated(over_limit_agent(), 604, 512)
+    ranker.notify_truncated(over_limit_agent(), 604, 512)
 
-    assert forum.sent == []
-    assert "nobody to tell" in caplog.text
+    assert [m["to"] for m in forum.sent] == ["yoshi-agent"]
 
 
 def test_a_refused_send_is_not_recorded_as_sent(tmp_path):
@@ -1160,40 +1269,6 @@ def test_the_embedding_request_asks_for_truncation(embedder):
 
     assert stub.last_embed_body is not None
     assert stub.last_embed_body.get("truncate") is True
-
-
-def test_a_failed_researcher_lookup_is_retried_rather_than_recorded(tmp_path):
-    """A key without the scope to read a user must not spend the one notice."""
-
-    class Raising(StubForumWriter):
-        def user(self, username):
-            raise RuntimeError("GET /u/yoshi.json -> 403")
-
-    forum = Raising()
-    ranker = a_ranker(tmp_path, forum)
-    agent = over_limit_agent()
-
-    ranker.notify_truncated(agent, 604, 512)
-
-    assert forum.sent == []
-    # Nothing recorded, so a later poll with a working credential still sends.
-    forum.__class__ = StubForumWriter
-    ranker.notify_truncated(agent, 604, 512)
-    assert len(forum.sent) == 1
-
-
-def test_a_user_the_forum_says_is_absent_is_recorded(tmp_path):
-    """404 is an answer, and no later poll will find that account."""
-    forum = StubForumWriter(known=())
-    ranker = a_ranker(tmp_path, forum)
-    agent = over_limit_agent()
-
-    ranker.notify_truncated(agent, 604, 512)
-    assert forum.sent == []
-
-    forum.known = {"yoshi"}
-    ranker.notify_truncated(agent, 604, 512)
-    assert forum.sent == []  # already answered; not asked again
 
 
 # ------------------------------------ telling a researcher their kit is behind

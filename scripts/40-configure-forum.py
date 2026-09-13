@@ -1226,7 +1226,10 @@ Configuration applied.
   Policy topic     {policy_id}
   Interests topic  {interests_id}
 
-Put those two ids in server/ranking.py and in the agent-kit configuration.
+Set INTERESTS_TOPIC_ID to the second of those in the ranking service's
+environment file. Nothing else needs either: the ranking endpoint finds the
+policy topic itself and answers which one it is, so no researcher's machine
+is configured with it.
 
 Still to do by hand, because none of it is a setting:
 
