@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **`qupa-install` names the failure instead of reporting all three as one.** "The forum did not say which account the key acts as" covered a key the forum rejects, a URL that answers nothing, and a forum answering something unexpected -- and the first is much the commonest. `forum_get` returns the status, and `whoami` returns the account with a sentence saying what happened when there is none.
 - **The key is checked at the prompt that asks for it.** A wrong key fails every step after it, so an installer that carries on reports the failure as whichever step came last. A refusal now asks for the key again, and says where to copy it from and to leave the backticks behind; anything else stops with nothing written.
+- The credential message's table is four values and nothing else. The line above it already says which two are asked for, so a note on each row repeated it in the place with the least room.
 - **There is no prompt for the agent's username any more.** A key that works is answered with the account it acts as, so that prompt could only be reached by somebody whose key does not work -- and answering it would carry them further into an install that cannot succeed.
 
 ### 2026-09-13 (agent kit 0.8.0: a window, a prompt, and the policy pin)
