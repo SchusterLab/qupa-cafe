@@ -233,6 +233,37 @@ def test_the_ledger_survives_a_restart(tmp_path):
     assert State(path).wakes_today("agent") == 1
 
 
+def test_feed_wakes_and_forum_wakes_are_counted_apart(state):
+    state.record_wake("agent", 1, "feed")
+    state.record_wake("agent", 2)
+
+    assert state.wakes_today("agent", "feed") == 1
+    assert state.wakes_today("agent") == 1
+
+
+def test_a_ledger_without_kinds_is_migrated(tmp_path):
+    """A ledger written before wakes carried a kind keeps its count, as forum
+    wakes, rather than failing to open or starting the day from zero."""
+    import sqlite3
+
+    path = str(tmp_path / "ranking.sqlite3")
+    db = sqlite3.connect(path)
+    db.execute(
+        "CREATE TABLE wakes (agent TEXT NOT NULL, post_id INTEGER NOT NULL, "
+        "day TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (agent, post_id))"
+    )
+    db.execute("INSERT INTO wakes VALUES ('agent', 1, ?, 'now')", (State.today(),))
+    db.commit()
+    db.close()
+
+    state = State(path)
+
+    assert state.wakes_today("agent") == 1
+    assert state.wakes_today("agent", "feed") == 0
+    state.record_wake("agent", 2, "feed")
+    assert state.wakes_today("agent", "feed") == 1
+
+
 def test_the_cursor_starts_at_zero(state):
     assert state.get_cursor() == 0
 
@@ -273,6 +304,68 @@ def test_a_rejected_decision_records_why():
     assert decision.woke is False
 
 
+class OfflineRanker(Ranker):
+    """A ranker whose database reads are answered in memory: every topic
+    scores 0.9 against every agent, and nobody has posted today."""
+
+    def __init__(self, config: Config, state: State, agents: list[Agent]):
+        self.config = config
+        self.state = state
+        self.agents = agents
+
+    def posts_today(self, username: str) -> int:
+        return 0
+
+    def similarity(self, topic_id: int, vector: list[float]) -> float | None:
+        return 0.9
+
+    def consecutive_agent_posts(self, topic_id: int, before_post_number: int) -> int:
+        return 0
+
+
+def a_post(post_id: int, username: str) -> dict:
+    return {
+        "id": post_id, "topic_id": post_id, "post_number": 1, "username": username,
+        "category_name": "arXiv quant-ph", "is_agent": False,
+    }
+
+
+def test_a_feed_post_does_not_spend_the_forum_budget(state):
+    config = Config(wake_cap_per_day=1, feed_wake_cap_per_day=1, feed_usernames=("arxiv-bot",))
+    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything")])
+
+    first_feed = ranker.score_post(a_post(1, "arxiv-bot"))
+    second_feed = ranker.score_post(a_post(2, "arxiv-bot"))
+    forum = ranker.score_post(a_post(3, "someone"))
+
+    assert [d.reason for d in first_feed] == ["woken"]
+    assert [d.kind for d in first_feed + second_feed + forum] == ["feed", "feed", "forum"]
+    assert [d.reason for d in second_feed] == ["daily-feed-wake-cap"]
+    assert [d.reason for d in forum] == ["woken"]
+
+
+def test_a_spent_forum_budget_leaves_the_feed_budget(state):
+    config = Config(wake_cap_per_day=1, feed_wake_cap_per_day=1, feed_usernames=("arxiv-bot",))
+    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything")])
+
+    ranker.score_post(a_post(1, "someone"))
+
+    assert [d.reason for d in ranker.score_post(a_post(2, "someone"))] == ["daily-wake-cap"]
+    assert [d.reason for d in ranker.score_post(a_post(3, "arxiv-bot"))] == ["woken"]
+
+
+def test_the_budget_reports_both_caps(state):
+    config = Config(wake_cap_per_day=10, feed_wake_cap_per_day=3)
+    ranker = OfflineRanker(config, state, [])
+    state.record_wake("a-agent", 1, "feed")
+
+    budget = ranker.budget_for("a-agent")
+
+    assert budget["wakes_remaining"] == 10
+    assert budget["feed_wakes_used"] == 1
+    assert budget["feed_wakes_remaining"] == 2
+
+
 # -------------------------------------------------------------- the defaults
 
 
@@ -284,6 +377,8 @@ def test_the_guardrail_defaults_match_the_documented_values():
     assert config.bot_depth_cap == 5
     assert config.post_cap_per_day == 50
     assert config.wake_cap_per_day == 10
+    assert config.feed_wake_cap_per_day == 3
+    assert config.feed_usernames == ("arxiv-bot",)
 
 
 def test_the_similarity_floor_sits_in_the_measured_gap():

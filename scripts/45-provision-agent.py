@@ -57,6 +57,9 @@ import onboarding
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 AGENTS_GROUP_NAME = "agents"
+# Accounts that post on the forum's behalf, such as the arXiv poster. They are
+# not researchers, so nobody is provisioned an agent for them.
+FEEDS_GROUP_NAME = "feeds"
 
 # The credential is a Single-User key with GLOBAL scope, not a granular one.
 #
@@ -164,6 +167,32 @@ class Discourse:
         return self._request("DELETE", path)
 
 
+def not_researchers(api: Discourse) -> set[str]:
+    """Usernames that are on the forum but are nobody's researcher account.
+
+    Agent accounts are themselves users, so without this a second run would
+    cheerfully provision ``sunada-agent-agent``. Feed accounts are users too,
+    and ``arxiv-bot`` is no more a researcher than an agent is.
+
+    The agents group has to exist, because provisioning adds to it. The feeds
+    group may not, on a forum configured before it was introduced, and then it
+    has no members to exclude.
+    """
+    try:
+        members = api.get(f"/groups/{AGENTS_GROUP_NAME}/members.json").get("members", [])
+    except RuntimeError:
+        die(f"cannot read the {AGENTS_GROUP_NAME!r} group. Run 40-configure-forum.py first.")
+    excluded = {m["username"].lower() for m in members}
+
+    try:
+        feeds = api.get(f"/groups/{FEEDS_GROUP_NAME}/members.json").get("members", [])
+    except RuntimeError as exc:
+        if " -> 404" not in str(exc):
+            raise
+        feeds = []
+    return excluded | {m["username"].lower() for m in feeds}
+
+
 def humans_without_agents(api: Discourse) -> list[str]:
     """Researchers who have joined and have no agent yet.
 
@@ -172,18 +201,12 @@ def humans_without_agents(api: Discourse) -> list[str]:
     to trust a payload or remember who is outstanding, and running twice is a
     no-op rather than a duplicate.
 
-    Two exclusions matter. Agent accounts are themselves users, so without
-    filtering them the second run would cheerfully provision
-    ``sunada-agent-agent``. And anything with a non-positive id is Discourse's
-    own (``system``, ``discobot``), which the admin list does not return anyway
-    but which is worth being explicit about.
+    Two exclusions matter. Agent and feed accounts are users but not
+    researchers; ``not_researchers`` names them. And anything with a
+    non-positive id is Discourse's own (``system``, ``discobot``), which the
+    admin list does not return anyway but which is worth being explicit about.
     """
-    agents: set[str] = set()
-    try:
-        members = api.get(f"/groups/{AGENTS_GROUP_NAME}/members.json").get("members", [])
-        agents = {m["username"].lower() for m in members}
-    except RuntimeError:
-        die(f"cannot read the {AGENTS_GROUP_NAME!r} group. Run 40-configure-forum.py first.")
+    agents = not_researchers(api)
 
     people: list[dict] = []
     page = 1
@@ -218,12 +241,7 @@ def humans_with_agents(api: Discourse) -> list[tuple[dict, str]]:
     moderator would never get a moderator agent and a demoted one would keep
     theirs, because nothing would look at them again.
     """
-    agents: set[str] = set()
-    try:
-        members = api.get(f"/groups/{AGENTS_GROUP_NAME}/members.json").get("members", [])
-        agents = {m["username"].lower() for m in members}
-    except RuntimeError:
-        die(f"cannot read the {AGENTS_GROUP_NAME!r} group. Run 40-configure-forum.py first.")
+    agents = not_researchers(api)
 
     paired: list[tuple[dict, str]] = []
     page = 1

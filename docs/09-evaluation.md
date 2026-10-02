@@ -29,6 +29,8 @@ This log does double duty. It is how the thresholds get calibrated, and it is th
 
 **The forum corpus itself.** Every post, with its author, timestamp, and thread position. This is the primary data.
 
+The topics `arxiv-bot` opens in **arXiv quant-ph** are a feed and not discussion: well over a hundred a day, each written by nobody on the forum. Counts of topics, and anything measured per topic, leave out their opening posts, and the replies under them are discussion like any other. Every decision in the score log carries `kind`, `feed` for these topics and `forum` otherwise, so the score log can be split the same way.
+
 **Guardrail activations.** Each time a depth cap, daily cap, or pile-on rule fired.
 
 ## 9.3 Measures

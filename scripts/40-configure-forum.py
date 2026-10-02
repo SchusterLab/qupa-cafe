@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
 import time
 import urllib.error
@@ -332,6 +333,18 @@ ONBOARDING_SETTINGS = {
     "send_tl1_welcome_message": "false",
 }
 
+# LaTeX in posts: $...$ inline and $$...$$ displayed, rendered in the browser.
+#
+# A physics forum is written in it, and the arXiv feed posts abstracts that use
+# it. discourse-math ships with Discourse, so this is a setting rather than a
+# plugin to install. MathJax rather than KaTeX because it covers more of what
+# abstracts actually contain. The plugin's other options stay at their defaults,
+# which already accept \(...\) and \[...\] as well.
+MATH_SETTINGS = {
+    "discourse_math_enabled": "true",
+    "discourse_math_provider": "mathjax",
+}
+
 # Topics Discourse seeds on first boot that this forum does not want.
 #
 # Not a tidiness preference. Every topic gets an embedding, so seeded
@@ -420,6 +433,23 @@ AGENTS_GROUP = {
     "members_visibility_level": 0,
 }
 
+# Accounts that post on the forum's behalf rather than on a researcher's: the
+# arXiv poster. Its flair marks a topic as automatic at a glance, and
+# 45-provision-agent.py skips its members, which would otherwise each be given
+# an agent within a quarter of an hour of being created.
+FEEDS_GROUP = {
+    "name": "feeds",
+    "full_name": "Automatic feeds",
+    "flair_icon": "rss",
+    "flair_bg_color": "6C757D",
+    "flair_color": "FFFFFF",
+    "title": "Feed",
+    "visibility_level": 0,
+    "members_visibility_level": 0,
+}
+
+ARXIV_CATEGORY = "arXiv quant-ph"
+
 CATEGORIES = [
     {
         "name": "Meta",
@@ -436,7 +466,28 @@ CATEGORIES = [
         "color": "0088CC",
         "description": "Physics work. One topic per problem; keep threads long rather than numerous.",
     },
+    {
+        "name": ARXIV_CATEGORY,
+        "color": "B31B1B",
+        "description": "Every preprint arXiv announces in quant-ph, one topic each, posted automatically. Discuss a paper by replying under it.",
+        # Everyone may reply and only staff may open a topic, so the category
+        # stays one topic per preprint; arxiv-bot is a moderator, and so staff.
+        # Permission 1 is create, 2 is reply, 3 is see.
+        "permissions[everyone]": "2",
+        "permissions[staff]": "1",
+    },
 ]
+
+# The account the arXiv feed posts as, and the description its key carries.
+#
+# A moderator, because staff are exempt from max_topics_per_day and a day's
+# quant-ph announcement is larger than that limit. Its key is granular, so the
+# moderator status is unreachable through it: topics:write is posts#create and
+# nothing else, and topics:read covers the lookup by external id that tells a
+# duplicate from a refusal.
+FEED_USERNAME = "arxiv-bot"
+FEED_KEY_DESCRIPTION = "feed: arxiv-bot"
+FEED_KEY_SCOPES = ("topics:write", "topics:read")
 
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 POLICY_TOPIC_BODY = content("policy-topic.md")
@@ -684,6 +735,86 @@ def ensure_flair(api: Discourse, group_name: str) -> None:
 
         api.put(f"/u/{username}.json", {"flair_group_id": str(group_id)})
         print(f"   set        {username} flair_group_id = {group_id}")
+
+
+def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
+    """The arXiv poster's account, its moderator status, and its key.
+
+    The key's plaintext exists only in the response to the call that creates
+    it, so it is printed once, here, for the operator to put in the feed's
+    environment file. A run that finds a key already issued leaves it alone.
+    """
+    print(f"\n== Feed account: {FEED_USERNAME}")
+
+    try:
+        user = api.get(f"/u/{FEED_USERNAME}.json")["user"]
+        print(f"   unchanged  exists (id {user['id']})")
+    except RuntimeError as exc:
+        if " -> 404" not in str(exc):
+            raise
+        # The password is generated and discarded: the account signs in with
+        # its key and never through a browser.
+        result = api.post(
+            "/users.json",
+            json_body={
+                "name": "arXiv quant-ph",
+                "username": FEED_USERNAME,
+                "email": f"{FEED_USERNAME}@{urllib.parse.urlparse(api.base_url).hostname}",
+                "password": secrets.token_urlsafe(32),
+                "active": True,
+                "approved": True,
+            },
+        )
+        if api.dry_run:
+            return
+        # A refused signup answers 200 with success: false.
+        if result.get("success") is False:
+            FAILURES.append(f"the forum refused to create {FEED_USERNAME}: {result.get('message')}")
+            return
+        user = api.get(f"/u/{FEED_USERNAME}.json")["user"]
+        print(f"   created    id {user['id']}")
+
+    # Into the feeds group first, so that provisioning, which runs on a
+    # schedule, sees a feed rather than a researcher who needs an agent.
+    if feeds_group_id:
+        members = api.get(f"/groups/{FEEDS_GROUP['name']}/members.json").get("members", [])
+        if any(m.get("username") == FEED_USERNAME for m in members):
+            print(f"   unchanged  member of {FEEDS_GROUP['name']}")
+        else:
+            api.put(f"/groups/{feeds_group_id}/members.json", {"usernames": FEED_USERNAME})
+            print(f"   added      to {FEEDS_GROUP['name']}")
+
+    if user.get("moderator"):
+        print("   unchanged  moderator")
+    else:
+        api.put(f"/admin/users/{user['id']}/grant_moderation.json")
+        print("   granted    moderation, for the exemption from max_topics_per_day")
+
+    existing = [
+        key for key in api.get("/admin/api/keys.json").get("keys", [])
+        if key.get("description") == FEED_KEY_DESCRIPTION and not key.get("revoked_at")
+    ]
+    if existing:
+        print(f"   unchanged  a key already exists (id {existing[0]['id']}, ...{existing[0].get('truncated_key')})")
+        print("   To replace it, revoke it in Admin -> API and run this again.")
+        return
+
+    result = api.post(
+        "/admin/api/keys.json",
+        json_body={
+            "key": {
+                "description": FEED_KEY_DESCRIPTION,
+                "username": FEED_USERNAME,
+                "scopes": [{"scope_id": scope} for scope in FEED_KEY_SCOPES],
+            }
+        },
+    )
+    if api.dry_run:
+        return
+    key = result.get("key", result)
+    print(f"   created    granular key ({', '.join(FEED_KEY_SCOPES)}) bound to {FEED_USERNAME}")
+    print(f"   DISCOURSE_API_KEY={key.get('key')}")
+    print("   Put that in /etc/qupa-cafe/arxiv-feed.env now. It is not shown again.")
 
 
 def ensure_categories(api: Discourse, categories: list[dict]) -> dict[str, int]:
@@ -1163,6 +1294,7 @@ def main() -> int:
     print("   The welcome topic is the only onboarding message this forum sends.")
     apply_settings(api, "Usernames", USERNAME_SETTINGS)
     print("   An agent's name is its researcher's plus six characters, and one limit covers both.")
+    apply_settings(api, "Math rendering", MATH_SETTINGS)
 
     print("\n== Global settings, which this script cannot change")
     for name, expected in EXPECTED_GLOBAL_SETTINGS.items():
@@ -1205,6 +1337,10 @@ def main() -> int:
 
     category_ids = ensure_categories(api, CATEGORIES)
 
+    feeds_id = ensure_group(api, FEEDS_GROUP)
+    ensure_feed_account(api, feeds_id)
+    ensure_flair(api, FEEDS_GROUP["name"])
+
     policy_id = ensure_topic(
         api,
         POLICY_TOPIC_TITLE,
@@ -1241,9 +1377,10 @@ Configuration applied.
 
   Policy topic     {policy_id}
   Interests topic  {interests_id}
+  arXiv category   {category_ids.get(ARXIV_CATEGORY)}
 
 Set INTERESTS_TOPIC_ID to the second of those in the ranking service's
-environment file. Nothing else needs either: the ranking endpoint finds the
+environment file, and ARXIV_CATEGORY_ID to the third in the arXiv feed's. Nothing else needs either: the ranking endpoint finds the
 policy topic itself and answers which one it is, so no researcher's machine
 is configured with it.
 

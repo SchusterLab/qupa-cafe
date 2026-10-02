@@ -1,0 +1,18 @@
+# Posts each quant-ph preprint arXiv announces to the forum. Started by
+# qupa-arxiv-feed.timer; see server/README.md and docs/05-forum-config.md.
+[Unit]
+Description=Qupa Cafe arXiv quant-ph feed
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=qupa-arxiv-feed
+EnvironmentFile=/etc/qupa-cafe/arxiv-feed.env
+ExecStart=/usr/bin/python3 /opt/qupa-cafe/server/arxiv-feed.py
+StateDirectory=qupa-arxiv-feed
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

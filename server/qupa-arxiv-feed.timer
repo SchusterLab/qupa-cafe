@@ -1,0 +1,11 @@
+# Every ten minutes, so a rebuilt feed reaches the forum within ten minutes.
+# A run that finds the feed unchanged costs arXiv one 304.
+[Unit]
+Description=Check arXiv's quant-ph feed every ten minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+
+[Install]
+WantedBy=timers.target

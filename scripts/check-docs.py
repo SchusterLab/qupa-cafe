@@ -184,6 +184,7 @@ def check_paragraphs(fix: bool) -> list[str]:
 
 # Markdown links, and the backticked paths the prose uses instead of links.
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+PLACEHOLDER = re.compile(r"%[A-Z_]+%")
 BACKTICKED_PATH = re.compile(r"`([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)+)`")
 
 # Top-level directories of this repository, used to tell our own paths apart
@@ -207,9 +208,12 @@ def check_references() -> list[str]:
         relative = path.relative_to(REPO_ROOT)
 
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            # A `%PLACEHOLDER%` target in content/ is a URL filled in when the
+            # text is sent, not a path.
             targets = [
                 target for target in MARKDOWN_LINK.findall(line)
                 if not target.startswith(("http://", "https://", "#", "mailto:"))
+                and not PLACEHOLDER.fullmatch(target)
             ]
             # A whitelist, not a blacklist. The prose is full of backticked
             # paths that are not ours -- `containers/app.yml` inside the

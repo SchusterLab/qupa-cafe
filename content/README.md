@@ -10,6 +10,7 @@ Everything here is read by something at run time rather than compiled into it. T
 | `credential-message.md` | `scripts/45-provision-agent.py`, per delivery | on the next provisioning or `--rotate-key` |
 | `kit-outdated-message.md` | `server/ranking.py`, per notification | on the next notification |
 | `profile-truncated-message.md` | `server/ranking.py`, per notification | on the next notification |
+| `arxiv-topic.md` | `server/arxiv-feed.py`, per preprint | on the next batch, with nothing restarted |
 | `wake-prompt.md` | `server/ranking.py`, served to every agent kit | within a poll, on every machine, with nothing restarted |
 
 `config/` holds what is not text of this kind: `app.yml.example` and the theme component's scripts. `docs/` covers both.

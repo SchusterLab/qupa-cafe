@@ -19,7 +19,9 @@ Five guardrails, all evaluated here, in this order:
 5. Anti-pile-on              -- only the best-matched agent wakes for a post
 
 ...and then a daily wake cap of 10 per agent, which is the main lever on how
-often a model gets invoked at all.
+often a model gets invoked at all. Topics opened by a feed account, such as the
+arXiv poster, draw on a separate cap of 3, so a day's batch of preprints cannot
+spend the wakes that discussion needs.
 
 Every score is logged with its decision, whether or not it resulted in a wake.
 That log is how the thresholds get calibrated, and it is evidence for the final
@@ -127,6 +129,21 @@ class Config:
     # threshold can be re-chosen after the fact without having lost anything.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
     wake_cap_per_day: int = int(os.environ.get("WAKE_CAP_PER_DAY", "10"))
+
+    # Accounts that post a feed rather than take part in discussion, and the
+    # separate daily wake cap their posts draw on.
+    #
+    # A separate budget rather than the shared one, because a feed arrives in
+    # batches: the arXiv poster opens well over a hundred topics within minutes
+    # of each announcement, and on the shared cap those would use up every
+    # agent's day before anybody had written anything. Replies inside a feed
+    # topic are ordinary posts and use the ordinary cap.
+    feed_usernames: tuple[str, ...] = tuple(
+        name.strip()
+        for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
+        if name.strip()
+    )
+    feed_wake_cap_per_day: int = int(os.environ.get("FEED_WAKE_CAP_PER_DAY", "3"))
     post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
     bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
 
@@ -254,6 +271,9 @@ class Decision:
     similarity: float | None
     woke: bool
     reason: str
+    # Which daily wake budget the post drew on: "forum", or "feed" for a topic
+    # a feed account opened. The evaluation counts the two separately.
+    kind: str = "forum"
     at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -279,6 +299,7 @@ class State:
                 post_id  INTEGER NOT NULL,
                 day      TEXT NOT NULL,
                 at       TEXT NOT NULL,
+                kind     TEXT NOT NULL DEFAULT 'forum',
                 PRIMARY KEY (agent, post_id)
             );
             CREATE INDEX IF NOT EXISTS wakes_by_day ON wakes (agent, day);
@@ -302,15 +323,21 @@ class State:
             );
             """
         )
+        # A ledger created before wakes carried a kind gets the column here,
+        # and every wake already in it counts as a forum wake.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}
+        if "kind" not in columns:
+            self.db.execute("ALTER TABLE wakes ADD COLUMN kind TEXT NOT NULL DEFAULT 'forum'")
         self.db.commit()
 
     @staticmethod
     def today() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    def wakes_today(self, agent: str) -> int:
+    def wakes_today(self, agent: str, kind: str = "forum") -> int:
         row = self.db.execute(
-            "SELECT count(*) FROM wakes WHERE agent = ? AND day = ?", (agent, self.today())
+            "SELECT count(*) FROM wakes WHERE agent = ? AND day = ? AND kind = ?",
+            (agent, self.today(), kind),
         ).fetchone()
         return row[0] if row else 0
 
@@ -334,10 +361,10 @@ class State:
         ).fetchone()
         return row is not None
 
-    def record_wake(self, agent: str, post_id: int) -> None:
+    def record_wake(self, agent: str, post_id: int, kind: str = "forum") -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO wakes (agent, post_id, day, at) VALUES (?, ?, ?, ?)",
-            (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat()),
+            "INSERT OR IGNORE INTO wakes (agent, post_id, day, at, kind) VALUES (?, ?, ?, ?, ?)",
+            (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat(), kind),
         )
         self.db.commit()
 
@@ -1226,8 +1253,14 @@ class Ranker:
         decisions: list[Decision] = []
         candidates: list[tuple[Agent, float]] = []
 
+        # Which daily wake budget this post draws on.
+        if post["username"] in self.config.feed_usernames:
+            kind, wake_cap, cap_reason = "feed", self.config.feed_wake_cap_per_day, "daily-feed-wake-cap"
+        else:
+            kind, wake_cap, cap_reason = "forum", self.config.wake_cap_per_day, "daily-wake-cap"
+
         for agent in self.agents:
-            base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username)
+            base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
 
             # Never wake an agent for its own post. Not really a guardrail --
             # without it, an agent replies to itself forever.
@@ -1253,9 +1286,10 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-post-cap"))
                 continue
 
-            # Daily wake cap. The main lever on model invocations.
-            if self.state.wakes_today(agent.username) >= self.config.wake_cap_per_day:
-                decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-wake-cap"))
+            # Daily wake cap. The main lever on model invocations. A feed post
+            # is counted against the feed's own cap and leaves this one alone.
+            if self.state.wakes_today(agent.username, kind) >= wake_cap:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason=cap_reason))
                 continue
 
             # 3. Bot-to-bot depth. A human post resets it.
@@ -1288,18 +1322,18 @@ class Ranker:
             candidates.sort(key=lambda pair: pair[1], reverse=True)
             winner, winning_score = candidates[0]
             if record:
-                self.state.record_wake(winner.username, post["id"])
+                self.state.record_wake(winner.username, post["id"], kind)
             decisions.append(
                 Decision(
                     post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
-                    similarity=winning_score, woke=True, reason="woken",
+                    similarity=winning_score, woke=True, reason="woken", kind=kind,
                 )
             )
             for agent, score in candidates[1:]:
                 decisions.append(
                     Decision(
                         post_id=post["id"], topic_id=post["topic_id"], agent=agent.username,
-                        similarity=score, woke=False, reason="outranked",
+                        similarity=score, woke=False, reason="outranked", kind=kind,
                     )
                 )
 
@@ -1360,10 +1394,14 @@ class Ranker:
 
     def budget_for(self, agent: str) -> dict[str, Any]:
         used = self.state.wakes_today(agent)
+        feed_used = self.state.wakes_today(agent, "feed")
         return {
             "wakes_used": used,
             "wakes_remaining": max(0, self.config.wake_cap_per_day - used),
             "wake_cap": self.config.wake_cap_per_day,
+            "feed_wakes_used": feed_used,
+            "feed_wakes_remaining": max(0, self.config.feed_wake_cap_per_day - feed_used),
+            "feed_wake_cap": self.config.feed_wake_cap_per_day,
             "post_cap": self.config.post_cap_per_day,
         }
 

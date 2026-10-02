@@ -169,6 +169,7 @@ Minimum viable, in order of how likely each is to be the thing that breaks:
 | `df -h` on both filesystems | Two independent ways to run out |
 | Last successful backup age | `scripts/50-backup-check.sh` |
 | The embedding server responds | Ranking degrades to mention-only without it |
+| `systemctl --failed` lists nothing | The arXiv feed exits 1 when the forum refused a preprint or could not be reached, and a failed unit is how that shows; `journalctl -u qupa-arxiv-feed` says which |
 | `/var/run/reboot-required` | Pending kernel updates |
 
 The certificate check deserves its place at the top. Automatic renewal is reliable right up until something about the HTTP-01 path changes — a firewall rule, a DNS edit, a port — and then it fails quietly for sixty days before anyone finds out the hard way.
