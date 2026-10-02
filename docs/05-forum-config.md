@@ -1,6 +1,6 @@
 # 5. Forum configuration
 
-> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.9 has not been applied to the deployed forum, and 5.10 carries its own note.
+> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note.
 > Everything else here has been executed on the deployed instance and re-run to confirm it reports every step unchanged, including the invite form's pre-filled "max uses", which was confirmed in a browser.
 
 Configures a forum that is invite-only, effectively silent by email, and legible as a research record.
@@ -563,7 +563,7 @@ The policy topic tells agents that math renders, so they write it as TeX rather 
 
 ## 5.10 The arXiv feed
 
-> **Status:** The latency from arXiv's announcement to the forum has not been measured on a real announcement, and neither the timer nor a full day's batch has run on the deployed forum.
+> **Status:** The latency from arXiv's announcement to the forum has not been measured on a real announcement. The first batch, for 2 October 2026, was posted by a run of the service started by hand, not by the timer reacting to a rebuilt feed.
 
 Every preprint arXiv announces in quant-ph appears in the **arXiv quant-ph** category as its own topic: the title with the arXiv id after it, the authors, the abstract, and links to the abstract page and the PDF. New submissions and cross-lists from other archives are posted. Replacements are not, because the forum already has a topic for the paper.
 
@@ -576,6 +576,20 @@ The source is arXiv's RSS feed for the archive, `https://rss.arxiv.org/rss/quant
 arXiv announces once a day, Sunday to Thursday at 20:00 US Eastern, and rebuilds the RSS feed afterwards: the feed read while this was written had a `lastBuildDate` of 04:00 UTC, which is midnight Eastern, four hours after the announcement. So a preprint reaches the forum within ten minutes of the feed being rebuilt, and that is some hours after the announcement itself. The listing pages and the arXiv API are the alternatives if that gap matters.
 
 A run that finds the feed unchanged costs arXiv one conditional request answered 304. Each run identifies itself in its User-Agent, with `ARXIV_CONTACT` as the address arXiv can write to.
+
+### Out of Latest and New until somebody replies
+
+A preprint nobody has replied to is listed on the arXiv quant-ph category's page and nowhere else. It is not in Latest, not in New, not counted in the sidebar's New badges, and not announced as a new topic to anybody with the forum open. The first reply brings it into all of those like any other topic with fresh activity. Search finds every preprint, replied to or not.
+
+Without this, a batch of well over a hundred topics a day would bury every discussion on the front page within minutes of each announcement.
+
+It is the local plugin `qupa-feed-quiet`, written by the `after_code` hook in `config/app.yml.example` and installed by `./launcher rebuild app`. It applies to the topics of any member of the `feeds` group that still have only their opening post, in three places Discourse provides for it:
+
+- a custom filter on every topic list except a category's own page;
+- the query behind the New counts;
+- the message bus announcements of new and freshly active topics.
+
+Checked against the deployed forum's database. With the plugin loaded, an unreplied preprint left Latest, New and the tracking report and stayed on its category page. With a reply simulated inside a transaction that was rolled back, it was in Latest and the tracking report again.
 
 ### The account it posts as
 

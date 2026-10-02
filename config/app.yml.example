@@ -144,6 +144,68 @@ hooks:
         cd: $home/plugins
         cmd:
           - git clone --depth 1 https://github.com/discourse/docker_manager.git
+          # A feed's topics stay out of Latest and New until somebody replies.
+          # docs/05-forum-config.md 5.10 has why. Written here rather than
+          # cloned, because it is this forum's and nobody else's.
+          - mkdir -p qupa-feed-quiet
+          - |
+            cat > qupa-feed-quiet/plugin.rb <<'PLUGIN'
+            # name: qupa-feed-quiet
+            # about: Keep a feed account's topics out of Latest and New until somebody replies
+            # version: 0.1.0
+            # authors: Qupa Cafe
+
+            after_initialize do
+              module ::QupaFeedQuiet
+                # A topic a member of the feeds group opened, with nothing in it
+                # but that opening post. Members are looked up per query, so
+                # adding a feed account needs no restart.
+                UNREPLIED_SQL = <<~SQL.squish
+                  topics.posts_count <= 1 AND topics.user_id IN (
+                    SELECT gu.user_id FROM group_users gu
+                    JOIN groups g ON g.id = gu.group_id
+                    WHERE g.name = 'feeds'
+                  )
+                SQL
+
+                def self.unreplied?(topic)
+                  topic.posts_count.to_i <= 1 &&
+                    GroupUser.joins(:group).where(groups: { name: "feeds" }, user_id: topic.user_id).exists?
+                end
+
+                # The message bus announcements, and the query behind the
+                # sidebar's New counts. Without these a topic missing from the
+                # lists would still be counted and announced as new.
+                module TrackingState
+                  def publish_new(topic)
+                    return if QupaFeedQuiet.unreplied?(topic)
+                    super
+                  end
+
+                  def publish_latest(topic)
+                    return if QupaFeedQuiet.unreplied?(topic)
+                    super
+                  end
+
+                  def new_filter_sql
+                    "#{super} AND NOT (#{UNREPLIED_SQL})"
+                  end
+                end
+              end
+
+              # Every topic list, except a category's own page: that is where
+              # the preprints are browsed, so it lists all of them.
+              TopicQuery.add_custom_filter(:qupa_feed_quiet) do |results, topic_query|
+                if topic_query.options[:category].present?
+                  results
+                else
+                  results.where("NOT (#{QupaFeedQuiet::UNREPLIED_SQL})")
+                end
+              end
+
+              TopicTrackingState.singleton_class.prepend(QupaFeedQuiet::TrackingState)
+            end
+            PLUGIN
 
 run:
   - exec: echo "Beginning of custom commands"
