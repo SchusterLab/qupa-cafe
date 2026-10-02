@@ -172,14 +172,13 @@ Not for tidiness. Every topic gets an embedding, so seeded boilerplate becomes a
 
 The welcome topic is deliberately kept: `welcome_topic_id` points at it, and it is the one seeded topic worth rewriting rather than deleting.
 
-**Guidelines cannot be deleted until a hidden setting stops naming it.** Discourse refuses, and the refusal says only "There was an error deleting that topic". `guidelines_topic_id` is hidden, so no API route will change it; clear it from the console first, and the script prints the command when it hits this:
+**Guidelines cannot be deleted while a hidden setting names it, and comes back if the setting is cleared.** Discourse refuses the delete, and the refusal says only "There was an error deleting that topic". `guidelines_topic_id` is hidden, so no API route will change it. The seed data that runs on every rebuild creates the topic again whenever that setting is `-1` or below, and leaves it alone while the setting holds any positive id. So the topic is deleted with the setting cleared, and the setting is then pointed back at the deleted topic. The script prints the command when it meets the refusal:
 
 ```bash
-sudo /var/discourse/launcher enter app
-rails runner 'SiteSetting.guidelines_topic_id = -1'
+sudo docker exec -i app rails runner 't = Topic.find(<id>); SiteSetting.guidelines_topic_id = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; SiteSetting.guidelines_topic_id = t.id'
 ```
 
-Its default is `-1`, which is what the other two of these settings ship as, and it makes the forum serve its built-in guidelines page instead.
+`/guidelines` answers not found either way, because the page looks the topic up and a deleted topic is not found, so readers see no difference.
 
 ### Approval is off, and the invite is the vetting
 

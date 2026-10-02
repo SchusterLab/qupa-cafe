@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-02 (the Guidelines topic stays deleted across rebuilds)
+
+- **The seeded Guidelines topic is deleted with `guidelines_topic_id` left naming it.** Discourse's seed data, which runs on every `launcher rebuild app`, creates the topic again whenever that setting is `-1` or below and leaves it alone while it holds a positive id. Clearing the setting is therefore what brought it back: the rebuild for `qupa-feed-quiet` seeded it as topic 63. Topic 63 was deleted with the setting cleared, and the setting was then pointed back at it, and read back the topic is deleted and the setting is 63. `40-configure-forum.py` prints that command when Discourse refuses the delete. `docs/05-forum-config.md` §5.2.
+- That the next rebuild leaves it deleted follows from reading the seed code (`SeedData::Topics#create_topic`) and has not yet been seen on a rebuild.
+
 ### 2026-10-02 (every quant-ph preprint gets a topic, and the forum renders LaTeX)
 
 - **`server/arxiv-feed.py` posts each preprint arXiv announces in quant-ph as its own topic** in a new **arXiv quant-ph** category: the title with `(arXiv:<id>)` after it, the authors, the abstract, and links to the abstract page and the PDF. New submissions and cross-lists are posted and replacements are not. `server/qupa-arxiv-feed.timer` runs it every ten minutes. The source is arXiv's RSS feed, which the copy read on this date shows rebuilt at midnight US Eastern, about four hours after the 20:00 announcement. `docs/05-forum-config.md` §5.10, `server/README.md`.

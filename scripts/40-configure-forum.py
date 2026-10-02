@@ -362,9 +362,12 @@ SEED_TOPICS_TO_REMOVE = ("Guidelines", "Admin Guide: Getting Started")
 # allowed to change hidden settings". So the operator has to clear it on the
 # host and this script can only say which one and how.
 #
-# **A rebuild re-seeds these and re-points the setting.** Clearing it is not
-# once and for all: `launcher rebuild app` creates a fresh Guidelines topic and
-# sets guidelines_topic_id to it, so this step comes back every rebuild.
+# **Clearing the setting is what brings the topic back.** The seed data that
+# runs on every `launcher rebuild app` creates the topic again whenever its
+# setting is -1 or below, and leaves it alone when the setting holds any
+# positive id, deleted topic or not. So the topic is deleted with the setting
+# cleared, and then the setting is pointed back at it, deleted as it is. Either
+# way /guidelines answers not found, so readers see no difference.
 SEED_TOPIC_SETTINGS = {
     "Guidelines": "SiteSetting.guidelines_topic_id",
 }
@@ -1026,7 +1029,8 @@ def remove_seed_topics(api: Discourse) -> None:
     is a HIDDEN site setting, so no API route will change it, and Discourse
     refuses to delete a topic that setting still names. The refusal message says
     only "There was an error deleting that topic", so this prints the command
-    that actually clears it rather than leaving the reader with that.
+    that deletes it on the host, and leaves the setting naming the deleted topic
+    so that the next rebuild does not seed it again.
     """
     print()
     print("== Seeded topics this forum does not keep")
@@ -1070,10 +1074,15 @@ def remove_seed_topics(api: Discourse) -> None:
             print(f"   REFUSED    topic {topic_id} {title!r}: {exc}")
             if setting:
                 print(f"   {setting} still names it, and that setting is hidden:")
-                print("   this script cannot read it or change it over the API. One command,")
-                print("   on the forum host, then run this again:")
+                print("   this script cannot read it or change it over the API. This deletes")
+                print("   the topic on the forum host, and leaves the setting naming it so")
+                print("   that the next rebuild does not seed it again:")
                 print()
-                print(f"     sudo docker exec -i app rails runner '{setting} = -1'")
+                print(
+                    f"     sudo docker exec -i app rails runner 't = Topic.find({topic_id}); "
+                    f"{setting} = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; "
+                    f"{setting} = t.id'"
+                )
                 print()
                 print("   `launcher enter app -c` needs a TTY and fails from a script;")
                 print("   docker exec -i does not.")
