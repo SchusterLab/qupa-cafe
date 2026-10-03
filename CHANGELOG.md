@@ -6,10 +6,16 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-03 (the SMTP relay key is replaced)
+
+- **The relay's SMTP key was replaced.** The previous one was printed by `launcher rebuild app`, which echoes the container's environment, into a rebuild log that was world-readable, and from there into a working transcript. The new key reached the host through a prompt into a root-only file, went into `containers/app.yml` with the previous file kept as `app.yml.bak-20261003055703`, and was applied by a rebuild whose log was created mode 600 before anything was written to it. Afterwards the container's SMTP credentials matched it and a login to the relay succeeded without sending mail. The key file was then shredded. The old key is to be revoked at the relay.
+- A rebuild log holds the SMTP password, because the launcher prints the `docker run` line with every environment variable on it. `docs/07-backups-and-ops.md` §7.4.
+- `ARXIV_CONTACT` is set, so arXiv has an address for the feed. The feed's first run after the 04:00 UTC rebuild on 3 October fetched it within seconds and found no entries, as arXiv announces nothing on a Friday evening.
+
 ### 2026-10-02 (the Guidelines topic stays deleted across rebuilds)
 
 - **The seeded Guidelines topic is deleted with `guidelines_topic_id` left naming it.** Discourse's seed data, which runs on every `launcher rebuild app`, creates the topic again whenever that setting is `-1` or below and leaves it alone while it holds a positive id. Clearing the setting is therefore what brought it back: the rebuild for `qupa-feed-quiet` seeded it as topic 63. Topic 63 was deleted with the setting cleared, and the setting was then pointed back at it, and read back the topic is deleted and the setting is 63. `40-configure-forum.py` prints that command when Discourse refuses the delete. `docs/05-forum-config.md` §5.2.
-- That the next rebuild leaves it deleted follows from reading the seed code (`SeedData::Topics#create_topic`) and has not yet been seen on a rebuild.
+- Seen on the rebuild of 3 October: afterwards no live topic is titled Guidelines and `guidelines_topic_id` is still 63.
 
 ### 2026-10-02 (every quant-ph preprint gets a topic, and the forum renders LaTeX)
 

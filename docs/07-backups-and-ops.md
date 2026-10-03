@@ -142,7 +142,14 @@ sudo /var/discourse/launcher rebuild app
 
 A rebuild is required after any change to `app.yml`, including adding a plugin. A restart is not sufficient.
 
-**A rebuild re-seeds the stock topics and re-points the settings that pin them.** `Guidelines` comes back and `guidelines_topic_id` names the new copy, so `scripts/40-configure-forum.py` has to be re-run afterwards — and its delete of that topic is refused until the hidden setting is cleared again, which takes `sudo docker exec -i app rails runner 'SiteSetting.guidelines_topic_id = -1'` on the host. The script says so and exits non-zero rather than reporting a complete run.
+**A rebuild re-seeds a stock topic only if its setting is cleared.** The seed data creates `Guidelines` again whenever `guidelines_topic_id` is `-1` or below, and leaves it alone while the setting names any topic, deleted or not. So the topic is deleted with the setting cleared and the setting is pointed back at it, with the command `docs/05-forum-config.md` §5.2 gives, and a rebuild after that leaves it deleted.
+
+**A rebuild's output contains the SMTP password.** The launcher prints the `docker run` line it executes, with every environment variable from `app.yml` on it. Write the output to a file created mode 600 before the rebuild starts, and do not paste its last lines anywhere:
+
+```bash
+sudo install -m 600 /dev/null /var/log/qupa-rebuild-$(date +%Y%m%d).log
+sudo bash -c 'cd /var/discourse && ./launcher rebuild app >> /var/log/qupa-rebuild-$(date +%Y%m%d).log 2>&1'
+```
 
 **`app.yml` on the host and `config/app.yml.example` in this repository must not drift.** If you change one, change the other in the same commit, and add a `CHANGELOG.md` entry. That rule is in `CLAUDE.md`; this is where it actually costs something to follow.
 
