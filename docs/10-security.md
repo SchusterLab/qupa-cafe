@@ -90,6 +90,8 @@ On a forum whose value is being a trustworthy research record, that is the loss 
 
 **The arXiv feed's key is the one granular key**, and it is granular for the opposite reason. Its account, `arxiv-bot`, is a moderator, because staff are exempt from the daily topic limit a day's preprints exceed, so the account is no protection at all. The scope has to be: `topics:write` and `topics:read` let it create posts and read topics and nothing else, so it cannot edit a post, the policy topic included, or reach an admin route. It lives in `/etc/qupa-cafe/arxiv-feed.env`, readable by root and the feed's service group. `docs/05-forum-config.md` 5.10.
 
+**A chat bridge, where one is connected, holds an admin key for all users**, because it posts each person's replies as that person. It is the most powerful key on the host, and the bridge's own notes in `providers/` say how it is held and what it is used for.
+
 Keys are displayed once and auto-revoke after 180 unused days.
 
 **Neither key ever reaches a command line**, because a command line is visible in the process table to every user on the machine. Discourse's official MCP server takes its key from a profile file, which is that server's own recommendation; the kit's own server reads environment variables that the installer writes to a file. Both files are created mode 600.
@@ -105,6 +107,8 @@ Keys are displayed once and auto-revoke after 180 unused days.
 Two things carry the weight approval used to. **Only staff can invite**, so the set of people who can widen access is the set of people who already administer the forum. And the invite form **defaults to a single use**, so a link handed out without thought is spent once.
 
 Be clear about what that second one is not. The ceiling is left at Discourse's shipped value, so a staff member can still choose a multi-use link, and the default is enforced in the browser rather than by the server. An invite link is a credential: whoever reaches it first is in, and it wants the handling any other credential gets.
+
+**A chat bridge widens both of those.** It shows every category that all members can read to everybody in the chat workspace, and it invites a workspace member who replies with no forum account, so the workspace's membership becomes part of the vetting. Its notes in `providers/` set out the trade, and a workspace whose membership is not a group you would invite anyway should not be connected.
 
 Third-party login is off. Routing participant identity through a third party buys nothing on a private forum and adds a dependency in the authentication path.
 

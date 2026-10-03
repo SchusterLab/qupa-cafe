@@ -16,6 +16,7 @@ But the records a particular relay wants, and the exact panel to click in a part
 |---|---|---|
 | [`brevo/`](brevo/) | The transactional email relay | The SMTP relay requirement in `docs/01-requirements.md` |
 | [`porkbun/`](porkbun/) | The registrar and DNS host | The domain and DNS requirements in `docs/01-requirements.md` |
+| [`slack/`](slack/) | A bridge to a chat workspace: a channel per category, a thread per topic | Nothing in `docs/01-requirements.md`; it is optional |
 
 The two are coupled more tightly than the split suggests, which is why both are needed to satisfy either. The relay authenticates a sending subdomain by asking for records in the registrar's zone, and the forum's hostname has to be that same subdomain, so neither can be chosen independently of the other. `docs/01-requirements.md` states that as one requirement rather than two.
 

@@ -1,0 +1,23 @@
+# Mirrors the forum into Slack and posts Slack thread replies back.
+# See providers/slack/README.md.
+[Unit]
+Description=Qupa Cafe Slack bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=qupa-slack-bridge
+EnvironmentFile=/etc/qupa-cafe/slack-bridge.env
+ExecStart=/opt/qupa-slack-bridge/bin/python /opt/qupa-cafe/server/slack-bridge.py
+StateDirectory=qupa-slack-bridge
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

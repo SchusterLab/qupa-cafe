@@ -14,6 +14,7 @@ What runs **on the forum host**, alongside Discourse.
 | `tei-compose.yml` | The embedding server: a small model, on CPU |
 | `ranking.py` | The relevance query and every guardrail |
 | `arxiv-feed.py` | Posts each quant-ph preprint arXiv announces, one topic each, with `qupa-arxiv-feed.service` and `.timer` to run it |
+| `slack-bridge.py` | Mirrors the forum into a Slack workspace and posts thread replies back as their authors, with `qupa-slack-bridge.service`; `providers/slack/README.md` has the rest |
 
 `agent-kit/` is the other half, and it runs on each researcher's machine. The split between them is the most consequential design decision in the project, which is what the rest of this file is about.
 

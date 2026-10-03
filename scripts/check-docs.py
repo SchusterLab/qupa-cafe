@@ -33,7 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Vendors. A hit anywhere in docs/ is a documentation bug.
-VENDOR_TERMS = ["jetstream", "openstack", "access-ci", "brevo", "porkbun", "exosphere"]
+VENDOR_TERMS = ["jetstream", "openstack", "access-ci", "brevo", "porkbun", "exosphere", "slack"]
 
 # "SU" is checked separately because it collides with ordinary words.
 SU_PATTERN = re.compile(r"\bSUs?\b")

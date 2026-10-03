@@ -1,0 +1,30 @@
+# The Slack app the bridge runs as. Paste this into "Create an app" ->
+# "From a manifest". See README.md beside it for what each scope is for.
+display_information:
+  name: Qupa Cafe
+  description: Mirrors the Qupa Cafe forum, one channel per category and one thread per topic.
+features:
+  bot_user:
+    display_name: qupa-cafe
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:join
+      - channels:manage
+      - channels:read
+      - chat:write
+      - chat:write.customize
+      - im:write
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
