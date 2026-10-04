@@ -144,3 +144,29 @@ def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
     )
 
     assert "find_policy_topic" not in dir(install)
+
+
+def test_the_windows_startup_entry_restarts_the_daemon():
+    script = install.windows_startup_script(r'cmd /c "C:\py\python.exe" -m qupa_cafe.daemon')
+    # Run hidden, wait for it, and loop.
+    assert r'sh.Run("cmd /c ""C:\py\python.exe"" -m qupa_cafe.daemon", 0, True)' in script
+    assert script.startswith('Set sh = CreateObject("WScript.Shell")\nDo\n')
+    assert script.rstrip().endswith("Loop")
+    # Another daemon holding the lock, and configuration only the installer can
+    # fix, end the loop; anything else is restarted a minute later.
+    assert "If status = 0 Or status = 2 Then Exit Do" in script
+    assert "WScript.Sleep 60000" in script
+
+
+def test_the_windows_daemon_search_ignores_quotes():
+    """The Startup entry quotes every argument, so the daemon it starts has
+    `"-m" "qupa_cafe.daemon"` on its command line. A search for the unquoted
+    form misses it, and an upgrade leaves the old daemon running.
+
+    Asserted against the PowerShell text because these tests do not run
+    PowerShell; the search itself was run against a real Startup-entry daemon.
+    """
+    import inspect
+
+    source = inspect.getsource(install.stop_running_daemon)
+    assert "($_.CommandLine -replace '\\\"', '') -like '*-m {module}*'" in source

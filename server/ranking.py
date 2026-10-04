@@ -52,7 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -144,6 +144,12 @@ class Config:
         if name.strip()
     )
     feed_wake_cap_per_day: int = int(os.environ.get("FEED_WAKE_CAP_PER_DAY", "3"))
+    # How long an agent's daemon may go without polling before its researcher
+    # is told. A daemon polls every minute, so an hour of silence is already a
+    # stopped daemon or a machine that is off; the default is long enough that
+    # a laptop shut for an evening says nothing, and short enough that a
+    # daemon that died in the morning is known about the same day.
+    daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
     post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
     bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
 
@@ -314,6 +320,14 @@ class State:
             -- the agent, so a researcher who edits a profile and is still over
             -- the limit hears about it once more, and one who fixes it and
             -- breaks it again hears about it again.
+            -- When each agent's daemon last asked for its wakes, which is the
+            -- only sign this host has that the daemon is alive.
+            CREATE TABLE IF NOT EXISTS daemons (
+                agent     TEXT PRIMARY KEY,
+                last_poll TEXT NOT NULL,
+                kit       TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS notices (
                 kind    TEXT NOT NULL,
                 subject TEXT NOT NULL,
@@ -354,6 +368,25 @@ class State:
             (kind, subject, digest, datetime.now(timezone.utc).isoformat()),
         )
         self.db.commit()
+
+    def record_poll(self, agent: str, kit: str = "") -> None:
+        self.db.execute(
+            "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?) "
+            "ON CONFLICT(agent) DO UPDATE SET last_poll = excluded.last_poll, kit = excluded.kit",
+            (agent, datetime.now(timezone.utc).isoformat(), kit),
+        )
+        self.db.commit()
+
+    def silent_daemons(self, before: datetime) -> list[tuple[str, str]]:
+        """(agent, last poll) for every daemon that has polled at least once
+        and not since ``before``. One that never polled was never installed,
+        which is a different conversation."""
+        return list(
+            self.db.execute(
+                "SELECT agent, last_poll FROM daemons WHERE last_poll < ? ORDER BY agent",
+                (before.isoformat(),),
+            )
+        )
 
     def already_woken(self, agent: str, post_id: int) -> bool:
         row = self.db.execute(
@@ -1011,6 +1044,56 @@ class Ranker:
         ):
             LOG.info("told %s and %s that the kit is behind", researcher, agent)
             self.state.record_notice("kit-outdated", agent, digest)
+
+    def check_daemons(self, now: datetime | None = None) -> list[str]:
+        """Tell each researcher whose agent's daemon has gone quiet.
+
+        A daemon that has stopped cannot report that it has, and on the
+        researcher's machine nothing else is watching it, so this host is the
+        one place its absence can be seen: every daemon asks ``/wake`` once a
+        minute. Silence longer than ``daemon_silence_hours`` earns the
+        researcher a private message.
+
+        Once per silence. The notice is keyed on the time of the last poll, so
+        the next poll ends the silence and a later one starts a new one.
+        Researcher only, and not the agent, which nothing can wake while its
+        daemon is down. Sent as this service's account, which the Slack bridge
+        carries to the researcher's DM with the bot like any other message.
+        Returns the agents whose researchers were told.
+        """
+        now = now or datetime.now(timezone.utc)
+        hours = self.config.daemon_silence_hours
+        told = []
+        for agent, last_poll in self.state.silent_daemons(now - timedelta(hours=hours)):
+            if self.state.notice_sent("daemon-silent", agent, last_poll):
+                continue
+            try:
+                researcher = self.researcher_for(agent)
+            except Exception as exc:  # noqa: BLE001
+                LOG.error("cannot look up the researcher behind %s: %s", agent, exc)
+                continue
+            if not researcher:
+                LOG.warning("%s's daemon has been silent since %s and there is nobody to tell", agent, last_poll)
+                self.state.record_notice("daemon-silent", agent, last_poll)
+                continue
+
+            seen = datetime.fromisoformat(last_poll).strftime("%Y-%m-%d %H:%M UTC")
+            try:
+                body = message(
+                    "daemon-silent-message.md",
+                    AGENT=agent,
+                    LAST_SEEN=seen,
+                    HOURS=f"{hours:g}",
+                )
+            except OSError as exc:
+                LOG.error("cannot read the daemon-silent message: %s", exc)
+                return told
+
+            if self.forum.private_message(researcher, f"{agent}'s daemon has not polled since {seen}", body):
+                LOG.info("told %s that %s's daemon has been silent since %s", researcher, agent, seen)
+                self.state.record_notice("daemon-silent", agent, last_poll)
+                told.append(agent)
+        return told
 
     def notify_truncated(self, agent: Agent, tokens: int, limit: int) -> None:
         """Tell the agent its profile is being cut off.
@@ -1684,6 +1767,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, {"error": "that key does not act as that agent"})
                 return
 
+            # Proof of life, and only from a caller that holds the agent's key.
+            self.ranker.state.record_poll(agent, reported)
+
             # Now that the caller is known to act as this agent, the staleness
             # gets a log line against its name, rides along in the payload, and
             # -- once per version -- reaches the researcher as a message.
@@ -1757,6 +1843,10 @@ def serve(ranker: Ranker) -> None:
                 LOG.info("woke %s", ", ".join(f"{d.agent}<-{d.post_id}" for d in woke))
         except Exception as exc:  # noqa: BLE001 - a scoring failure must not end the loop
             LOG.exception("scoring pass failed: %s", exc)
+        try:
+            ranker.check_daemons()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
+            LOG.exception("daemon check failed: %s", exc)
         time.sleep(ranker.config.poll_seconds)
 
 

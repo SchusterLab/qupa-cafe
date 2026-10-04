@@ -77,19 +77,22 @@ class StubForum:
             "sunada": {"id": 2, "username": "sunada", "email": "sunada@uni.edu", "active": True},
             "sunada-agent": {"id": 3, "username": "sunada-agent", "email": "sunada-agent@forum", "active": True},
             "pat": {"id": 4, "username": "pat", "email": "pat@uni.edu", "active": True},
+            "pat-agent": {"id": 6, "username": "pat-agent", "email": "pat-agent@forum", "active": True},
             "arxiv-bot": {"id": 5, "username": "arxiv-bot", "email": "arxiv-bot@forum", "active": True},
         }
-        self.groups = {"agents": ["sunada-agent"], "feeds": ["arxiv-bot"]}
+        self.groups = {"agents": ["sunada-agent", "pat-agent"], "feeds": ["arxiv-bot"]}
         self.topics: dict[int, dict] = {}
         self.posts: list[dict] = []
         self.invites: list[str] = []
+        self.added: list[tuple[int, str]] = []
         self.created_as: list[tuple[str, dict]] = []
         self.next_post = 100
 
-    def topic(self, topic_id, title, category_id, opener, archetype="regular"):
+    def topic(self, topic_id, title, category_id, opener, archetype="regular", allowed_users=(), allowed_groups=()):
         self.topics[topic_id] = {
             "id": topic_id, "title": title, "slug": title.lower().replace(" ", "-"),
             "category_id": category_id, "archetype": archetype, "opener": opener, "posts": [],
+            "allowed_users": list(allowed_users), "allowed_groups": list(allowed_groups),
         }
 
     def post(self, topic_id, username, raw, post_type=1):
@@ -120,14 +123,19 @@ def serve(stub: StubForum):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             path = url.path
 
-            if path == "/posts.json":
-                # Public posts only, newest first, 50 a page, as posts#latest.
-                public = [
+            if path in ("/posts.json", "/private-posts.json"):
+                # Newest first, 50 a page, as posts#latest. The public listing
+                # has regular posts only; the private one, as an admin sees it,
+                # has every private post, whispers included.
+                private = path == "/private-posts.json"
+                listed = [
                     p for p in stub.posts
-                    if stub.topics[p["topic_id"]]["archetype"] == "regular"
+                    if (stub.topics[p["topic_id"]]["archetype"] == "private_message") == private
+                    and (private or p["post_type"] == 1)
                     and ("before" not in q or p["id"] < int(q["before"]))
                 ]
-                return self._json(200, {"latest_posts": sorted(public, key=lambda p: -p["id"])[:50]})
+                root = "private_posts" if private else "latest_posts"
+                return self._json(200, {root: sorted(listed, key=lambda p: -p["id"])[:50]})
             if path.startswith("/posts/"):
                 post_id = int(path.split("/")[2].removesuffix(".json"))
                 return self._json(200, next(p for p in stub.posts if p["id"] == post_id))
@@ -138,7 +146,14 @@ def serve(stub: StubForum):
                 return self._json(200, {
                     "id": topic["id"], "title": topic["title"], "slug": topic["slug"],
                     "category_id": topic["category_id"], "archetype": topic["archetype"],
-                    "details": {"created_by": {"username": topic["opener"]}},
+                    "details": {
+                        "created_by": {"id": stub.users[topic["opener"]]["id"] if topic["opener"] in stub.users else -1, "username": topic["opener"]},
+                        "allowed_users": [
+                            {"id": stub.users[u]["id"] if u in stub.users else -1, "username": u}
+                            for u in topic["allowed_users"]
+                        ],
+                        "allowed_groups": [{"name": g} for g in topic["allowed_groups"]],
+                    },
                     "post_stream": {"stream": [p["id"] for p in topic["posts"]]},
                 })
             if path == "/categories.json":
@@ -168,8 +183,20 @@ def serve(stub: StubForum):
                 if len(form.get("raw", "")) < 5:
                     return self._json(422, {"errors": ["Body is too short (minimum is 5 characters)"]})
                 stub.created_as.append((as_user, form))
+                if form.get("archetype") == "private_message":
+                    if any(t["title"] == form["title"] for t in stub.topics.values()):
+                        return self._json(422, {"errors": ["Title has already been used"]})
+                    topic_id = max(stub.topics) + 1
+                    stub.topic(topic_id, form["title"], None, as_user, archetype="private_message",
+                               allowed_users=[as_user] + form["target_recipients"].split(","))
+                    return self._json(200, stub.post(topic_id, as_user, form["raw"]))
                 post = stub.post(int(form["topic_id"]), as_user, form["raw"])
                 return self._json(200, post)
+            if self.path.startswith("/t/") and self.path.endswith("/invite.json"):
+                topic = stub.topics[int(self.path.split("/")[2])]
+                topic["allowed_users"].append(form["user"])
+                stub.added.append((topic["id"], form["user"]))
+                return self._json(200, {"success": "OK"})
             if self.path == "/invites.json":
                 stub.invites.append(form["email"])
                 return self._json(200, {"id": len(stub.invites), "email": form["email"]})
@@ -203,6 +230,7 @@ class FakeSlack:
             "UN": {"id": "UN", "profile": {"email": "new@uni.edu", "display_name": "Newcomer"}},
             "UA": {"id": "UA", "profile": {"email": "sunada-agent@forum"}},
         }
+        self.group_members: dict[str, list[str]] = {}
         self._ts = 1000
 
     def _next_ts(self):
@@ -219,6 +247,9 @@ class FakeSlack:
         return {"channels": [{"name": n, "id": i} for n, i in self.channels.items()], "response_metadata": {}}
 
     def conversations_info(self, channel):
+        if channel.startswith("D"):
+            # The app has no im:read, so Slack refuses this for a DM.
+            raise SlackError("The server responded with: {'ok': False, 'error': 'missing_scope', 'needed': 'im:read'}")
         name = next(n for n, i in self.channels.items() if i == channel)
         return {"channel": {"id": channel, "name": name}}
 
@@ -245,8 +276,17 @@ class FakeSlack:
     def chat_postEphemeral(self, **kwargs):  # noqa: N802
         self.ephemerals.append(kwargs)
 
+    def conversations_members(self, channel, **kwargs):
+        return {"members": self.group_members[channel], "response_metadata": {}}
+
     def conversations_open(self, users):
-        return {"channel": {"id": f"D{users}"}}
+        # One user is their DM with the bot; several are a group DM with it.
+        ids = users.split(",")
+        if len(ids) == 1:
+            return {"channel": {"id": f"D{users}"}}
+        channel = "G" + "".join(sorted(ids))
+        self.group_members[channel] = sorted(ids) + ["UBOT"]
+        return {"channel": {"id": channel}}
 
     def users_info(self, user):
         return {"user": self.people[user]}
@@ -268,7 +308,10 @@ def world(tmp_path):
     bridge.bot_user_id = "UBOT"
     stub.topic(10, "Surface code thresholds", 1, "sunada")
     stub.post(10, "sunada", "Opening the discussion.")
-    bridge.poll()  # the first run only places the cursor
+    stub.topic(40, "Your agent sunada-agent is ready", None, "system", archetype="private_message",
+               allowed_users=["system", "sunada"])
+    stub.post(40, "system", "Here is the key.")
+    bridge.poll()  # the first run only places the cursors
     yield stub, slack, bridge
     httpd.shutdown()
 
@@ -371,6 +414,190 @@ def test_channels_are_renamed_when_the_prefix_changes(world):
     bridge.prefix = "taken-"
     bridge.sync_categories(force=True)
     assert slack.channels["lab-research"] == research
+
+
+# ---------------------------------------------------------------- conversations with the bot
+
+
+def dm(user, text, ts, thread_ts=None, channel=None):
+    event = {"type": "message", "channel_type": "im", "channel": channel or f"D{user}", "user": user,
+             "text": text, "ts": ts}
+    if thread_ts:
+        event["thread_ts"] = thread_ts
+    return event
+
+
+def in_thread(slack, channel, thread_ts):
+    return [m for m in slack.dms + slack.messages if m["channel"] == channel and m.get("thread_ts") == thread_ts]
+
+
+def test_a_dm_with_the_bot_is_a_private_message_with_your_agent(world):
+    stub, slack, bridge = world
+    outcome = bridge.handle_message(dm("US", "Can you rerun the threshold sweep at d=7?", "7000.1"))
+    assert outcome.startswith("opened message")
+    as_user, form = stub.created_as[-1]
+    assert as_user == "sunada" and form["archetype"] == "private_message"
+    assert form["target_recipients"] == "sunada-agent"
+    assert form["title"] == "Can you rerun the threshold sweep at d=7?"
+    topic_id = max(stub.topics)
+    assert bridge.state.thread_for(topic_id) == ("DUS", "7000.1")
+    # The bot says where it went, in the thread.
+    (note,) = in_thread(slack, "DUS", "7000.1")
+    assert "sunada-agent" in note["text"]
+
+    # The agent answers on the forum, and the answer arrives in the thread
+    # under the agent's name, with no mention: it is the reader's own DM.
+    stub.post(topic_id, "sunada-agent", "Running it now; about an hour.")
+    assert bridge.poll() == 1
+    reply = in_thread(slack, "DUS", "7000.1")[-1]
+    assert reply["username"] == "sunada-agent" and reply["text"].startswith("Running it now")
+    assert "<@" not in reply["text"]
+
+    # A reply in the thread continues the same message, and is not echoed.
+    assert bridge.handle_message(dm("US", "Thanks, post the plot here.", "7000.5", thread_ts="7000.1")).startswith("posted as sunada")
+    assert stub.created_as[-1] == ("sunada", {"topic_id": str(topic_id), "raw": "Thanks, post the plot here."})
+    before = len(in_thread(slack, "DUS", "7000.1"))
+    bridge.poll()
+    assert len(in_thread(slack, "DUS", "7000.1")) == before
+
+
+def test_a_group_dm_includes_everybody_and_all_their_agents(world):
+    stub, slack, bridge = world
+    slack.group_members["GSP"] = ["US", "UP", "UBOT", "UN"]
+    event = {"type": "message", "channel_type": "mpim", "channel": "GSP", "user": "US",
+             "text": "Shall we write the comparison up?", "ts": "7100.1"}
+    assert bridge.handle_message(event).startswith("opened message")
+    _, form = stub.created_as[-1]
+    assert sorted(form["target_recipients"].split(",")) == ["pat", "pat-agent", "sunada-agent"]
+    # The newcomer has no forum account, and the note says they are not in it.
+    note = slack.messages[-1]
+    assert note["thread_ts"] == "7100.1" and "Newcomer" in note["text"]
+
+    # In a group, an agent's reply says whose agent it is.
+    topic_id = max(stub.topics)
+    stub.post(topic_id, "pat-agent", "Draft outline attached on the forum.")
+    bridge.poll()
+    assert slack.messages[-1]["text"].startswith("<@UP>, your agent posted")
+
+
+def test_someone_added_on_the_forum_brings_their_agent(world):
+    stub, slack, bridge = world
+    bridge.handle_message(dm("US", "Can you rerun the threshold sweep at d=7?", "7000.1"))
+    topic_id = max(stub.topics)
+    stub.topics[topic_id]["allowed_users"].append("pat")
+    stub.post(topic_id, "sunada-agent", "Adding pat, who ran the d=5 case.")
+    bridge.poll()
+    assert stub.added == [(topic_id, "pat-agent")]
+
+
+def test_a_message_from_the_agent_reaches_its_researchers_dm(world):
+    stub, slack, bridge = world
+    stub.topic(41, "The d=7 sweep finished", None, "sunada-agent", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada-agent", "Threshold holds at 0.57%.")
+    assert bridge.poll() == 1
+    parent, reply = [m for m in slack.dms if m["channel"] == "DUS"]
+    assert "The d=7 sweep finished" in parent["text"] and not parent.get("thread_ts")
+    assert reply["thread_ts"] == bridge.state.thread_for(41)[1] and reply["username"] == "sunada-agent"
+
+    # Answered from the DM, the reply goes to the message as sunada.
+    event = dm("US", "Great, write it up.", "8000.2", thread_ts=reply["thread_ts"])
+    assert bridge.handle_message(event).startswith("posted as sunada")
+    assert stub.created_as[-1] == ("sunada", {"topic_id": "41", "raw": "Great, write it up."})
+
+
+def test_a_message_between_people_opens_a_group_dm_and_brings_their_agents(world):
+    stub, slack, bridge = world
+    stub.topic(41, "About your threshold result", None, "pat", archetype="private_message",
+               allowed_users=["pat", "sunada"])
+    stub.post(41, "pat", "Can we compare notes?")
+    assert bridge.poll() == 1
+    # Both agents are added on the forum.
+    assert sorted(a for _, a in stub.added) == ["pat-agent", "sunada-agent"]
+    # One thread, in a group DM of the two of them and the bot.
+    channel, thread_ts = bridge.state.thread_for(41)
+    assert slack.group_members[channel] == ["UP", "US", "UBOT"]
+    assert [m["username"] for m in slack.messages if m.get("thread_ts") == thread_ts] == ["pat"]
+
+
+def test_somebody_added_later_moves_the_thread_to_a_conversation_with_them(world):
+    stub, slack, bridge = world
+    stub.topic(41, "The d=7 sweep finished", None, "sunada-agent", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada-agent", "Threshold holds at 0.57%.")
+    bridge.poll()
+    old_channel, old_ts = bridge.state.thread_for(41)
+    assert old_channel == "DUS"
+
+    stub.topics[41]["allowed_users"].append("pat")
+    stub.post(41, "sunada", "Adding pat.")
+    bridge.poll()
+    channel, _ = bridge.state.thread_for(41)
+    assert channel == "GUPUS"
+    note = [m for m in slack.dms if m.get("thread_ts") == old_ts][-1]
+    assert "continues in a conversation that includes them" in note["text"]
+    assert stub.added == [(41, "pat-agent")]
+
+
+def test_the_forums_own_messages_reach_slack_without_agents_or_keys(world):
+    stub, slack, bridge = world
+    key = "0123456789abcdef" * 4
+    stub.post(40, "system", f"Your key is `{key}`.")
+    assert bridge.poll() == 1
+    assert stub.added == []
+    reply = [m for m in slack.dms if m["channel"] == "DUS" and m.get("thread_ts")][-1]
+    assert key not in reply["text"] and "possibly a credential" in reply["text"]
+
+
+def test_a_message_with_nobody_on_slack_stays_on_the_forum(world):
+    stub, slack, bridge = world
+    stub.users["solo"] = {"id": 8, "username": "solo", "email": "solo@elsewhere.org", "active": True}
+    stub.topic(41, "Just me", None, "solo", archetype="private_message", allowed_users=["solo"])
+    stub.post(41, "solo", "A note to myself.")
+    assert bridge.poll() == 0
+    assert slack.dms == [] and slack.messages == []
+
+
+def test_no_api_key_reaches_slack(world):
+    stub, slack, bridge = world
+    key = "0123456789abcdef" * 4
+    bridge.handle_message(dm("US", "Where did my key go?", "7000.1"))
+    stub.post(max(stub.topics), "sunada-agent", f"It was `{key}`, and you should rotate it.")
+    bridge.poll()
+    reply = in_thread(slack, "DUS", "7000.1")[-1]
+    assert key not in reply["text"] and "possibly a credential" in reply["text"]
+    # A 40-character commit hash is left alone.
+    assert "possibly" not in bridge_mod.redact("a" * 40)
+
+
+def test_whispers_in_a_conversation_stay_out(world):
+    stub, slack, bridge = world
+    bridge.handle_message(dm("US", "Can you rerun the threshold sweep at d=7?", "7000.1"))
+    before = len(slack.dms)
+    stub.post(max(stub.topics), "sunada-agent", "A whisper.", post_type=4)
+    assert bridge.poll() == 0 and len(slack.dms) == before
+
+
+def test_message_titles_read_as_subject_lines():
+    assert bridge_mod.message_title("**Rerun** the d=7 sweep\nwith more shots") == "Rerun the d=7 sweep"
+    assert bridge_mod.message_title("**Rerun** it\nwith more shots") == "From Slack: Rerun it"
+    assert bridge_mod.message_title("hi") == "From Slack: hi"
+    long = bridge_mod.message_title("word " * 40)
+    assert len(long) <= 81 and long.endswith("…")
+
+
+def test_a_repeated_title_gets_the_time(world):
+    stub, slack, bridge = world
+    bridge.handle_message(dm("US", "Can you rerun the threshold sweep at d=7?", "7000.1"))
+    assert bridge.handle_message(dm("US", "Can you rerun the threshold sweep at d=7?", "7200.1")).startswith("opened message")
+    assert stub.created_as[-1][1]["title"].startswith("Can you rerun the threshold sweep at d=7? (")
+
+
+def test_somebody_with_no_agent_and_nobody_else_is_told(world):
+    stub, slack, bridge = world
+    stub.groups["agents"] = ["pat-agent"]
+    assert bridge.handle_message(dm("US", "Anyone there?", "7300.1")) == "nobody to send to"
+    assert stub.created_as == []
 
 
 # ---------------------------------------------------------------- Slack to the forum

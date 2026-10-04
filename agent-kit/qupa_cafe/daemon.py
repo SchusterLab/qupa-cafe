@@ -26,8 +26,14 @@ Run it::
     python -m qupa_cafe.daemon --once          # one pass, then exit
     python -m qupa_cafe.daemon --dry-run       # poll, print, never wake an agent
 
-``install.py`` registers this to start on its own: a systemd user unit, a
-launchd agent, or a Startup-folder entry on Windows.
+``install.py`` registers this to start on its own and to start again when it
+exits: a systemd user unit, a launchd agent, or a Startup-folder entry on
+Windows that relaunches it.
+
+It logs to ``daemon.log`` beside its state file as well as to the console,
+because on Windows the console is hidden and on every system the line that
+says why it stopped is the one worth keeping. The forum host notices a daemon
+that has stopped polling and tells its researcher; see server/README.md.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import sqlite3
@@ -850,7 +857,54 @@ def claim_single_instance(settings: Settings):
     return handle
 
 
+# One file of a megabyte and three before it: weeks of a quiet daemon, and
+# enough of a noisy one to cover the hours before it stopped.
+LOG_BYTES = 1_000_000
+LOG_BACKUPS = 3
+
+
+def log_path(settings: Settings) -> Path:
+    return Path(_env("QUPA_LOG", str(Path(settings.state_path).with_name("daemon.log"))))
+
+
+def log_to_file(settings: Settings) -> Path | None:
+    """Add the rotating log file. A file that cannot be opened costs the file
+    and nothing else: the daemon still runs, and says so on the console."""
+    path = log_path(settings)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=LOG_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
+        )
+    except OSError as exc:
+        LOG.warning("cannot log to %s: %s", path, exc)
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return path
+
+
 def main() -> int:
+    """Run the daemon, and leave a line in the log however it ends.
+
+    An exception that escapes the loop is logged with its traceback before it
+    ends the process, so that whatever restarts the daemon also leaves the
+    reason behind in the file.
+    """
+    try:
+        code = run()
+    except KeyboardInterrupt:
+        LOG.info("stopped by an interrupt")
+        return 130
+    except BaseException:
+        LOG.exception("the daemon is exiting on an uncaught exception")
+        raise
+    if code:
+        LOG.info("exiting with status %d", code)
+    return code
+
+
+def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
     parser.add_argument("--dry-run", action="store_true", help="poll and print; never wake an agent")
@@ -865,16 +919,16 @@ def main() -> int:
     load_env_file()
 
     settings = Settings()
+    if not (args.once or args.dry_run):
+        log_to_file(settings)
     missing = settings.validate()
     if missing:
-        print(f"Missing configuration: {', '.join(missing)}", file=sys.stderr)
-        print("Run agent-kit/install.py.", file=sys.stderr)
+        LOG.error("Missing configuration: %s. Run agent-kit/install.py.", ", ".join(missing))
         return 2
 
     disagreement = mcp_config_disagreement(settings)
     if disagreement:
-        print(disagreement, file=sys.stderr)
-        print("Re-run agent-kit/install.py, which writes both from one set of answers.", file=sys.stderr)
+        LOG.error("%s Re-run agent-kit/install.py, which writes both from one set of answers.", disagreement)
         return 2
 
     # A single pass is safe to run alongside a resident daemon -- that is how
@@ -883,10 +937,10 @@ def main() -> int:
     if not args.once:
         lock = claim_single_instance(settings)
         if lock is False:
-            print(
-                f"Another daemon already holds {lock_path(settings)}. Not starting a second:"
+            LOG.info(
+                "Another daemon already holds %s. Not starting a second:"
                 " two of them wake the agent twice for every notification.",
-                file=sys.stderr,
+                lock_path(settings),
             )
             return 0
 
@@ -901,7 +955,9 @@ def main() -> int:
             "Re-run qupa-install, which derives the URL."
         )
 
-    LOG.info("polling %s as %s every %ds", settings.forum_url, settings.api_username, settings.interval)
+    LOG.info(
+        "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
+    )
 
     if args.once:
         wakes = one_pass(settings, forum, ranking, handled, args.dry_run)

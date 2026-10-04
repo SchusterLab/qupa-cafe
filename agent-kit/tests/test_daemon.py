@@ -621,3 +621,50 @@ def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
 
 def test_a_missing_env_file_is_not_an_error(tmp_path):
     load_env_file(tmp_path / "absent")
+
+
+# ------------------------------------------------------------ how it ends
+
+
+def test_the_daemon_logs_to_a_file_beside_its_state(tmp_path, monkeypatch):
+    import logging
+
+    monkeypatch.setenv("QUPA_STATE", str(tmp_path / "daemon.sqlite3"))
+    monkeypatch.delenv("QUPA_LOG", raising=False)
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        path = daemon.log_to_file(Settings())
+        assert path == tmp_path / "daemon.log"
+        daemon.LOG.warning("a line worth keeping")
+        for handler in root.handlers:
+            handler.flush()
+        assert "a line worth keeping" in path.read_text(encoding="utf-8")
+    finally:
+        for handler in root.handlers[len(before):]:
+            root.removeHandler(handler)
+            handler.close()
+
+
+def test_an_uncaught_exception_is_logged_before_the_daemon_exits(monkeypatch, caplog):
+    def explode():
+        raise RuntimeError("the loop could not continue")
+
+    monkeypatch.setattr(daemon, "run", explode)
+    try:
+        daemon.main()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("main swallowed the exception")
+    assert "exiting on an uncaught exception" in caplog.text
+    assert "the loop could not continue" in caplog.text
+
+
+def test_an_ordinary_refusal_to_start_is_logged(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(daemon, "run", lambda: 2)
+    assert daemon.main() == 2
+    assert "exiting with status 2" in caplog.text

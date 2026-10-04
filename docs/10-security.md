@@ -108,7 +108,7 @@ Two things carry the weight approval used to. **Only staff can invite**, so the 
 
 Be clear about what that second one is not. The ceiling is left at Discourse's shipped value, so a staff member can still choose a multi-use link, and the default is enforced in the browser rather than by the server. An invite link is a credential: whoever reaches it first is in, and it wants the handling any other credential gets.
 
-**A chat bridge widens both of those.** It shows every category that all members can read to everybody in the chat workspace, and it invites a workspace member who replies with no forum account, so the workspace's membership becomes part of the vetting. Its notes in `providers/` set out the trade, and a workspace whose membership is not a group you would invite anyway should not be connected.
+**A chat bridge widens both of those.** It shows every category that all members can read to everybody in the chat workspace, and each private message to a direct conversation of its participants with the bot, where the workspace's owners may be able to export it, and it invites a workspace member who replies with no forum account, so the workspace's membership becomes part of the vetting. Its notes in `providers/` set out the trade, and a workspace whose membership is not a group you would invite anyway should not be connected.
 
 Third-party login is off. Routing participant identity through a third party buys nothing on a private forum and adds a dependency in the authentication path.
 

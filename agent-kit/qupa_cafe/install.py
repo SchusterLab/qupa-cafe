@@ -751,6 +751,20 @@ def run_step(argv: list[str], done: str, doing: str) -> bool:
     return False
 
 
+def windows_startup_script(command: str) -> str:
+    """The Startup entry's script: run the daemon hidden, and run it again a
+    minute after it exits for any reason other than 0 or 2."""
+    quoted = command.replace('"', '""')
+    return (
+        'Set sh = CreateObject("WScript.Shell")\n'
+        "Do\n"
+        f'    status = sh.Run("{quoted}", 0, True)\n'
+        "    If status = 0 Or status = 2 Then Exit Do\n"
+        "    WScript.Sleep 60000\n"
+        "Loop\n"
+    )
+
+
 def windows_startup_entry(command: str) -> Path | None:
     """Register the daemon at logon without needing an elevated prompt.
 
@@ -763,22 +777,39 @@ def windows_startup_entry(command: str) -> Path | None:
 
     A ``.vbs`` wrapper rather than a ``.cmd``, so logging in does not leave a
     console window sitting open.
+
+    The wrapper waits for the daemon and starts it again a minute after it
+    exits, which is what ``Restart=always`` and ``KeepAlive`` do on the other
+    two systems. Two exits end it instead: 0, which is another daemon already
+    holding the lock, and 2, which is configuration only the installer can fix
+    and which a restart would only repeat.
     """
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     target = startup / "qupa-cafe-daemon.vbs"
-    quoted = command.replace('"', '""')
     try:
         startup.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            'Set sh = CreateObject("WScript.Shell")' + "\n"
-            + f'sh.Run "{quoted}", 0, False' + "\n",
-            encoding="utf-8",
-        )
+        target.write_text(windows_startup_script(command), encoding="utf-8")
     except OSError as exc:
         print(f"  could not write a Startup entry either: {exc}")
         return None
     return target
+
+
+def start_startup_entry(entry: Path) -> bool:
+    """Run the Windows Startup entry now, detached, as a logon would."""
+    try:
+        subprocess.Popen(
+            ["wscript.exe", str(entry)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=0x00000008 | 0x08000000,  # DETACHED_PROCESS, CREATE_NO_WINDOW
+        )
+    except OSError as exc:
+        print(f"  could not run {entry}: {exc}")
+        return False
+    return True
 
 
 def start_daemon_now() -> bool:
@@ -887,11 +918,25 @@ def stop_running_daemon() -> bool:
     module = "qupa_cafe" + ".daemon"
 
     if system == "Windows":
+        # The Startup entry's loop first, because it restarts the daemon a
+        # minute after it is ended, with whatever command line it was written
+        # with -- which, after an upgrade, can name an interpreter that has
+        # gone. Matched on the script's own file name and on wscript.exe only.
+        script = (
+            "Get-CimInstance Win32_Process |"
+            " Where-Object { $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*qupa-cafe-daemon.vbs*' } |"
+            " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
+
+        # Quotes are taken out before matching. The Startup entry quotes every
+        # argument, so the daemon it starts has `"-m" "qupa_cafe.daemon"` on its
+        # command line, which a pattern for `-m qupa_cafe.daemon` does not match.
         script = (
             "$mine = @(" + ",".join(str(p) for p in mine) + ");"
             "Get-CimInstance Win32_Process |"
             " Where-Object { $_.Name -like 'python*' -and"
-            f" $_.CommandLine -like '*-m {module}*' -and"
+            f" ($_.CommandLine -replace '\"', '') -like '*-m {module}*' -and"
             " $mine -notcontains $_.ProcessId } |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
         )
@@ -1042,7 +1087,11 @@ WantedBy=default.target
         # stop_running_daemon asks the service manager and the process list,
         # which can see an old one.
         stop_running_daemon()
-        if start_daemon_now():
+        # Through the Startup entry when there is one, so that the daemon
+        # started now is restarted like the one started at logon.
+        if entry and start_startup_entry(entry):
+            print("  started it now, so it is polling already rather than from your next logon")
+        elif start_daemon_now():
             print("  started it now, so it is polling already rather than from your next logon")
 
     else:

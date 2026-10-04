@@ -633,9 +633,12 @@ class StubRanker:
     point of these tests."""
 
     def __init__(self, config: Config):
+        import tempfile
+
         self.config = config
         self.agents: list[Agent] = []
         self.told: list[tuple] = []
+        self.state = State(str(Path(tempfile.mkdtemp()) / "state.sqlite3"))
 
     def pending_for(self, agent: str) -> list[dict]:
         return []
@@ -1429,3 +1432,66 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
     ranker.notify_outdated("yoshi-agent", {"reported": None, "advice": "no version"})
 
     assert forum.sent == []
+
+
+# ------------------------------------- telling a researcher their daemon stopped
+
+
+def test_a_poll_is_recorded_as_proof_of_life(endpoint):
+    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"})
+    assert status == 200
+    agent, last_poll = Handler.ranker.state.db.execute("SELECT agent, last_poll FROM daemons").fetchone()
+    assert agent == "yoshi-agent" and last_poll
+
+
+def test_a_silent_daemon_earns_its_researcher_one_message(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+    ranker.state.record_poll("yoshi-agent", "0.8.3")
+    now = datetime.now(timezone.utc)
+
+    # Quiet for less than the threshold: nothing.
+    assert ranker.check_daemons(now + timedelta(hours=1)) == []
+    # Quiet for longer: one message, to the researcher alone.
+    assert ranker.check_daemons(now + timedelta(hours=7)) == ["yoshi-agent"]
+    assert ranker.check_daemons(now + timedelta(hours=8)) == []
+    (sent,) = forum.sent
+    assert sent["to"] == "yoshi"
+    assert "yoshi-agent" in sent["title"] and "daemon.log" in sent["raw"]
+    assert "%AGENT%" not in sent["raw"] and "%LAST_SEEN%" not in sent["raw"]
+    assert "more than 6 hours ago" in sent["raw"]
+
+
+def test_a_daemon_that_polls_again_and_stops_again_earns_another(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+    ranker.state.record_poll("yoshi-agent")
+    ranker.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
+    ranker.state.record_poll("yoshi-agent")
+    ranker.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
+    assert len(forum.sent) == 2
+
+
+def test_a_daemon_that_never_polled_is_not_reported(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    forum = StubForumWriter()
+    ranker = a_ranker(tmp_path, forum)
+    assert ranker.check_daemons(datetime.now(timezone.utc) + timedelta(days=30)) == []
+    assert forum.sent == []
+
+
+def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    forum = StubForumWriter(refuse=True)
+    ranker = a_ranker(tmp_path, forum)
+    ranker.state.record_poll("yoshi-agent")
+    later = datetime.now(timezone.utc) + timedelta(hours=7)
+    assert ranker.check_daemons(later) == []
+    forum.refuse = False
+    assert ranker.check_daemons(later) == ["yoshi-agent"]
