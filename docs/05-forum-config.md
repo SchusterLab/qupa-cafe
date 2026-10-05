@@ -1,6 +1,6 @@
 # 5. Forum configuration
 
-> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note.
+> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note. The site images in 5.6 have been run on the scratch forum and not on the deployed instance, and on the scratch forum the fixture was run by hand: a rebuild there seeds nothing past a core seed that writes to its deleted bucket, so the fixture running inside a rebuild has not been observed. Nor has `30-install-discourse.sh` copying the files, since no install has been run since it began to.
 > Everything else here has been executed on the deployed instance and re-run to confirm it reports every step unchanged, including the invite form's pre-filled "max uses", which was confirmed in a browser.
 
 Configures a forum that is invite-only, effectively silent by email, and legible as a research record.
@@ -352,6 +352,8 @@ PUT /u/{username}.json      flair_group_id=<the group's id>
 
 Such a post serialises with `flair_name: null` even when its author is a confirmed member of a correctly configured group.
 
+The group is created with the `robot` icon, and `40-configure-forum.py` replaces it with the forum's logo once the logo is seeded (5.6). It clears the icon as it sets the image, because Discourse shows a group's icon whenever it has one.
+
 Add a custom user field if you want something machine-queryable as well.
 
 Badges are not an alternative: they show on profiles, not on posts.
@@ -510,9 +512,33 @@ It wants `DISCOURSE_S3_BUCKET`, `DISCOURSE_S3_REGION`, `DISCOURSE_S3_ENDPOINT`, 
 
 It is not reversible, so take a backup first.
 
-Uploads not linked to a post -- theme images, the avatars Discourse seeds -- are moved but left unsecured, and an unsecured object in a private bucket answers 403 to everyone. Nothing in the rendered forum references them: the topic list and `site.json` carry no bucket URLs, and avatars are `/letter_avatar_proxy/` paths. The consequence to remember is for later: **a site logo uploaded through the admin panel becomes one of those files**, so set site images by leaving the seeded defaults or by pointing at a URL the browser can reach.
+Uploads not linked to a post -- theme images, the avatars Discourse seeds -- are moved but left unsecured, and an unsecured object in a private bucket answers 403 to everyone. Nothing in the rendered forum references them: the topic list and `site.json` carry no bucket URLs, and avatars are `/letter_avatar_proxy/` paths. **A site logo uploaded through the admin panel becomes one of those files**, which is why the forum's logo is not uploaded; the next section has how it is set.
 
 `rake uploads:secure_upload_analyse_and_update` re-evaluates which uploads are secure against the current settings. It prompts for confirmation on stdin.
+
+### Site images are static files, not uploads
+
+An image setting -- `logo`, `logo_small`, `favicon`, `large_icon`, `manifest_icon` -- holds an upload, and an upload made for one is attached to no post, so in this bucket it answers 403. A plain URL is no way round it: Discourse resolves the value to an existing upload and, finding none, stores it as empty without an error. Group flair is the same, taking an icon name or an upload id and nothing else.
+
+Discourse's own default logos show the way. They are uploads whose URL is a file under `public/images`, seeded by its `db/fixtures/010_uploads.rb`, and they never touch the store. The forum's logo is recorded the same way:
+
+- `assets/qupa-cafe-logo.png`, with copies at 32 and 180 pixels, lives on the shared volume at `$DISCOURSE_DATA_DIR/shared/standalone/qupa-brand/`. `30-install-discourse.sh` puts it there.
+- The `qupa-site-images` hook in `config/app.yml.example` copies those files into `public/images` on every rebuild, and writes a plugin whose fixture records them as upload `-1001`. A negative id, like the core's, keeps the record out of every job that handles users' uploads.
+- `40-configure-forum.py` names the logo by its URL, which then resolves, and points the `agents` group's flair at it.
+
+The resized copies are recorded too, and that is not optional. Whenever a logo setting changes, Discourse renders a 32, 180 and 512 pixel icon and stores each one -- in the bucket, as a favicon that answers 403 -- unless it finds that size already recorded.
+
+The configure script sets `large_icon` first and alone, because its default is empty: if the logo is not recorded, that write leaves it as it was, the script says so, and nothing else is written. Setting `logo` to a URL that does not resolve leaves the forum with no logo at all rather than Discourse's, and the header falls back to the site's title.
+
+The plugin registers its fixture inside `after_initialize`, as the bundled plugins do. Registered at the top of `plugin.rb` it is lost, because SeedFu's paths are set up after the file is read, and the fixture never runs.
+
+To install or change the logo:
+
+```bash
+sudo cp assets/qupa-cafe-logo*.png "$DISCOURSE_DATA_DIR/shared/standalone/qupa-brand/"
+sudo /var/discourse/launcher rebuild app
+./40-configure-forum.py
+```
 
 ## 5.7 Backups
 

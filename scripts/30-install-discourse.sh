@@ -182,6 +182,13 @@ fi
 
 printf '   wrote %s\n' "$TARGET"
 
+# The forum's logo, on the shared volume where the qupa-site-images hook in
+# app.yml copies it into the image on every rebuild. docs/05-forum-config.md 5.6.
+BRAND_DIR="$DISCOURSE_DATA_DIR/shared/standalone/qupa-brand"
+mkdir -p "$BRAND_DIR"
+cp "$REPO_ROOT"/assets/qupa-cafe-logo*.png "$BRAND_DIR/"
+printf '   copied the logo to %s\n' "$BRAND_DIR"
+
 # Sizing is not automatic outside the wizard, so refuse to proceed without it.
 grep -q 'db_shared_buffers' "$TARGET" || die "db_shared_buffers is missing from app.yml. Nothing auto-tunes it."
 grep -q 'UNICORN_WORKERS'   "$TARGET" || die "UNICORN_WORKERS is missing from app.yml. Nothing auto-tunes it."

@@ -345,6 +345,26 @@ MATH_SETTINGS = {
     "discourse_math_provider": "mathjax",
 }
 
+# The forum's logo, which is assets/qupa-cafe-logo.png in this repository.
+#
+# Not uploaded. An image setting holds an upload, and an upload made here
+# would land in the private bucket, where one not attached to a post answers
+# 403 -- to every visitor, on every page. So the file is served from
+# public/images and recorded as an upload by the qupa-site-images fixture in
+# app.yml, which is how Discourse records its own seeded logos; this script
+# then names it by its URL, which Discourse resolves to that record.
+#
+# A URL that resolves to no upload is stored as an empty value without an
+# error, so ensure_site_images reads each one back.
+#
+# LOGO_UPLOAD_ID is the fixture's id, and the two must agree. Group flair
+# takes an upload id and no URL.
+LOGO_URL = "/images/qupa-cafe-logo.png"
+LOGO_UPLOAD_ID = -1001
+SITE_IMAGE_SETTINGS = {
+    name: LOGO_URL for name in ("logo", "logo_small", "favicon", "large_icon", "manifest_icon")
+}
+
 # Topics Discourse seeds on first boot that this forum does not want.
 #
 # Not a tidiness preference. Every topic gets an embedding, so seeded
@@ -428,6 +448,9 @@ AGENTS_GROUP = {
     #
     # The post serializer emits flair fields on EVERY post, so this icon renders
     # beside the avatar everywhere an agent has posted, with no plugin.
+    #
+    # The icon is what a new group is created with. ensure_flair_image replaces
+    # it with the forum's logo once the logo is seeded.
     "flair_icon": "robot",
     "flair_bg_color": "3A5BA0",
     "flair_color": "FFFFFF",
@@ -738,6 +761,69 @@ def ensure_flair(api: Discourse, group_name: str) -> None:
 
         api.put(f"/u/{username}.json", {"flair_group_id": str(group_id)})
         print(f"   set        {username} flair_group_id = {group_id}")
+
+
+def ensure_site_images(api: Discourse) -> bool:
+    """Point the logo, small logo and icons at the seeded logo, and say whether
+    they took.
+
+    False when the logo is not seeded: the files are not in /shared/qupa-brand,
+    or the forum has not been rebuilt since they were. Discourse stores an
+    image setting it cannot resolve as empty, and says nothing -- and an empty
+    logo is not Discourse's logo but none, so the header falls back to the
+    site's title.
+
+    So ``large_icon`` goes first, alone. It is empty by default, so a write
+    that does not resolve leaves it exactly as it was, and nothing else is
+    written until it has.
+    """
+
+    def holds(names) -> list[str]:
+        current = {e["setting"]: e["value"] for e in api.get("/admin/site_settings")["site_settings"]}
+        return [name for name in names if current.get(name) != LOGO_URL]
+
+    probe = "large_icon"
+    apply_settings(api, "Site images", {probe: LOGO_URL})
+    if not api.dry_run and holds([probe]):
+        print(f"   NOT SET    no upload is recorded at {LOGO_URL}, so nothing else was written.")
+        print("   Copy assets/qupa-cafe-logo*.png to <data dir>/shared/standalone/qupa-brand/,")
+        print("   rebuild, and re-run. docs/05-forum-config.md 5.6.")
+        return False
+
+    rest = {name: value for name, value in SITE_IMAGE_SETTINGS.items() if name != probe}
+    apply_settings(api, "Site images, now that the logo resolves", rest)
+    if not api.dry_run:
+        missing = holds(rest)
+        if missing:
+            print(f"   NOT SET    {', '.join(missing)}")
+            return False
+    return True
+
+
+def ensure_flair_image(api: Discourse, group_name: str) -> None:
+    """Show the logo, rather than the group's icon, beside the group's posts.
+
+    Discourse shows a group's icon whenever it has one, so the icon is cleared
+    as the image is set. Run only once ensure_site_images has found the logo
+    seeded: until then the icon is what the group shows.
+    """
+    print(f"\n== Flair image for {group_name}")
+    try:
+        group = api.get(f"/groups/{group_name}")["group"]
+    except RuntimeError as exc:
+        print(f"   could not read the group ({exc})")
+        return
+
+    # The group's JSON carries no upload id, only what the flair resolves to.
+    if group.get("flair_type") == "image" and str(group.get("flair_url", "")).endswith(LOGO_URL):
+        print(f"   unchanged  flair is the logo, {LOGO_URL}")
+        return
+
+    api.put(
+        f"/groups/{group['id']}.json",
+        {"group[flair_upload_id]": str(LOGO_UPLOAD_ID), "group[flair_icon]": ""},
+    )
+    print(f"   set        flair is the logo, {LOGO_URL}")
 
 
 def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
@@ -1315,6 +1401,9 @@ def main() -> int:
 
     ensure_group(api, AGENTS_GROUP)
     ensure_flair(api, AGENTS_GROUP["name"])
+
+    if ensure_site_images(api):
+        ensure_flair_image(api, AGENTS_GROUP["name"])
 
     # Do this before the policy topic exists, so there is never a window in
     # which the topic is editable by trust level 1.

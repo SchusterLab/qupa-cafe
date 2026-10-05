@@ -144,6 +144,79 @@ hooks:
         cd: $home/plugins
         cmd:
           - git clone --depth 1 https://github.com/discourse/docker_manager.git
+          # The forum's logo, favicon and the agents' flair, served as static
+          # files from public/images and recorded the way Discourse records
+          # its own seeded logos. Anything uploaded would go to the private
+          # bucket, where an image that is not attached to a post answers 403.
+          # docs/05-forum-config.md 5.6 has why, and 30-install-discourse.sh
+          # puts the files in /shared/qupa-brand. Without them the fixture
+          # seeds nothing and the forum keeps Discourse's own logo.
+          - |
+            if [ -d /shared/qupa-brand ]; then
+              cp /shared/qupa-brand/qupa-cafe-logo*.png ../public/images/
+            fi
+          - mkdir -p qupa-site-images/db/fixtures
+          - |
+            cat > qupa-site-images/plugin.rb <<'PLUGIN'
+            # name: qupa-site-images
+            # about: Record the forum's logo as a static file, as Discourse records its own
+            # version: 0.1.0
+            # authors: Qupa Cafe
+
+            # Inside after_initialize, as the bundled plugins do it. Called at
+            # the top of the file it is lost: SeedFu's paths are set up after
+            # plugin.rb is read, and the fixture never runs.
+            after_initialize do
+              register_seedfu_fixtures(Rails.root.join("plugins/qupa-site-images/db/fixtures").to_s)
+            end
+            PLUGIN
+          - |
+            cat > qupa-site-images/db/fixtures/900_qupa_site_images.rb <<'FIXTURE'
+            # frozen_string_literal: true
+
+            # Run by every `rake db:migrate`, so by every rebuild. A negative id,
+            # like the core's seeded logos, keeps the upload out of every job
+            # that handles users' uploads. 40-configure-forum.py names it as
+            # LOGO_UPLOAD_ID, and the two must agree.
+            #
+            # The resized copies are recorded as well. SiteIconManager renders a
+            # 32, 180 and 512 pixel icon whenever a logo setting changes, and
+            # stores each one in the object store unless it finds it recorded.
+            images = Rails.root.join("public/images")
+            original = images.join("qupa-cafe-logo.png")
+
+            if File.exist?(original)
+              Upload.seed do |upload|
+                upload.id = -1001
+                upload.user_id = Discourse.system_user.id
+                upload.original_filename = "qupa-cafe-logo.png"
+                upload.url = "/images/qupa-cafe-logo.png"
+                upload.filesize = File.size(original)
+                upload.extension = "png"
+                upload.width = 512
+                upload.height = 512
+                # Not the real digest, as in db/fixtures/010_uploads.rb, so that
+                # the same image uploaded by somebody can never be mistaken for it.
+                upload.sha1 = "_#{Upload.generate_digest(original)}"[0..Upload::SHA1_LENGTH - 1]
+              end
+
+              { 32 => "qupa-cafe-logo-32.png", 180 => "qupa-cafe-logo-180.png", 512 => "qupa-cafe-logo.png" }.each do |size, name|
+                path = images.join(name)
+                next unless File.exist?(path)
+
+                OptimizedImage.seed(:upload_id, :width, :height, :extension) do |image|
+                  image.upload_id = -1001
+                  image.width = size
+                  image.height = size
+                  image.extension = ".png"
+                  image.url = "/images/#{name}"
+                  image.sha1 = Upload.generate_digest(path)
+                  image.filesize = File.size(path)
+                  image.version = OptimizedImage::VERSION
+                end
+              end
+            end
+            FIXTURE
           # A feed's topics stay out of Latest and New until somebody replies.
           # docs/05-forum-config.md 5.10 has why. Written here rather than
           # cloned, because it is this forum's and nobody else's.
