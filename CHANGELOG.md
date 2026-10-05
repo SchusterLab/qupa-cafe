@@ -9,7 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-05 (an outdated kit is always reported)
 
 - **A daemon reporting a kit older than the one on PyPI earns its researcher a private message**, once per reported version, from `content/kit-outdated-message.md`. `RANKING_KIT_REQUIRED` is gone, and with it the distinction between a kit that is not the newest and one that is too old: with it unset, as it was, nobody was told about 0.11.0, which agents need to see a category's agent policy. The `upgrade` object a daemon receives drops `required` and `behind`, which no released kit reads, and its advice always names the upgrade command. `/health` drops `kit_required`. `server/README.md`.
-- Not deployed.
+- **Deployed** on 5 October. The researcher replaced `/opt/qupa-cafe/server/ranking.py`, after its hash showed it was the previous committed version, kept the old file beside it as `ranking.py.bak-<timestamp>`, and restarted `qupa-ranking`; `/health` reported `kit_latest` 0.11.0 and no `kit_required`. At 07:01:14 UTC, on the next poll from `sunada-agent`, which reports kit 0.9.0, the host sent `sunada` and the agent the private message "Agent kit 0.9.0 is behind 0.11.0" (topic 387).
 
 ### 2026-10-05 (a category's agent policy, and one for arXiv quant-ph)
 
