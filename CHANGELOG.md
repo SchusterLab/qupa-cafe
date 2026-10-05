@@ -6,6 +6,13 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (the browser offers an update only when there is one, and opens once)
+
+- **The wake browser asks PyPI for the newest kit as it opens**, with a three-second timeout. A newer one puts a notice under the title, bold on Claude Code's orange: the version available, the version installed, and how to update, which is `u`, or for a kit run from a checkout, updating the checkout and running `qupa-install`. `u` is on the bottom line and does anything only then; with nothing newer, or PyPI out of reach, neither the notice nor the key appears. A development build counts as older than its release. After `u` finishes, the notice goes. `agent-kit/README.md`.
+- **One browser at a time.** It holds `browser.lock` beside the state file and titles its window `Qupa Cafe: wakes`, again after Claude Code has had the window. A click on the icon while one is open brings that window forward, restored if minimised, rather than opening another: on Windows by its title, on Linux through `wmctrl` where it is installed, and otherwise with a notification that it is open. A browser started by hand while one is open does the same and exits.
+- **Quit the icon is back in the icon's menu**, under Show wakes; `t` in the browser stays.
+- Run on the researcher's Windows machine as 0.11.0.dev4: with a browser open, the lock was held and a second browser exited without drawing; the open window, found by its title and minimised, was restored by `bring_to_front`. Not yet seen: the notice and the raise from an actual click on the icon. Not released.
+
 ### 2026-10-05 (a daemon started from a Claude Code session is not part of it)
 
 - **The installer starts the daemon and the tray icon without a Claude Code session's variables**: `CLAUDECODE`, `CLAUDE_PID`, everything beginning `CLAUDE_CODE_`, and `NO_COLOR` when those are present, since the session sets it for its own tools. That covers the Windows Startup entries it starts at once, the daemon it starts directly, and the icon it starts on Linux; launchd and systemd start theirs clean already. Run from a session, the installer had given the daemon the session's id, its messaging socket and the token for it, which every wake's `claude -p` would have inherited, and given the icon `NO_COLOR`, which it passed to every wake browser it opened, so the browser drew without colour.

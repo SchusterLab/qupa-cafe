@@ -84,3 +84,21 @@ def test_the_window_does_not_wait_without_a_terminal(monkeypatch):
 
     monkeypatch.setattr(update.sys, "stdin", NotATerminal())
     update.pause()
+
+
+def test_a_release_is_newer_than_its_own_development_builds():
+    key = update.version_key
+    assert key("0.11.0") > key("0.11.0.dev3")
+    assert key("0.12.0") > key("0.11.0")
+    assert key("0.10.0") > key("0.9.9")
+    assert key("0.11") == key("0.11.0")
+
+
+def test_an_update_is_offered_only_for_a_newer_published_kit(monkeypatch):
+    monkeypatch.setattr(update, "__version__", "0.11.0")
+    monkeypatch.setattr(update, "latest_published", lambda timeout=3.0: "0.12.0")
+    assert update.update_available() == "0.12.0"
+    monkeypatch.setattr(update, "latest_published", lambda timeout=3.0: "0.11.0")
+    assert update.update_available() is None
+    monkeypatch.setattr(update, "latest_published", lambda timeout=3.0: None)
+    assert update.update_available() is None

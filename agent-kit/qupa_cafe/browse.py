@@ -28,9 +28,10 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from . import tray, wakes
-from .daemon import Settings, log_path
+from . import __version__, tray, update, wakes
+from .daemon import Settings, claim_lock, log_path
 from .install import interpreter_argv
 
 # Withheld from a session reopened to be asked about: every tool that writes to
@@ -49,12 +50,13 @@ ASKING = (
 
 
 # What else the list does, by key: the action ``run`` carries out, and how the
-# key is named on the list's bottom line.
+# key is named on the list's bottom line. `u` is among them only while a newer
+# kit is published and pip can install it here; see Browser.actions.
 LIST_ACTIONS = {
     "l": ("log", "l for the log"),
-    "u": ("update", "u to update"),
     "t": ("quit-tray", "t to quit the icon"),
 }
+UPDATE_ACTION = {"u": ("update", "u to update")}
 
 
 # What the arrow and paging keys send. Windows gives a prefix and a letter;
@@ -125,6 +127,9 @@ class Terminal:
             tty.setcbreak(sys.stdin)
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
         sys.stdout.flush()
+        # Here rather than once, because Claude Code titles the window its own
+        # way while a wake is being asked about.
+        set_title()
         return self
 
     def __exit__(self, *exc) -> None:
@@ -172,11 +177,22 @@ class Browser:
     viewing: bool = False
     scroll: int = 0
     message: str = ""
+    # The newer kit on the index, as it was when the browser opened, or None.
+    latest: str | None = None
+    # Whether pip can install it: false for a kit run from a checkout.
+    updatable: bool = True
     _detail: list[str] = field(default_factory=list)
 
     @property
     def selected(self) -> Wake | None:
         return self.items[self.index] if self.items else None
+
+    @property
+    def actions(self) -> dict[str, tuple[str, str]]:
+        """The list's keys besides moving and reading, as they stand now."""
+        if self.latest and self.updatable:
+            return {**UPDATE_ACTION, **LIST_ACTIONS}
+        return LIST_ACTIONS
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
@@ -184,8 +200,8 @@ class Browser:
         self.message = ""
         if key == "esc" and not self.viewing:
             return "quit"
-        if key in LIST_ACTIONS and not self.viewing:
-            return LIST_ACTIONS[key][0]
+        if key in self.actions and not self.viewing:
+            return self.actions[key][0]
         # Enter in a wake opens it in Claude Code; in the list it reads one.
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
@@ -234,6 +250,7 @@ class Browser:
             f"  wakes of {self.agent}" if self.agent else "  wakes", "meta"
         )
         out = self._box(cols, title, [wakes.daemon_line(self.state)])
+        out.extend(self._notice(cols))
         out.append("")
 
         if not self.items:
@@ -246,8 +263,23 @@ class Browser:
         while len(out) < rows - 2:
             out.append("")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
-        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in LIST_ACTIONS.values()), "Esc to quit"]))
+        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in self.actions.values()), "Esc to quit"]))
         return out
+
+    def _notice(self, cols: int) -> list[str]:
+        """A newer kit, on a block of colour under the title: both versions,
+        and how to get the new one."""
+        if not self.latest:
+            return []
+        how = (
+            "Press u to update: pip installs it and the installer restarts the daemon and the icon."
+            if self.updatable
+            else "This kit runs from a checkout: update the checkout, then run qupa-install."
+        )
+        lines = [f" ⬆  Agent kit {self.latest} is available. You have {__version__}.", f"    {how}"]
+        width = max(cols - 2, 4)
+        clipped = (line if len(line) <= width else line[: width - 3] + "..." for line in lines)
+        return ["", *(" " + wakes.paint(line.ljust(width), "notice") for line in clipped)]
 
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
         row = item.row
@@ -332,6 +364,77 @@ def ask(row: wakes.Row) -> str:
     return ""
 
 
+# ------------------------------------------------------------ one window
+
+
+# The browser's window title, which is how another process finds the window to
+# bring it forward: the tray icon when it is clicked again, or a second browser.
+TITLE = "Qupa Cafe: wakes"
+
+
+def lock_path(settings: Settings) -> Path:
+    return Path(settings.state_path).with_name("browser.lock")
+
+
+def already_open(settings: Settings) -> bool:
+    """Whether a browser holds the lock. False when there is nowhere to keep
+    one, since then no browser could have taken it either."""
+    lock = claim_lock(lock_path(settings))
+    if lock:
+        lock.close()
+    return lock is False
+
+
+def set_title() -> None:
+    sys.stdout.write(f"\x1b]0;{TITLE}\x07")
+    sys.stdout.flush()
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleTitleW(TITLE)
+        except Exception:  # noqa: BLE001 - a title is a convenience
+            pass
+
+
+def bring_to_front() -> bool:
+    """Raise the open browser's window. False when it cannot be found, which
+    includes macOS, where nothing here can raise another app's window."""
+    if os.name == "nt":
+        return _raise_on_windows()
+    if sys.platform != "darwin" and shutil.which("wmctrl"):
+        return subprocess.run(["wmctrl", "-a", TITLE], capture_output=True).returncode == 0
+    return False
+
+
+def _raise_on_windows() -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            text = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, text, length + 1)
+            # Contained rather than equal: a terminal may add to its tab's title.
+            if TITLE in text.value:
+                found.append(hwnd)
+                return False
+        return True
+
+    user32.EnumWindows(each, 0)
+    if not found:
+        return False
+    if user32.IsIconic(found[0]):
+        user32.ShowWindow(found[0], 9)  # SW_RESTORE
+    user32.SetForegroundWindow(found[0])
+    return True
+
+
 # ----------------------------------------------------- the list's actions
 
 
@@ -356,13 +459,14 @@ def show_log(settings: Settings) -> str:
     return f"Opened {path}."
 
 
-def update_kit() -> str:
-    """Run the update in this terminal, which pip and the installer print to."""
+def update_kit() -> tuple[bool, str]:
+    """Run the update in this terminal, which pip and the installer print to.
+    Whether it finished, and a message for the list."""
     print(wakes.paint("Updating the agent kit.\n", "accent"))
     code = subprocess.call(interpreter_argv("qupa_cafe.update"))
     if code != 0:
-        return "The update did not finish; what it printed says why."
-    return "Done. This window still runs the kit it was opened with: Esc, and open it again for the new one."
+        return False, "The update did not finish; what it printed says why."
+    return True, "Done. This window still runs the kit it was opened with: Esc, and open it again for the new one."
 
 
 def quit_tray(settings: Settings) -> str:
@@ -382,7 +486,20 @@ def load(settings: Settings, limit: int) -> list[Wake]:
 
 
 def run(settings: Settings, limit: int) -> int:
-    browser = Browser(load(settings, limit), wakes.status(settings.state_path), settings.api_username)
+    lock = claim_lock(lock_path(settings))
+    if lock is False:
+        if not bring_to_front():
+            print(f"The wake browser is already open, in a window titled {TITLE!r}.")
+        return 0
+    browser = Browser(
+        load(settings, limit),
+        wakes.status(settings.state_path),
+        settings.api_username,
+        # Asked once, as it opens, with a short timeout: an index that cannot
+        # be reached shows no notice and no `u`, and costs seconds at most.
+        latest=update.update_available(),
+        updatable=update.installed_from_index(),
+    )
     with Terminal() as terminal:
         while True:
             size = shutil.get_terminal_size((100, 30))
@@ -400,8 +517,11 @@ def run(settings: Settings, limit: int) -> int:
                 browser.message = quit_tray(settings)
             if action == "update":
                 terminal.suspend()
-                browser.message = update_kit()
+                done, browser.message = update_kit()
                 terminal.resume()
+                if done:
+                    # Installed; what is left is to reopen, which the message says.
+                    browser.latest = None
             if action == "ask":
                 row = browser.selected.row
                 terminal.suspend()

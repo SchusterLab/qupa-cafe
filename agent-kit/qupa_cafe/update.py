@@ -18,8 +18,11 @@ would install a copy that the checkout then shadows, so nothing would change.
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 from . import __version__
@@ -32,6 +35,44 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 def installed_from_index(package_dir: Path = PACKAGE_DIR) -> bool:
     """Whether this copy of the kit is one pip installed, and pip can replace."""
     return package_dir.parent.name in ("site-packages", "dist-packages")
+
+
+INDEX_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
+
+
+def latest_published(timeout: float = 3.0) -> str | None:
+    """The newest version on the index, or None when it cannot be told.
+
+    Short, because the wake browser asks as it opens and a slow index should
+    cost a second of waiting at most, not the browser.
+    """
+    try:
+        with urllib.request.urlopen(INDEX_URL, timeout=timeout) as response:
+            return str(json.load(response)["info"]["version"])
+    except Exception:  # noqa: BLE001 - offline, blocked, or malformed: no opinion
+        return None
+
+
+def version_key(text: str) -> tuple:
+    """Enough of PEP 440 to order this kit's versions: the dotted release,
+    and a final release after any pre-release or development build of it, so
+    that 0.11.0.dev3 is older than 0.11.0."""
+    found = re.match(r"(\d+(?:\.\d+)*)(.*)", text.strip())
+    if not found:
+        return ((), 0, text)
+    numbers = tuple(int(n) for n in found.group(1).split("."))
+    numbers += (0,) * (6 - len(numbers))
+    suffix = found.group(2).lstrip(".-")
+    return (numbers, 0 if suffix else 1, suffix)
+
+
+def update_available(timeout: float = 3.0) -> str | None:
+    """The newer version on the index, or None when this one is the newest
+    or the index could not be asked."""
+    latest = latest_published(timeout)
+    if latest and version_key(latest) > version_key(__version__):
+        return latest
+    return None
 
 
 def requirement() -> str:

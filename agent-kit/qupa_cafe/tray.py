@@ -4,11 +4,11 @@ The icon says whether the daemon is polling, waking the agent, or has stopped,
 and its tooltip says when the agent was last woken and for what. Clicking it
 opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
 to choose from with the arrow keys, each to read, and each to reopen in Claude
-Code to ask the agent about. Everything else is done from the browser too:
-opening the daemon's log, updating the kit, and quitting this icon, which the
-browser asks for by leaving a file beside the state file that the icon looks
-for every second. The icon's menu has the one item, Show wakes, since on
-macOS a click opens the menu rather than doing anything itself.
+Code to ask the agent about. The browser also opens the daemon's log, updates
+the kit, and quits this icon, which it asks for by leaving a file beside the
+state file that the icon looks for every second. The icon's own menu has Show
+wakes, since on macOS a click opens the menu rather than doing anything itself,
+and Quit the icon.
 
 It is a viewer and nothing else. The daemon runs without it, under whatever
 restarts it, and quitting this or a desktop with no tray to show it in costs no
@@ -220,15 +220,31 @@ def main() -> int:
     stop = threading.Event()
 
     def show_wakes(icon, item) -> None:
+        # Imported here: the browser imports this module for its quit request.
+        from . import browse
+
+        # One browser: a click with one open brings it forward rather than
+        # opening a second. This process was just clicked, which is what lets
+        # Windows give the foreground to a window of another.
+        if browse.already_open(settings):
+            if not browse.bring_to_front():
+                icon.notify("The wake browser is already open.", "Qupa Cafe")
+            return
         # The browser, which is what a terminal of its own gets.
         argv = [console_python(), "-m", "qupa_cafe.wakes"]
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 
+    def quit_tray(icon, item) -> None:
+        stop.set()
+        icon.stop()
+
     menu = pystray.Menu(
         # The default item is what a click does where a click does anything
         # but open the menu, which is Windows and the plain X11 backend.
         pystray.MenuItem("Show wakes", show_wakes, default=True),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
     icon = pystray.Icon("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
 

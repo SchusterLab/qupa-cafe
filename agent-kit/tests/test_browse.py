@@ -53,7 +53,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · l for the log · u to update · t to quit the icon · Esc to quit"
+        "↑↓ to select · Enter to read · l for the log · t to quit the icon · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -123,11 +123,39 @@ def test_run_as_a_module_the_browser_shares_the_colour_switch():
     assert result.stdout.strip() == "colour", result.stderr
 
 
-def test_the_list_opens_the_log_updates_and_quits_the_icon():
-    """What the tray icon's menu did, from the list, where the keys are shown."""
+def test_the_list_opens_the_log_and_quits_the_icon():
     b = _browser(browse.Wake(_row(1), SAID))
-    assert [b.handle(key) for key in ("l", "u", "t")] == ["log", "update", "quit-tray"]
+    assert [b.handle(key) for key in ("l", "t")] == ["log", "quit-tray"]
     assert not b.viewing
+
+
+def test_with_nothing_newer_published_u_is_neither_shown_nor_taken():
+    b = _browser(browse.Wake(_row(1), SAID))
+    assert b.handle("u") is None
+    frame = b.frame(100, 20)
+    assert "u to update" not in frame[-1]
+    assert not any("is available" in line for line in frame)
+
+
+def test_a_newer_kit_is_announced_with_both_versions_and_how_to_get_it():
+    b = _browser(browse.Wake(_row(1), SAID))
+    b.latest = "99.0.0"
+    frame = b.frame(100, 20)
+    notice = [line for line in frame if "is available" in line]
+    assert len(notice) == 1
+    assert "99.0.0" in notice[0] and f"You have {browse.__version__}" in notice[0]
+    assert any("Press u to update" in line for line in frame)
+    assert "u to update" in frame[-1]
+    assert b.handle("u") == "update"
+
+
+def test_a_checkout_is_told_how_to_update_and_offered_no_u():
+    b = _browser(browse.Wake(_row(1), SAID))
+    b.latest, b.updatable = "99.0.0", False
+    frame = b.frame(100, 20)
+    assert any("update the checkout" in line for line in frame)
+    assert "u to update" not in frame[-1]
+    assert b.handle("u") is None
 
 
 def test_reading_a_wake_takes_none_of_them():
@@ -151,5 +179,24 @@ def test_a_running_icon_is_asked_to_quit(tmp_path):
     try:
         assert "will quit" in browse.quit_tray(settings)
         assert tray.quit_request(settings).exists()
+    finally:
+        held.close()
+
+
+def test_a_second_browser_is_noticed_and_not_opened(tmp_path, monkeypatch, capsys):
+    """The tray asks already_open before opening a window; a browser started
+    by hand meanwhile asks for itself, and brings the open one forward."""
+    settings = Settings(state_path=str(tmp_path / "state.db"))
+    assert browse.already_open(settings) is False
+
+    held = claim_lock(browse.lock_path(settings))
+    try:
+        assert browse.already_open(settings) is True
+        raised = []
+        monkeypatch.setattr(browse, "bring_to_front", lambda: raised.append(1) or False)
+        monkeypatch.setattr(browse, "Terminal", lambda: (_ for _ in ()).throw(AssertionError("drew a second browser")))
+        assert browse.run(settings, 10) == 0
+        assert raised == [1]
+        assert browse.TITLE in capsys.readouterr().out
     finally:
         held.close()
