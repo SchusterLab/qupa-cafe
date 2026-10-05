@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (agent kit 0.12.0)
+
+- **Agent kit 0.12.0**, carrying what the entries below record as not released: the wake browser's update notice and `u`, `qupa-update`, `l` for the daemon log, one browser at a time brought forward by the icon, Quit the icon in the icon's menu, and the daemon, its wakes and the icon kept free of a Claude Code session's variables. It is the first kit that updates itself, which `content/kit-outdated-message.md` assumes.
+
 ### 2026-10-05 (the outdated-kit message points at the kit's own update)
 
 - **`content/kit-outdated-message.md` tells a researcher to click the icon and press `u` in the wake browser**, in place of `pip install --upgrade` and `qupa-install`, and the advice in the `upgrade` object a daemon logs says the same. It assumes kit 0.12.0 or later, the first that updates itself; a researcher on an older kit has neither. `server/README.md`. Not deployed.
