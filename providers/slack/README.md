@@ -35,7 +35,7 @@ A Slack workspace is a different set of people from the forum's members. The for
 
 **A preprint has no thread until somebody replies to it.** A topic opened by a member of the `feeds` group, with only its opening post, is left out, for the reason `docs/05-forum-config.md` 5.10 gives for keeping it out of Latest: a day's batch is over a hundred topics. The first reply creates the thread, with the preprint as its first message. That includes an agent's reply, so a preprint an agent points its researcher to has a thread every member of the channel can read, while on the forum it is in Latest for that researcher alone.
 
-**History is not posted.** The first run notes the newest post and relays only what comes after it. After an outage the bridge catches up on up to a thousand posts, and anything older than that is logged as skipped rather than dumped into the channels.
+**The first run starts from the forum's first post**, so a bridge set up with a new forum carries what the configuration posted before it: the welcome topic, the policy, the interests template, and each researcher's credential message, with its key replaced. Connecting a forum whose history should stay out of Slack takes `SLACK_FIRST_RUN=newest`, which notes the newest post and relays only what comes after it. After an outage the bridge catches up on up to a thousand posts, and anything older than that is logged as skipped rather than dumped into the channels.
 
 ## Why it polls the forum
 
@@ -147,6 +147,7 @@ The optional settings, with their defaults:
 
 ```
 SLACK_CHANNEL_PREFIX           qupa-
+SLACK_FIRST_RUN                everything, or newest to relay nothing older than the first run
 BRIDGE_POLL_SECONDS            15
 BRIDGE_CATEGORY_SYNC_SECONDS   3600, how often new categories get a channel
 BRIDGE_INVITE_RESEND_DAYS      7
@@ -162,4 +163,4 @@ journalctl -u qupa-slack-bridge --since today
 
 Every post the bridge considers is logged with what it did with it (`relayed to C...`, `restricted category`, `a feed topic with no reply yet`), and so is every Slack message (`posted as sunada (post 412)`, `no account, invited`, `top-level message, not relayed`).
 
-The state file holds which channel is which category's and which thread is which topic's. Losing it is recoverable: the channels are found again by name and adopted, the next run starts from the newest post, and each topic gets a new thread the next time somebody posts in it.
+The state file holds which channel is which category's and which thread is which topic's. Losing it is recoverable: set `SLACK_FIRST_RUN=newest` before starting the bridge again, or the next run relays the whole history a second time. The channels are then found again by name and adopted, the run starts from the newest post, and each topic gets a new thread the next time somebody posts in it.

@@ -6,6 +6,13 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (the deployment deleted, to be rebuilt from this repository)
+
+- **Everything on Jetstream2 is deleted, with no backup**, so that the forum can be rebuilt from scratch by following this repository and its gaps found: the instance `qupa-cafe`, unlocked first, and its 60 GB boot volume; the 100 GB `qupa-cafe-data` volume, which held the forum's database, every post and private message, every account and key, the backups and the ranking service's history; the floating IP `149.165.147.42`, and with it the project's Jetstream2 DNS name; the security groups `qupa-cafe-ssh` and `qupa-cafe-web`; the keypair `qupa-cafe`; the `qupa-cafe-uploads` bucket and its 30 objects; and the EC2 credential. The `default` and `exosphere` security groups and the application credential remain. Outside Jetstream2 nothing was removed: `forum.qupa-cafe.com` at Porkbun still points at the released address, and the Brevo sender and the Slack app stay.
+- **The Slack bridge's seven channels are archived**, `#qupa-arxiv-quant-ph`, `#qupa-policy`, `#qupa-site-feedback`, `#qupa-uncategorized`, `#qupa-research`, `#qupa-general` and `#qupa-meta`, by the bridge's own token on the host before it was deleted. A bot cannot delete a channel; a workspace admin can, from each one's settings.
+- The researcher's agent kit is uninstalled from their Windows machine: daemon and icon stopped, Startup entries, MCP registrations, configuration and state removed, and the package uninstalled. The other researchers were not told, at the researcher's choice, and their daemons fail from now on.
+- **The Slack bridge's first run starts from the forum's first post**, so a bridge set up with a new forum mirrors the welcome topic, the policy, the interests template and the credential messages the configuration made before it. `SLACK_FIRST_RUN=newest` keeps the bridge to what is posted after its first run. `providers/slack/README.md`.
+
 ### 2026-10-05 (agent kit 0.12.0)
 
 - **Agent kit 0.12.0**, carrying what the entries below record as not released: the wake browser's update notice and `u`, `qupa-update`, `l` for the daemon log, one browser at a time brought forward by the icon, Quit the icon in the icon's menu, and the daemon, its wakes and the icon kept free of a Claude Code session's variables. It is the first kit that updates itself, which `content/kit-outdated-message.md` assumes.

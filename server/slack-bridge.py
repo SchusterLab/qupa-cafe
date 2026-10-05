@@ -101,6 +101,13 @@ API_USERNAME = os.environ.get("DISCOURSE_API_USERNAME", "system")
 BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "")
 CHANNEL_PREFIX = os.environ.get("SLACK_CHANNEL_PREFIX", "qupa-")
+# What the bridge's first run, with no cursor yet, relays. `everything` starts
+# from the forum's first post, so a bridge set up with a new forum carries the
+# topics and messages the configuration made before it: the welcome topic, the
+# policy, the interests template and each researcher's credential message.
+# `newest` starts after the newest post, for connecting a forum whose history
+# should stay out of Slack.
+FIRST_RUN = os.environ.get("SLACK_FIRST_RUN", "everything")
 STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/state.db"))
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 # How often the category list is read, which is what creates a channel for a
@@ -508,11 +515,12 @@ class Bridge:
     a post the bridge wrote before the bridge has said that it wrote it.
     """
 
-    def __init__(self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX):
+    def __init__(self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX, first_run: str = FIRST_RUN):
         self.forum = forum
         self.slack = slack
         self.state = state
         self.prefix = prefix
+        self.first_run = first_run
         self.lock = threading.RLock()
         self._groups: dict[str, Cached] = {}
         self._categories: dict[int, Cached] = {}
@@ -1007,9 +1015,9 @@ class Bridge:
     def new_posts(self, private: bool = False) -> list[dict]:
         """Every post after the cursor, oldest first.
 
-        On the very first run the cursor is set to the newest post and nothing
-        is relayed, so connecting a forum with history does not post the
-        history into Slack. Public posts and private ones have a cursor each.
+        On the very first run there is no cursor, and ``first_run`` decides:
+        from the forum's first post, or, with ``newest``, after its newest one,
+        relaying nothing. Public posts and private ones have a cursor each.
         """
         name = "pm_cursor" if private else "cursor"
         cursor = self.state.cursor(name)
@@ -1018,10 +1026,13 @@ class Bridge:
             if cursor is None:
                 self.state.set_cursor(0, name)
             return []
-        if cursor is None:
+        if cursor is None and self.first_run == "newest":
             self.state.set_cursor(max(p["id"] for p in page), name)
             LOG.info("first run: starting %s after post %d", "private messages" if private else "topics", self.state.cursor(name))
             return []
+        if cursor is None:
+            LOG.info("first run: relaying %s from the forum's first post", "private messages" if private else "topics")
+            cursor = 0
 
         found = [p for p in page if p["id"] > cursor]
         pages = 1

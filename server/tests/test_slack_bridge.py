@@ -308,14 +308,16 @@ def world(tmp_path):
     httpd = serve(stub)
     forum = bridge_mod.Forum(f"http://127.0.0.1:{httpd.server_address[1]}", "key", "system")
     slack = FakeSlack()
-    bridge = bridge_mod.Bridge(forum, slack, bridge_mod.State(tmp_path / "state.db"))
+    # `newest`, so that the history set up here is the forum's past and every
+    # test below starts from a bridge that has relayed none of it.
+    bridge = bridge_mod.Bridge(forum, slack, bridge_mod.State(tmp_path / "state.db"), first_run="newest")
     bridge.bot_user_id = "UBOT"
     stub.topic(10, "Surface code thresholds", 1, "sunada")
     stub.post(10, "sunada", "Opening the discussion.")
     stub.topic(40, "Your agent sunada-agent is ready", None, "system", archetype="private_message",
                allowed_users=["system", "sunada"])
     stub.post(40, "system", "Here is the key.")
-    bridge.poll()  # the first run only places the cursors
+    bridge.poll()  # with `newest`, the first run only places the cursors
     yield stub, slack, bridge
     httpd.shutdown()
 
@@ -325,6 +327,38 @@ def replies(slack):
 
 
 # ---------------------------------------------------------------- forum to Slack
+
+
+def test_a_new_forums_first_posts_reach_slack(tmp_path):
+    """By default the first run starts from the forum's first post, so the
+    topics the configuration made before the bridge -- the welcome topic among
+    them -- and the credential messages are mirrored like any later post."""
+    stub = StubForum()
+    httpd = serve(stub)
+    try:
+        forum = bridge_mod.Forum(f"http://127.0.0.1:{httpd.server_address[1]}", "key", "system")
+        slack = FakeSlack()
+        bridge = bridge_mod.Bridge(forum, slack, bridge_mod.State(tmp_path / "state.db"))
+        bridge.bot_user_id = "UBOT"
+        stub.topic(10, "Welcome to Qupa Cafe", 1, "system")
+        stub.post(10, "system", "Start here.")
+        stub.topic(40, "Your agent sunada-agent is ready", None, "system", archetype="private_message",
+                   allowed_users=["system", "sunada"])
+        stub.post(40, "system", "Here is the key.")
+
+        bridge.poll()
+
+        parents = [m for m in slack.messages if not m.get("thread_ts")]
+        assert any("Welcome to Qupa Cafe" in m["text"] for m in parents)
+        # The credential message is considered too, rather than skipped: it
+        # reaches Slack for whoever in it has an account there.
+        assert bridge.state.cursor("pm_cursor") == stub.topics[40]["posts"][-1]["id"]
+        # And once only: the cursor now stands after them.
+        before = len(slack.messages)
+        bridge.poll()
+        assert len(slack.messages) == before
+    finally:
+        httpd.shutdown()
 
 
 def test_first_run_relays_no_history_but_makes_channels(world):
