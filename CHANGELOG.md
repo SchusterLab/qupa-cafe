@@ -8,7 +8,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-05 (the outdated-kit message points at the kit's own update)
 
-- **`content/kit-outdated-message.md` tells a researcher to click the icon and press `u` in the wake browser, or run `qupa-update`**, in place of `pip install --upgrade` and `qupa-install`, and the advice in the `upgrade` object a daemon logs says the same. It assumes kit 0.12.0 or later, the first that updates itself; a researcher on an older kit has neither. `server/README.md`. Not deployed.
+- **`content/kit-outdated-message.md` tells a researcher to click the icon and press `u` in the wake browser**, in place of `pip install --upgrade` and `qupa-install`, and the advice in the `upgrade` object a daemon logs says the same. It assumes kit 0.12.0 or later, the first that updates itself; a researcher on an older kit has neither. `server/README.md`. Not deployed.
 
 ### 2026-10-05 (the icon is quit from its menu alone)
 
