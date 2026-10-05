@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from qupa_cafe import browse, wakes
+from qupa_cafe import browse, tray, wakes
+from qupa_cafe.daemon import Settings, claim_lock
 
 
 def _row(topic: int, session: str = "s-1", status: str = "finished") -> wakes.Row:
@@ -51,7 +52,9 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     frame = b.frame(100, 20)
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
-    assert frame[-1].strip() == "↑↓ to select · Enter to read · Esc to quit"
+    assert frame[-1].strip() == (
+        "↑↓ to select · Enter to read · l for the log · u to update · t to quit the icon · Esc to quit"
+    )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
 
@@ -118,3 +121,35 @@ def test_run_as_a_module_the_browser_shares_the_colour_switch():
     root = Path(__file__).resolve().parent.parent
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root)
     assert result.stdout.strip() == "colour", result.stderr
+
+
+def test_the_list_opens_the_log_updates_and_quits_the_icon():
+    """What the tray icon's menu did, from the list, where the keys are shown."""
+    b = _browser(browse.Wake(_row(1), SAID))
+    assert [b.handle(key) for key in ("l", "u", "t")] == ["log", "update", "quit-tray"]
+    assert not b.viewing
+
+
+def test_reading_a_wake_takes_none_of_them():
+    b = _browser(browse.Wake(_row(1), SAID))
+    b.handle("enter")
+    assert [b.handle(key) for key in ("l", "u", "t")] == [None, None, None]
+    assert b.viewing
+
+
+def test_with_no_icon_running_nothing_is_asked_to_quit(tmp_path):
+    settings = Settings(state_path=str(tmp_path / "state.db"))
+    assert browse.quit_tray(settings) == "No tray icon is running."
+    assert not tray.quit_request(settings).exists()
+
+
+def test_a_running_icon_is_asked_to_quit(tmp_path):
+    """Asked through a file it looks for, rather than killed, so that Windows
+    does not leave its picture by the clock."""
+    settings = Settings(state_path=str(tmp_path / "state.db"))
+    held = claim_lock(tray.lock_path(settings))
+    try:
+        assert "will quit" in browse.quit_tray(settings)
+        assert tray.quit_request(settings).exists()
+    finally:
+        held.close()

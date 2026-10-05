@@ -4,10 +4,13 @@ The icon says whether the daemon is polling, waking the agent, or has stopped,
 and its tooltip says when the agent was last woken and for what. Clicking it
 opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
 to choose from with the arrow keys, each to read, and each to reopen in Claude
-Code to ask the agent about. Its menu also updates the kit, through
-``qupa_cafe.update`` in a terminal of its own.
+Code to ask the agent about. Everything else is done from the browser too:
+opening the daemon's log, updating the kit, and quitting this icon, which the
+browser asks for by leaving a file beside the state file that the icon looks
+for every second. The icon's menu has the one item, Show wakes, since on
+macOS a click opens the menu rather than doing anything itself.
 
-Otherwise it is a viewer. The daemon runs without it, under whatever
+It is a viewer and nothing else. The daemon runs without it, under whatever
 restarts it, and quitting this or a desktop with no tray to show it in costs no
 wake. It reads the daemon's state file, read-only, and holds a lock of its own
 so that a second copy exits rather than adding a second icon.
@@ -34,8 +37,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, wakes
-from .daemon import Settings, claim_lock, load_env_file, log_path
+from . import wakes
+from .daemon import Settings, claim_lock, load_env_file
 
 REFRESH_SECONDS = 20
 
@@ -171,13 +174,28 @@ def open_terminal(argv: list[str], settings: Settings) -> bool:
     return False
 
 
-def open_file(path: Path) -> None:
-    if platform.system() == "Windows":
-        os.startfile(path)  # noqa: S606 - the researcher's own log
-    elif platform.system() == "Darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
+def lock_path(settings: Settings) -> Path:
+    return Path(settings.state_path).with_name("tray.lock")
+
+
+def quit_request(settings: Settings) -> Path:
+    """The file that asks a running icon to quit: it deletes it and exits 0,
+    which the Windows Startup entry takes as a reason not to start it again."""
+    return Path(settings.state_path).with_name("tray.quit")
+
+
+def ask_to_quit(settings: Settings) -> bool:
+    """Ask the running icon to quit. False when there is none to ask."""
+    lock = claim_lock(lock_path(settings))
+    if lock:
+        # Nobody held it, so no icon is running. A request left now would end
+        # the next icon the moment it started, were it not cleared then too.
+        lock.close()
+        return False
+    # Held, or nowhere to keep a lock at all, in which case the icon could not
+    # keep one either and may well be running.
+    quit_request(settings).write_text("", encoding="utf-8")
+    return True
 
 
 def main() -> int:
@@ -190,9 +208,11 @@ def main() -> int:
     load_env_file()
     settings = Settings()
 
-    lock = claim_lock(Path(settings.state_path).with_name("tray.lock"))
+    lock = claim_lock(lock_path(settings))
     if lock is False:
         return 0
+    # Left by a browser after an icon it asked had already gone.
+    quit_request(settings).unlink(missing_ok=True)
 
     images = {key: image(key) for key in COLOURS}
     stop = threading.Event()
@@ -203,32 +223,10 @@ def main() -> int:
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 
-    def show_log(icon, item) -> None:
-        path = log_path(settings)
-        if path.is_file():
-            open_file(path)
-        else:
-            icon.notify(f"No log yet at {path}", "Qupa Cafe")
-
-    def update_kit(icon, item) -> None:
-        # In a terminal, so pip and the installer can be read. The installer
-        # ends this icon and starts one from the new code.
-        argv = [console_python(), "-m", "qupa_cafe.update"]
-        if not open_terminal(argv, settings):
-            icon.notify("No terminal to open. Run: python -m qupa_cafe.update", "Qupa Cafe")
-
-    def quit_tray(icon, item) -> None:
-        stop.set()
-        icon.stop()
-
     menu = pystray.Menu(
         # The default item is what a click does where a click does anything
         # but open the menu, which is Windows and the plain X11 backend.
         pystray.MenuItem("Show wakes", show_wakes, default=True),
-        pystray.MenuItem("Open the daemon log", show_log),
-        pystray.MenuItem(f"Update the agent kit (this is {__version__})", update_kit),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
     icon = pystray.Icon("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
 
@@ -236,14 +234,24 @@ def main() -> int:
         # Runs in pystray's own thread, which is where it allows the icon to be
         # changed from on every backend.
         icon.visible = True
+        tick = 0
         while not stop.is_set():
-            try:
-                key, text = describe(settings)
-                icon.icon = images[key]
-                icon.title = text
-            except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
-                pass
-            stop.wait(REFRESH_SECONDS)
+            # Every second for a request to quit, so that the browser's `t`
+            # is answered at once; the picture only every REFRESH_SECONDS.
+            if quit_request(settings).exists():
+                quit_request(settings).unlink(missing_ok=True)
+                stop.set()
+                icon.stop()
+                return
+            if tick % REFRESH_SECONDS == 0:
+                try:
+                    key, text = describe(settings)
+                    icon.icon = images[key]
+                    icon.title = text
+                except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
+                    pass
+            tick += 1
+            stop.wait(1)
 
     icon.run(setup=refresh)
     return 0

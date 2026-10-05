@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (the tray icon's menu is the browser's keys)
+
+- **Everything the tray icon's menu did is a key in the wake browser's list**, named on its bottom line: `l` opens `daemon.log`, `u` runs `qupa_cafe.update` in the browser's own terminal and returns to the list after Enter, and `t` quits the icon. The menu keeps Show wakes alone, which a click does on Windows and X11 and which is the only way in on macOS, where a click opens the menu. `agent-kit/README.md`.
+- **`t` asks the icon to quit rather than killing it**, since a killed icon stays drawn by the Windows clock until the mouse passes over it. The browser leaves `tray.quit` beside the state file; the icon looks for it every second, deletes it and exits 0, which the Windows Startup entry does not restart. With nobody holding the icon's lock, the browser says no icon is running and leaves nothing, and an icon starting deletes any request left over.
+- Tests drive the three keys and the quit request against a lock held as a running icon holds it. Run on the researcher's Windows machine with this tree installed as 0.11.0.dev2 and the installer re-run: the browser's quit request ended the running icon and its Startup wrapper within three seconds, left no request behind, and a second request reported no icon running; the Startup entry then started the icon again. The keys have not been pressed in the browser itself. Not released.
+
 ### 2026-10-05 (the kit updates itself from the tray icon)
 
 - **The tray icon's menu has Update the agent kit**, labelled with the version installed. It opens a terminal running `qupa_cafe.update`, also installed as `qupa-update`: `pip install --upgrade` of the kit, with the tray extra when it is installed, into the interpreter the icon runs from, and then, if the version a fresh interpreter imports has changed, `qupa_cafe.install --non-interactive` with the settings in the environment file. The installer replaces the daemon and the icon with ones started from the new code. A kit already the newest stops after pip; a failed pip changes nothing else; a kit run from a checkout is refused, since pip would install a copy the checkout shadows. The window waits for Enter. `agent-kit/README.md`.

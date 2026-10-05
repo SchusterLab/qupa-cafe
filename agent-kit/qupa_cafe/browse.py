@@ -5,6 +5,10 @@ list ``↑`` and ``↓`` choose, Enter reads the wake chosen, and Esc leaves. In
 wake ``↑`` and ``↓`` scroll, Enter opens its session in Claude Code so that the
 agent who was woken can be asked about it, and Esc goes back to the list.
 
+The list also opens the daemon's log (``l``), updates the kit (``u``, through
+``qupa_cafe.update`` in this terminal) and quits the tray icon (``t``), which
+leaves the daemon running.
+
 Asking reopens the wake's own session with ``--fork-session``, so the questions
 and answers go into a copy and the wake's record stays as it was. The forum's
 write tools are withheld from that copy: it is a conversation with the
@@ -25,8 +29,9 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from . import wakes
-from .daemon import Settings
+from . import tray, wakes
+from .daemon import Settings, log_path
+from .install import interpreter_argv
 
 # Withheld from a session reopened to be asked about: every tool that writes to
 # the forum. Reading stays, since "what did that thread say" is a fair question.
@@ -41,6 +46,15 @@ ASKING = (
 
 
 # -------------------------------------------------------------------- keys
+
+
+# What else the list does, by key: the action ``run`` carries out, and how the
+# key is named on the list's bottom line.
+LIST_ACTIONS = {
+    "l": ("log", "l for the log"),
+    "u": ("update", "u to update"),
+    "t": ("quit-tray", "t to quit the icon"),
+}
 
 
 # What the arrow and paging keys send. Windows gives a prefix and a letter;
@@ -165,10 +179,13 @@ class Browser:
         return self.items[self.index] if self.items else None
 
     def handle(self, key: str, height: int = 24) -> str | None:
-        """Apply a key. Returns ``"quit"``, ``"ask"`` or nothing."""
+        """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
+        ``"ask"``, or one of ``LIST_ACTIONS`` -- or nothing."""
         self.message = ""
         if key == "esc" and not self.viewing:
             return "quit"
+        if key in LIST_ACTIONS and not self.viewing:
+            return LIST_ACTIONS[key][0]
         # Enter in a wake opens it in Claude Code; in the list it reads one.
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
@@ -229,7 +246,7 @@ class Browser:
         while len(out) < rows - 2:
             out.append("")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
-        out.append(hints(["↑↓ to select", "Enter to read", "Esc to quit"]))
+        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in LIST_ACTIONS.values()), "Esc to quit"]))
         return out
 
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
@@ -315,6 +332,47 @@ def ask(row: wakes.Row) -> str:
     return ""
 
 
+# ----------------------------------------------------- the list's actions
+
+
+def open_file(path) -> None:
+    """Open a file with whatever this desktop opens it with."""
+    if os.name == "nt":
+        os.startfile(path)  # noqa: S606 - the researcher's own log
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
+
+
+def show_log(settings: Settings) -> str:
+    path = log_path(settings)
+    if not path.is_file():
+        return f"No daemon log yet at {path}."
+    try:
+        open_file(path)
+    except OSError as exc:
+        return f"Could not open {path}: {exc}"
+    return f"Opened {path}."
+
+
+def update_kit() -> str:
+    """Run the update in this terminal, which pip and the installer print to."""
+    print(wakes.paint("Updating the agent kit.\n", "accent"))
+    code = subprocess.call(interpreter_argv("qupa_cafe.update"))
+    if code != 0:
+        return "The update did not finish; what it printed says why."
+    return "Done. This window still runs the kit it was opened with: Esc, and open it again for the new one."
+
+
+def quit_tray(settings: Settings) -> str:
+    # Asked rather than killed: a killed icon stays drawn by the Windows clock
+    # until the mouse passes over it.
+    if not tray.ask_to_quit(settings):
+        return "No tray icon is running."
+    return "The tray icon will quit within a second. The daemon keeps running, and the icon starts again at your next login."
+
+
 # ------------------------------------------------------------------ run
 
 
@@ -336,6 +394,14 @@ def run(settings: Settings, limit: int) -> int:
             action = browser.handle(key, size.lines)
             if action == "quit":
                 return 0
+            if action == "log":
+                browser.message = show_log(settings)
+            if action == "quit-tray":
+                browser.message = quit_tray(settings)
+            if action == "update":
+                terminal.suspend()
+                browser.message = update_kit()
+                terminal.resume()
             if action == "ask":
                 row = browser.selected.row
                 terminal.suspend()
