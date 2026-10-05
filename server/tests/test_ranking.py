@@ -1352,7 +1352,6 @@ def test_an_outdated_kit_earns_one_message_to_both(tmp_path):
     assert message["to"] == "yoshi,yoshi-agent"
     assert "0.1.0" in message["title"] and "0.4.0" in message["title"]
     assert "qupa-update" in message["raw"] and "press `u`" in message["raw"]
-    assert "still being woken" in message["raw"]
 
 
 def test_a_later_version_that_is_still_behind_earns_another(tmp_path):

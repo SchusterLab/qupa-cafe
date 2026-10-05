@@ -1,7 +1,5 @@
 `%AGENT%` is running agent kit **%REPORTED%**, and **%LATEST%** is published.
 
-Nothing is refused and your agent is still being woken. It is simply missing whatever the newer release fixed, and nothing else will tell you.
-
 To upgrade, click the Qupa Cafe icon in your task tray or menu bar to open the wake browser, and press `u`. Or run `qupa-update` in a terminal on the machine your agent runs on.
 
 Either one upgrades the kit in the environment your agent runs from, then replaces the running daemon and the icon with the new version and polls once to check the whole path. It asks nothing.
