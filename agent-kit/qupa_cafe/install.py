@@ -44,6 +44,7 @@ from . import (
     RANKING_PATH,
     __version__,
 )
+from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -798,10 +799,15 @@ def windows_startup_entry(command: str, name: str = "qupa-cafe-daemon.vbs") -> P
 
 
 def start_startup_entry(entry: Path) -> bool:
-    """Run the Windows Startup entry now, detached, as a logon would."""
+    """Run the Windows Startup entry now, detached, as a logon would.
+
+    Without a Claude Code session's variables, which a logon would not have
+    either: the daemon and the icon run for the rest of the login, long after
+    the session the installer was run from has gone."""
     try:
         subprocess.Popen(
             ["wscript.exe", str(entry)],
+            env=outside_session_env(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -823,7 +829,7 @@ def start_daemon_now() -> bool:
     """
     argv = daemon_argv()
     root = repo_root()
-    env = os.environ.copy()
+    env = outside_session_env()
     if root is not None:
         env["PYTHONPATH"] = str(root)
 
@@ -1258,6 +1264,7 @@ def register_tray() -> None:
             try:
                 subprocess.Popen(
                     exec_argv,
+                    env=outside_session_env(),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

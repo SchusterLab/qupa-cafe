@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (a daemon started from a Claude Code session is not part of it)
+
+- **The installer starts the daemon and the tray icon without a Claude Code session's variables**: `CLAUDECODE`, `CLAUDE_PID`, everything beginning `CLAUDE_CODE_`, and `NO_COLOR` when those are present, since the session sets it for its own tools. That covers the Windows Startup entries it starts at once, the daemon it starts directly, and the icon it starts on Linux; launchd and systemd start theirs clean already. Run from a session, the installer had given the daemon the session's id, its messaging socket and the token for it, which every wake's `claude -p` would have inherited, and given the icon `NO_COLOR`, which it passed to every wake browser it opened, so the browser drew without colour.
+- **The daemon starts each wake without them too**, whatever started the daemon, and the icon opens each browser without them.
+- Found on the researcher's Windows machine, where the daemon and icon of the two test builds above had been started by an installer run from a session. Both were stopped and started again from the Startup entries with the session's variables removed, after a first attempt through Explorer started nothing and left the daemon down for about three minutes; no wake had run in the meantime. Then 0.11.0.dev3 was installed and its installer run from a session with `CLAUDECODE` set: read through `psutil`, the daemon and the icon it started carried none of the session's variables. Not released.
+
 ### 2026-10-05 (the tray icon's menu is the browser's keys)
 
 - **Everything the tray icon's menu did is a key in the wake browser's list**, named on its bottom line: `l` opens `daemon.log`, `u` runs `qupa_cafe.update` in the browser's own terminal and returns to the list after Enter, and `t` quits the icon. The menu keeps Show wakes alone, which a click does on Windows and X11 and which is the only way in on macOS, where a click opens the menu. `agent-kit/README.md`.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import subprocess
 
 import qupa_cafe.daemon as daemon
@@ -129,6 +130,37 @@ def test_the_wake_asks_for_no_console_window(monkeypatch, tmp_path):
 
     assert wake_agent(Settings(), "a prompt") is True
     assert captured["kwargs"]["creationflags"] == daemon.NO_WINDOW
+
+
+def test_a_wake_is_not_nested_in_the_session_that_started_the_daemon(monkeypatch, tmp_path):
+    """An installer run from Claude Code leaves that session's variables in the
+    daemon, and `claude -p` would take itself for a part of that session."""
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-installers-session")
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(tmp_path / "claude"))
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+
+    assert wake_agent(Settings(), "a prompt") is True
+    assert "CLAUDECODE" not in captured["env"]
+    assert "CLAUDE_CODE_SESSION_ID" not in captured["env"]
+    assert captured["env"]["PATH"] == os.environ["PATH"]
+
+
+def test_a_sessions_variables_go_and_the_researchers_own_stay():
+    inside = daemon.outside_session_env(
+        {"CLAUDECODE": "1", "CLAUDE_PID": "7", "CLAUDE_CODE_ENTRYPOINT": "cli", "NO_COLOR": "1", "HOME": "/h"}
+    )
+    assert inside == {"HOME": "/h"}
+    # Outside a session NO_COLOR is the researcher's own, and stays.
+    assert daemon.outside_session_env({"NO_COLOR": "1", "HOME": "/h"}) == {"NO_COLOR": "1", "HOME": "/h"}
+    # And CLAUDE_CONFIG_DIR is configuration, not a session's.
+    assert daemon.outside_session_env({"CLAUDE_CONFIG_DIR": "/c"}) == {"CLAUDE_CONFIG_DIR": "/c"}
 
 
 def test_the_wake_runs_the_resolved_path():

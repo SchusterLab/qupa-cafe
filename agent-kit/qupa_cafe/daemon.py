@@ -694,6 +694,30 @@ def wake_for(settings: Settings, reason: str, topic: dict) -> Wake:
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def outside_session_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """This environment without what a Claude Code session put into it.
+
+    A process started from inside a session inherits the session's variables:
+    ``CLAUDECODE``, ``CLAUDE_PID`` and the ``CLAUDE_CODE_`` family, which carry
+    its id, its messaging socket and the token for it. A daemon holding those
+    starts every wake's ``claude -p`` as though nested in that session, and a
+    tray icon holding ``NO_COLOR``, which a session sets for its own tools,
+    opens every wake browser without colour. Both happen whenever the
+    installer is run from a session, which is a natural place to run it.
+
+    ``NO_COLOR`` goes only alongside the session's own variables: outside a
+    session it is the researcher's choice, and kept.
+    """
+    env = dict(os.environ if env is None else env)
+    in_session = any(name == "CLAUDECODE" or name.startswith("CLAUDE_CODE_") for name in env)
+    for name in list(env):
+        if name in ("CLAUDECODE", "CLAUDE_PID") or name.startswith("CLAUDE_CODE_"):
+            del env[name]
+    if in_session:
+        env.pop("NO_COLOR", None)
+    return env
+
+
 # The tools a woken agent may use without being asked.
 #
 # Every qupa-cafe tool, because each write among them is already checked
@@ -824,6 +848,8 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wak
             text=True,
             timeout=900,
             cwd=cwd,
+            # A wake is a session of its own, whatever started this daemon.
+            env=outside_session_env(),
             creationflags=NO_WINDOW,
         )
     except subprocess.TimeoutExpired:

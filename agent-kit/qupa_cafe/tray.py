@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import wakes
-from .daemon import Settings, claim_lock, load_env_file
+from .daemon import Settings, claim_lock, load_env_file, outside_session_env
 
 REFRESH_SECONDS = 20
 
@@ -136,8 +136,10 @@ def console_python() -> str:
 
 
 def child_env() -> dict[str, str]:
-    """This environment, with this package importable however it was found."""
-    env = os.environ.copy()
+    """This environment, with this package importable however it was found,
+    and without a Claude Code session's variables if the icon was started
+    from one."""
+    env = outside_session_env()
     root = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (root, env.get("PYTHONPATH", "")) if p)
     return env

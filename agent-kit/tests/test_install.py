@@ -199,3 +199,20 @@ def test_the_tray_has_a_startup_entry_of_its_own(monkeypatch, tmp_path):
     entry = install.windows_startup_entry('"pythonw.exe" -m qupa_cafe.tray', install.TRAY_VBS)
     assert entry.name == "qupa-cafe-tray.vbs"
     assert not (entry.parent / "qupa-cafe-daemon.vbs").exists()
+
+
+def test_a_startup_entry_started_now_leaves_the_session_behind(monkeypatch, tmp_path):
+    """The daemon and the icon outlive the session the installer ran in, and
+    should not carry its id, its socket or its NO_COLOR for the whole login."""
+    seen = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["env"] = kwargs.get("env")
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_MESSAGING_TOKEN", "secret")
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(install.subprocess, "Popen", fake_popen)
+
+    assert install.start_startup_entry(tmp_path / "qupa-cafe-daemon.vbs") is True
+    assert not {"CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "NO_COLOR"} & set(seen["env"])
