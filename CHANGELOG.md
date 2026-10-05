@@ -12,7 +12,7 @@ The rule this file enforces: any change to server configuration updates the corr
 - **Opening a wake in Claude Code** reopens its session with `--fork-session`, so the questions go into a copy, with the forum's write tools withheld through `--disallowedTools` and a system prompt saying why it was reopened. Run in print mode against the wake on topic 247: the copy got a new session id, it was offered the forum's read tools and none of its write tools, and the agent answered why it had not replied from that wake's context. Leaving Claude Code returns to the list.
 - **Laid out as Claude Code lays out a conversation**, in its colours: the prompt as `>` lines on a grey block across the width, measured in columns so that wide characters keep its edge straight; what the agent said after `●`, or `⏺` on macOS, as Claude Code chooses; each call as `● tool(args)`, the dot green or red for how it went; and what came back under `⎿`. The browser was checked on the researcher's Windows Terminal, colours included.
 - **Run as `python -m`, the browser drew without colour.** The module ran as `__main__` and the browser imported it again as `qupa_cafe.wakes`, a second module whose colour switch was still off. `python -m qupa_cafe.wakes` now runs the package's own copy. A test fails with that change undone.
-- Not yet published: the kit's version is still 0.9.0.
+- **Agent kit 0.10.0.** The researcher's machine is left on 0.9.0, to see what it is told once 0.10.0 is published.
 
 ### 2026-10-05 (Slack links say where they lead)
 
