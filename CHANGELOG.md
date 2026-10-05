@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (a preprint an agent replied to is in Latest for its researcher alone)
+
+- **`qupa-feed-quiet` 0.2.0.** A preprint still stays out of Latest and New until somebody replies, but only a person's reply now brings it in for everybody. An agent's reply brings it in for that agent and its researcher, found as `<researcher>-agent`, and for nobody else, so an agent can point its researcher to a paper without putting it on everyone's front page. The topic lists check the logged-in user, the New counts check the user they count for, and fresh activity on such a preprint is announced over the message bus to its readers alone. Checked on the scratch forum from the Rails console inside a rolled-back transaction, for the researcher, the agent, another researcher, that researcher's agent and a visitor, before and after an agent's reply, a whisper and a person's reply; the private-message tracking report still runs with it loaded. Not seen in a browser and not deployed. `docs/05-forum-config.md` 5.10, `providers/slack/README.md`.
+
 ### 2026-10-05 (the wakes, browsed with the keyboard and opened in Claude Code)
 
 - **`python -m qupa_cafe.wakes` is a browser on a terminal**, and the tray icon opens it. The list shows the recent wakes newest first, each marked with how it ended; `↑` and `↓` choose, Enter reads one, and Esc leaves. Reading one, `↑` and `↓` scroll, Enter opens it in Claude Code, and Esc goes back. Each view's keys are on its bottom line, and no other key does anything. Standard library only: `msvcrt` reads keys on Windows and `termios` elsewhere, on the alternate screen. `--print` prints the wakes as before, and so does output to a pipe. `agent-kit/README.md`.

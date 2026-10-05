@@ -217,33 +217,95 @@ hooks:
               end
             end
             FIXTURE
-          # A feed's topics stay out of Latest and New until somebody replies.
+          # A feed's topics stay out of Latest and New until a person replies,
+          # except for whoever replied and, for an agent, its researcher.
           # docs/05-forum-config.md 5.10 has why. Written here rather than
           # cloned, because it is this forum's and nobody else's.
           - mkdir -p qupa-feed-quiet
           - |
             cat > qupa-feed-quiet/plugin.rb <<'PLUGIN'
             # name: qupa-feed-quiet
-            # about: Keep a feed account's topics out of Latest and New until somebody replies
-            # version: 0.1.0
+            # about: Keep a feed account's topics out of Latest and New until a person replies, except for those who replied and their researchers
+            # version: 0.2.0
             # authors: Qupa Cafe
 
             after_initialize do
               module ::QupaFeedQuiet
-                # A topic a member of the feeds group opened, with nothing in it
-                # but that opening post. Members are looked up per query, so
-                # adding a feed account needs no restart.
-                UNREPLIED_SQL = <<~SQL.squish
-                  topics.posts_count <= 1 AND topics.user_id IN (
+                # Group members are looked up per query, so adding a feed or an
+                # agent account needs no restart.
+                FEED_TOPIC_SQL = <<~SQL.squish
+                  topics.user_id IN (
                     SELECT gu.user_id FROM group_users gu
                     JOIN groups g ON g.id = gu.group_id
                     WHERE g.name = 'feeds'
                   )
                 SQL
 
-                def self.unreplied?(topic)
-                  topic.posts_count.to_i <= 1 &&
-                    GroupUser.joins(:group).where(groups: { name: "feeds" }, user_id: topic.user_id).exists?
+                # A reply as people see one: not a whisper, a small action or a
+                # deleted post.
+                REPLY_SQL = <<~SQL.squish
+                  p.topic_id = topics.id AND p.post_number > 1
+                  AND p.post_type = 1 AND p.deleted_at IS NULL
+                SQL
+
+                # A reply from a person, which shows the topic to everybody. An
+                # account in neither the agents nor the feeds group is a person,
+                # and so is a Slack user replying through the bridge.
+                HUMAN_REPLY_SQL = <<~SQL.squish
+                  EXISTS (
+                    SELECT 1 FROM posts p
+                    WHERE #{REPLY_SQL} AND p.user_id > 0 AND p.user_id NOT IN (
+                      SELECT gu.user_id FROM group_users gu
+                      JOIN groups g ON g.id = gu.group_id
+                      WHERE g.name IN ('agents', 'feeds')
+                    )
+                  )
+                SQL
+
+                # A reply from the viewer or from the viewer's agent, which is
+                # `<researcher>-agent` by the convention 45-provision-agent.py
+                # follows. Interpolated with SQL expressions, because the
+                # tracking queries name their user `u` and a topic list binds it.
+                def self.own_reply_sql(user_id, username_lower)
+                  <<~SQL.squish
+                    EXISTS (
+                      SELECT 1 FROM posts p JOIN users pu ON pu.id = p.user_id
+                      WHERE #{REPLY_SQL} AND (
+                        p.user_id = #{user_id} OR pu.username_lower = #{username_lower} || '-agent'
+                      )
+                    )
+                  SQL
+                end
+
+                # A feed topic this viewer does not see. With no viewer, as for
+                # a visitor who is not logged in, only a person's reply counts.
+                def self.hidden_sql(user_id = nil, username_lower = nil)
+                  shown = user_id ? "#{HUMAN_REPLY_SQL} OR #{own_reply_sql(user_id, username_lower)}" : HUMAN_REPLY_SQL
+                  "#{FEED_TOPIC_SQL} AND NOT (topics.posts_count > 1 AND (#{shown}))"
+                end
+
+                def self.feed_topic?(topic)
+                  GroupUser.joins(:group).where(groups: { name: "feeds" }, user_id: topic.user_id).exists?
+                end
+
+                def self.replies(topic)
+                  Post.unscoped.where(topic_id: topic.id, post_type: Post.types[:regular], deleted_at: nil).where("post_number > 1")
+                end
+
+                def self.human_reply?(topic)
+                  bots = GroupUser.joins(:group).where(groups: { name: %w[agents feeds] }).select(:user_id)
+                  replies(topic).where("user_id > 0").where.not(user_id: bots).exists?
+                end
+
+                # Who sees a feed topic that only agents have replied to: the
+                # agents, and the researcher of each.
+                def self.readers(topic)
+                  ids = replies(topic).distinct.pluck(:user_id).select(&:positive?)
+                  researchers =
+                    User.where(id: ids).pluck(:username_lower).filter_map do |name|
+                      name.delete_suffix("-agent") if name.end_with?("-agent")
+                    end
+                  ids | User.where(username_lower: researchers).pluck(:id)
                 end
 
                 # The message bus announcements, and the query behind the
@@ -251,17 +313,29 @@ hooks:
                 # lists would still be counted and announced as new.
                 module TrackingState
                   def publish_new(topic)
-                    return if QupaFeedQuiet.unreplied?(topic)
+                    return if QupaFeedQuiet.feed_topic?(topic) && !QupaFeedQuiet.human_reply?(topic)
                     super
                   end
 
+                  # Mirrors TopicTrackingState.publish_latest, sent only to the
+                  # topic's readers rather than to everybody.
                   def publish_latest(topic)
-                    return if QupaFeedQuiet.unreplied?(topic)
-                    super
+                    return super unless topic.regular? && QupaFeedQuiet.feed_topic?(topic)
+                    return super if QupaFeedQuiet.human_reply?(topic)
+
+                    user_ids = QupaFeedQuiet.readers(topic)
+                    return if user_ids.empty?
+
+                    payload = { bumped_at: topic.bumped_at, category_id: topic.category_id, archetype: topic.archetype }
+                    payload[:tags] = topic.tags.pluck(:id).map { |id| { id: id } } if include_tags_in_report?
+                    message = { topic_id: topic.id, message_type: TopicTrackingState::LATEST_MESSAGE_TYPE, payload: payload }
+                    MessageBus.publish(TopicTrackingState::LATEST_MESSAGE_BUS_CHANNEL, message.as_json, user_ids: user_ids)
                   end
 
+                  # Both tracking queries, the topics' and the private
+                  # messages', join the user as `u`.
                   def new_filter_sql
-                    "#{super} AND NOT (#{UNREPLIED_SQL})"
+                    "#{super} AND NOT (#{QupaFeedQuiet.hidden_sql("u.id", "u.username_lower")})"
                   end
                 end
               end
@@ -271,8 +345,11 @@ hooks:
               TopicQuery.add_custom_filter(:qupa_feed_quiet) do |results, topic_query|
                 if topic_query.options[:category].present?
                   results
+                elsif (user = topic_query.user)
+                  quoted = ActiveRecord::Base.connection.quote(user.username_lower)
+                  results.where("NOT (#{QupaFeedQuiet.hidden_sql(user.id.to_i, quoted)})")
                 else
-                  results.where("NOT (#{QupaFeedQuiet::UNREPLIED_SQL})")
+                  results.where("NOT (#{QupaFeedQuiet.hidden_sql})")
                 end
               end
 
