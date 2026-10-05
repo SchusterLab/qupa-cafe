@@ -34,6 +34,11 @@ It logs to ``daemon.log`` beside its state file as well as to the console,
 because on Windows the console is hidden and on every system the line that
 says why it stopped is the one worth keeping. The forum host notices a daemon
 that has stopped polling and tells its researcher; see server/README.md.
+
+Each wake is journalled in the state file with the session the runtime kept
+for it, and each poll leaves the time it happened. ``qupa_cafe.wakes`` shows
+what the agent did on each wake from those, and ``qupa_cafe.tray`` puts that a
+click away.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -207,6 +213,100 @@ class Handled:
             (kind, item_id),
         )
         self.db.commit()
+
+
+class Journal:
+    """What this daemon has done, for a researcher to look at.
+
+    Two things: one row per wake, naming the session the runtime kept for it,
+    and the time of the last poll. ``qupa_cafe.wakes`` and ``qupa_cafe.tray``
+    read them; nothing in the daemon does. The runtime's own session file is
+    the record of what the agent read and wrote, and this is only the index
+    into it -- which session answered which post, and why it was woken.
+
+    In the same file as ``Handled``, as separate tables, because a researcher
+    has one state file to find and one to delete.
+    """
+
+    def __init__(self, path: str):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(path)
+        self.db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS wakes (
+                id          INTEGER PRIMARY KEY,
+                started     TEXT NOT NULL,
+                finished    TEXT,
+                status      TEXT NOT NULL,
+                runtime     TEXT NOT NULL,
+                session     TEXT NOT NULL,
+                agent_dir   TEXT NOT NULL,
+                topic_id    INTEGER,
+                post_number INTEGER,
+                title       TEXT NOT NULL,
+                reason      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS heartbeat (
+                id       INTEGER PRIMARY KEY CHECK (id = 1),
+                polled   TEXT NOT NULL,
+                interval INTEGER NOT NULL
+            );
+            """
+        )
+        self.db.commit()
+
+    # A journal that cannot be written costs the record of a wake and never
+    # the wake: the agent is still answering, and only the viewer is poorer.
+
+    def begin(self, wake: Wake) -> int | None:
+        try:
+            cursor = self._begin(wake)
+        except sqlite3.Error as exc:
+            LOG.warning("could not journal the wake for topic %s: %s", wake.topic_id, exc)
+            return None
+        return int(cursor.lastrowid)
+
+    def _begin(self, wake: Wake) -> sqlite3.Cursor:
+        cursor = self.db.execute(
+            "INSERT INTO wakes (started, status, runtime, session, agent_dir, topic_id,"
+            " post_number, title, reason)"
+            " VALUES (datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?)",
+            (
+                wake.runtime,
+                wake.session,
+                wake.agent_dir,
+                wake.topic_id,
+                wake.post_number,
+                wake.title,
+                wake.reason,
+            ),
+        )
+        self.db.commit()
+        return cursor
+
+    def end(self, row: int, ok: bool) -> None:
+        try:
+            self.db.execute(
+                "UPDATE wakes SET finished = datetime('now'), status = ? WHERE id = ?",
+                ("finished" if ok else "failed", row),
+            )
+            self.db.commit()
+        except sqlite3.Error as exc:
+            LOG.warning("could not journal how a wake ended: %s", exc)
+
+    def beat(self, interval: int) -> None:
+        """Record a poll, so that a viewer can tell a quiet daemon from a
+        stopped one. The interval goes with it, because how long a silence
+        means "stopped" depends on how often it should have polled."""
+        try:
+            self.db.execute(
+                "INSERT INTO heartbeat (id, polled, interval) VALUES (1, datetime('now'), ?)"
+                " ON CONFLICT (id) DO UPDATE SET polled = excluded.polled, interval = excluded.interval",
+                (interval,),
+            )
+            self.db.commit()
+        except sqlite3.Error as exc:
+            LOG.warning("could not record the poll: %s", exc)
 
 
 # ---------------------------------------------------------------------- forum
@@ -543,6 +643,46 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     return filled
 
 
+@dataclass
+class Wake:
+    """One invocation of the agent, as the journal and the runtime see it.
+
+    ``session`` is chosen here rather than learnt afterwards, because Claude
+    Code accepts one with ``--session-id`` and keeps its transcript under that
+    name -- so the daemon knows where the record of the wake will be before
+    the wake starts, and a wake that times out still has one. Codex takes no
+    such argument, and its wakes are journalled without a session.
+    """
+
+    runtime: str
+    agent_dir: str
+    topic_id: int | None
+    post_number: int | None
+    title: str
+    reason: str
+    session: str = ""
+
+    @property
+    def label(self) -> str:
+        """The session's name in Claude Code's own `/resume` list, where every
+        wake otherwise starts with the same template text."""
+        return f"qupa wake: topic {self.topic_id} post {self.post_number}, {self.reason}"
+
+
+def wake_for(settings: Settings, reason: str, topic: dict) -> Wake:
+    posts = topic.get("post_stream", {}).get("posts") or []
+    latest = posts[-1] if posts else {}
+    return Wake(
+        runtime=settings.runtime,
+        agent_dir=settings.agent_dir,
+        topic_id=topic.get("id"),
+        post_number=latest.get("post_number"),
+        title=str(topic.get("title") or "(untitled)"),
+        reason=reason,
+        session=str(uuid.uuid4()) if settings.runtime == "claude" else "",
+    )
+
+
 # Windows gives a console program its own window when the process starting it
 # has no console to lend it, and the daemon has none: it is launched windowless
 # so that logging in does not leave a black box on the desktop. Without this
@@ -620,7 +760,7 @@ def mcp_config_disagreement(settings: Settings) -> str:
     return ""
 
 
-def runtime_command(settings: Settings, prompt: str) -> list[str]:
+def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -> list[str]:
     """The command line that wakes the agent."""
     if settings.runtime == "codex":
         # --skip-git-repo-check because an agent's working directory is a place
@@ -628,6 +768,8 @@ def runtime_command(settings: Settings, prompt: str) -> list[str]:
         return ["codex", "exec", "--skip-git-repo-check", prompt]
 
     command = ["claude", "-p", prompt]
+    if wake is not None and wake.session:
+        command += ["--session-id", wake.session, "--name", wake.label]
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -638,12 +780,12 @@ def runtime_command(settings: Settings, prompt: str) -> list[str]:
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
 
-def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
+def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wake | None = None) -> bool:
     """Invoke the researcher's agent runtime once.
 
     This is the only place in the daemon that costs tokens.
     """
-    command = runtime_command(settings, prompt)
+    command = runtime_command(settings, prompt, wake)
 
     # The resolved path, not the bare name. Both runtimes ship as `.cmd` shims
     # on Windows for at least one installation method, and CreateProcess appends
@@ -664,7 +806,17 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False) -> bool:
         LOG.info("DRY RUN: would run %s with a %d-character prompt", command[0], len(prompt))
         return True
 
-    LOG.info("waking %s (%d characters of context)", command[0], len(prompt))
+    if wake is not None and wake.session:
+        LOG.info(
+            "waking %s for topic %s post %s (%d characters of context), session %s",
+            command[0],
+            wake.topic_id,
+            wake.post_number,
+            len(prompt),
+            wake.session,
+        )
+    else:
+        LOG.info("waking %s (%d characters of context)", command[0], len(prompt))
     try:
         result = subprocess.run(
             command,
@@ -750,7 +902,14 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
     return list(candidates.values())
 
 
-def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled, dry_run: bool) -> int:
+def one_pass(
+    settings: Settings,
+    forum: Forum,
+    ranking: Ranking,
+    handled: Handled,
+    dry_run: bool,
+    journal: Journal | None = None,
+) -> int:
     """One poll. Returns the number of agent invocations made."""
     candidates = collect(settings, forum, ranking, handled)
     if not candidates:
@@ -782,7 +941,14 @@ def one_pass(settings: Settings, forum: Forum, ranking: Ranking, handled: Handle
             continue
 
         prompt = build_prompt(settings, candidate.reason, topic, wording)
-        if not wake_agent(settings, prompt, dry_run=dry_run):
+        wake = wake_for(settings, candidate.reason, topic)
+        # Journalled before it starts, so a wake that never returns -- killed
+        # with the daemon, or with the machine -- still shows as begun.
+        row = journal.begin(wake) if journal is not None and not dry_run else None
+        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake)
+        if row is not None:
+            journal.end(row, ok)
+        if not ok:
             # Deliberately not acknowledged, so the next pass retries it. A wake
             # that failed is not a wake that happened.
             LOG.warning("wake failed for topic %s; it will be retried", candidate.topic_id)
@@ -834,7 +1000,13 @@ def claim_single_instance(settings: Settings):
     prompt can all race. The lock is advisory and released when the process
     ends, including when it is killed.
     """
-    path = lock_path(settings)
+    return claim_lock(lock_path(settings))
+
+
+def claim_lock(path: Path):
+    """Hold the advisory lock at ``path`` for the life of this process: the
+    open handle, ``False`` when another process holds it, or ``None`` when
+    there is nowhere to put it."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a+b")
@@ -947,6 +1119,7 @@ def run() -> int:
     forum = Forum(settings)
     ranking = Ranking(settings)
     handled = Handled(settings.state_path)
+    journal = Journal(settings.state_path)
 
     if not settings.ranking_url:
         LOG.warning(
@@ -960,13 +1133,17 @@ def run() -> int:
     )
 
     if args.once:
-        wakes = one_pass(settings, forum, ranking, handled, args.dry_run)
+        wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
 
     while True:
         try:
-            one_pass(settings, forum, ranking, handled, args.dry_run)
+            # Only the resident loop beats. The installer's own check runs a
+            # dry pass beside it, and that is not evidence the daemon is up.
+            if not args.dry_run:
+                journal.beat(settings.interval)
+            one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
         time.sleep(settings.interval)

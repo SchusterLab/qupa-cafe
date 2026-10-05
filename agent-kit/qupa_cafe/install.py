@@ -27,6 +27,7 @@ elevated prompt an ordinary researcher does not have.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import platform
@@ -765,7 +766,7 @@ def windows_startup_script(command: str) -> str:
     )
 
 
-def windows_startup_entry(command: str) -> Path | None:
+def windows_startup_entry(command: str, name: str = "qupa-cafe-daemon.vbs") -> Path | None:
     """Register the daemon at logon without needing an elevated prompt.
 
     ``schtasks /SC ONLOGON`` wants administrator rights, which an ordinary
@@ -786,7 +787,7 @@ def windows_startup_entry(command: str) -> Path | None:
     """
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    target = startup / "qupa-cafe-daemon.vbs"
+    target = startup / name
     try:
         startup.mkdir(parents=True, exist_ok=True)
         target.write_text(windows_startup_script(command), encoding="utf-8")
@@ -1102,6 +1103,174 @@ WantedBy=default.target
             print(f"    {exec_start}")
 
 
+# ------------------------------------------------------------------- the tray
+
+
+TRAY_EXTRA = f'"{PACKAGE_NAME}[tray]"'
+TRAY_VBS = "qupa-cafe-tray.vbs"
+TRAY_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.tray.plist"
+TRAY_DESKTOP = Path.home() / ".config" / "autostart" / "qupa-cafe-tray.desktop"
+
+
+def tray_available() -> bool:
+    """Whether the tray's one dependency is installed. It is an extra, so that
+    the kit itself stays standard library only."""
+    return importlib.util.find_spec("pystray") is not None
+
+
+def tray_argv() -> list[str]:
+    """How to start the tray icon.
+
+    ``pythonw.exe`` on Windows, which is the interpreter with no console: the
+    icon lives for the whole session, and a console beside it would too.
+    """
+    argv = interpreter_argv("qupa_cafe.tray")
+    if os.name == "nt":
+        windowless = Path(argv[0]).with_name("pythonw.exe")
+        if windowless.is_file():
+            argv[0] = str(windowless)
+    return argv
+
+
+def desktop_exec(argv: list[str]) -> str:
+    """An ``Exec=`` line, quoted as the desktop entry specification asks."""
+
+    def quote(arg: str) -> str:
+        for char in ("\\", '"', "`", "$"):
+            arg = arg.replace(char, "\\" + char)
+        return f'"{arg}"'
+
+    return " ".join(quote(arg) for arg in argv)
+
+
+def stop_running_tray() -> None:
+    """End a tray icon already running, so that the one started next runs the
+    new code rather than sitting beside the old one. Matched as narrowly as
+    stop_running_daemon matches the daemon."""
+    system = platform.system()
+    module = "qupa_cafe" + ".tray"
+    if system == "Windows":
+        script = (
+            "Get-CimInstance Win32_Process |"
+            f" Where-Object {{ $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{TRAY_VBS}*' }} |"
+            " ForEach-Object { Stop-Process -Id $_.ProcessId -Force };"
+            f"$mine = @({os.getpid()},{os.getppid()});"
+            "Get-CimInstance Win32_Process |"
+            " Where-Object { $_.Name -like 'python*' -and"
+            f" ($_.CommandLine -replace '\"', '') -like '*-m {module}*' -and"
+            " $mine -notcontains $_.ProcessId } |"
+            " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
+    elif system == "Darwin" and shutil.which("launchctl"):
+        subprocess.run(["launchctl", "unload", str(TRAY_PLIST)], capture_output=True, text=True)
+    elif shutil.which("pkill"):
+        subprocess.run(["pkill", "-f", f"-m {module}"], capture_output=True, text=True)
+
+
+def register_tray() -> None:
+    """Start the tray icon at each login, and now.
+
+    Registered apart from the daemon, and nothing depends on it: the icon is a
+    window onto the daemon's state file, so a session with no tray to show it
+    in, or an icon somebody quit, leaves the daemon answering.
+    """
+    if not tray_available():
+        print("  no tray icon: it needs the tray extra, which is not installed.")
+        print(f"        pip install {TRAY_EXTRA}, then run qupa-install again")
+        return
+
+    system = platform.system()
+    argv = tray_argv()
+    root = repo_root()
+
+    if system == "Windows":
+        # Written as the daemon's entry is, so it runs again a minute after a
+        # crash. Quitting the icon exits 0, which ends the script.
+        if root is not None:
+            command = f'cmd /c cd /d "{root}" && "{argv[0]}" -m qupa_cafe.tray'
+        else:
+            command = " ".join(f'"{a}"' for a in argv)
+        entry = windows_startup_entry(command, TRAY_VBS)
+        if entry is None:
+            return
+        print(f"  wrote {entry}")
+        stop_running_tray()
+        if start_startup_entry(entry):
+            print("  started the tray icon; Windows may put it among the hidden icons by the clock")
+
+    elif system == "Darwin":
+        TRAY_PLIST.parent.mkdir(parents=True, exist_ok=True)
+        program_arguments = "\n".join(f"    <string>{a}</string>" for a in argv)
+        environment = (
+            "  <key>EnvironmentVariables</key>\n  <dict>\n"
+            f"    <key>PYTHONPATH</key><string>{root}</string>\n  </dict>\n"
+            if root is not None
+            else ""
+        )
+        # Restarted after a crash and not after a quit, and only in a login
+        # session with a menu bar to put it in.
+        TRAY_PLIST.write_text(
+            f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>cafe.qupa.tray</string>
+  <key>ProgramArguments</key>
+  <array>
+{program_arguments}
+  </array>
+{environment}  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+        print(f"  wrote {TRAY_PLIST}")
+        stop_running_tray()
+        run_step(["launchctl", "load", "-w", str(TRAY_PLIST)], "loaded cafe.qupa.tray", "load cafe.qupa.tray")
+
+    elif system == "Linux":
+        # The freedesktop autostart directory rather than a systemd unit: a
+        # tray icon belongs to the graphical session, and a user unit can start
+        # before there is one to draw in.
+        exec_argv = (["env", f"PYTHONPATH={root}"] if root is not None else []) + argv
+        TRAY_DESKTOP.parent.mkdir(parents=True, exist_ok=True)
+        TRAY_DESKTOP.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Qupa Cafe\n"
+            "Comment=What your forum agent did when it was woken\n"
+            f"Exec={desktop_exec(exec_argv)}\n"
+            "Terminal=false\n"
+            "X-GNOME-Autostart-enabled=true\n",
+            encoding="utf-8",
+        )
+        print(f"  wrote {TRAY_DESKTOP}")
+        stop_running_tray()
+        if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            try:
+                subprocess.Popen(
+                    exec_argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                print("  started the tray icon")
+            except OSError as exc:
+                print(f"  could not start the tray icon now: {exc}")
+        else:
+            print("  no graphical session here; the icon starts at your next desktop login")
+
+    else:
+        print(f"  unknown platform {system}; start the tray icon yourself: {' '.join(argv)}")
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -1375,6 +1544,9 @@ def main() -> int:
     if not args.no_service:
         print("\nRegistering the daemon...")
         register_service(settings)
+
+        print("\nAdding the tray icon...")
+        register_tray()
 
     print("\nChecking the whole path: one poll, waking nothing...")
     ran, degraded = check_daemon_runs(settings)

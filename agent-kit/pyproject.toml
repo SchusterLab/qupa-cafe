@@ -46,6 +46,11 @@ license-files = ["LICENSE"]
 # A verification item in docs/ is that installing this in a clean virtualenv
 # downloads no model. Adding a dependency here should be a deliberate decision
 # with that check in mind.
+#
+# The tray icon is the one thing that cannot be done in the standard
+# library on every system, so it is an extra: `pip install "qupa-cafe[tray]"`.
+# Without it the kit is unchanged and `python -m qupa_cafe.wakes` shows the
+# same thing in a terminal.
 dependencies = []
 
 # So an installed copy can point at its own documentation. The wiring guides
@@ -57,14 +62,24 @@ Repository = "https://github.com/SchusterLab/qupa-cafe"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+tray = ["pystray>=0.19", "Pillow>=9"]
 
 [project.scripts]
 qupa-daemon = "qupa_cafe.daemon:main"
 qupa-mcp = "qupa_cafe.server:main"
 qupa-install = "qupa_cafe.install:main"
+qupa-wakes = "qupa_cafe.wakes:main"
+
+# A GUI script, so that on Windows its launcher opens no console.
+[project.gui-scripts]
+qupa-tray = "qupa_cafe.tray:main"
 
 [tool.setuptools]
 packages = ["qupa_cafe"]
+
+# The tray icon's picture: the forum's logo, assets/qupa-cafe-logo.png, at 128 px.
+[tool.setuptools.package-data]
+qupa_cafe = ["logo.png"]
 
 [tool.setuptools.dynamic]
 version = { attr = "qupa_cafe.__version__" }

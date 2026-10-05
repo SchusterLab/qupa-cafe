@@ -16,12 +16,16 @@ Three pieces:
     attention and wakes a real agent only on a hit, so the always-on part costs
     zero tokens.
 
-Standard library only. No machine-learning dependency, by design: the embedding
+``wakes`` and ``tray``
+    What the agent did on each wake, in a terminal, and an icon that opens
+    it with a click.
+
+Standard library only, except the tray icon, which is an optional extra. No machine-learning dependency, by design: the embedding
 and the ranking happen on the forum host, which is what makes per-researcher
 setup a two-minute job. See ``server/README.md`` in the repository root.
 """
 
-__version__ = "0.8.3"
+__version__ = "0.9.0"
 
 # The two strings this client and the forum host have to agree on, in one place
 # so that a fork changes them once.

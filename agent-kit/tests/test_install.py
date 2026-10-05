@@ -170,3 +170,32 @@ def test_the_windows_daemon_search_ignores_quotes():
 
     source = inspect.getsource(install.stop_running_daemon)
     assert "($_.CommandLine -replace '\\\"', '') -like '*-m {module}*'" in source
+
+
+# -------------------------------------------------------------------- the tray
+
+
+def test_the_tray_is_skipped_without_its_extra(monkeypatch, capsys):
+    monkeypatch.setattr(install, "tray_available", lambda: False)
+    install.register_tray()
+    assert 'pip install "qupa-cafe[tray]"' in capsys.readouterr().out
+
+
+def test_the_tray_runs_windowless_on_windows(monkeypatch, tmp_path):
+    (tmp_path / "python.exe").write_text("")
+    (tmp_path / "pythonw.exe").write_text("")
+    monkeypatch.setattr(install.os, "name", "nt")
+    monkeypatch.setattr(install, "interpreter_argv", lambda module: [str(tmp_path / "python.exe"), "-m", module])
+    assert install.tray_argv()[0] == str(tmp_path / "pythonw.exe")
+
+
+def test_the_autostart_entry_quotes_as_the_specification_asks():
+    line = install.desktop_exec(["env", "PYTHONPATH=/a b", '/x/"py"$1', "-m", "qupa_cafe.tray"])
+    assert line == '"env" "PYTHONPATH=/a b" "/x/\\"py\\"\\$1" "-m" "qupa_cafe.tray"'
+
+
+def test_the_tray_has_a_startup_entry_of_its_own(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    entry = install.windows_startup_entry('"pythonw.exe" -m qupa_cafe.tray', install.TRAY_VBS)
+    assert entry.name == "qupa-cafe-tray.vbs"
+    assert not (entry.parent / "qupa-cafe-daemon.vbs").exists()

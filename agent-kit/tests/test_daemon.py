@@ -668,3 +668,92 @@ def test_an_ordinary_refusal_to_start_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(daemon, "run", lambda: 2)
     assert daemon.main() == 2
     assert "exiting with status 2" in caplog.text
+
+
+# ------------------------------------------------------------- the journal
+
+
+def _wake(**overrides):
+    fields = dict(
+        runtime="claude",
+        agent_dir="/agent",
+        topic_id=10,
+        post_number=1,
+        title="Topic 10",
+        reason="you were mentioned or replied to",
+        session="3f2a0000-0000-4000-8000-000000000000",
+    )
+    fields.update(overrides)
+    return daemon.Wake(**fields)
+
+
+def test_claude_is_told_which_session_to_keep_the_wake_in(tmp_path):
+    """The session id is the daemon's, so it knows where the transcript will be
+    before the wake starts -- and the name is what tells one wake from another
+    in Claude Code's own list of sessions."""
+    wake = _wake()
+    command = runtime_command(Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path))), "p", wake)
+
+    assert command[command.index("--session-id") + 1] == wake.session
+    assert command[command.index("--name") + 1] == wake.label
+    assert "topic 10 post 1" in wake.label
+
+
+def test_codex_is_given_no_session_it_cannot_take():
+    command = runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session=""))
+    assert command == ["codex", "exec", "--skip-git-repo-check", "a prompt"]
+
+
+def test_only_claude_wakes_get_a_session():
+    topic = _topic(10)
+    assert daemon.wake_for(Settings(runtime="claude"), "r", topic).session
+    assert daemon.wake_for(Settings(runtime="codex"), "r", topic).session == ""
+
+
+def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
+    state = str(tmp_path / "state.sqlite3")
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    forum = FakeForum({10: _topic(10)})
+    journal = daemon.Journal(state)
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    seen = {}
+
+    def fake_wake(settings, prompt, dry_run=False, wake=None):
+        # Journalled as running before the runtime is started.
+        seen["status"] = journal.db.execute("SELECT status FROM wakes").fetchone()[0]
+        seen["wake"] = wake
+        return False
+
+    monkeypatch.setattr(daemon, "wake_agent", fake_wake)
+    daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
+
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
+
+    rows = journal.db.execute("SELECT status, session, topic_id, finished FROM wakes ORDER BY id").fetchall()
+    assert seen["status"] == "running"
+    assert [row[0] for row in rows] == ["failed", "finished"]
+    assert rows[0][1] == seen["wake"].session and rows[0][2] == 10
+    assert all(row[3] for row in rows)
+
+
+def test_a_dry_run_journals_nothing(tmp_path, monkeypatch):
+    state = str(tmp_path / "state.sqlite3")
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    journal = daemon.Journal(state)
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    daemon.one_pass(
+        settings, FakeForum({10: _topic(10)}), FakeRanking([101]), Handled(state), dry_run=True, journal=journal
+    )
+
+    assert journal.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 0
+
+
+def test_the_heartbeat_is_one_row(tmp_path):
+    journal = daemon.Journal(str(tmp_path / "state.sqlite3"))
+    journal.beat(60)
+    journal.beat(30)
+    assert journal.db.execute("SELECT interval FROM heartbeat").fetchall() == [(30,)]
