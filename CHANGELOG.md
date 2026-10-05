@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (the icon is quit from its menu alone)
+
+- **`t` is gone from the wake browser**, and with it the quit request the icon looked for every second: Quit the icon, in the icon's own menu, is the one way to quit it. The icon refreshes every twenty seconds again. `agent-kit/README.md`.
+
 ### 2026-10-05 (the browser offers an update only when there is one, and opens once)
 
 - **The wake browser asks PyPI for the newest kit as it opens**, with a three-second timeout. A newer one puts a notice under the title, bold on Claude Code's orange: the version available, the version installed, and how to update, which is `u`, or for a kit run from a checkout, updating the checkout and running `qupa-install`. `u` does anything only then, and is named in the notice rather than on the bottom line; with nothing newer, or PyPI out of reach, neither the notice nor the key appears. A development build counts as older than its release. After `u` finishes, the notice goes. `agent-kit/README.md`.

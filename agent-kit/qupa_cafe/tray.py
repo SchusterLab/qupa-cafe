@@ -4,11 +4,9 @@ The icon says whether the daemon is polling, waking the agent, or has stopped,
 and its tooltip says when the agent was last woken and for what. Clicking it
 opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
 to choose from with the arrow keys, each to read, and each to reopen in Claude
-Code to ask the agent about. The browser also opens the daemon's log, updates
-the kit, and quits this icon, which it asks for by leaving a file beside the
-state file that the icon looks for every second. The icon's own menu has Show
-wakes, since on macOS a click opens the menu rather than doing anything itself,
-and Quit the icon.
+Code to ask the agent about; it also opens the daemon's log and updates the
+kit. The icon's own menu has Show wakes, since on macOS a click opens the menu
+rather than doing anything itself, and Quit the icon.
 
 It is a viewer and nothing else. The daemon runs without it, under whatever
 restarts it, and quitting this or a desktop with no tray to show it in costs no
@@ -180,26 +178,6 @@ def lock_path(settings: Settings) -> Path:
     return Path(settings.state_path).with_name("tray.lock")
 
 
-def quit_request(settings: Settings) -> Path:
-    """The file that asks a running icon to quit: it deletes it and exits 0,
-    which the Windows Startup entry takes as a reason not to start it again."""
-    return Path(settings.state_path).with_name("tray.quit")
-
-
-def ask_to_quit(settings: Settings) -> bool:
-    """Ask the running icon to quit. False when there is none to ask."""
-    lock = claim_lock(lock_path(settings))
-    if lock:
-        # Nobody held it, so no icon is running. A request left now would end
-        # the next icon the moment it started, were it not cleared then too.
-        lock.close()
-        return False
-    # Held, or nowhere to keep a lock at all, in which case the icon could not
-    # keep one either and may well be running.
-    quit_request(settings).write_text("", encoding="utf-8")
-    return True
-
-
 def main() -> int:
     try:
         import pystray
@@ -213,14 +191,12 @@ def main() -> int:
     lock = claim_lock(lock_path(settings))
     if lock is False:
         return 0
-    # Left by a browser after an icon it asked had already gone.
-    quit_request(settings).unlink(missing_ok=True)
 
     images = {key: image(key) for key in COLOURS}
     stop = threading.Event()
 
     def show_wakes(icon, item) -> None:
-        # Imported here: the browser imports this module for its quit request.
+        # Imported here, so that the icon starts without loading the browser.
         from . import browse
 
         # One browser: a click with one open brings it forward rather than
@@ -252,24 +228,14 @@ def main() -> int:
         # Runs in pystray's own thread, which is where it allows the icon to be
         # changed from on every backend.
         icon.visible = True
-        tick = 0
         while not stop.is_set():
-            # Every second for a request to quit, so that the browser's `t`
-            # is answered at once; the picture only every REFRESH_SECONDS.
-            if quit_request(settings).exists():
-                quit_request(settings).unlink(missing_ok=True)
-                stop.set()
-                icon.stop()
-                return
-            if tick % REFRESH_SECONDS == 0:
-                try:
-                    key, text = describe(settings)
-                    icon.icon = images[key]
-                    icon.title = text
-                except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
-                    pass
-            tick += 1
-            stop.wait(1)
+            try:
+                key, text = describe(settings)
+                icon.icon = images[key]
+                icon.title = text
+            except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
+                pass
+            stop.wait(REFRESH_SECONDS)
 
     icon.run(setup=refresh)
     return 0

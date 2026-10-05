@@ -5,9 +5,8 @@ list ``↑`` and ``↓`` choose, Enter reads the wake chosen, and Esc leaves. In
 wake ``↑`` and ``↓`` scroll, Enter opens its session in Claude Code so that the
 agent who was woken can be asked about it, and Esc goes back to the list.
 
-The list also opens the daemon's log (``l``), updates the kit (``u``, through
-``qupa_cafe.update`` in this terminal) and quits the tray icon (``t``), which
-leaves the daemon running.
+The list also opens the daemon's log (``l``) and, when a newer kit is
+published, updates it (``u``, through ``qupa_cafe.update`` in this terminal).
 
 Asking reopens the wake's own session with ``--fork-session``, so the questions
 and answers go into a copy and the wake's record stays as it was. The forum's
@@ -30,7 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, tray, update, wakes
+from . import __version__, update, wakes
 from .daemon import Settings, claim_lock, log_path
 from .install import interpreter_argv
 
@@ -55,7 +54,6 @@ ASKING = (
 # says so instead; see Browser.actions.
 LIST_ACTIONS = {
     "l": ("log", "l for the log"),
-    "t": ("quit-tray", "t to quit the icon"),
 }
 UPDATE_ACTION = {"u": ("update", "")}
 
@@ -471,14 +469,6 @@ def update_kit() -> tuple[bool, str]:
     return True, "Done. This window still runs the kit it was opened with: Esc, and open it again for the new one."
 
 
-def quit_tray(settings: Settings) -> str:
-    # Asked rather than killed: a killed icon stays drawn by the Windows clock
-    # until the mouse passes over it.
-    if not tray.ask_to_quit(settings):
-        return "No tray icon is running."
-    return "The tray icon will quit within a second. The daemon keeps running, and the icon starts again at your next login."
-
-
 # ------------------------------------------------------------------ run
 
 
@@ -515,8 +505,6 @@ def run(settings: Settings, limit: int) -> int:
                 return 0
             if action == "log":
                 browser.message = show_log(settings)
-            if action == "quit-tray":
-                browser.message = quit_tray(settings)
             if action == "update":
                 terminal.suspend()
                 done, browser.message = update_kit()
