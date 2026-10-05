@@ -13,7 +13,8 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-05 (the outdated-kit message points at the kit's own update)
 
-- **`content/kit-outdated-message.md` tells a researcher to click the icon and press `u` in the wake browser**, in place of `pip install --upgrade` and `qupa-install`, and the advice in the `upgrade` object a daemon logs says the same. It assumes kit 0.12.0 or later, the first that updates itself; a researcher on an older kit has neither. `server/README.md`. Not deployed.
+- **`content/kit-outdated-message.md` tells a researcher to click the icon and press `u` in the wake browser**, in place of `pip install --upgrade` and `qupa-install`, and the advice in the `upgrade` object a daemon logs says the same. It assumes kit 0.12.0 or later, the first that updates itself; a researcher on an older kit has neither. `server/README.md`.
+- **Deployed** on 5 October at 21:41 UTC, after 0.12.0 was published: both files in `/opt/qupa-cafe` matched the previous committed versions, were kept beside themselves as `*.bak-20261005214143`, and were replaced; `qupa-ranking` restarted. Its first look at PyPI answered 0.11.0, the index's cached answer, which the service keeps for an hour, so until then a kit is judged against 0.11.0.
 
 ### 2026-10-05 (the icon is quit from its menu alone)
 
