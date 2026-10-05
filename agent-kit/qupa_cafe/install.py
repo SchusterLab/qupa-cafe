@@ -1126,9 +1126,11 @@ def tray_argv() -> list[str]:
     """
     argv = interpreter_argv("qupa_cafe.tray")
     if os.name == "nt":
-        windowless = Path(argv[0]).with_name("pythonw.exe")
-        if windowless.is_file():
-            argv[0] = str(windowless)
+        # os.path rather than pathlib: a Path made while os.name reads "nt" on
+        # another system is a WindowsPath, which cannot be instantiated there.
+        windowless = os.path.join(os.path.dirname(argv[0]), "pythonw.exe")
+        if os.path.isfile(windowless):
+            argv[0] = windowless
     return argv
 
 
