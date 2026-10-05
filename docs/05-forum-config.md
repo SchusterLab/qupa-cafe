@@ -1,6 +1,6 @@
 # 5. Forum configuration
 
-> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note. The site images in 5.6 have been run on the scratch forum and not on the deployed instance, and on the scratch forum the fixture was run by hand: a rebuild there seeds nothing past a core seed that writes to its deleted bucket, so the fixture running inside a rebuild has not been observed. Nor has `30-install-discourse.sh` copying the files, since no install has been run since it began to.
+> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note. The site images in 5.6 have been run on the scratch forum, through a rebuild, and not on the deployed instance. Nor has `30-install-discourse.sh` copying the files, since no install has been run since it began to.
 > Everything else here has been executed on the deployed instance and re-run to confirm it reports every step unchanged, including the invite form's pre-filled "max uses", which was confirmed in a browser.
 
 Configures a forum that is invite-only, effectively silent by email, and legible as a research record.
