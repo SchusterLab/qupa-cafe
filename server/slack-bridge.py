@@ -418,7 +418,7 @@ def slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def to_slack(raw: str, link: str) -> str:
+def to_slack(raw: str, link: str, site: str = "the forum") -> str:
     """Forum markdown, rendered well enough to read in a thread.
 
     Not a converter. Links and bold change syntax, an image becomes its alt
@@ -435,7 +435,7 @@ def to_slack(raw: str, link: str) -> str:
     text = text.strip()
     if len(text) > MAX_SLACK_TEXT:
         cut = text.rfind("\n", 0, MAX_SLACK_TEXT)
-        text = text[: cut if cut > MAX_SLACK_TEXT // 2 else MAX_SLACK_TEXT].rstrip() + f"\n… <{link}|continued on the forum>"
+        text = text[: cut if cut > MAX_SLACK_TEXT // 2 else MAX_SLACK_TEXT].rstrip() + f"\n… <{link}|Read the rest on {site}>"
     return text
 
 
@@ -521,9 +521,28 @@ class Bridge:
         self._forum_users: dict[str, Cached] = {}
         self._conversations: dict[str, Cached] = {}
         self._last_category_sync = 0.0
+        self._site_name: str | None = None
         self.bot_user_id: str | None = None
 
     # -------------------------------------------------------- lookups
+
+    def site_name(self) -> str:
+        """What the forum calls itself, for the links that lead to it.
+
+        A link that says only "on the forum" leaves a Slack reader guessing
+        which forum, and whether it is a page they can open at all. The name is
+        the forum's own title rather than one written here, so the links say
+        whatever the forum says at the top of its pages. Read once; "the forum"
+        when the forum cannot be asked, and asked again on the next message.
+        """
+        if self._site_name is None:
+            try:
+                title = str(self.forum.request("GET", "/site/basic-info.json").get("title") or "").strip()
+            except (Transient, Refused) as exc:
+                LOG.warning("cannot read the forum's title, so links say 'the forum': %s", exc)
+                return "the forum"
+            self._site_name = slack_escape(title) if title else "the forum"
+        return self._site_name
 
     def members(self, group: str) -> set[str]:
         cached = self._groups.get(group)
@@ -731,9 +750,11 @@ class Bridge:
             return existing[1]
         url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
         opener = topic.get("opener")
-        text = f"*<{url}|{slack_escape(topic['title'])}>*"
+        # Named as a topic, so that the bold link reads as the topic's title and
+        # the place it leads, rather than as a headline with no source.
+        text = f"Topic on {self.site_name()}: *<{url}|{slack_escape(topic['title'])}>*"
         if opener:
-            text += f"\nopened by {slack_escape(opener)}. Reply in this thread to post to the topic."
+            text += f"\nOpened by {slack_escape(opener)}. Reply in this thread to post to the topic."
         result = self.slack.chat_postMessage(channel=channel_id, text=text, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(topic["id"], channel_id, result["ts"])
         return result["ts"]
@@ -789,14 +810,16 @@ class Bridge:
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
             post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
-        body = to_slack(post.get("raw") or "", url)
+        site = self.site_name()
+        body = to_slack(post.get("raw") or "", url, site)
         lead = ""
         if mention and self.is_agent(author):
             researcher = self.researcher_for(author)
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
-                lead = f"<@{slack_id}>, your agent posted <{url}|in this topic>:\n"
-        text = f"{lead}{body}" if lead else f"{body}\n<{url}|on the forum>"
+                lead = f"<@{slack_id}>, your agent posted:\n"
+        # Every post ends with the same link, which says what it opens.
+        text = f"{lead}{body}\n<{url}|View this post on {site}>"
         try:
             self.slack.chat_postMessage(
                 channel=channel_id,
@@ -904,8 +927,8 @@ class Bridge:
             self._conversations[channel_id] = Cached(set(slack_ids))
         url = f"{self.forum.base_url}/t/{meta['slug']}/{meta['id']}"
         text = (
-            f"*<{url}|{slack_escape(meta['title'])}>*\n"
-            f"A private message on the forum, among {', '.join(slack_escape(p) for p in people)} and their agents. "
+            f"Private message on {self.site_name()}: *<{url}|{slack_escape(meta['title'])}>*\n"
+            f"Among {', '.join(slack_escape(p) for p in people)} and their agents. "
             "Reply in this thread to answer it there."
         )
         result = self.slack.chat_postMessage(channel=channel_id, text=text, unfurl_links=False, unfurl_media=False)
