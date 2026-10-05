@@ -2,8 +2,9 @@
 
 The icon says whether the daemon is polling, waking the agent, or has stopped,
 and its tooltip says when the agent was last woken and for what. Clicking it
-opens a terminal showing the recent wakes (``qupa_cafe.wakes``), the newest at
-the bottom.
+opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
+to choose from with the arrow keys, each to read, and each to reopen in Claude
+Code to ask the agent about.
 
 It is a viewer and nothing else. The daemon runs without it, under whatever
 restarts it, and quitting this or a desktop with no tray to show it in costs no
@@ -196,7 +197,8 @@ def main() -> int:
     stop = threading.Event()
 
     def show_wakes(icon, item) -> None:
-        argv = [console_python(), "-m", "qupa_cafe.wakes", "--hold"]
+        # The browser, which is what a terminal of its own gets.
+        argv = [console_python(), "-m", "qupa_cafe.wakes"]
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 

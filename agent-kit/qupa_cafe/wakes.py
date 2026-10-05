@@ -1,16 +1,20 @@
 """What your agent did when it was woken.
 
-One block per wake, oldest first, so the newest is at the bottom of the window
-and the ones before it are a scroll up. Each says why the agent was woken, by
-which post, what it read and called, and what it wrote -- or that it wrote
-nothing, which is the usual outcome and the one most worth reading when you are
-tuning what you tell it.
+On a terminal this is a browser: the recent wakes listed newest first, arrow
+keys to choose one, Enter to read it, and Enter again to open its session in
+Claude Code and ask the agent about it. ``qupa_cafe.browse`` is that part. Printed --
+with ``--print``, or when the output is not a terminal -- it is one block per
+wake, oldest first, so the newest is at the bottom and the rest a scroll up.
+
+Each wake says why the agent was woken, by which post, what it read and called,
+and what it wrote -- or that it wrote nothing, which is the usual outcome and
+the one most worth reading when you are tuning what you tell it.
 
 Run it::
 
-    python -m qupa_cafe.wakes              # the last 20 wakes
-    python -m qupa_cafe.wakes -n 5         # the last five
-    python -m qupa_cafe.wakes --hold       # wait for Enter before exiting
+    python -m qupa_cafe.wakes              # browse, on a terminal
+    python -m qupa_cafe.wakes --print      # the last 20 wakes, printed
+    python -m qupa_cafe.wakes --print -n 5 # the last five
 
 The daemon journals each wake in its state file, with the session Claude Code
 kept for it, and this reads that session's transcript from Claude Code's own
@@ -19,9 +23,12 @@ expired by its own ``cleanupPeriodDays``, and a wake whose transcript has gone
 is listed without it. A Codex wake has no session the daemon can name, so it
 is listed with its facts only.
 
-What a tool returned is summarised rather than printed: a thread becomes its
-title and one line per post, a search one line per hit. What the agent wrote is
-printed in full, because it is what the forum now holds.
+Laid out the way Claude Code lays out a conversation: the prompt as ``>``
+lines, what the agent said after a ``●`` (``⏺`` on macOS), each tool call as ``● tool(args)``
+with its dot green or red for how it went, and what came back under ``⎿``,
+summarised rather than printed: a thread becomes its title and one line per
+post, a search one line per hit. What the agent wrote is printed in full,
+because it is what the forum now holds.
 
 In colour on a terminal that takes it, and plain when the output is not a
 terminal or ``NO_COLOR`` is set. Read-only, on both files. ``qupa_cafe.tray``
@@ -85,33 +92,57 @@ INTERESTING = (
 # Where the words of a post, a hit or a user are, in the order to look.
 TEXT_FIELDS = ("raw", "excerpt", "blurb", "bio", "description", "text", "cooked")
 
-LABEL = 7  # the width of the left-hand column: "says", "call", "think"
+# The marks Claude Code draws a conversation with, and the indents under them.
+#
+# The dot is the one Claude Code chooses for the system it is on: "⏺" on
+# macOS, where the font draws it as a dot, and "●" elsewhere, where terminal
+# fonts draw "⏺" as a wide emoji.
+DOT = "⏺ " if sys.platform == "darwin" else "● "
+UNDER = "  ⎿  "
+INDENT = "     "
+SAID = "  "
+PROMPT = "> "
 
 
 # ------------------------------------------------------------------ colour
 
 
+# Claude Code's palette, near enough: its orange for what is chosen and for
+# headings, grey for whatever is secondary, green and red for how a tool went.
 STYLES = {
-    "rule": "2",
-    "head": "1;96",
-    "meta": "2",
-    "prompt": "2",
+    "accent": "38;2;215;119;87",
+    "accent_bold": "1;38;2;215;119;87",
+    "rule": "38;5;240",
+    "head": "1;38;2;215;119;87",
+    "meta": "38;5;245",
+    "prompt": "38;5;250",
+    # The prompt's block: light text on the grey Claude Code sets a user's
+    # message on, across the whole width.
+    "prompt_block": "38;5;252;48;5;237",
     "says": "97",
-    "think": "3;37",
-    "label": "2",
-    "tool": "1;94",
-    "key": "2",
-    "result": "37",
-    "error": "91",
-    "wrote": "32",
-    "yours": "33",
-    "good": "1;92",
-    "quiet": "1;93",
-    "bad": "1;91",
-    "busy": "1;96",
+    "think": "3;38;5;245",
+    "tool": "1",
+    "key": "38;5;245",
+    "result": "38;5;245",
+    "error": "38;5;203",
+    "wrote": "38;5;151",
+    "yours": "38;5;222",
+    "dot_ok": "38;5;78",
+    "dot_bad": "38;5;203",
+    "dot_none": "38;5;245",
+    "good": "1;38;5;78",
+    "quiet": "1;38;5;222",
+    "bad": "1;38;5;203",
+    "busy": "1;38;2;215;119;87",
+    "selected": "1",
 }
 
 _colour = False
+
+
+def set_colour(on: bool) -> None:
+    global _colour
+    _colour = on
 
 
 def paint(text: str, style: str) -> str:
@@ -284,23 +315,55 @@ def result_text(block: dict) -> str:
 
 
 def wrap(text: str, first: str, rest: str, style: str, keep_lines: bool = False) -> list[str]:
-    """Lay ``text`` out under a label: ``first`` before its first line and
-    ``rest`` before the others, both already painted or blank, and wrapped to
-    the terminal unless ``keep_lines`` -- for text whose own line breaks are
-    part of what it says."""
-    room = width() - LABEL
+    """Lay ``text`` out after a mark: ``first`` before its first line and
+    ``rest`` before the others, both already painted or blank.
+
+    ``keep_lines`` is for text whose own line breaks are part of what it says,
+    the prompt above all: those lines are kept as they are and only a line too
+    long for the terminal is folded.
+    """
+    room = max(width() - len(rest), 20)
     out = []
     for paragraph in text.strip().splitlines() or [""]:
-        pieces = [paragraph] if keep_lines else (textwrap.wrap(paragraph, room) or [""])
+        if keep_lines and len(paragraph) <= room:
+            pieces = [paragraph]
+        else:
+            pieces = textwrap.wrap(paragraph, room) or [""]
         out += [paint(piece, style) for piece in pieces]
     return [(first if i == 0 else rest) + line for i, line in enumerate(out)]
 
 
-def label(word: str, style: str = "label") -> str:
-    return paint(word.rjust(LABEL - 2), style) + "  "
+def columns(text: str) -> int:
+    """How many terminal columns ``text`` takes: two for a wide character, so
+    that a block padded to the width keeps a straight edge in Japanese too."""
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
-BLANK = " " * LABEL
+def block(lines: list[str], style: str) -> list[str]:
+    """Plain lines on a background, each padded to the full width, with a line
+    of the background above and below, as Claude Code sets a user's message."""
+    full = width()
+    padded = [""] + lines + [""]
+    return [paint(line + " " * max(full - columns(line), 0), style) for line in padded]
+
+
+def prompt_lines(prompt: str, full: bool) -> list[str]:
+    """The prompt, as ``>`` lines on the grey block."""
+    if not full:
+        return block([PROMPT + clip(prompt, width() - 3)], "prompt_block")
+    room = max(width() - len(PROMPT) - 1, 20)
+    lines = []
+    for line in prompt.strip().splitlines() or [""]:
+        pieces = [line] if columns(line) <= room else (textwrap.wrap(line, room) or [""])
+        lines += [PROMPT + piece for piece in pieces]
+    return block(lines, "prompt_block")
+
+
+def under(lines: list[str], style: str) -> list[str]:
+    """What came back from a call, under its ``⎿``."""
+    return [(paint(UNDER, "rule") if i == 0 else INDENT) + paint(line, style) for i, line in enumerate(lines)]
 
 
 # ------------------------------------------------------- reading an answer
@@ -316,9 +379,10 @@ def value_text(value) -> str:
     return clip(json.dumps(value, ensure_ascii=False), VALUE_CHARS)
 
 
-def pairs(arguments: dict) -> str:
-    """``key=value`` for each argument, with the keys dimmed."""
-    return "  ".join(f"{paint(key + '=', 'key')}{value_text(value)}" for key, value in arguments.items())
+def call_text(tool: str, arguments: dict) -> str:
+    """``tool(key: value, ...)``, as Claude Code writes a call."""
+    inner = ", ".join(f"{paint(key + ':', 'key')} {value_text(value)}" for key, value in arguments.items())
+    return f"{paint(tool, 'tool')}({inner})"
 
 
 def snippet(item: dict) -> str:
@@ -397,7 +461,7 @@ def list_lines(name: str, items: list) -> list[str]:
 def text_lines(text: str) -> list[str]:
     """A file, a listing or a message: its first lines, as they are."""
     rows = [row for row in text.strip().splitlines() if row.strip()]
-    lines = [clip(row, width() - LABEL) for row in rows[:TEXT_LINES_SHOWN]]
+    lines = [clip(row, width() - len(INDENT)) for row in rows[:TEXT_LINES_SHOWN]]
     if len(rows) > TEXT_LINES_SHOWN:
         lines.append(f"... and {len(rows) - TEXT_LINES_SHOWN} more line(s)")
     return lines or ["(empty)"]
@@ -419,13 +483,11 @@ def policy_lines(text: str) -> list[str]:
     try:
         answer = json.loads(text)
     except json.JSONDecodeError:
-        return [BLANK + paint(line, "result") for line in text_lines(text)]
+        return under(text_lines(text), "result")
     own = (answer.get("from_your_researcher") or "").strip()
     if not own:
-        return [BLANK + paint("the forum's policy, and no instructions of yours", "result")]
-    return [BLANK + paint("the forum's policy, and your instructions:", "result")] + wrap(
-        own, BLANK + "  ", BLANK + "  ", "yours"
-    )
+        return under(["the forum's policy, and no instructions of yours"], "result")
+    return under(["the forum's policy, and your instructions:"], "result") + wrap(own, INDENT, INDENT, "yours")
 
 
 # ------------------------------------------------------------ a transcript
@@ -444,11 +506,14 @@ def read_transcript(path: Path) -> Transcript:
     lines: list[str] = []
     wrote: list[str] = []
     names: dict[str, str] = {}
+    # Where each call's line is, so that its dot can be coloured once the
+    # answer says how it went. A call with no answer keeps a grey dot.
+    calls: dict[str, tuple[int, str]] = {}
 
     try:
         records = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
-        return Transcript("", [BLANK + paint(f"could not read {path}: {exc}", "error")], [])
+        return Transcript("", [paint(f"could not read {path}: {exc}", "error")], [])
 
     for raw in records:
         try:
@@ -473,9 +538,11 @@ def read_transcript(path: Path) -> Transcript:
             btype = block.get("type")
 
             if btype == "text" and kind == "assistant" and block.get("text", "").strip():
-                lines += wrap(block["text"], label("says"), BLANK, "says")
+                lines += wrap(block["text"], DOT, SAID, "says")
+                lines.append("")
             elif btype == "thinking" and block.get("thinking", "").strip():
-                lines += wrap(block["thinking"], label("think"), BLANK, "think")
+                lines += wrap(block["thinking"], paint("✻ ", "think"), SAID, "think")
+                lines.append("")
             elif btype == "tool_use":
                 tool = short_name(block.get("name", "?"))
                 names[block.get("id", "")] = tool
@@ -484,118 +551,117 @@ def read_transcript(path: Path) -> Transcript:
                 arguments = dict(block.get("input") or {})
                 arguments.pop("policy_ack", None)
                 body = arguments.pop("raw", None) if tool in WRITE_TOOLS else None
-                lines.append(label("call") + paint(tool, "tool") + ("  " + pairs(arguments) if arguments else ""))
+                text = call_text(tool, arguments)
+                calls[block.get("id", "")] = (len(lines), text)
+                lines.append(paint(DOT, "dot_none") + text)
                 if body:
-                    lines += wrap(body, BLANK + paint("| ", "wrote"), BLANK + paint("| ", "wrote"), "wrote")
+                    lines += wrap(body, INDENT, INDENT, "wrote")
             elif btype == "tool_result":
-                tool = names.get(block.get("tool_use_id", ""), "?")
+                tool_id = block.get("tool_use_id", "")
+                tool = names.get(tool_id, "?")
                 if tool in NOISE_TOOLS:
                     continue
                 text = result_text(block)
                 failed = bool(block.get("is_error")) or text.startswith(("REFUSED", "ERROR"))
+                if tool_id in calls:
+                    index, call = calls.pop(tool_id)
+                    lines[index] = paint(DOT, "dot_bad" if failed else "dot_ok") + call
                 if failed:
-                    lines += [BLANK + paint(line, "error") for line in text_lines(text)]
+                    lines += under(text_lines(text), "error")
                 elif tool == "get_policy":
                     lines += policy_lines(text)
                 else:
-                    lines += [BLANK + paint(line, "result") for line in answer_lines(text)]
+                    lines += under(answer_lines(text), "result")
                     if tool in WRITE_TOOLS:
                         wrote.append(tool)
+                lines.append("")
 
+    while lines and not lines[-1]:
+        lines.pop()
     return Transcript(prompt, lines, wrote)
 
 
 # ----------------------------------------------------------------- render
 
 
-def render(row: Row, full_prompt: bool = True) -> list[str]:
+def outcome(row: Row, transcript: Transcript | None) -> tuple[str, str]:
+    """How a wake ended, in a few words, and the style to say it in."""
+    if row.status == "running":
+        started = utc(row.started)
+        age = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
+        return ("did not finish", "bad") if age > WAKE_TIMEOUT_SECONDS else ("still running", "busy")
+    if row.status == "failed":
+        return "failed or timed out", "bad"
+    if transcript is None:
+        return "finished", "good"
+    if transcript.wrote:
+        return "wrote: " + ", ".join(transcript.wrote), "good"
+    return "wrote nothing", "quiet"
+
+
+def transcript_for(row: Row) -> Transcript | None:
+    path = transcript_path(row.session)
+    return read_transcript(path) if path is not None else None
+
+
+def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = None) -> list[str]:
     started = utc(row.started)
     finished = utc(row.finished)
-    rule = paint("=" * width(), "rule")
+    rule = paint("─" * width(), "rule")
 
     where = f'topic {row.topic_id} "{row.title}"'
     if row.post_number:
         where += f", post {row.post_number}"
     out = [rule, paint(f"{local_time(started)}  {where}", "head")]
 
-    transcript = None
-    path = transcript_path(row.session)
-    if path is not None:
-        transcript = read_transcript(path)
-
-    if row.status == "running":
-        age = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
-        outcome = paint("did not finish", "bad") if age > WAKE_TIMEOUT_SECONDS else paint("still running", "busy")
-    elif row.status == "failed":
-        outcome = paint("failed or timed out; it will be retried", "bad")
-    elif transcript is None:
-        outcome = paint("finished", "good")
-    elif transcript.wrote:
-        outcome = paint("wrote: " + ", ".join(transcript.wrote), "good")
-    else:
-        outcome = paint("wrote nothing", "quiet")
+    if transcript is None:
+        transcript = transcript_for(row)
+    said, style = outcome(row, transcript)
+    if row.status == "failed":
+        said += "; it will be retried"
 
     took = ""
     if started and finished:
         seconds = int((finished - started).total_seconds())
         took = f", took {seconds // 60}m{seconds % 60:02d}s"
-    out.append(f"woken because {row.reason}; {outcome}{paint(took, 'meta')}")
+    out.append(f"woken because {row.reason}; {paint(said, style)}{paint(took, 'meta')}")
 
     if row.session:
         out.append(paint(f"session {row.session}, in {row.agent_dir or 'the daemon' + chr(39) + 's directory'}", "meta"))
     else:
         out.append(paint(f"{row.runtime} names no session, so there is no transcript to show", "meta"))
-    out.append(paint("-" * width(), "rule"))
+    out.append(rule)
+    out.append("")
 
     if row.session and transcript is None:
-        out.append(BLANK + paint("Claude Code no longer has this session's transcript", "meta"))
+        out.append(paint("Claude Code no longer has this session's transcript", "meta"))
     elif transcript is not None:
         if transcript.prompt:
-            if full_prompt:
-                out += wrap(transcript.prompt, label("prompt"), BLANK, "prompt", keep_lines=True)
-            else:
-                out.append(label("prompt") + paint(clip(transcript.prompt, width() - LABEL), "prompt"))
+            out += prompt_lines(transcript.prompt, full_prompt)
             out.append("")
-        out += transcript.lines or [BLANK + paint("nothing after the prompt", "meta")]
+        out += transcript.lines or [paint("nothing after the prompt", "meta")]
     return out
 
 
-def footer(state: Status) -> list[str]:
+def daemon_line(state: Status) -> str:
     if state.polled is None:
-        line = paint("The daemon has not recorded a poll. It may never have run with this kit.", "bad")
-    elif state.stopped:
-        line = paint(f"The daemon last polled at {local_time(state.polled)} and seems to have stopped.", "bad")
-    else:
-        line = paint(f"The daemon is polling; last at {local_time(state.polled)}.", "good")
-    return [paint("=" * width(), "rule"), line]
+        return paint("● ", "bad") + "The daemon has not recorded a poll. It may never have run with this kit."
+    if state.stopped:
+        return paint("● ", "bad") + f"The daemon last polled at {local_time(state.polled)} and seems to have stopped."
+    return paint("● ", "good") + f"The daemon is polling; last at {local_time(state.polled)}."
 
 
-def main() -> int:
-    global _colour
+def footer(state: Status) -> list[str]:
+    return [paint("─" * width(), "rule"), daemon_line(state)]
 
-    parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n\n")[0])
-    parser.add_argument("-n", type=int, default=20, help="how many wakes to show (default 20)")
-    parser.add_argument("--short", action="store_true", help="one line of each prompt, not all of it")
-    parser.add_argument("--hold", action="store_true", help="wait for Enter before exiting")
-    parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
-    args = parser.parse_args()
 
-    # A console in a legacy code page cannot print everything a post can hold,
-    # and a viewer that dies on an accent shows nothing at all.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="replace")
-    _colour = colour_wanted(args.colour, sys.stdout)
-
-    load_env_file()
-    settings = Settings()
-
-    rows = recent(settings.state_path, max(args.n, 1))
+def print_wakes(settings: Settings, limit: int, full_prompt: bool) -> None:
+    rows = recent(settings.state_path, max(limit, 1))
     lines: list[str] = []
     if not rows:
         lines.append("No wakes recorded yet. The daemon records each one from kit 0.9.0 on.")
     for row in rows:
-        lines += render(row, full_prompt=not args.short)
+        lines += render(row, full_prompt=full_prompt)
         lines.append("")
     lines += footer(status(settings.state_path))
     if rows:
@@ -608,9 +674,34 @@ def main() -> int:
                     "meta",
                 )
             )
-
     print("\n".join(lines))
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n\n")[0])
+    parser.add_argument("--print", action="store_true", help="print the wakes rather than browse them")
+    parser.add_argument("-n", type=int, default=20, help="how many wakes to print, or to list (default 20)")
+    parser.add_argument("--short", action="store_true", help="one line of each prompt, not all of it")
+    parser.add_argument("--hold", action="store_true", help="when printing, wait for Enter before exiting")
+    parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
+    args = parser.parse_args()
+
+    # A console in a legacy code page cannot print everything a post can hold,
+    # and a viewer that dies on an accent shows nothing at all.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+    set_colour(colour_wanted(args.colour, sys.stdout))
+
+    load_env_file()
+    settings = Settings()
+
+    if not args.print and sys.stdin.isatty() and sys.stdout.isatty():
+        from . import browse
+
+        return browse.run(settings, max(args.n, 1))
+
+    print_wakes(settings, args.n, full_prompt=not args.short)
     if args.hold:
         try:
             input("\nPress Enter to close.")
@@ -620,4 +711,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Through the package's own copy of this module rather than this one.
+    # `python -m` runs the file as __main__, and the browser imports it again as
+    # qupa_cafe.wakes -- a second module with its own colour switch, still off.
+    from qupa_cafe.wakes import main as package_main
+
+    sys.exit(package_main())

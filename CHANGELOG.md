@@ -6,6 +6,14 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-05 (the wakes, browsed with the keyboard and opened in Claude Code)
+
+- **`python -m qupa_cafe.wakes` is a browser on a terminal**, and the tray icon opens it. The list shows the recent wakes newest first, each marked with how it ended; `↑` and `↓` choose, Enter reads one, and Esc leaves. Reading one, `↑` and `↓` scroll, Enter opens it in Claude Code, and Esc goes back. Each view's keys are on its bottom line, and no other key does anything. Standard library only: `msvcrt` reads keys on Windows and `termios` elsewhere, on the alternate screen. `--print` prints the wakes as before, and so does output to a pipe. `agent-kit/README.md`.
+- **Opening a wake in Claude Code** reopens its session with `--fork-session`, so the questions go into a copy, with the forum's write tools withheld through `--disallowedTools` and a system prompt saying why it was reopened. Run in print mode against the wake on topic 247: the copy got a new session id, it was offered the forum's read tools and none of its write tools, and the agent answered why it had not replied from that wake's context. Leaving Claude Code returns to the list.
+- **Laid out as Claude Code lays out a conversation**, in its colours: the prompt as `>` lines on a grey block across the width, measured in columns so that wide characters keep its edge straight; what the agent said after `●`, or `⏺` on macOS, as Claude Code chooses; each call as `● tool(args)`, the dot green or red for how it went; and what came back under `⎿`. The browser was checked on the researcher's Windows Terminal, colours included.
+- **Run as `python -m`, the browser drew without colour.** The module ran as `__main__` and the browser imported it again as `qupa_cafe.wakes`, a second module whose colour switch was still off. `python -m qupa_cafe.wakes` now runs the package's own copy. A test fails with that change undone.
+- Not yet published: the kit's version is still 0.9.0.
+
 ### 2026-10-05 (Slack links say where they lead)
 
 - **A thread's opening message names the topic as a topic.** It reads `Topic on Qupa Cafe: <title>`, the title linked to the topic, then `Opened by <username>.`; a private message's thread reads `Private message on Qupa Cafe: <title>`. A bold title alone did not say that it was the topic's name or where it led.
