@@ -12,6 +12,12 @@ template. Three properties follow from that, and they are the reason for it:
 
 That last point is a prompt-injection defence; see docs/10-security.md.
 
+A category can add rules of its own, as a reply in the policy topic that opens
+with a heading reading "Agent policy: <category>", is a wiki post, and was
+written by staff. Those come back with the policy and are covered by the same
+hash, so an edit to one is acknowledged like an edit to the policy. Every other
+reply is discussion of the policy and is not part of it.
+
 Standard library only. The whole agent kit is, deliberately -- setup friction is
 what decides whether five researchers actually participate.
 """
@@ -28,6 +34,24 @@ import urllib.request
 from dataclasses import dataclass
 
 
+# The first line of a category's policy: a heading of any level reading
+# "Agent policy: <category>". The category is named as the forum names it.
+CATEGORY_POLICY_HEADING = re.compile(r"\A#{1,6}[ \t]+Agent policy:[ \t]*(?P<name>.+?)[ \t]*#*[ \t]*$", re.I | re.M)
+
+# How many posts to ask for at once when the policy topic is longer than the
+# first page the topic endpoint returns.
+POSTS_PER_REQUEST = 20
+
+
+@dataclass(frozen=True)
+class CategoryPolicy:
+    """The rules one category adds, from a reply in the policy topic."""
+
+    name: str
+    post_number: int
+    text: str
+
+
 @dataclass(frozen=True)
 class Policy:
     """The policy text, with the hash that writes must carry."""
@@ -36,6 +60,7 @@ class Policy:
     hash: str
     topic_id: int
     fetched_at: float
+    categories: tuple[CategoryPolicy, ...] = ()
 
     @property
     def age_seconds(self) -> float:
@@ -52,6 +77,35 @@ def policy_hash(text: str) -> str:
     """
     normalised = re.sub(r"\s+", " ", text).strip()
     return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
+
+
+def hashed_text(text: str, categories: tuple[CategoryPolicy, ...] = ()) -> str:
+    """What the hash covers: the policy, then each category's rules in topic order.
+
+    With no category rules this is the policy text alone, so a forum that has
+    none hashes exactly as the policy topic does by itself.
+    """
+    parts = [text]
+    for category in sorted(categories, key=lambda c: c.post_number):
+        parts.append(f"## Agent policy: {category.name}\n\n{category.text}")
+    return "\n\n".join(parts)
+
+
+def category_policy(post: dict) -> CategoryPolicy | None:
+    """The category policy a reply in the policy topic carries, if it is one.
+
+    It has to be a wiki post written by staff, as the policy topic's own first
+    post is, so that who may write a category's rules is who may write the
+    policy. Without that, any account able to reply in the topic could add a
+    rule every agent follows.
+    """
+    if (post.get("post_number") or 0) < 2 or not post.get("wiki") or not post.get("staff"):
+        return None
+    raw = (post.get("raw") or "").strip()
+    found = CATEGORY_POLICY_HEADING.match(raw)
+    if not found:
+        return None
+    return CategoryPolicy(found.group("name"), int(post["post_number"]), raw[found.end():].strip())
 
 
 class PolicyError(RuntimeError):
@@ -129,7 +183,8 @@ class PolicyClient:
             raise PolicyError(f"Topic {self.topic_id} has no posts. Is the topic id right?")
 
         # The first post is the policy. Replies to a policy topic are discussion
-        # about the policy, and are deliberately not part of it.
+        # about the policy, and are deliberately not part of it, except for the
+        # category policies `category_policy` recognises.
         text = posts[0].get("raw") or ""
         if not text.strip():
             if posts[0].get("cooked"):
@@ -139,14 +194,36 @@ class PolicyClient:
                 )
             raise PolicyError(f"Topic {self.topic_id} first post is empty.")
 
-        found = policy_hash(text)
+        categories = tuple(
+            found for post in self._all_posts(data, posts) if (found := category_policy(post))
+        )
         self._cached = Policy(
             text=text,
-            hash=found,
+            hash=policy_hash(hashed_text(text, categories)),
             topic_id=self.topic_id,
             fetched_at=time.time(),
+            categories=categories,
         )
         return self._cached
+
+    def _all_posts(self, data: dict, posts: list[dict]) -> list[dict]:
+        """Every post in the policy topic, past the first page as well.
+
+        The topic endpoint returns the first page of posts and the ids of all
+        of them, so a short topic costs no further request. A failure fails the
+        fetch, as a failure to read the policy does: a write checked against
+        part of the rules is a write against rules the agent was not shown.
+        """
+        seen = {post.get("id") for post in posts}
+        missing = [i for i in data.get("post_stream", {}).get("stream") or [] if i not in seen]
+        posts = list(posts)
+        for start in range(0, len(missing), POSTS_PER_REQUEST):
+            query = urllib.parse.urlencode(
+                [("include_raw", "true")] + [("post_ids[]", i) for i in missing[start:start + POSTS_PER_REQUEST]]
+            )
+            page = self._get(f"/t/{self.topic_id}/posts.json?{query}")
+            posts.extend(page.get("post_stream", {}).get("posts") or [])
+        return posts
 
     # ------------------------------------------------------------- enforce
 
@@ -168,8 +245,8 @@ class PolicyClient:
         if policy_ack != current.hash:
             raise PolicyError(
                 f"Stale policy_ack: you sent {policy_ack!r} but the policy hashes to "
-                f"{current.hash!r}. Either the policy topic was edited since you read "
-                "it, or that hash did not come from get_policy. Call get_policy, read "
+                f"{current.hash!r}. Either the policy or a category's agent policy "
+                "was edited since you read it, or that hash did not come from get_policy. Call get_policy, read "
                 "the text it returns, and retry with the hash from that call."
             )
 

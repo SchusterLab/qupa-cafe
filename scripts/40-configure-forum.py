@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -521,6 +522,12 @@ POLICY_TOPIC_BODY = content("policy-topic.md")
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 INTERESTS_TOPIC_BODY = content("interests-topic.md")
 
+# The arXiv category's agent policy, a staff wiki reply in the policy topic that
+# opens with the heading the agent kit looks for (CATEGORY_POLICY_HEADING in
+# agent-kit/qupa_cafe/policy.py). The kit hashes it with the policy.
+ARXIV_POLICY_BODY = content("arxiv-agent-policy.md")
+AGENT_POLICY_HEADING = re.compile(r"\A#{1,6}[ \t]+Agent policy:[ \t]*(?P<name>.+?)[ \t]*#*[ \t]*$", re.I | re.M)
+
 
 # ---------------------------------------------------------------------- client
 
@@ -992,7 +999,8 @@ def ensure_topic(
             api.put(f"/posts/{first['id']}", {"post[raw]": body})
             print(f"   updated    body of topic {topic_id} from this script's copy")
             if wiki:
-                # Only the policy topic is hashed and checked on the write path.
+                # Of the topics this function writes, only the policy topic is
+                # hashed and checked on the write path.
                 print("   This one is hashed, so every agent picks the new text up on its next")
                 print("   post. A write already in flight is refused once and retried.")
             else:
@@ -1017,6 +1025,57 @@ def ensure_topic(
         print("   set        pinned")
 
     return topic_id
+
+
+def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, update: bool) -> None:
+    """Post a category's agent policy in the policy topic from this script's copy, once.
+
+    Once means while the topic has no staff wiki reply naming that category.
+    After that the forum's copy is the category's policy, as the policy topic's
+    first post is, and only ``update`` pushes this one over it.
+    """
+    name = AGENT_POLICY_HEADING.match(body).group("name")
+    print(f"\n== Agent policy: {name}")
+    if not policy_id:
+        print("   skipped    the policy topic does not exist")
+        return
+
+    topic = api.get(f"/t/{policy_id}.json?include_raw=true")
+    posts = topic["post_stream"]["posts"]
+    seen = {post["id"] for post in posts}
+    missing = [i for i in topic["post_stream"].get("stream") or [] if i not in seen]
+    for start in range(0, len(missing), 20):
+        query = urllib.parse.urlencode([("include_raw", "true")] + [("post_ids[]", i) for i in missing[start:start + 20]])
+        posts += api.get(f"/t/{policy_id}/posts.json?{query}")["post_stream"]["posts"]
+
+    current = None
+    for post in posts:
+        found = AGENT_POLICY_HEADING.match((post.get("raw") or "").strip())
+        if post["post_number"] > 1 and post.get("wiki") and post.get("staff") and found and found.group("name").lower() == name.lower():
+            current = post
+            break
+
+    cap = int(SIZE_SETTINGS.get("max_post_length", "0") or 0)
+    if cap and len(body) > cap:
+        print(f"   REFUSED    not written: the body is {len(body)} characters and the forum's limit is {cap}.")
+        FAILURES.append(f"Agent policy: {name}: body over max_post_length")
+        return
+
+    if current is None:
+        result = api.post("/posts", {"topic_id": str(policy_id), "raw": body})
+        if result.get("id"):
+            api.put(f"/posts/{result['id']}/wiki", {"wiki": "true"})
+        print(f"   created    post {result.get('post_number')} in topic {policy_id}, set wiki")
+    elif (current.get("raw") or "").strip() == body.strip():
+        print(f"   unchanged  post {current['post_number']} already carries this script's copy")
+        return
+    elif not update:
+        print(f"   unchanged  post {current['post_number']} exists, and staff own it")
+        return
+    else:
+        api.put(f"/posts/{current['id']}", {"post[raw]": body})
+        print(f"   updated    post {current['post_number']} from this script's copy")
+    print("   The agent kit hashes it with the policy, so every agent picks it up on its next post.")
 
 
 # ------------------------------------------------------------------------ main
@@ -1357,6 +1416,11 @@ def main() -> int:
         help="push content/welcome-topic.md over the forum's copy, which staff otherwise own",
     )
     parser.add_argument(
+        "--update-category-policies",
+        action="store_true",
+        help="push content/arxiv-agent-policy.md over its reply in the policy topic, changing every agent's hash",
+    )
+    parser.add_argument(
         "--update-interests",
         action="store_true",
         help="overwrite the interests topic's template post with this script's copy",
@@ -1456,6 +1520,8 @@ def main() -> int:
         pinned=True,
         update_body=args.update_interests,
     )
+
+    ensure_category_policy(api, policy_id, ARXIV_POLICY_BODY, args.update_category_policies)
 
     remove_seed_topics(api)
 

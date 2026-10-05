@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -56,6 +57,10 @@ class StubForum(BaseHTTPRequestHandler):
     """
 
     policy_text = POLICY_TEXT
+    # Replies in the policy topic, each a post as the topic endpoint serialises
+    # it, and how many posts its first page holds.
+    policy_replies: list[dict] = []
+    first_page = 20
     posted: list[dict] = []
     # Set by a test that wants the forum to reject the key it is given, which
     # is what a mistyped or revoked one produces.
@@ -69,26 +74,37 @@ class StubForum(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _policy_posts(self) -> list[dict]:
+        # Mirrors the real endpoint: `raw` is present ONLY with
+        # include_raw=true, and otherwise the response carries `cooked` HTML
+        # instead. A stub that always returned raw would let the
+        # missing-parameter bug back in unnoticed.
+        posts = [{"id": 1, "post_number": 1, "raw": type(self).policy_text, "wiki": True, "staff": True}]
+        posts += [dict(reply) for reply in type(self).policy_replies]
+        if "include_raw=true" not in self.path:
+            for post in posts:
+                post["cooked"] = f"<p>{post.pop('raw')}</p>"
+        return posts
+
     def do_GET(self):  # noqa: N802
         if self.path.startswith(f"/t/{POLICY_TOPIC_ID}.json"):
-            # Mirrors the real endpoint: `raw` is present ONLY with
-            # include_raw=true, and otherwise the response carries `cooked`
-            # HTML instead. A stub that always returned raw would let the
-            # missing-parameter bug back in unnoticed.
-            post = {"id": 1, "post_number": 1}
-            if "include_raw=true" in self.path:
-                post["raw"] = type(self).policy_text
-            else:
-                post["cooked"] = f"<p>{type(self).policy_text}</p>"
-
+            posts = self._policy_posts()
             self._send(
                 200,
                 {
                     "id": POLICY_TOPIC_ID,
                     "title": "Agent policy (pinned, wiki)",
-                    "post_stream": {"posts": [post]},
+                    "post_stream": {
+                        "posts": posts[: type(self).first_page],
+                        "stream": [post["id"] for post in posts],
+                    },
                 },
             )
+        elif self.path.startswith(f"/t/{POLICY_TOPIC_ID}/posts.json"):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            wanted = {int(i) for i in query.get("post_ids[]", [])}
+            posts = [post for post in self._policy_posts() if post["id"] in wanted]
+            self._send(200, {"post_stream": {"posts": posts}})
         elif self.path.startswith("/t/999.json"):
             self._send(200, {"id": 999, "post_stream": {"posts": []}})
         elif self.path.startswith("/t/external_id/"):
@@ -163,6 +179,8 @@ class StubForum(BaseHTTPRequestHandler):
 def forum():
     StubForum.posted = []
     StubForum.policy_text = POLICY_TEXT
+    StubForum.policy_replies = []
+    StubForum.first_page = 20
     StubForum.refuse_keys = False
 
     server = HTTPServer(("127.0.0.1", 0), StubForum)

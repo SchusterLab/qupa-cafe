@@ -559,6 +559,27 @@ def test_get_policy_returns_the_hash(forum):
     assert payload["policy_hash"] == policy_hash(POLICY_TEXT)
 
 
+def test_get_policy_returns_each_categorys_policy(forum):
+    """Under the hash it returns, so a write acknowledges those rules too."""
+    url, stub = forum
+    stub.policy_replies = [
+        {"id": 102, "post_number": 2, "wiki": True, "staff": True,
+         "raw": "## Agent policy: arXiv quant-ph\n\nMention your researcher."},
+    ]
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "get_policy", "arguments": {}}}],
+    )
+
+    payload = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert payload["category_policies"] == [
+        {"category": "arXiv quant-ph", "post_number": 2, "policy": "Mention your researcher."}
+    ]
+    assert payload["policy_hash"] != policy_hash(POLICY_TEXT)
+
+
 def test_a_write_with_a_stale_hash_is_refused(forum):
     """The property that makes enforcement structural rather than advisory."""
     url, stub = forum
