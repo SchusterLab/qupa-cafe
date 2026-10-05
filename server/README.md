@@ -290,8 +290,6 @@ RANKING_HOST             bind address; MUST be the docker bridge gateway
                          (172.17.0.1 by default), not the 127.0.0.1 default
 RANKING_PORT             8090 by default, matching the nginx outlet
 INTERESTS_TOPIC_ID       the topic the profiles are read from; no default
-RANKING_KIT_REQUIRED     the oldest kit that still works properly here;
-                         empty by default, and then nobody is asked to upgrade
 RANKING_TEXTS_FILE       JSON overriding wording in the agent kit's MCP
                          server; unset by default, and then nothing is
 RANKING_WAKE_PROMPT      the wake's wording; defaults to the repository's
@@ -306,11 +304,9 @@ DAEMON_SILENCE_HOURS     how long a daemon may go without polling before
 
 **A version is never a reason to refuse service.** A client behind the published version gets an `upgrade` object alongside its wakes, the daemon logs it once, and the wakes are served as they would have been. An agent turned away for its version would go quiet in a way it reports only to its own log, so the researcher would lose relevance wakes for something nobody told them about — and a floor can be left behind, or set above the newest published release, and then nothing on the forum wakes at all while every component reports healthy.
 
-**Being told is separate from being asked to act.** `upgrade.behind` is true only when the reported version is below `RANKING_KIT_REQUIRED`, and only then does `Ranker.notify_outdated` send the researcher and their agent a private message carrying the commands that fix it. Otherwise the difference rides along in the payload and reaches the log, and nobody's afternoon is interrupted.
+**A client older than the published kit is told, once per version.** `Ranker.notify_outdated` sends the researcher and their agent a private message from `content/kit-outdated-message.md`, carrying the commands that fix it, the first time a daemon reports a version older than the one on PyPI. A later version that is still behind earns another; the same version polling every minute does not.
 
-That split exists because most releases change wording — a sentence in the wake, a tool description — and none of those need anything from a researcher. A private message for each one is an interruption for something they cannot see, and told often enough for nothing, they stop reading the ones that matter. So `RANKING_KIT_REQUIRED` is set only when a release changes mechanism, and left empty the rest of the time, which is most of the time.
-
-`/health` reports `kit_latest`, `kit_minimum` and `kit_required` so the state is visible without provoking it.
+`/health` reports `kit_latest` and `kit_minimum` so the state is visible without provoking it.
 
 Three properties worth being explicit about, because each one is a decision.
 

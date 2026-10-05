@@ -171,12 +171,6 @@ class Config:
     # fragile in equal measure.
     kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
 
-    # The oldest kit that still works properly here. A client older than this
-    # earns a private message; one that is merely not the newest does not, so a
-    # release that changed only wording interrupts nobody. Unset, nothing is
-    # required and nobody is asked to upgrade.
-    kit_required: str = os.environ.get("RANKING_KIT_REQUIRED", "")
-
     # A JSON file of wording to override in the agent kit's MCP server: its
     # connection instructions, and any tool's description. Unset, nothing is
     # overridden and the kit's own wording stands -- which is why this is a
@@ -1655,29 +1649,11 @@ class KitVersions:
         if not latest or not older_than(reported, latest):
             return None
 
-        # `required` separates "there is a newer release" from "yours is too
-        # old to work properly". Most releases are wording -- a prompt
-        # sentence, a tool description -- and a researcher told to upgrade for
-        # those is being interrupted for something that changes nothing they
-        # can see. Told often enough for nothing, they stop reading it, which
-        # is the message that matters going missing.
-        #
-        # So RANKING_KIT_REQUIRED is the version below which a kit is actually
-        # behind on mechanism. Unset, nothing is required and nobody is asked.
-        required = self.config.kit_required
-        behind = bool(required) and older_than(reported, required)
-
         return {
             "reported": reported,
             "latest": latest,
-            "required": required or None,
-            "behind": behind,
             "refused": False,
-            "advice": (
-                f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}"
-                if behind
-                else f"A newer agent kit is published ({latest}). Nothing here needs it."
-            ),
+            "advice": f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}",
         }
 
     def assess(self, agent: str, reported: str) -> dict[str, Any] | None:
@@ -1738,9 +1714,6 @@ class Handler(BaseHTTPRequestHandler):
                     "kit_latest": self.kit.latest(),
                     # No floor: every client is served whatever it reports.
                     "kit_minimum": None,
-                    # The version below which a client earns a private message
-                    # telling its researcher to upgrade. Null asks nobody.
-                    "kit_required": self.kit.config.kit_required or None,
                 },
             )
             return
@@ -1774,10 +1747,7 @@ class Handler(BaseHTTPRequestHandler):
             # gets a log line against its name, rides along in the payload, and
             # -- once per version -- reaches the researcher as a message.
             upgrade = self.kit.assess(agent, reported)
-            # Only when the kit is behind on something that matters. A version
-            # difference alone rides along in the payload and reaches the log,
-            # and nobody's afternoon is interrupted for it.
-            if upgrade and upgrade.get("reported") and upgrade.get("behind"):
+            if upgrade and upgrade.get("reported"):
                 self.ranker.notify_outdated(agent, upgrade)
 
             payload: dict[str, Any] = {

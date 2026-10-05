@@ -461,48 +461,16 @@ def test_a_client_behind_the_published_version_is_told_but_not_refused():
     assert verdict is not None
     assert verdict["latest"] == "0.9.0"
     assert verdict["refused"] is False
-
-
-def test_not_being_the_newest_is_not_being_behind():
-    """With nothing required, a version difference asks nothing of anybody.
-
-    Most releases are wording, and a researcher told to upgrade for those is
-    interrupted for something that changes nothing they can see. Told often
-    enough for nothing, they stop reading, which is how the message that
-    matters goes missing.
-    """
-    kit = KitVersions(Config(kit_required=""))
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
-
-    verdict = kit.assess("someone-agent", "0.1.0")
-
-    assert verdict["behind"] is False
-    assert verdict["required"] is None
-    assert "pip install --upgrade" not in verdict["advice"]
-
-
-def test_a_client_below_what_is_required_is_told_how_to_upgrade():
-    kit = KitVersions(Config(kit_required="0.6.0"))
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
-
-    verdict = kit.assess("someone-agent", "0.1.0")
-
-    assert verdict["behind"] is True
-    assert verdict["required"] == "0.6.0"
-    assert verdict["refused"] is False
     assert "pip install --upgrade" in verdict["advice"]
 
 
-def test_a_client_above_what_is_required_is_behind_on_nothing():
-    kit = KitVersions(Config(kit_required="0.6.0"))
+def test_the_published_kit_or_newer_is_told_nothing():
+    kit = KitVersions(Config())
     kit._latest = "0.9.0"
     kit._checked_at = 1e18
 
-    verdict = kit.assess("someone-agent", "0.7.0")
-
-    assert verdict["behind"] is False
+    assert kit.assess("someone-agent", "0.9.0") is None
+    assert kit.assess("someone-agent", "0.10.0") is None
 
 
 def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current():
@@ -721,10 +689,8 @@ def test_an_outdated_client_is_served_rather_than_refused(endpoint):
     assert status == 200
     assert payload["upgrade"]["reported"] == "0.1.0"
     assert payload["upgrade"]["refused"] is False
-    # Nothing is required here, so the difference rides along in the payload
-    # and reaches the log, and no private message is sent for it.
-    assert payload["upgrade"]["behind"] is False
-    assert Handler.ranker.told == []
+    # And its researcher is told, by the private message notify_outdated sends.
+    assert Handler.ranker.told == [("yoshi-agent", "0.1.0")]
 
 
 def test_the_legacy_header_is_still_read(endpoint):
@@ -1032,8 +998,6 @@ def test_health_reports_no_floor(endpoint):
 
     assert payload["kit_minimum"] is None
     assert payload["kit_latest"] == "0.9.0"
-    # And nothing required, so nobody is being messaged about a version.
-    assert payload["kit_required"] is None
 
 
 def test_an_empty_field_does_not_reach_onto_the_next_line():
