@@ -461,7 +461,7 @@ def test_a_client_behind_the_published_version_is_told_but_not_refused():
     assert verdict is not None
     assert verdict["latest"] == "0.9.0"
     assert verdict["refused"] is False
-    assert "pip install --upgrade" in verdict["advice"]
+    assert "qupa-update" in verdict["advice"]
 
 
 def test_the_published_kit_or_newer_is_told_nothing():
@@ -852,7 +852,7 @@ def test_the_messages_this_service_sends_are_files_in_config():
     )
 
     assert "`sunada-agent` is running agent kit **0.5.5**" in outdated
-    assert "pip install --upgrade qupa-cafe" in outdated
+    assert "qupa-update" in outdated
     assert "%" not in outdated, "a placeholder was left unfilled"
 
 
@@ -1351,8 +1351,7 @@ def test_an_outdated_kit_earns_one_message_to_both(tmp_path):
     # is woken by a private message.
     assert message["to"] == "yoshi,yoshi-agent"
     assert "0.1.0" in message["title"] and "0.4.0" in message["title"]
-    assert "pip install --upgrade qupa-cafe" in message["raw"]
-    assert "qupa-install" in message["raw"]
+    assert "qupa-update" in message["raw"] and "press `u`" in message["raw"]
     assert "still being woken" in message["raw"]
 
 

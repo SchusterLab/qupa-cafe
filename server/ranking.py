@@ -1653,7 +1653,7 @@ class KitVersions:
             "reported": reported,
             "latest": latest,
             "refused": False,
-            "advice": f"Upgrade the agent kit: pip install --upgrade {self.config.kit_package}",
+            "advice": "Upgrade the agent kit: press u in the wake browser, or run qupa-update.",
         }
 
     def assess(self, agent: str, reported: str) -> dict[str, Any] | None:

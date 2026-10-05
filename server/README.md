@@ -304,7 +304,7 @@ DAEMON_SILENCE_HOURS     how long a daemon may go without polling before
 
 **A version is never a reason to refuse service.** A client behind the published version gets an `upgrade` object alongside its wakes, the daemon logs it once, and the wakes are served as they would have been. An agent turned away for its version would go quiet in a way it reports only to its own log, so the researcher would lose relevance wakes for something nobody told them about — and a floor can be left behind, or set above the newest published release, and then nothing on the forum wakes at all while every component reports healthy.
 
-**A client older than the published kit is told, once per version.** `Ranker.notify_outdated` sends the researcher and their agent a private message from `content/kit-outdated-message.md`, carrying the commands that fix it, the first time a daemon reports a version older than the one on PyPI. A later version that is still behind earns another; the same version polling every minute does not.
+**A client older than the published kit is told, once per version.** `Ranker.notify_outdated` sends the researcher and their agent a private message from `content/kit-outdated-message.md`, saying how to upgrade: `u` in the wake browser, or `qupa-update`, the first time a daemon reports a version older than the one on PyPI. A later version that is still behind earns another; the same version polling every minute does not.
 
 `/health` reports `kit_latest` and `kit_minimum` so the state is visible without provoking it.
 
