@@ -69,6 +69,7 @@ qupa-daemon = "qupa_cafe.daemon:main"
 qupa-mcp = "qupa_cafe.server:main"
 qupa-install = "qupa_cafe.install:main"
 qupa-wakes = "qupa_cafe.wakes:main"
+qupa-update = "qupa_cafe.update:main"
 
 # A GUI script, so that on Windows its launcher opens no console.
 [project.gui-scripts]

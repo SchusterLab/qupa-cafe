@@ -4,9 +4,10 @@ The icon says whether the daemon is polling, waking the agent, or has stopped,
 and its tooltip says when the agent was last woken and for what. Clicking it
 opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
 to choose from with the arrow keys, each to read, and each to reopen in Claude
-Code to ask the agent about.
+Code to ask the agent about. Its menu also updates the kit, through
+``qupa_cafe.update`` in a terminal of its own.
 
-It is a viewer and nothing else. The daemon runs without it, under whatever
+Otherwise it is a viewer. The daemon runs without it, under whatever
 restarts it, and quitting this or a desktop with no tray to show it in costs no
 wake. It reads the daemon's state file, read-only, and holds a lock of its own
 so that a second copy exits rather than adding a second icon.
@@ -33,7 +34,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import wakes
+from . import __version__, wakes
 from .daemon import Settings, claim_lock, load_env_file, log_path
 
 REFRESH_SECONDS = 20
@@ -209,6 +210,13 @@ def main() -> int:
         else:
             icon.notify(f"No log yet at {path}", "Qupa Cafe")
 
+    def update_kit(icon, item) -> None:
+        # In a terminal, so pip and the installer can be read. The installer
+        # ends this icon and starts one from the new code.
+        argv = [console_python(), "-m", "qupa_cafe.update"]
+        if not open_terminal(argv, settings):
+            icon.notify("No terminal to open. Run: python -m qupa_cafe.update", "Qupa Cafe")
+
     def quit_tray(icon, item) -> None:
         stop.set()
         icon.stop()
@@ -218,6 +226,7 @@ def main() -> int:
         # but open the menu, which is Windows and the plain X11 backend.
         pystray.MenuItem("Show wakes", show_wakes, default=True),
         pystray.MenuItem("Open the daemon log", show_log),
+        pystray.MenuItem(f"Update the agent kit (this is {__version__})", update_kit),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
