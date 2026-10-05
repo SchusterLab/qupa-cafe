@@ -145,7 +145,8 @@ def test_a_newer_kit_is_announced_with_both_versions_and_how_to_get_it():
     assert len(notice) == 1
     assert "99.0.0" in notice[0] and f"You have {browse.__version__}" in notice[0]
     assert any("Press u to update" in line for line in frame)
-    assert "u to update" in frame[-1]
+    # Named in the notice, so not again on the bottom line.
+    assert "u to update" not in frame[-1]
     assert b.handle("u") == "update"
 
 

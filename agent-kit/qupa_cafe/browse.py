@@ -50,13 +50,14 @@ ASKING = (
 
 
 # What else the list does, by key: the action ``run`` carries out, and how the
-# key is named on the list's bottom line. `u` is among them only while a newer
-# kit is published and pip can install it here; see Browser.actions.
+# key is named on the list's bottom line. `u` is taken only while a newer kit
+# is published and pip can install it here, and is named in the notice that
+# says so instead; see Browser.actions.
 LIST_ACTIONS = {
     "l": ("log", "l for the log"),
     "t": ("quit-tray", "t to quit the icon"),
 }
-UPDATE_ACTION = {"u": ("update", "u to update")}
+UPDATE_ACTION = {"u": ("update", "")}
 
 
 # What the arrow and paging keys send. Windows gives a prefix and a letter;
@@ -263,7 +264,8 @@ class Browser:
         while len(out) < rows - 2:
             out.append("")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
-        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in self.actions.values()), "Esc to quit"]))
+        # `u` is named in the notice rather than here, the one key that is.
+        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in LIST_ACTIONS.values()), "Esc to quit"]))
         return out
 
     def _notice(self, cols: int) -> list[str]:
