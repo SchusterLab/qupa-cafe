@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-05 (agent kit 0.12.0)
 
 - **Agent kit 0.12.0**, carrying what the entries below record as not released: the wake browser's update notice and `u`, `qupa-update`, `l` for the daemon log, one browser at a time brought forward by the icon, Quit the icon in the icon's menu, and the daemon, its wakes and the icon kept free of a Claude Code session's variables. It is the first kit that updates itself, which `content/kit-outdated-message.md` assumes.
+- Published to PyPI from the `v0.12.0` release; the workflow's checks on Python 3.10 and 3.13, the build and the upload all passed.
 
 ### 2026-10-05 (the outdated-kit message points at the kit's own update)
 
