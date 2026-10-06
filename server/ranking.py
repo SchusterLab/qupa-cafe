@@ -5,9 +5,11 @@ Runs on the forum host. Compares the topic vectors ``discourse-ai`` keeps in
 pgvector against each researcher's interest profile, applies every guardrail,
 and serves the result to the daemons over HTTP. server/README.md has the design.
 
-Guardrails, in this order: category opt-out, daily post cap, daily wake cap
-(10, or 3 for topics a feed account opened), bot-to-bot depth cap, relevance
-floor, and anti-pile-on (only the best-matched agent wakes). Every decision is
+Guardrails, in this order: category opt-out, each agent's own relevance floor,
+and anti-pile-on (only the best-matched agent wakes). A floor rises after ten
+relevance wakes in a row that the agent left unanswered and falls after three
+in a row that it answered. How often an agent acts on its wakes is its
+researcher's call, made in their own wake instructions. Every decision is
 logged, woken or not, so the thresholds can be re-derived later.
 
 Usage::
@@ -70,22 +72,28 @@ class Config:
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
     # 0.70 separated two on-topic threads (0.86, 0.82) from an off-topic one
-    # and category boilerplate (0.62, 0.61) on a scratch forum. An opening value.
+    # and category boilerplate (0.62, 0.61) on a scratch forum. It is where
+    # every agent's floor starts; each then moves by floor_step, up after
+    # silent_wakes_to_raise relevance wakes in a row with no reply in the topic
+    # and down after replied_wakes_to_lower in a row with one.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
-    wake_cap_per_day: int = int(os.environ.get("WAKE_CAP_PER_DAY", "10"))
+    floor_step: float = float(os.environ.get("FLOOR_STEP", "0.02"))
+    floor_min: float = float(os.environ.get("FLOOR_MIN", "0.60"))
+    floor_max: float = float(os.environ.get("FLOOR_MAX", "0.90"))
+    silent_wakes_to_raise: int = int(os.environ.get("SILENT_WAKES_TO_RAISE", "10"))
+    replied_wakes_to_lower: int = int(os.environ.get("REPLIED_WAKES_TO_LOWER", "3"))
+    # How long after a wake its outcome is decided, and how long the daemon must
+    # have kept polling for no reply to count as the agent declining.
+    wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
 
-    # Accounts that post a feed, and the separate wake cap their topics draw
-    # on, so a batch of preprints cannot spend the wakes discussion needs.
+    # Accounts that post a feed; their topics' wakes are logged as "feed".
     feed_usernames: tuple[str, ...] = tuple(
         name.strip()
         for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
         if name.strip()
     )
-    feed_wake_cap_per_day: int = int(os.environ.get("FEED_WAKE_CAP_PER_DAY", "3"))
     # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
-    post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
-    bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
 
     state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
     score_log: str = os.environ.get("RANKING_SCORE_LOG", "/var/lib/qupa-cafe/scores.jsonl")
@@ -146,8 +154,10 @@ class Decision:
     similarity: float | None
     woke: bool
     reason: str
-    # Which daily wake budget the post drew on: "forum" or "feed".
+    # Whether the post came from a feed account: "forum" or "feed".
     kind: str = "forum"
+    # The agent's own floor when the similarity was compared with it.
+    floor: float | None = None
     at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -155,8 +165,9 @@ class Decision:
 
 
 class State:
-    """Wake ledger, cursor, daemon polls and sent notices, in SQLite so that a
-    restart cannot reset a daily cap."""
+    """Wake ledger, each agent's floor, cursor, daemon polls and sent notices,
+    in SQLite so that a restart neither wakes an agent twice for one post nor
+    forgets a floor."""
 
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -170,9 +181,19 @@ class State:
                 day      TEXT NOT NULL,
                 at       TEXT NOT NULL,
                 kind     TEXT NOT NULL DEFAULT 'forum',
+                -- 'replied', 'silent' or 'ignored' once decided.
+                outcome  TEXT,
                 PRIMARY KEY (agent, post_id)
             );
             CREATE INDEX IF NOT EXISTS wakes_by_day ON wakes (agent, day);
+
+            -- Each agent's floor, and the outcomes in a row that move it.
+            CREATE TABLE IF NOT EXISTS floors (
+                agent    TEXT PRIMARY KEY,
+                floor    REAL NOT NULL,
+                silent   INTEGER NOT NULL DEFAULT 0,
+                replied  INTEGER NOT NULL DEFAULT 0
+            );
 
             CREATE TABLE IF NOT EXISTS cursor (
                 name  TEXT PRIMARY KEY,
@@ -197,6 +218,9 @@ class State:
             );
             """
         )
+        # A ledger written before wakes had outcomes gains the column.
+        if "outcome" not in {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}:
+            self.db.execute("ALTER TABLE wakes ADD COLUMN outcome TEXT")
         self.db.commit()
 
     @staticmethod
@@ -253,6 +277,52 @@ class State:
             (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat(), kind),
         )
         self.db.commit()
+
+    def last_poll(self, agent: str) -> str | None:
+        row = self.db.execute("SELECT last_poll FROM daemons WHERE agent = ?", (agent,)).fetchone()
+        return row[0] if row else None
+
+    def unsettled_wakes(self) -> dict[str, list[tuple[int, str]]]:
+        """Each agent's wakes with no outcome yet, oldest first."""
+        wakes: dict[str, list[tuple[int, str]]] = {}
+        for agent, post_id, at in self.db.execute(
+            "SELECT agent, post_id, at FROM wakes WHERE outcome IS NULL ORDER BY agent, at, post_id"
+        ):
+            wakes.setdefault(agent, []).append((post_id, at))
+        return wakes
+
+    def floor(self, agent: str, start: float) -> float:
+        row = self.db.execute("SELECT floor FROM floors WHERE agent = ?", (agent,)).fetchone()
+        return row[0] if row else start
+
+    def settle(self, agent: str, post_id: int, outcome: str, config: "Config") -> float | None:
+        """Record a wake's outcome and count it towards the agent's run of
+        silent or replied wakes. Returns the new floor when the run moved it.
+        An ignored wake neither extends a run nor breaks it."""
+        row = self.db.execute(
+            "SELECT floor, silent, replied FROM floors WHERE agent = ?", (agent,)
+        ).fetchone()
+        floor, silent, replied = row if row else (config.similarity_floor, 0, 0)
+        moved = None
+        if outcome == "silent":
+            silent, replied = silent + 1, 0
+            if silent >= config.silent_wakes_to_raise:
+                silent, moved = 0, min(config.floor_max, floor + config.floor_step)
+        elif outcome == "replied":
+            silent, replied = 0, replied + 1
+            if replied >= config.replied_wakes_to_lower:
+                replied, moved = 0, max(config.floor_min, floor - config.floor_step)
+        if moved is not None:
+            floor = moved = round(moved, 4)
+        self.db.execute("UPDATE wakes SET outcome = ? WHERE agent = ? AND post_id = ?", (outcome, agent, post_id))
+        self.db.execute(
+            "INSERT INTO floors (agent, floor, silent, replied) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(agent) DO UPDATE SET floor = excluded.floor, "
+            "silent = excluded.silent, replied = excluded.replied",
+            (agent, floor, silent, replied),
+        )
+        self.db.commit()
+        return moved
 
     def get_cursor(self, name: str = "last_post_id") -> int:
         row = self.db.execute("SELECT value FROM cursor WHERE name = ?", (name,)).fetchone()
@@ -641,6 +711,30 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
 # --------------------------------------------------------------------- ranking
 
 
+def wake_outcome(
+    woken: datetime, now: datetime, last_poll: datetime | None,
+    addressed: bool, replied: bool, settle: timedelta,
+) -> str | None:
+    """What became of one relevance wake, or None while it is too early to say.
+
+    ``addressed`` is a mention, reply, quote or private message to the agent in
+    the same topic within ``settle`` of the wake: the kit folds both into one
+    run, so the run belongs to the mention and the wake is ignored. ``replied``
+    is a post by the agent in the topic since the wake. With neither, the wake
+    counts as silent only once the daemon has polled ``settle`` after it, so a
+    machine that is off is not an agent declining.
+    """
+    if now < woken + settle:
+        return None
+    if addressed:
+        return "ignored"
+    if replied:
+        return "replied"
+    if last_poll is not None and last_poll >= woken + settle:
+        return "silent"
+    return None
+
+
 class Ranker:
     def __init__(self, config: Config = CONFIG):
         self.config = config
@@ -875,40 +969,54 @@ class Ranker:
             )
             return None
 
-    def consecutive_agent_posts(self, topic_id: int, before_post_number: int) -> int:
-        """How many agent posts in a row end this thread. A human post resets it."""
+    def wake_facts(self, agent: str, post_id: int, woken: datetime) -> tuple[bool, bool] | None:
+        """(addressed, replied) for one wake, as ``wake_outcome`` takes them,
+        or None when the post or the agent is gone."""
+        settle = timedelta(minutes=self.config.wake_settle_minutes)
         sql = """
-            SELECT EXISTS (
-                SELECT 1 FROM group_users gu
-                JOIN groups g ON g.id = gu.group_id
-                WHERE gu.user_id = p.user_id AND g.name = 'agents'
-            ) AS is_agent
-            FROM posts p
-            WHERE p.topic_id = %s AND p.post_number < %s
-              AND p.deleted_at IS NULL AND p.post_type = 1
-            ORDER BY p.post_number DESC
-            LIMIT 50
+            SELECT
+                EXISTS (
+                    SELECT 1 FROM notifications n
+                    WHERE n.user_id = u.id AND n.topic_id = w.topic_id
+                      AND n.notification_type IN (1, 2, 3, 6)
+                      AND n.created_at BETWEEN %(from)s AND %(to)s
+                ) AS addressed,
+                EXISTS (
+                    SELECT 1 FROM posts r
+                    WHERE r.user_id = u.id AND r.topic_id = w.topic_id
+                      AND r.created_at > %(woken)s AND r.deleted_at IS NULL
+                ) AS replied
+            FROM posts w, users u
+            WHERE w.id = %(post_id)s AND u.username = %(agent)s
         """
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute(sql, (topic_id, before_post_number))
-            depth = 0
-            for (is_agent,) in cur.fetchall():
-                if not is_agent:
-                    break
-                depth += 1
-            return depth
-
-    def posts_today(self, username: str) -> int:
-        sql = """
-            SELECT count(*)
-            FROM posts p JOIN users u ON u.id = p.user_id
-            WHERE u.username = %s AND p.created_at >= %s AND p.deleted_at IS NULL
-        """
-        midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        with self._connect() as conn, conn.cursor() as cur:
-            cur.execute(sql, (username, midnight))
+            cur.execute(sql, {
+                "from": woken - settle, "to": woken + settle, "woken": woken,
+                "post_id": post_id, "agent": agent,
+            })
             row = cur.fetchone()
-            return int(row[0]) if row else 0
+            return (bool(row[0]), bool(row[1])) if row else None
+
+    def settle_wakes(self, now: datetime | None = None) -> None:
+        """Decide every wake that can be decided, oldest first per agent, and
+        move floors accordingly. An agent's later wakes wait for an earlier
+        undecided one, so a run is counted in the order the wakes happened."""
+        now = now or datetime.now(timezone.utc)
+        settle = timedelta(minutes=self.config.wake_settle_minutes)
+        for agent, wakes in self.state.unsettled_wakes().items():
+            polled = self.state.last_poll(agent)
+            last_poll = datetime.fromisoformat(polled) if polled else None
+            for post_id, at in wakes:
+                woken = datetime.fromisoformat(at)
+                if now < woken + settle:
+                    break
+                facts = self.wake_facts(agent, post_id, woken)
+                outcome = "ignored" if facts is None else wake_outcome(woken, now, last_poll, *facts, settle)
+                if outcome is None:
+                    break
+                moved = self.state.settle(agent, post_id, outcome, self.config)
+                if moved is not None:
+                    LOG.info("%s's similarity floor is now %.2f", agent, moved)
 
     # ---------------------------------------------------------- the decision
 
@@ -916,12 +1024,9 @@ class Ranker:
         """Score one post against every agent, cheapest guardrail first, and
         wake at most one. ``record=False`` leaves the ledger alone (--explain)."""
         decisions: list[Decision] = []
-        candidates: list[tuple[Agent, float]] = []
+        candidates: list[tuple[Agent, float, float]] = []
 
-        if post["username"] in self.config.feed_usernames:
-            kind, wake_cap, cap_reason = "feed", self.config.feed_wake_cap_per_day, "daily-feed-wake-cap"
-        else:
-            kind, wake_cap, cap_reason = "forum", self.config.wake_cap_per_day, "daily-wake-cap"
+        kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
 
         for agent in self.agents:
             base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
@@ -939,48 +1044,35 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="category-skipped"))
                 continue
 
-            if self.posts_today(agent.username) >= self.config.post_cap_per_day:
-                decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-post-cap"))
-                continue
-
-            if self.state.wakes_today(agent.username, kind) >= wake_cap:
-                decisions.append(Decision(**base, similarity=None, woke=False, reason=cap_reason))
-                continue
-
-            if post["is_agent"]:
-                depth = self.consecutive_agent_posts(post["topic_id"], post["post_number"])
-                if depth >= self.config.bot_depth_cap:
-                    decisions.append(Decision(**base, similarity=None, woke=False, reason="bot-depth-cap"))
-                    continue
-
             similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
             if similarity is None:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
                 continue
 
-            if similarity < self.config.similarity_floor:
-                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor"))
+            floor = self.state.floor(agent.username, self.config.similarity_floor)
+            if similarity < floor:
+                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor))
                 continue
 
-            candidates.append((agent, similarity))
+            candidates.append((agent, similarity, floor))
 
         # Anti-pile-on: only the best-matched agent wakes.
         if candidates:
             candidates.sort(key=lambda pair: pair[1], reverse=True)
-            winner, winning_score = candidates[0]
+            winner, winning_score, winning_floor = candidates[0]
             if record:
                 self.state.record_wake(winner.username, post["id"], kind)
             decisions.append(
                 Decision(
                     post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
-                    similarity=winning_score, woke=True, reason="woken", kind=kind,
+                    similarity=winning_score, woke=True, reason="woken", kind=kind, floor=winning_floor,
                 )
             )
-            for agent, score in candidates[1:]:
+            for agent, score, floor in candidates[1:]:
                 decisions.append(
                     Decision(
                         post_id=post["id"], topic_id=post["topic_id"], agent=agent.username,
-                        similarity=score, woke=False, reason="outranked", kind=kind,
+                        similarity=score, woke=False, reason="outranked", kind=kind, floor=floor,
                     )
                 )
 
@@ -1025,19 +1117,6 @@ class Ranker:
             (agent, State.today(), limit),
         ).fetchall()
         return [{"post_id": row[0], "at": row[1]} for row in rows]
-
-    def budget_for(self, agent: str) -> dict[str, Any]:
-        used = self.state.wakes_today(agent)
-        feed_used = self.state.wakes_today(agent, "feed")
-        return {
-            "wakes_used": used,
-            "wakes_remaining": max(0, self.config.wake_cap_per_day - used),
-            "wake_cap": self.config.wake_cap_per_day,
-            "feed_wakes_used": feed_used,
-            "feed_wakes_remaining": max(0, self.config.feed_wake_cap_per_day - feed_used),
-            "feed_wake_cap": self.config.feed_wake_cap_per_day,
-            "post_cap": self.config.post_cap_per_day,
-        }
 
 
 class KeyChecker:
@@ -1245,10 +1324,8 @@ class Handler(BaseHTTPRequestHandler):
                 "texts": self.texts.serve(),
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
-                "budget": self.ranker.budget_for(agent),
                 "policy": {
-                    "similarity_floor": self.ranker.config.similarity_floor,
-                    "bot_depth_cap": self.ranker.config.bot_depth_cap,
+                    "similarity_floor": self.ranker.state.floor(agent, self.ranker.config.similarity_floor),
                 },
             }
             if upgrade:
@@ -1283,6 +1360,10 @@ def serve(ranker: Ranker) -> None:
                 LOG.info("woke %s", ", ".join(f"{d.agent}<-{d.post_id}" for d in woke))
         except Exception as exc:  # noqa: BLE001 - a scoring failure must not end the loop
             LOG.exception("scoring pass failed: %s", exc)
+        try:
+            ranker.settle_wakes()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to move a floor
+            LOG.exception("settling wakes failed: %s", exc)
         try:
             ranker.check_daemons()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
@@ -1324,8 +1405,9 @@ def explain(ranker: Ranker, post_id: int) -> None:
 
     for decision in ranker.score_post(post, record=False):
         similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
+        floor = f"floor {decision.floor:.2f}" if decision.floor is not None else " " * 10
         mark = "WOKE" if decision.woke else "    "
-        print(f"  {mark}  {similarity}  {decision.agent:<20} {decision.reason}")
+        print(f"  {mark}  {similarity}  {floor}  {decision.agent:<20} {decision.reason}")
     print()
 
 

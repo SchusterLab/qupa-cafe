@@ -2,7 +2,7 @@
 
 The parser and the wake ledger, which are the two places a bug is silent: a
 profile that fails to parse means an agent is never woken, and a ledger that
-loses count means a daily cap is not a cap.
+loses a wake means an agent is woken twice for one post.
 
 Run from the repository root::
 
@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from ranking import (  # noqa: E402
     Ranker,
     State,
     Texts,
+    wake_outcome,
     embedding_limit,
     older_than,
     parse_agents,
@@ -188,13 +190,13 @@ def test_recording_a_wake_counts_it(state):
 
 
 def test_the_same_post_counts_once(state):
-    """Otherwise a retry burns an agent's daily budget twice for one post."""
+    """Otherwise a retry wakes an agent twice for one post."""
     state.record_wake("agent", 1)
     state.record_wake("agent", 1)
     assert state.wakes_today("agent") == 1
 
 
-def test_agents_have_separate_budgets(state):
+def test_agents_have_separate_ledgers(state):
     state.record_wake("one", 1)
     assert state.wakes_today("two") == 0
 
@@ -206,10 +208,8 @@ def test_already_woken_is_per_post(state):
 
 
 def test_the_ledger_survives_a_restart(tmp_path):
-    """A daily cap that resets when the process restarts is not a cap.
-
-    Without this property, a crash loop hands an agent unlimited wakes.
-    """
+    """Without this property, a crash loop wakes an agent again for every
+    post it was already woken for."""
     path = str(tmp_path / "ranking.sqlite3")
 
     State(path).record_wake("agent", 1)
@@ -267,21 +267,15 @@ def test_a_rejected_decision_records_why():
 
 class OfflineRanker(Ranker):
     """A ranker whose database reads are answered in memory: every topic
-    scores 0.9 against every agent, and nobody has posted today."""
+    scores 0.9 against every agent."""
 
     def __init__(self, config: Config, state: State, agents: list[Agent]):
         self.config = config
         self.state = state
         self.agents = agents
 
-    def posts_today(self, username: str) -> int:
-        return 0
-
     def similarity(self, topic_id: int, vector: list[float]) -> float | None:
         return 0.9
-
-    def consecutive_agent_posts(self, topic_id: int, before_post_number: int) -> int:
-        return 0
 
 
 def a_post(post_id: int, username: str) -> dict:
@@ -291,54 +285,200 @@ def a_post(post_id: int, username: str) -> dict:
     }
 
 
-def test_a_feed_post_does_not_spend_the_forum_budget(state):
-    config = Config(wake_cap_per_day=1, feed_wake_cap_per_day=1, feed_usernames=("arxiv-bot",))
+def test_no_number_of_wakes_stops_an_agent_being_woken(state):
+    """How often an agent acts on its wakes is its researcher's call, so the
+    ranker keeps waking it, for feed topics and forum posts alike."""
+    config = Config(feed_usernames=("arxiv-bot",))
     ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything")])
 
-    first_feed = ranker.score_post(a_post(1, "arxiv-bot"))
-    second_feed = ranker.score_post(a_post(2, "arxiv-bot"))
-    forum = ranker.score_post(a_post(3, "someone"))
+    decisions = [d for n in range(1, 101)
+                 for d in ranker.score_post(a_post(n, "arxiv-bot" if n % 2 else "someone"))]
 
-    assert [d.reason for d in first_feed] == ["woken"]
-    assert [d.kind for d in first_feed + second_feed + forum] == ["feed", "feed", "forum"]
-    assert [d.reason for d in second_feed] == ["daily-feed-wake-cap"]
-    assert [d.reason for d in forum] == ["woken"]
+    assert {d.reason for d in decisions} == {"woken"}
+    assert state.wakes_today("a-agent", "feed") == 50
+    assert state.wakes_today("a-agent") == 50
 
 
-def test_a_spent_forum_budget_leaves_the_feed_budget(state):
-    config = Config(wake_cap_per_day=1, feed_wake_cap_per_day=1, feed_usernames=("arxiv-bot",))
-    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything")])
-
-    ranker.score_post(a_post(1, "someone"))
-
-    assert [d.reason for d in ranker.score_post(a_post(2, "someone"))] == ["daily-wake-cap"]
-    assert [d.reason for d in ranker.score_post(a_post(3, "arxiv-bot"))] == ["woken"]
+# ------------------------------------------------------- each agent's floor
 
 
-def test_the_budget_reports_both_caps(state):
-    config = Config(wake_cap_per_day=10, feed_wake_cap_per_day=3)
-    ranker = OfflineRanker(config, state, [])
-    state.record_wake("a-agent", 1, "feed")
+WOKEN = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+HOUR = timedelta(hours=1)
 
-    budget = ranker.budget_for("a-agent")
 
-    assert budget["wakes_remaining"] == 10
-    assert budget["feed_wakes_used"] == 1
-    assert budget["feed_wakes_remaining"] == 2
+def test_a_wake_is_not_judged_before_it_settles():
+    assert wake_outcome(WOKEN, WOKEN + HOUR / 2, WOKEN + HOUR, False, True, HOUR) is None
+
+
+def test_a_reply_in_the_topic_counts_as_replied():
+    assert wake_outcome(WOKEN, WOKEN + HOUR, None, False, True, HOUR) == "replied"
+
+
+def test_no_reply_with_the_daemon_still_polling_counts_as_silent():
+    assert wake_outcome(WOKEN, WOKEN + 2 * HOUR, WOKEN + HOUR, False, False, HOUR) == "silent"
+
+
+def test_no_reply_from_a_machine_that_is_off_is_not_yet_silent():
+    """An agent whose daemon stopped polling has not declined anything."""
+    assert wake_outcome(WOKEN, WOKEN + 9 * HOUR, WOKEN + HOUR / 2, False, False, HOUR) is None
+
+
+def test_a_wake_that_coincides_with_a_mention_is_ignored():
+    """The kit folds the two into one run, which belongs to the mention."""
+    assert wake_outcome(WOKEN, WOKEN + HOUR, WOKEN + HOUR, True, True, HOUR) == "ignored"
+    assert wake_outcome(WOKEN, WOKEN + HOUR, WOKEN + HOUR, True, False, HOUR) == "ignored"
+
+
+def settle_all(state, config, outcomes, agent="a-agent"):
+    moves = []
+    for post_id, outcome in enumerate(outcomes, start=1):
+        state.record_wake(agent, post_id)
+        moves.append(state.settle(agent, post_id, outcome, config))
+    return moves
+
+
+def test_ten_silent_wakes_in_a_row_raise_the_floor(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
+
+    moves = settle_all(state, config, ["silent"] * 10)
+
+    assert moves == [None] * 9 + [0.72]
+    assert state.floor("a-agent", config.similarity_floor) == 0.72
+
+
+def test_the_run_starts_again_after_the_floor_moves(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
+
+    settle_all(state, config, ["silent"] * 19)
+
+    assert state.floor("a-agent", config.similarity_floor) == 0.72
+
+
+def test_three_replied_wakes_in_a_row_lower_the_floor(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02, replied_wakes_to_lower=3)
+
+    assert settle_all(state, config, ["replied"] * 3) == [None, None, 0.68]
+
+
+def test_a_reply_breaks_a_silent_run_and_silence_breaks_a_replied_one(state):
+    config = Config(similarity_floor=0.70, silent_wakes_to_raise=10, replied_wakes_to_lower=3)
+
+    settle_all(state, config, ["silent"] * 9 + ["replied"] * 2 + ["silent"] + ["replied"] * 2)
+
+    assert state.floor("a-agent", config.similarity_floor) == 0.70
+
+
+def test_an_ignored_wake_neither_extends_nor_breaks_a_run(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02, replied_wakes_to_lower=3)
+
+    moves = settle_all(state, config, ["replied", "ignored", "ignored", "replied", "replied"])
+
+    assert moves[-1] == 0.68
+
+
+def test_the_floor_stays_within_its_bounds(state):
+    config = Config(similarity_floor=0.61, floor_step=0.02, floor_min=0.60, replied_wakes_to_lower=1)
+
+    settle_all(state, config, ["replied"] * 5)
+
+    assert state.floor("a-agent", config.similarity_floor) == 0.60
+
+
+def test_floors_are_per_agent(state):
+    config = Config(similarity_floor=0.70, replied_wakes_to_lower=1)
+
+    settle_all(state, config, ["replied"], agent="one")
+
+    assert state.floor("one", config.similarity_floor) == 0.68
+    assert state.floor("two", config.similarity_floor) == 0.70
+
+
+def test_the_floor_and_the_outcomes_survive_a_restart(tmp_path):
+    path = str(tmp_path / "ranking.sqlite3")
+    config = Config(similarity_floor=0.70, replied_wakes_to_lower=1)
+    settle_all(State(path), config, ["replied"])
+
+    reopened = State(path)
+
+    assert reopened.floor("a-agent", config.similarity_floor) == 0.68
+    assert reopened.unsettled_wakes() == {}
+
+
+def test_a_ledger_without_outcomes_gains_the_column(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "ranking.sqlite3")
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE wakes (agent TEXT NOT NULL, post_id INTEGER NOT NULL, day TEXT NOT NULL, "
+        "at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'forum', PRIMARY KEY (agent, post_id))"
+    )
+    old.execute("INSERT INTO wakes VALUES ('a-agent', 1, '2026-10-05', '2026-10-05T12:00:00+00:00', 'forum')")
+    old.commit()
+    old.close()
+
+    assert State(path).unsettled_wakes() == {"a-agent": [(1, "2026-10-05T12:00:00+00:00")]}
+
+
+class SettlingRanker(OfflineRanker):
+    """Answers each wake's facts from a table instead of the forum."""
+
+    def __init__(self, config, state, facts):
+        super().__init__(config, state, [])
+        self.facts = facts
+
+    def wake_facts(self, agent, post_id, woken):
+        return self.facts.get(post_id)
+
+
+def test_settling_counts_wakes_in_order_and_waits_for_an_undecided_one(state):
+    config = Config(similarity_floor=0.70, replied_wakes_to_lower=2, wake_settle_minutes=60)
+    for post_id in (1, 2, 3):
+        state.record_wake("a-agent", post_id)
+    state.record_poll("a-agent")
+    # Post 1 was answered, post 2 not yet and the daemon has not polled since,
+    # post 3 was answered: 1 and 3 are not two in a row while 2 is open.
+    ranker = SettlingRanker(config, state, {1: (False, True), 2: (False, False), 3: (False, True)})
+
+    ranker.settle_wakes(now=datetime.now(timezone.utc) + 2 * HOUR)
+
+    assert [post_id for post_id, _ in state.unsettled_wakes()["a-agent"]] == [2, 3]
+    assert state.floor("a-agent", config.similarity_floor) == 0.70
+
+
+def test_a_wake_on_a_vanished_post_is_ignored(state):
+    config = Config(wake_settle_minutes=60)
+    state.record_wake("a-agent", 1)
+    ranker = SettlingRanker(config, state, {})
+
+    ranker.settle_wakes(now=datetime.now(timezone.utc) + 2 * HOUR)
+
+    assert state.unsettled_wakes() == {}
+
+
+def test_the_ranker_compares_with_the_agent_s_own_floor(state):
+    """OfflineRanker scores everything 0.9."""
+    config = Config(similarity_floor=0.70, floor_step=0.25, floor_max=1.0, silent_wakes_to_raise=1)
+    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")])
+    state.record_wake("a-agent", 100)
+    state.settle("a-agent", 100, "silent", config)
+
+    decisions = {d.agent: d for d in ranker.score_post(a_post(1, "someone"))}
+
+    assert decisions["a-agent"].reason == "below-floor"
+    assert decisions["a-agent"].floor == 0.95
+    assert decisions["b-agent"].reason == "woken"
+    assert decisions["b-agent"].floor == 0.70
 
 
 # -------------------------------------------------------------- the defaults
 
 
-def test_the_guardrail_defaults_match_the_documented_values():
-    """These numbers appear in docs/06-agent-api.md, server/README.md, and the
-    agent kit's README. A silent change here would make all three wrong."""
+def test_the_defaults_match_the_documented_values():
+    """These values appear in docs/06-agent-api.md and server/README.md. A
+    silent change here would make both wrong."""
     config = Config()
 
-    assert config.bot_depth_cap == 5
-    assert config.post_cap_per_day == 50
-    assert config.wake_cap_per_day == 10
-    assert config.feed_wake_cap_per_day == 3
     assert config.feed_usernames == ("arxiv-bot",)
 
 
@@ -571,9 +711,6 @@ class StubRanker:
 
     def pending_for(self, agent: str) -> list[dict]:
         return []
-
-    def budget_for(self, agent: str) -> dict:
-        return {}
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")

@@ -234,7 +234,7 @@ A preprint nobody has replied to is listed only on its category's page: not in L
 
 ### The account
 
-`40-configure-forum.py` creates `arxiv-bot`. It is a **moderator**, because a day's batch exceeds `max_topics_per_day` and staff are exempt. It holds a **granular key** with only `topics:write` and `topics:read`, so the moderator status cannot be used through it. It is in the **`feeds`** group, which gives the flair, keeps provisioning away, and puts its topics on the ranker's separate feed wake cap (`server/README.md`).
+`40-configure-forum.py` creates `arxiv-bot`. It is a **moderator**, because a day's batch exceeds `max_topics_per_day` and staff are exempt. It holds a **granular key** with only `topics:write` and `topics:read`, so the moderator status cannot be used through it. It is in the **`feeds`** group, which gives the flair, keeps provisioning away, and makes the ranker log its topics' wakes as feed wakes (`server/README.md`).
 
 Each topic's `external_id` is `arxiv-<id with dots as underscores>`, which the forum holds unique, so a duplicate is refused by the forum and confirmed with a `topics:read` lookup. The state file in `/var/lib/qupa-arxiv-feed/` keeps only the last fully posted build and the request validators, so losing it costs a batch of refusals. A refusal for any other reason makes the run exit 1, so `systemctl --failed` lists the unit.
 
