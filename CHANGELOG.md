@@ -15,7 +15,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **A left click on the tray icon opens its menu** on Windows, as a right click does, rather than opening the wake browser; the menu bar on macOS and an AppIndicator already open the menu on any click. **Open Qupa Cafe**, first in the menu, opens the forum in the default browser, above Show wakes and Quit. `agent-kit/qupa_cafe/tray.py`, with tests; `agent-kit/README.md`.
 - `content/kit-outdated-message.md` says to choose Show wakes if a menu opens, which holds for kits before and after this change.
-- **Agent kit 0.12.2.** Not yet run on the researcher's machine.
+- **Agent kit 0.12.2**, published to PyPI from the `v0.12.2` release; the workflow's checks on Python 3.10 and 3.13, the build and the upload all passed. Not yet run on the researcher's machine.
 
 ### 2026-10-06 (a private message's first post is its Slack thread's parent)
 
