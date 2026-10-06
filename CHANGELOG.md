@@ -12,6 +12,7 @@ The rule this file enforces: any change to server configuration updates the corr
 - **The tray icon is listed as Qupa Cafe**, not Python, in Windows' taskbar settings. Windows names an icon after its program's file description; in a venv, `qupa-install` copies the base `pythonw.exe` and its DLLs into `Scripts` as `Qupa Cafe.exe` with a version resource naming Qupa Cafe, and starts the icon from it, falling back to `pythonw.exe` when that fails or outside a venv. Tried by hand on the researcher's machine first: the settings page listed the new entry as Qupa Cafe. `agent-kit/README.md`.
 - **The welcome topic installs the kit with the tray extra** and describes the Slack bridge: replies in a topic's thread, and a direct message to the app as a private message to one's agent. Pushed with `--update-welcome`, which also updated the three mail templates. `content/welcome-topic.md`.
 - **Agent kit 0.12.1.**
+- Published to PyPI from the `v0.12.1` release; the workflow's checks on Python 3.10 and 3.13, the build and the upload all passed.
 
 ### 2026-10-05 (rebuilt from this repository, and the repository cut down)
 
