@@ -53,6 +53,8 @@ AGENT_SUFFIX = "-agent"
 # Not a whisper or a small action.
 POST_TYPE_REGULAR = 1
 
+TOPIC_HINT = "Reply in this thread to post to the topic."
+
 # Slack folds anything past about 4,000 characters.
 MAX_SLACK_TEXT = 3500
 
@@ -578,26 +580,35 @@ class Bridge:
     def post_url(self, topic: dict, post_number: int) -> str:
         return f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}/{post_number}"
 
-    def opening(self, topic: dict, first: dict | None) -> dict:
-        """The thread's parent: the topic's title over its first post, under
-        that post's author, so the channel shows what the topic says. With the
-        first post gone, the title alone under the topic's opener."""
+    def opening(self, topic: dict, first: dict | None, hint: str = TOPIC_HINT, mention: bool = True) -> dict:
+        """A thread's parent: the title, linked, over the first post, under that
+        post's author, so the conversation shows what the topic says without
+        opening the thread, and ``hint`` after it in italics. With the first
+        post gone, the title alone under the topic's opener."""
         url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
         heading = f"*<{url}|{slack_escape(topic['title'])}>*\n"
-        hint = "\nReply in this thread to post to the topic."
+        hint = f"\n_{hint}_"
         if not first or first.get("hidden") or first.get("deleted_at") or first.get("user_deleted"):
             return {"text": heading.rstrip() + hint, "username": topic.get("opener") or "somebody"}
-        return {"text": self.post_text(first, topic, heading=heading) + hint, "username": first.get("username") or "somebody"}
+        # The linked title is the link to the post.
+        text = self.post_text(first, topic, mention=mention, heading=heading, link=False) + hint
+        return {"text": text, "username": first.get("username") or "somebody"}
+
+    def first_post(self, topic: dict) -> dict | None:
+        if not topic.get("first_post_id"):
+            return None
+        try:
+            return self.forum.post(topic["first_post_id"])
+        except Refused as exc:
+            LOG.warning("topic %d opens without its first post: %s", topic["id"], exc)
+            return None
 
     def ensure_thread(self, topic: dict, channel_id: str, first: dict | None = None) -> str:
         existing = self.state.thread_for(topic["id"])
         if existing and existing[0] == channel_id:
             return existing[1]
-        if first is None and topic.get("first_post_id"):
-            try:
-                first = self.forum.post(topic["first_post_id"])
-            except Refused as exc:
-                LOG.warning("topic %d opens without its first post: %s", topic["id"], exc)
+        if first is None:
+            first = self.first_post(topic)
         result = self.slack.chat_postMessage(
             channel=channel_id, **self.opening(topic, first), unfurl_links=False, unfurl_media=False,
         )
@@ -667,9 +678,9 @@ class Bridge:
                 return
             raise
 
-    def post_text(self, post: dict, topic: dict, mention: bool = True, heading: str = "") -> str:
+    def post_text(self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True) -> str:
         """A post as Slack text: an agent's starts by mentioning its researcher,
-        then ``heading``, the body, and a link to the post."""
+        then ``heading``, the body, and with ``link`` a link to the post."""
         author = post.get("username") or "somebody"
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
@@ -683,7 +694,7 @@ class Bridge:
                 lead = f"<@{slack_id}>, your agent posted:\n"
         # A cut post already ends with a link to the rest.
         cut = body.endswith("|Read the rest>")
-        return f"{lead}{heading}{body}" if cut else f"{lead}{heading}{body}\n<{url}|View this post>"
+        return f"{lead}{heading}{body}" if cut or not link else f"{lead}{heading}{body}\n<{url}|View this post>"
 
     def agent_of(self, username: str) -> str | None:
         """``<username>-agent``, if it is an agent."""
@@ -740,21 +751,25 @@ class Bridge:
             cached = self._conversations[f"dm:{slack_id}"] = Cached(channel)
         return cached.value
 
-    def open_thread(self, meta: dict, slack_ids: list[str], people: list[str]) -> tuple[str, str]:
+    def open_thread(
+        self, meta: dict, slack_ids: list[str], people: list[str], first: dict | None = None,
+    ) -> tuple[str, str]:
         """A new thread for a private message, in the bot's DM or group DM with
-        exactly these Slack users."""
+        exactly these Slack users, its parent the message's first post."""
         channel_id = self.slack.conversations_open(users=",".join(slack_ids))["channel"]["id"]
         if channel_id.startswith("D"):
             self._conversations[f"dm:{slack_ids[0]}"] = Cached(channel_id)
         else:
             self._conversations[channel_id] = Cached(set(slack_ids))
-        url = f"{self.forum.base_url}/t/{meta['slug']}/{meta['id']}"
-        text = (
-            f"Private message: *<{url}|{slack_escape(meta['title'])}>*\n"
-            f"Among {', '.join(slack_escape(p) for p in people)} and their agents. "
+        if first is None:
+            first = self.first_post(meta)
+        hint = (
+            f"A private message among {', '.join(slack_escape(p) for p in people)} and their agents. "
             "Reply in this thread to answer it there."
         )
-        result = self.slack.chat_postMessage(channel=channel_id, text=text, unfurl_links=False, unfurl_media=False)
+        # Outside a DM (id D...), an agent's post mentions its researcher.
+        opening = self.opening(meta, first, hint=hint, mention=not channel_id.startswith("D"))
+        result = self.slack.chat_postMessage(channel=channel_id, **opening, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(meta["id"], channel_id, result["ts"])
         return channel_id, result["ts"]
 
@@ -778,6 +793,8 @@ class Bridge:
             "id": post["topic_id"],
             "title": topic.get("title") or post.get("topic_title") or f"Message {post['topic_id']}",
             "slug": topic.get("slug") or post.get("topic_slug") or "message",
+            "opener": ((topic.get("details") or {}).get("created_by") or {}).get("username") or "",
+            "first_post_id": next(iter((topic.get("post_stream") or {}).get("stream") or []), None),
         }
         people = self.humans_in(topic)
         on_slack = {person: self.slack_id_for(person) for person in people}
@@ -786,6 +803,9 @@ class Bridge:
             return "nobody in it is on Slack" + also
 
         threaded = self.state.thread_for(meta["id"])
+        if not threaded and (post.get("post_number") or 1) == 1:
+            channel_id, _ = self.open_thread(meta, slack_ids, people, first=post)
+            return f"relayed to {channel_id} as its thread's parent" + also
         if not threaded:
             channel_id, thread_ts = self.open_thread(meta, slack_ids, people)
         else:

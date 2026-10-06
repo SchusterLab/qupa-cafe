@@ -1,7 +1,7 @@
 """The daemon's state as an icon in the task tray or menu bar.
 
-Clicking it opens the wake browser (``qupa_cafe.browse``) in a terminal. A
-viewer only: it reads the daemon's state file and holds its own lock so a
+Clicking it opens its menu: the forum in the default browser, the wake
+browser (``qupa_cafe.browse``) in a terminal, and Quit. A viewer only: it reads the daemon's state file and holds its own lock so a
 second copy exits. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
 or already running and 2 without the extra, as the Windows Startup entry
 expects.
@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -147,6 +148,25 @@ def lock_path(settings: Settings) -> Path:
     return Path(settings.state_path).with_name("tray.lock")
 
 
+# Windows' notification-area messages, as pystray's backend receives them.
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONUP = 0x0205
+
+
+def menu_on_click(icon_class: type) -> type:
+    """pystray's Windows icon with a left click opening the menu, as a right
+    click does, rather than running a default item. The menu bar on macOS and
+    an AppIndicator open the menu on any click already."""
+    if platform.system() != "Windows" or not hasattr(icon_class, "_on_notify"):
+        return icon_class
+
+    class MenuOnClick(icon_class):
+        def _on_notify(self, wparam, lparam):
+            return super()._on_notify(wparam, WM_RBUTTONUP if lparam == WM_LBUTTONUP else lparam)
+
+    return MenuOnClick
+
+
 def main() -> int:
     try:
         import pystray
@@ -177,17 +197,21 @@ def main() -> int:
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 
+    def open_forum(icon, item) -> None:
+        if not settings.forum_url or not webbrowser.open(settings.forum_url):
+            icon.notify(f"Could not open a browser. The forum is {settings.forum_url or 'not configured'}.", "Qupa Cafe")
+
     def quit_tray(icon, item) -> None:
         stop.set()
         icon.stop()
 
     menu = pystray.Menu(
-        # What a click does on Windows and plain X11.
-        pystray.MenuItem("Show wakes", show_wakes, default=True),
+        pystray.MenuItem("Open Qupa Cafe", open_forum),
+        pystray.MenuItem("Show wakes", show_wakes),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
-    icon = pystray.Icon("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
+    icon = menu_on_click(pystray.Icon)("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
 
     def refresh(icon) -> None:
         # In pystray's thread, the only one it lets change the icon everywhere.

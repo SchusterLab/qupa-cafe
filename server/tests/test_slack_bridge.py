@@ -397,8 +397,9 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
     assert parent["username"] == "pat"
     assert "|Leakage in the cat qubit>*\nDoes *leakage* matter here?" in parent["text"]
-    assert "/11/1|View this post>" in parent["text"]
-    assert parent["text"].endswith("Reply in this thread to post to the topic.")
+    # The linked title is the link to the post, so no second link follows it.
+    assert "View this post" not in parent["text"]
+    assert parent["text"].endswith("\n_Reply in this thread to post to the topic._")
     assert replies(slack) == []
     assert bridge.state.thread_for(11)[0] == parent["channel"]
 
@@ -564,12 +565,17 @@ def test_a_message_from_the_agent_reaches_its_researchers_dm(world):
                allowed_users=["sunada-agent", "sunada"])
     stub.post(41, "sunada-agent", "Threshold holds at 0.57%.")
     assert bridge.poll() == 1
-    parent, reply = [m for m in slack.dms if m["channel"] == "DUS"]
-    assert "The d=7 sweep finished" in parent["text"] and not parent.get("thread_ts")
-    assert reply["thread_ts"] == bridge.state.thread_for(41)[1] and reply["username"] == "sunada-agent"
+    # The parent is the message itself, under its author, with no mention in a DM.
+    (parent,) = [m for m in slack.dms if m["channel"] == "DUS"]
+    assert not parent.get("thread_ts") and parent["username"] == "sunada-agent"
+    assert "|The d=7 sweep finished>*\nThreshold holds at 0.57%." in parent["text"]
+    assert "<@" not in parent["text"]
+    assert parent["text"].endswith("\n_A private message among sunada and their agents. Reply in this thread to answer it there._")
+    assert "View this post" not in parent["text"]
+    thread_ts = bridge.state.thread_for(41)[1]
 
     # Answered from the DM, the reply goes to the message as sunada.
-    event = dm("US", "Great, write it up.", "8000.2", thread_ts=reply["thread_ts"])
+    event = dm("US", "Great, write it up.", "8000.2", thread_ts=thread_ts)
     assert bridge.handle_message(event).startswith("posted as sunada")
     assert stub.created_as[-1] == ("sunada", {"topic_id": "41", "raw": "Great, write it up."})
 
@@ -585,7 +591,14 @@ def test_a_message_between_people_opens_a_group_dm_and_brings_their_agents(world
     # One thread, in a group DM of the two of them and the bot.
     channel, thread_ts = bridge.state.thread_for(41)
     assert slack.group_members[channel] == ["UP", "US", "UBOT"]
-    assert [m["username"] for m in slack.messages if m.get("thread_ts") == thread_ts] == ["pat"]
+    (parent,) = [m for m in slack.messages if m["channel"] == channel]
+    assert parent["username"] == "pat" and "Can we compare notes?" in parent["text"]
+    assert "A private message among pat, sunada and their agents." in parent["text"]
+
+    # A reply goes under it.
+    stub.post(41, "sunada", "Yes, tomorrow.")
+    bridge.poll()
+    assert [m["username"] for m in slack.messages if m.get("thread_ts") == thread_ts] == ["sunada"]
 
 
 def test_somebody_added_later_moves_the_thread_to_a_conversation_with_them(world):
@@ -600,8 +613,14 @@ def test_somebody_added_later_moves_the_thread_to_a_conversation_with_them(world
     stub.topics[41]["allowed_users"].append("pat")
     stub.post(41, "sunada", "Adding pat.")
     bridge.poll()
-    channel, _ = bridge.state.thread_for(41)
+    channel, thread_ts = bridge.state.thread_for(41)
     assert channel == "GUPUS"
+    # The new conversation opens with the first post too; outside a DM, the
+    # agent's post mentions its researcher.
+    parent, reply = [m for m in slack.messages if m["channel"] == channel]
+    assert parent["username"] == "sunada-agent" and parent["text"].startswith("<@US>, your agent posted:\n*<")
+    assert "Threshold holds at 0.57%." in parent["text"]
+    assert reply["thread_ts"] == thread_ts and reply["username"] == "sunada"
     note = [m for m in slack.dms if m.get("thread_ts") == old_ts][-1]
     assert "continues in a conversation that includes them" in note["text"]
     assert stub.added == [(41, "pat-agent")]
