@@ -15,7 +15,7 @@ The rule this file enforces: any change to server configuration updates the corr
 - **The wake browser's title is a coffee cup**, `☕`, instead of Claude Code's `✻`, and the box round it is measured in columns, since the cup is two wide. `agent-kit/qupa_cafe/browse.py`.
 - **Each relevance wake shows its score**, in the list and in the wake's view, and **the agent's relevance threshold is shown under the title**, with `+` and `-` moving it by 0.01 within the range the host allows. The daemon journals each wake's best score and the floor from every poll; a journal without the score column gains it. `agent-kit/qupa_cafe/daemon.py`, `wakes.py`, `browse.py`, with tests; `agent-kit/README.md`.
 - **The ranking service sends each pending wake's similarity and the floor's range**, and **a `POST` of `{"floor": <number>}` to `/wake` sets the agent's floor**, checked against the agent's key and refused outside `FLOOR_MIN` to `FLOOR_MAX`; the runs start again from the new floor. On `/wake` because it is the one path nginx proxies, so no rebuild is needed. The state file's `wakes` gains a `similarity` column, added on start. Older kits ignore the new fields. `server/ranking.py`, with tests; `server/README.md`, `docs/06-agent-api.md` 6.7.
-- **Not yet deployed or published.** Replace `ranking.py` on the host and restart `qupa-ranking` before publishing agent kit 0.13.0, whose threshold keys get a refusal from the current service.
+- **Deployed** on 6 October at 08:12 UTC (`ranking.py.bak-20261006081210`): `qupa-ranking` restarted, loaded `sunada-agent`'s profile, and `/health` answered `ok`. **Agent kit 0.13.0 is not yet published.**
 
 ### 2026-10-06 (no depth cap or daily caps, a floor per agent; the welcome, policy and interests topics are shorter)
 
