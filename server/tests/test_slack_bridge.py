@@ -54,10 +54,9 @@ def test_to_slack_turns_images_and_attachments_into_their_names():
     assert bridge_mod.to_slack("data: [run.csv|attachment](upload://x.csv) (2 KB)", "u") == "data: run.csv (2 KB)"
 
 
-def test_to_slack_cuts_long_posts_with_a_link():
-    text = bridge_mod.to_slack("word " * 2000, "https://f/t/x/1/3")
-    assert len(text) < bridge_mod.MAX_SLACK_TEXT + 100
-    assert text.endswith("<https://f/t/x/1/3|Read the rest>")
+def test_to_slack_keeps_a_post_of_the_longest_length_whole():
+    raw = ("word " * 799) + "last"  # 3999 characters, under max_post_length
+    assert bridge_mod.to_slack(raw, "https://f/t/x/1/3") == raw
 
 
 def test_from_slack_resolves_mentions_links_and_entities():
@@ -795,8 +794,8 @@ def test_a_refusal_is_told_to_the_person_who_wrote(world):
 
 
 def test_threads_and_posts_carry_their_links(world):
-    """A thread opens with the topic's title, and every post ends with a link
-    to it, unless it was cut and already ends with a link to the rest."""
+    """A thread opens with the topic's title, and every reply, whatever its
+    length, is posted whole and ends with a link to it."""
     stub, slack, bridge = world
     stub.post(10, "pat", "I get 0.57% for this.")
     bridge.poll()
@@ -814,8 +813,8 @@ def test_threads_and_posts_carry_their_links(world):
     assert agent.startswith("<@US>, your agent posted:\n")
     assert agent.endswith("|View this post>")
 
-    stub.post(10, "pat", "word " * 2000)
+    stub.post(10, "pat", ("word " * 799) + "last")
     bridge.poll()
-    cut = replies(slack)[2]["text"]
-    assert cut.endswith("|Read the rest>")
-    assert "View this post" not in cut
+    long = replies(slack)[2]["text"]
+    assert long.startswith(("word " * 799) + "last\n<")
+    assert long.endswith("|View this post>")

@@ -55,9 +55,6 @@ POST_TYPE_REGULAR = 1
 
 TOPIC_HINT = "Reply in this thread to post to the topic."
 
-# Slack folds anything past about 4,000 characters.
-MAX_SLACK_TEXT = 3500
-
 MEMBERSHIP_TTL_SECONDS = 600
 
 MAX_PAGES_PER_POLL = 20
@@ -338,7 +335,10 @@ def html_link(match: re.Match, base: str) -> str:
 
 def to_slack(raw: str, link: str) -> str:
     """Forum markdown, readable in a thread: links, bold and images converted,
-    the rest as written, and anything long cut with a link to the rest."""
+    and the rest as written, in full. ``link`` is the post's address, against
+    which a relative one is resolved. A post is at most `max_post_length`
+    (4,000) characters, and Slack truncates only past 40,000, folding a long
+    message behind "Show more"."""
     text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
@@ -346,11 +346,7 @@ def to_slack(raw: str, link: str) -> str:
     # Links after escaping, so their angle brackets are the only live ones.
     text = _MD_LINK.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)
     text = _MD_BOLD.sub(lambda m: f"*{m.group(1)}*", text)
-    text = text.strip()
-    if len(text) > MAX_SLACK_TEXT:
-        cut = text.rfind("\n", 0, MAX_SLACK_TEXT)
-        text = text[: cut if cut > MAX_SLACK_TEXT // 2 else MAX_SLACK_TEXT].rstrip() + f"\n… <{link}|Read the rest>"
-    return text
+    return text.strip()
 
 
 _SLACK_USER = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
@@ -706,9 +702,7 @@ class Bridge:
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
                 lead = f"<@{slack_id}>, your agent posted:\n"
-        # A cut post already ends with a link to the rest.
-        cut = body.endswith("|Read the rest>")
-        return f"{lead}{heading}{body}" if cut or not link else f"{lead}{heading}{body}\n<{url}|View this post>"
+        return f"{lead}{heading}{body}\n<{url}|View this post>" if link else f"{lead}{heading}{body}"
 
     def agent_of(self, username: str) -> str | None:
         """``<username>-agent``, if it is an agent."""

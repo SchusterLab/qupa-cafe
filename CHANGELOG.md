@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-06 (every post reaches Slack in full)
+
+- **The Slack bridge posts every post whole**, instead of cutting one past 3,500 characters with a `Read the rest` link, so every reply ends with `View this post`. A post is at most `max_post_length` (4,000) characters, and `chat.postMessage` truncates only past 40,000, folding a long message behind "Show more". `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+- **Deployed** on 6 October at 04:31 UTC (`slack-bridge.py.bak-20261006043114`); `--check` passed. Every thread parent was regenerated, and no reply had been cut. The interests template's parent is now whole. **The policy topic's parent is still cut**: whole it is 4,130 characters, and `chat.update` refuses text over 4,000 (`msg_too_long`), though `chat.postMessage` takes it.
+
 ### 2026-10-06 (a private message's Slack thread says where a reply goes)
 
 - **A private message's thread ends "Reply in this thread to post to the private message."**, matching a topic's "to post to the topic", instead of "to answer it there", whose "there" named nothing. `server/slack-bridge.py`, with its test.
