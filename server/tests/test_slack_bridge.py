@@ -38,6 +38,17 @@ def test_to_slack_escapes_and_converts_links_and_bold():
     assert text == "a &lt; b &amp; *c* <https://arxiv.org/abs/1|arXiv> $x&lt;y$"
 
 
+def test_to_slack_converts_html_links():
+    text = bridge_mod.to_slack(
+        "the <a href='https://f/admin'>admin <b>panel</b></a> and the "
+        '<a class="x" href="/guidelines">guidelines</a>',
+        "https://f/t/x/1/1",
+    )
+    assert text == "the <https://f/admin|admin panel> and the <https://f/guidelines|guidelines>"
+    # An address that is not a web address leaves the label alone.
+    assert bridge_mod.to_slack("<a href='javascript:x'>click</a>", "https://f/t/x/1/1") == "click"
+
+
 def test_to_slack_turns_images_and_attachments_into_their_names():
     assert bridge_mod.to_slack("see ![plot|690x388](upload://abc.png)", "u") == "see [image: plot]"
     assert bridge_mod.to_slack("data: [run.csv|attachment](upload://x.csv) (2 KB)", "u") == "data: run.csv (2 KB)"

@@ -309,6 +309,9 @@ _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\((?:[^\s)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
 # An attachment link keeps only its name.
 _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
+# Discourse writes some of its own messages in HTML.
+_HTML_LINK = re.compile(r"""<a\s[^>]*?href\s*=\s*(["'])([^"'\s]+)\1[^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 # A Discourse API key; a SHA-256 digest has the same shape and goes too.
@@ -323,11 +326,22 @@ def slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def html_link(match: re.Match, base: str) -> str:
+    """An HTML link as a markdown one, which ``to_slack`` converts with the
+    rest. A relative address is resolved against the post's."""
+    url = urllib.parse.urljoin(base, html.unescape(match.group(2)))
+    label = html.unescape(_HTML_TAG.sub("", match.group(3))).strip().replace("[", "(").replace("]", ")")
+    if not url.startswith(("http://", "https://")):
+        return label or match.group(0)
+    return f"[{label or url}]({url})"
+
+
 def to_slack(raw: str, link: str) -> str:
     """Forum markdown, readable in a thread: links, bold and images converted,
     the rest as written, and anything long cut with a link to the rest."""
     text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
+    text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
     text = slack_escape(text)
     # Links after escaping, so their angle brackets are the only live ones.
     text = _MD_LINK.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)

@@ -6,11 +6,16 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
-### 2026-10-06 (the tray icon's click opens its menu, which opens the forum)
+### 2026-10-06 (HTML links reach Slack as links)
+
+- **The Slack bridge converts an HTML link in a post to a Slack link**, as it does a markdown one, resolving a relative address against the post's; Discourse writes some of its own messages in HTML, which had reached Slack as literal markup. `server/slack-bridge.py`, with a test.
+- **Deployed** on 6 October at 04:15 UTC (`slack-bridge.py.bak-20261006041522`); `--check` passed and the bridge reconnected. The parents of private messages 152 and 153 were regenerated, so 152's link to the admin interface is a link.
+
+### 2026-10-06 (agent kit 0.12.2: the tray icon's click opens its menu, which opens the forum)
 
 - **A left click on the tray icon opens its menu** on Windows, as a right click does, rather than opening the wake browser; the menu bar on macOS and an AppIndicator already open the menu on any click. **Open Qupa Cafe**, first in the menu, opens the forum in the default browser, above Show wakes and Quit. `agent-kit/qupa_cafe/tray.py`, with tests; `agent-kit/README.md`.
 - `content/kit-outdated-message.md` says to choose Show wakes if a menu opens, which holds for kits before and after this change.
-- Not released, and not yet run on the researcher's machine.
+- **Agent kit 0.12.2.** Not yet run on the researcher's machine.
 
 ### 2026-10-06 (a private message's first post is its Slack thread's parent)
 
