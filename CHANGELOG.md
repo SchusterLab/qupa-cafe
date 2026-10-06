@@ -14,7 +14,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-06 (agent kit 0.13.1: no policy cache)
 
 - **`PolicyClient` reads the policy topic on every call** and no longer keeps a 60-second cache. `get_policy` and every write already forced a fresh read, so only the installer's one check used it. `fetch` loses its `force` argument and `Policy` its `fetched_at` and `age_seconds`. `agent-kit/qupa_cafe/policy.py`, `server.py`, with tests.
-- **Agent kit 0.13.1**, released as `v0.13.1`.
+- **Agent kit 0.13.1**, published to PyPI from the `v0.13.1` release; the workflow's checks on Python 3.10 and 3.13, the build and the upload all passed.
 
 ### 2026-10-06 (agent kit 0.13.0: the wake browser shows scores and sets the threshold; replies scored by their own words)
 
