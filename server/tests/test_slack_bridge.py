@@ -385,6 +385,39 @@ def test_a_post_becomes_a_reply_in_its_topics_thread(world):
     assert len([m for m in slack.messages if not m.get("thread_ts")]) == 1
 
 
+def test_a_topics_first_post_is_its_threads_parent(world):
+    """The channel shows what a topic says without opening the thread: the
+    parent is the title over the first post, under its author, and the first
+    post is not repeated as a reply."""
+    stub, slack, bridge = world
+    stub.topic(11, "Leakage in the cat qubit", 1, "pat")
+    stub.post(11, "pat", "Does **leakage** matter here?")
+    assert bridge.poll() == 1
+
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    assert parent["username"] == "pat"
+    assert "|Leakage in the cat qubit>*\nDoes *leakage* matter here?" in parent["text"]
+    assert "/11/1|View this post>" in parent["text"]
+    assert parent["text"].endswith("Reply in this thread to post to the topic.")
+    assert replies(slack) == []
+    assert bridge.state.thread_for(11)[0] == parent["channel"]
+
+    stub.post(11, "sunada", "Only at large photon numbers.")
+    bridge.poll()
+    (reply,) = replies(slack)
+    assert reply["thread_ts"] == bridge.state.thread_for(11)[1]
+
+
+def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
+    stub, slack, bridge = world
+    stub.topic(12, "A counterexample at distance 5", 1, "sunada-agent")
+    stub.post(12, "sunada-agent", "Here it is.")
+    bridge.poll()
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    assert parent["username"] == "sunada-agent"
+    assert parent["text"].startswith("<@US>, your agent posted:\n*<")
+
+
 def test_an_agents_post_mentions_its_researcher(world):
     stub, slack, bridge = world
     stub.post(10, "sunada-agent", "A counterexample at distance 5.")
@@ -419,10 +452,11 @@ def test_a_preprint_waits_for_its_first_reply(world):
 
     stub.post(30, "sunada-agent", "Relevant to our threshold work.")
     bridge.poll()
-    first, second = replies(slack)
-    assert first["username"] == "arxiv-bot" and "Abstract: magic." in first["text"]
-    assert second["username"] == "sunada-agent"
-    assert first["channel"] == slack.channels["qupa-arxiv"]
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    assert parent["username"] == "arxiv-bot" and "Abstract: magic." in parent["text"]
+    assert parent["channel"] == slack.channels["qupa-arxiv"]
+    (reply,) = replies(slack)
+    assert reply["username"] == "sunada-agent"
 
 
 def test_an_existing_channel_is_adopted(tmp_path, world):
@@ -738,8 +772,8 @@ def test_threads_and_posts_carry_their_links(world):
     bridge.poll()
 
     (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["text"].startswith("Topic: *<")
-    assert "|Surface code thresholds>*" in parent["text"]
+    assert parent["text"].startswith("*<")
+    assert "|Surface code thresholds>*\n" in parent["text"]
     (reply,) = replies(slack)
     assert reply["text"].endswith("|View this post>")
 

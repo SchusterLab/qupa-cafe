@@ -578,16 +578,29 @@ class Bridge:
     def post_url(self, topic: dict, post_number: int) -> str:
         return f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}/{post_number}"
 
-    def ensure_thread(self, topic: dict, channel_id: str) -> str:
+    def opening(self, topic: dict, first: dict | None) -> dict:
+        """The thread's parent: the topic's title over its first post, under
+        that post's author, so the channel shows what the topic says. With the
+        first post gone, the title alone under the topic's opener."""
+        url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
+        heading = f"*<{url}|{slack_escape(topic['title'])}>*\n"
+        hint = "\nReply in this thread to post to the topic."
+        if not first or first.get("hidden") or first.get("deleted_at") or first.get("user_deleted"):
+            return {"text": heading.rstrip() + hint, "username": topic.get("opener") or "somebody"}
+        return {"text": self.post_text(first, topic, heading=heading) + hint, "username": first.get("username") or "somebody"}
+
+    def ensure_thread(self, topic: dict, channel_id: str, first: dict | None = None) -> str:
         existing = self.state.thread_for(topic["id"])
         if existing and existing[0] == channel_id:
             return existing[1]
-        url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
-        opener = topic.get("opener")
-        text = f"Topic: *<{url}|{slack_escape(topic['title'])}>*"
-        if opener:
-            text += f"\nOpened by {slack_escape(opener)}. Reply in this thread to post to the topic."
-        result = self.slack.chat_postMessage(channel=channel_id, text=text, unfurl_links=False, unfurl_media=False)
+        if first is None and topic.get("first_post_id"):
+            try:
+                first = self.forum.post(topic["first_post_id"])
+            except Refused as exc:
+                LOG.warning("topic %d opens without its first post: %s", topic["id"], exc)
+        result = self.slack.chat_postMessage(
+            channel=channel_id, **self.opening(topic, first), unfurl_links=False, unfurl_media=False,
+        )
         self.state.set_thread(topic["id"], channel_id, result["ts"])
         return result["ts"]
 
@@ -607,16 +620,13 @@ class Bridge:
         if not channel_id:
             return "restricted category"
 
-        number = post.get("post_number") or 1
-        threaded = self.state.thread_for(topic["id"])
-
-        if not threaded and self.is_feed(topic.get("opener") or ""):
-            if number == 1:
+        # The first post is the thread's parent; a feed topic's waits for a
+        # reply, which brings it.
+        if (post.get("post_number") or 1) == 1:
+            if self.is_feed(topic.get("opener") or ""):
                 return "a feed topic with no reply yet"
-            # The first reply to a preprint brings the preprint with it.
-            thread_ts = self.ensure_thread(topic, channel_id)
-            if topic.get("first_post_id"):
-                self.send(self.forum.post(topic["first_post_id"]), topic, channel_id, thread_ts)
+            self.ensure_thread(topic, channel_id, first=post)
+            return f"relayed to {channel_id} as its thread's parent"
         thread_ts = self.ensure_thread(topic, channel_id)
         self.send(post, topic, channel_id, thread_ts)
         return f"relayed to {channel_id}"
@@ -633,19 +643,7 @@ class Bridge:
         """One post as a thread reply. ``reopen`` restarts a thread whose parent
         was deleted in Slack; ``mention`` is off in a DM."""
         author = post.get("username") or "somebody"
-        url = self.post_url(topic, post.get("post_number") or 1)
-        if "raw" not in post:
-            post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
-        body = to_slack(post.get("raw") or "", url)
-        lead = ""
-        if mention and self.is_agent(author):
-            researcher = self.researcher_for(author)
-            slack_id = self.slack_id_for(researcher) if researcher else None
-            if slack_id:
-                lead = f"<@{slack_id}>, your agent posted:\n"
-        # A cut post already ends with a link to the rest.
-        cut = body.endswith("|Read the rest>")
-        text = f"{lead}{body}" if cut else f"{lead}{body}\n<{url}|View this post>"
+        text = self.post_text(post, topic, mention=mention)
         try:
             self.slack.chat_postMessage(
                 channel=channel_id,
@@ -668,6 +666,24 @@ class Bridge:
                 )
                 return
             raise
+
+    def post_text(self, post: dict, topic: dict, mention: bool = True, heading: str = "") -> str:
+        """A post as Slack text: an agent's starts by mentioning its researcher,
+        then ``heading``, the body, and a link to the post."""
+        author = post.get("username") or "somebody"
+        url = self.post_url(topic, post.get("post_number") or 1)
+        if "raw" not in post:
+            post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
+        body = to_slack(post.get("raw") or "", url)
+        lead = ""
+        if mention and self.is_agent(author):
+            researcher = self.researcher_for(author)
+            slack_id = self.slack_id_for(researcher) if researcher else None
+            if slack_id:
+                lead = f"<@{slack_id}>, your agent posted:\n"
+        # A cut post already ends with a link to the rest.
+        cut = body.endswith("|Read the rest>")
+        return f"{lead}{heading}{body}" if cut else f"{lead}{heading}{body}\n<{url}|View this post>"
 
     def agent_of(self, username: str) -> str | None:
         """``<username>-agent``, if it is an agent."""
