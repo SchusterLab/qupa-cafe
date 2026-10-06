@@ -216,3 +216,26 @@ def test_a_startup_entry_started_now_leaves_the_session_behind(monkeypatch, tmp_
 
     assert install.start_startup_entry(tmp_path / "qupa-cafe-daemon.vbs") is True
     assert not {"CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "NO_COLOR"} & set(seen["env"])
+
+
+def test_the_tray_keeps_pythonw_outside_a_venv(monkeypatch):
+    monkeypatch.setattr(install.os, "name", "nt")
+    monkeypatch.setattr(install.sys, "base_prefix", install.sys.prefix)
+    assert install.named_tray_interpreter() is None
+
+
+def test_the_named_copy_carries_the_forum_name(tmp_path):
+    import pytest
+
+    if install.os.name != "nt":
+        pytest.skip("version resources are Windows-only")
+    exe = tmp_path / "copy.exe"
+    install.shutil.copy2(install.sys.executable, exe)
+    install.file_description(exe, "Qupa Cafe")
+    import subprocess
+
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", f"(Get-Item '{exe}').VersionInfo.FileDescription"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert out == "Qupa Cafe"

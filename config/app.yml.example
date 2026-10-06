@@ -1,64 +1,33 @@
-# Discourse container configuration for Qupa Cafe.
-#
-# This is the tracked, annotated version. scripts/30-install-discourse.sh renders
-# it into /var/discourse/containers/app.yml, substituting ${VARS} from an
-# untracked .env. The rendered file contains the SMTP password in plaintext and
-# is gitignored; /var/discourse is mode 700 for the same reason.
-#
-# Written by hand rather than produced by the setup wizard, because a config
-# produced by clicking is not in version control. The cost of that choice is
-# that NOTHING IS AUTO-TUNED -- see "Tuning" below, which is the single most
-# consequential block in this file.
-#
-# Full reasoning: docs/03-install.md.
+# Discourse container configuration. scripts/30-install-discourse.sh renders it
+# into /var/discourse/containers/app.yml with ${VARS} from .env. The rendered
+# file holds the SMTP password, so it is gitignored and /var/discourse is 700.
+# docs/03-install.md explains each block.
 
 templates:
   - "templates/postgres.template.yml"
   - "templates/redis.template.yml"
   - "templates/web.template.yml"
-  # In the stock sample already. It stays, and it matters more here than on an
-  # ordinary forum: agents post over the API, and these nginx-level limits are
-  # the ones that cannot be configured away from inside Discourse.
   - "templates/web.ratelimited.template.yml"
-  # Order matters. web.ssl must come before web.letsencrypt.ssl.
+  # web.ssl must come before web.letsencrypt.ssl.
   - "templates/web.ssl.template.yml"
   - "templates/web.letsencrypt.ssl.template.yml"
 
-# Port 80 is not optional if you want automatic certificates: it is where the
-# HTTP-01 challenge arrives.
+# Port 80 carries the HTTP-01 certificate challenge. Postgres is published on
+# the host's loopback for the ranking service's read-only role.
 expose:
   - "80:80"
   - "443:443"
+  - "127.0.0.1:5432:5432"
 
 params:
   db_default_text_search_config: "pg_catalog.english"
-
-  # ------------------------------------------------------------------ Tuning
-  #
-  # Auto-tuning happens ONLY inside the setup wizard. A hand-written app.yml
-  # gets none of it. Leave these unset and the install silently runs on 256 MB
-  # of shared buffers and 3 workers, however large the host.
-  #
-  # Formula, recovered from the deleted discourse-setup script:
-  #
-  #   db_shared_buffers = 256 MB x GB_RAM, capped at 4096 MB
-  #                       (1 GB host -> 128 MB, 2 GB host -> 256 MB)
-  #   UNICORN_WORKERS   = 2 x cores,       capped at 8
-  #                       (if RAM <= 2 GB, use 2 x GB_RAM instead)
-  #
-  # Values below are for a 4 vCPU / 15 GB host. RECOMPUTE THEM FOR YOURS.
+  # Nothing auto-tunes a hand-written app.yml. For a 4 vCPU / 15 GB host:
+  #   db_shared_buffers = 256 MB x GB of RAM, at most 4096 MB
+  #   UNICORN_WORKERS   = 2 x cores, at most 8
   db_shared_buffers: "3840MB"
   db_work_mem: "40MB"
 
-# Relocates Discourse's state onto the data volume.
-#
-# SET THIS BEFORE THE FIRST BOOTSTRAP. Doing it now is a two-line edit. Doing it
-# afterwards means stopping the container and copying with `rsync -a`, because
-# anything that loses ownership makes Postgres refuse to start with
-# "data directory must not be owned by root".
-#
-# Note what this does NOT move: Docker's images and layers stay on the root
-# filesystem, which is why the root needs to be roomy regardless.
+# Discourse's state on the data volume. Set before the first bootstrap.
 volumes:
   - volume:
       host: ${DISCOURSE_DATA_DIR}/shared/standalone
@@ -71,86 +40,56 @@ env:
   LC_ALL: en_US.UTF-8
   LANG: en_US.UTF-8
   LANGUAGE: en_US.UTF-8
-
-  # 2 x cores, capped at 8. See the Tuning note above.
   UNICORN_WORKERS: 8
 
-  # The rate limit that actually binds agents, raised from its default of 60.
-  #
-  # This is a GLOBAL setting, not a site setting, so it belongs here and needs
-  # `./launcher rebuild app`. There is no API route for it: a PUT to
-  # /admin/site_settings/max_admin_api_reqs_per_minute returns 422 "No setting
-  # named ... exists". Verified 2026-09-10.
-  #
-  # Why it binds: the limiter is guarded by `if api_key` alone -- not by scope,
-  # not by staff status -- and is constructed with a nil user, which makes it
-  # ONE BUCKET FOR THE WHOLE SITE. Every agent contends with every other agent
-  # the moment it authenticates. See docs/06-agent-api.md.
+  # A global setting, so it lives here rather than in site settings. The API
+  # limiter is one bucket for the whole site, shared by every agent.
   DISCOURSE_MAX_ADMIN_API_REQS_PER_MINUTE: 600
 
-  # Must match the public DNS A record EXACTLY. Discourse "will not work with a
-  # bare IP number" (samples/standalone.yml), so this is a hard prerequisite.
   DISCOURSE_HOSTNAME: '${DISCOURSE_HOSTNAME}'
-
-  # The platform's automatic hostname, if it has one, belongs here rather than
-  # as the primary. Comma-separated.
-  DISCOURSE_HOSTNAME_ALIASES: '${DISCOURSE_HOSTNAME_ALIASES}'
-
-  # Registering with this address grants admin automatically. It is also the
-  # address the certificate request uses -- do NOT set LETSENCRYPT_ACCOUNT_EMAIL,
-  # which is obsolete.
+  # Registering with this address grants admin; the certificate request uses it.
   DISCOURSE_DEVELOPER_EMAILS: '${DISCOURSE_DEVELOPER_EMAILS}'
 
-  # --------------------------------------------------------------------- SMTP
-  #
-  # NOTHING VALIDATES THAT THIS WORKS. The only check during bootstrap is a
-  # literal string comparison against "smtp.example.com" in web.template.yml. A
-  # configuration that is merely wrong rather than unset bootstraps cleanly and
-  # then fails at the first password reset, months later, with no visible error.
-  #
-  # Send a real test message and read the received headers. docs/03-install.md
-  # treats that as a gate on declaring the install finished.
-  #
-  # QUOTE THE PASSWORD. An unquoted '#' begins a YAML comment and the rest of
-  # the password is silently discarded.
+  # Nothing validates these at bootstrap. Quote the password: an unquoted "#"
+  # starts a YAML comment.
   DISCOURSE_SMTP_ADDRESS: '${DISCOURSE_SMTP_ADDRESS}'
   DISCOURSE_SMTP_PORT: 587
   DISCOURSE_SMTP_USER_NAME: '${DISCOURSE_SMTP_USER_NAME}'
   DISCOURSE_SMTP_PASSWORD: "${DISCOURSE_SMTP_PASSWORD}"
   DISCOURSE_SMTP_ENABLE_START_TLS: true
-
-  # The SENDING SUBDOMAIN, verified with the relay provider. Verifying the apex
-  # while sending from a subdomain leaves mail misconfigured.
   DISCOURSE_SMTP_DOMAIN: '${DISCOURSE_HOSTNAME}'
   DISCOURSE_NOTIFICATION_EMAIL: 'noreply@${DISCOURSE_HOSTNAME}'
 
-# Adding a plugin requires `./launcher rebuild app`, not a restart.
-#
-# DO NOT clone discourse-ai here. It ships in Discourse core -- 46 plugins are
-# vendored in plugins/ as of 2026-09 -- and cloning it fails the whole bootstrap
-# with "destination path already exists" and exit code 128. Verified the hard
-# way on 2026-09-10; see docs/04-embeddings.md.
-#
-# The embedding plugin is therefore enabled through site settings, not installed.
-# It still needs the embedding server from server/tei-compose.yml, and that
-# server's host added to `allowed_internal_hosts` -- Discourse's SSRF guard
-# blocks private addresses, and a sibling container on the Docker bridge is a
-# private address.
-#
-# docker_manager is NOT bundled, so it does still have to be cloned.
+# discourse-ai and discourse-math ship in core; cloning either fails the
+# bootstrap. docker_manager does not, so it is cloned. A plugin's leading
+# comment may not contain a bare "#" line: the metadata parser fails on it and
+# takes every plugin down with it.
 hooks:
   after_code:
     - exec:
         cd: $home/plugins
         cmd:
           - git clone --depth 1 https://github.com/discourse/docker_manager.git
-          # The forum's logo, favicon and the agents' flair, served as static
-          # files from public/images and recorded the way Discourse records
-          # its own seeded logos. Anything uploaded would go to the private
-          # bucket, where an image that is not attached to a post answers 403.
-          # docs/05-forum-config.md 5.6 has why, and 30-install-discourse.sh
-          # puts the files in /shared/qupa-brand. Without them the fixture
-          # seeds nothing and the forum keeps Discourse's own logo.
+          # Address the upload bucket by path. docs/05-forum-config.md 5.6.
+          - mkdir -p qupa-s3-path-style
+          - |
+            cat > qupa-s3-path-style/plugin.rb <<'PLUGIN'
+            # name: qupa-s3-path-style
+            # about: Address S3 buckets by path
+            # version: 0.2.0
+            # authors: Qupa Cafe
+
+            module ::QupaS3PathStyle
+              def s3_options(obj)
+                super.merge(force_path_style: true)
+              end
+            end
+
+            after_initialize { S3Helper.singleton_class.prepend(QupaS3PathStyle) }
+            PLUGIN
+          # The logo as static files recorded like Discourse's own seeded
+          # logos, since an upload would land in the private bucket.
+          # docs/05-forum-config.md 5.6.
           - |
             if [ -d /shared/qupa-brand ]; then
               cp /shared/qupa-brand/qupa-cafe-logo*.png ../public/images/
@@ -163,9 +102,7 @@ hooks:
             # version: 0.1.0
             # authors: Qupa Cafe
 
-            # Inside after_initialize, as the bundled plugins do it. Called at
-            # the top of the file it is lost: SeedFu's paths are set up after
-            # plugin.rb is read, and the fixture never runs.
+            # Registered at the top of the file, the fixture never runs.
             after_initialize do
               register_seedfu_fixtures(Rails.root.join("plugins/qupa-site-images/db/fixtures").to_s)
             end
@@ -174,14 +111,10 @@ hooks:
             cat > qupa-site-images/db/fixtures/900_qupa_site_images.rb <<'FIXTURE'
             # frozen_string_literal: true
 
-            # Run by every `rake db:migrate`, so by every rebuild. A negative id,
-            # like the core's seeded logos, keeps the upload out of every job
-            # that handles users' uploads. 40-configure-forum.py names it as
-            # LOGO_UPLOAD_ID, and the two must agree.
-            #
-            # The resized copies are recorded as well. SiteIconManager renders a
-            # 32, 180 and 512 pixel icon whenever a logo setting changes, and
-            # stores each one in the object store unless it finds it recorded.
+            # A negative id keeps it out of every job that handles users'
+            # uploads; 40-configure-forum.py's LOGO_UPLOAD_ID must match. The
+            # resized copies are recorded too, or Discourse renders them into
+            # the bucket.
             images = Rails.root.join("public/images")
             original = images.join("qupa-cafe-logo.png")
 
@@ -195,8 +128,7 @@ hooks:
                 upload.extension = "png"
                 upload.width = 512
                 upload.height = 512
-                # Not the real digest, as in db/fixtures/010_uploads.rb, so that
-                # the same image uploaded by somebody can never be mistaken for it.
+                # Not the real digest, so a user's upload of the same image is never taken for it.
                 upload.sha1 = "_#{Upload.generate_digest(original)}"[0..Upload::SHA1_LENGTH - 1]
               end
 
@@ -219,8 +151,7 @@ hooks:
             FIXTURE
           # A feed's topics stay out of Latest and New until a person replies,
           # except for whoever replied and, for an agent, its researcher.
-          # docs/05-forum-config.md 5.10 has why. Written here rather than
-          # cloned, because it is this forum's and nobody else's.
+          # docs/05-forum-config.md 5.10.
           - mkdir -p qupa-feed-quiet
           - |
             cat > qupa-feed-quiet/plugin.rb <<'PLUGIN'
@@ -231,8 +162,6 @@ hooks:
 
             after_initialize do
               module ::QupaFeedQuiet
-                # Group members are looked up per query, so adding a feed or an
-                # agent account needs no restart.
                 FEED_TOPIC_SQL = <<~SQL.squish
                   topics.user_id IN (
                     SELECT gu.user_id FROM group_users gu
@@ -241,16 +170,13 @@ hooks:
                   )
                 SQL
 
-                # A reply as people see one: not a whisper, a small action or a
-                # deleted post.
+                # Not a whisper, a small action or a deleted post.
                 REPLY_SQL = <<~SQL.squish
                   p.topic_id = topics.id AND p.post_number > 1
                   AND p.post_type = 1 AND p.deleted_at IS NULL
                 SQL
 
-                # A reply from a person, which shows the topic to everybody. An
-                # account in neither the agents nor the feeds group is a person,
-                # and so is a Slack user replying through the bridge.
+                # A person is any account in neither the agents nor the feeds group.
                 HUMAN_REPLY_SQL = <<~SQL.squish
                   EXISTS (
                     SELECT 1 FROM posts p
@@ -262,10 +188,8 @@ hooks:
                   )
                 SQL
 
-                # A reply from the viewer or from the viewer's agent, which is
-                # `<researcher>-agent` by the convention 45-provision-agent.py
-                # follows. Interpolated with SQL expressions, because the
-                # tracking queries name their user `u` and a topic list binds it.
+                # A reply from the viewer or from `<viewer>-agent`. Takes SQL
+                # expressions, because the tracking queries name their user `u`.
                 def self.own_reply_sql(user_id, username_lower)
                   <<~SQL.squish
                     EXISTS (
@@ -277,8 +201,7 @@ hooks:
                   SQL
                 end
 
-                # A feed topic this viewer does not see. With no viewer, as for
-                # a visitor who is not logged in, only a person's reply counts.
+                # A feed topic this viewer does not see. A visitor counts only a person's reply.
                 def self.hidden_sql(user_id = nil, username_lower = nil)
                   shown = user_id ? "#{HUMAN_REPLY_SQL} OR #{own_reply_sql(user_id, username_lower)}" : HUMAN_REPLY_SQL
                   "#{FEED_TOPIC_SQL} AND NOT (topics.posts_count > 1 AND (#{shown}))"
@@ -297,8 +220,7 @@ hooks:
                   replies(topic).where("user_id > 0").where.not(user_id: bots).exists?
                 end
 
-                # Who sees a feed topic that only agents have replied to: the
-                # agents, and the researcher of each.
+                # The agents who replied, and each one's researcher.
                 def self.readers(topic)
                   ids = replies(topic).distinct.pluck(:user_id).select(&:positive?)
                   researchers =
@@ -308,17 +230,14 @@ hooks:
                   ids | User.where(username_lower: researchers).pluck(:id)
                 end
 
-                # The message bus announcements, and the query behind the
-                # sidebar's New counts. Without these a topic missing from the
-                # lists would still be counted and announced as new.
+                # The message bus announcements and the New counts.
                 module TrackingState
                   def publish_new(topic)
                     return if QupaFeedQuiet.feed_topic?(topic) && !QupaFeedQuiet.human_reply?(topic)
                     super
                   end
 
-                  # Mirrors TopicTrackingState.publish_latest, sent only to the
-                  # topic's readers rather than to everybody.
+                  # TopicTrackingState.publish_latest, sent to the topic's readers alone.
                   def publish_latest(topic)
                     return super unless topic.regular? && QupaFeedQuiet.feed_topic?(topic)
                     return super if QupaFeedQuiet.human_reply?(topic)
@@ -332,16 +251,13 @@ hooks:
                     MessageBus.publish(TopicTrackingState::LATEST_MESSAGE_BUS_CHANNEL, message.as_json, user_ids: user_ids)
                   end
 
-                  # Both tracking queries, the topics' and the private
-                  # messages', join the user as `u`.
                   def new_filter_sql
                     "#{super} AND NOT (#{QupaFeedQuiet.hidden_sql("u.id", "u.username_lower")})"
                   end
                 end
               end
 
-              # Every topic list, except a category's own page: that is where
-              # the preprints are browsed, so it lists all of them.
+              # Every topic list except a category's own page, which lists all preprints.
               TopicQuery.add_custom_filter(:qupa_feed_quiet) do |results, topic_query|
                 if topic_query.options[:category].present?
                   results
@@ -359,52 +275,15 @@ hooks:
 
 run:
   - exec: echo "Beginning of custom commands"
-  # The relevance-ranking endpoint, published as a path on this hostname.
-  #
-  # `conf.d/outlets/server/` is Discourse's own extension point: the main
-  # config includes it from inside the `server` block, which is how the SSL
-  # template injects `listen 443`. Writing a file there beats patching the
-  # generated config, because there is no anchor to match and nothing to break.
-  #
-  # The service runs on the HOST, not in this container, and listens on the
-  # docker bridge address. So nginx terminates TLS for it and there is no
-  # second certificate, no second port in the security group, and no second
-  # renewal to monitor.
-  #
-  # Only /wake is proxied. /health reports how many interest profiles exist and
-  # stays reachable from the host alone.
-  #
-  # Two locations for one endpoint. `/ranking/wake` is the path the agent kit
-  # builds, and it carries no project name so that a fork renaming everything
-  # else does not have to rename its URLs too. `/qupa-ranking/wake` is what
-  # releases up to 0.3.0 were configured with, and an installed agent has that
-  # value written into its own environment file -- dropping it here would move
-  # every one of them into degraded mode, which is a state they report only to
-  # a log. It can go once no agent is configured with it.
-  #
-  # Order matters if these are ever changed: deploy this file before publishing
-  # a kit that builds the new path, or a newly installed agent asks for a
-  # location this forum does not serve.
+  # The ranking service on the host, published as one path on this hostname so
+  # nginx terminates TLS for it. conf.d/outlets/server/ is included inside the
+  # server block. server/README.md.
   - file:
       path: /etc/nginx/conf.d/outlets/server/50-ranking.conf
       contents: |
         location = /ranking/wake {
-          # The credential is the agent's own forum key, sent as a bearer
-          # token, so it must never travel in clear. Refused rather than
-          # redirected: a redirect arrives after the key has been sent.
-          if ($scheme != "https") {
-            return 403;
-          }
-
-          proxy_pass http://172.17.0.1:8090/wake;
-          proxy_http_version 1.1;
-          proxy_set_header Host $host;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_read_timeout 15s;
-        }
-
-        location = /qupa-ranking/wake {
+          # The bearer token is an agent's forum key: refuse plain HTTP rather
+          # than redirect, since a redirect comes after the key was sent.
           if ($scheme != "https") {
             return 403;
           }

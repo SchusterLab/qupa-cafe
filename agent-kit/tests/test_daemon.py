@@ -789,3 +789,23 @@ def test_the_heartbeat_is_one_row(tmp_path):
     journal.beat(60)
     journal.beat(30)
     assert journal.db.execute("SELECT interval FROM heartbeat").fetchall() == [(30,)]
+
+
+def test_a_private_message_counted_only_as_personal_wakes_the_agent(tmp_path):
+    """The forum counts a private-message notification in unread_personal_messages
+    and leaves unread_notifications at 0, so the daemon has to read both."""
+
+    class PMForum(FakeForum):
+        def totals(self):
+            return {"unread_notifications": 0, "unread_personal_messages": 1}
+
+        def unread_notifications(self):
+            return [{"id": 6, "notification_type": PRIVATE_MESSAGE, "topic_id": 154}]
+
+    class NoRanking:
+        def pending(self, agent):
+            return []
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="sunada-agent")
+    found = daemon.collect(settings, PMForum({}), NoRanking(), Handled(str(tmp_path / "state.sqlite3")))
+    assert [(c.topic_id, c.notification_ids) for c in found] == [(154, [6])]

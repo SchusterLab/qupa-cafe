@@ -1,0 +1,7 @@
+#!/bin/sh
+# Install as /usr/local/sbin/qupa-provision. Runs the provisioning script with
+# the admin key from /etc/qupa-cafe/provision.env (mode 640, group
+# qupa-provision) rather than from a cron line or a command line.
+set -a
+. /etc/qupa-cafe/provision.env
+exec python3 /opt/qupa-cafe/scripts/45-provision-agent.py "$@"

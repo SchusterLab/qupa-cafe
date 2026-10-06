@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
 #
-# Provision the Qupa Cafe host on Jetstream2.
+# Provision the Qupa Cafe host on Jetstream2. Idempotent: every step checks
+# first, so a second run is a no-op. platforms/jetstream2/02-provision.md.
 #
-# Idempotent: every step is guarded by an existence check, so a second run is a
-# no-op and a run interrupted halfway can simply be repeated. That property is
-# the point of the script -- see platforms/jetstream2/02-provision.md.
-#
-# Prerequisites:
-#   - python3-openstackclient and python3-designateclient installed
-#   - an application credential sourced IN A FRESH TERMINAL:
-#       source app-cred-qupa-cafe-openrc.sh
-#   - an ed25519 or RSA public key at $KEY_FILE
-#
-# Usage:
-#   ./10-provision.sh              provision
-#   ./10-provision.sh --dry-run    print what would happen, change nothing
-#
-# Ends at an instance you can SSH into. Continue at docs/02-host-setup.md.
+# Needs python3-openstackclient and python3-designateclient, the openrc sourced
+# in a fresh terminal, and an ed25519 or RSA public key at $KEY_FILE.
+#   ./10-provision.sh [--dry-run]
 
 set -euo pipefail
 
@@ -50,8 +39,7 @@ run() {
   fi
 }
 
-# `openstack <thing> show` exits non-zero when the thing does not exist, which
-# is the existence check every step below uses.
+# `openstack <thing> show` fails when the thing does not exist.
 exists() {
   openstack "$@" > /dev/null 2>&1
 }
@@ -66,8 +54,6 @@ command -v openstack > /dev/null || die "openstack CLI not found. See platforms/
 
 [ -n "${OS_AUTH_URL:-}" ] || die "No credentials in the environment. Source your openrc in a FRESH terminal."
 
-# The smoke test doubles as a check that the application credential has not
-# expired -- a blank expiration field defaults to today, so this fails often.
 openstack flavor list > /dev/null 2>&1 \
   || die "Cannot talk to OpenStack. If you sourced an openrc over another one, open a new terminal."
 
@@ -82,8 +68,7 @@ printf '   ok\n'
 
 # ------------------------------------------------------------------- keypair
 
-# This comes first because a keypair can ONLY be attached at instance creation.
-# An instance created without one is unreachable and has to be rebuilt.
+# First: a keypair can only be attached when the instance is created.
 say "Keypair: $KEYPAIR"
 if exists keypair show "$KEYPAIR"; then
   skip "$KEYPAIR"
@@ -94,7 +79,6 @@ fi
 
 # ------------------------------------------------------------ security groups
 
-# Groups are additive, and the OpenStack-provided `default` group is left alone.
 say "Security group: $SG_SSH"
 if exists security group show "$SG_SSH"; then
   skip "$SG_SSH"
@@ -110,8 +94,6 @@ if exists security group show "$SG_WEB"; then
   skip "$SG_WEB"
 else
   run openstack security group create --description "http and https" "$SG_WEB"
-  # [extrapolated] These two follow the documented pattern for the port 22 rule
-  # but were not published by Jetstream2. Verify against the group after creation.
   run openstack security group rule create --protocol tcp --dst-port 80:80   --remote-ip 0.0.0.0/0 "$SG_WEB"
   run openstack security group rule create --protocol tcp --dst-port 443:443 --remote-ip 0.0.0.0/0 "$SG_WEB"
   did "$SG_WEB"
@@ -133,9 +115,7 @@ say "Instance: $INSTANCE ($FLAVOR, $IMAGE, ${ROOT_GB} GB root)"
 if exists server show "$INSTANCE"; then
   skip "$INSTANCE"
 else
-  # --nic is deliberately omitted. With a single network OpenStack selects
-  # auto_allocated_network, which is what Jetstream2 recommends and what
-  # carries the DNS domain.
+  # No --nic: the single auto_allocated_network carries the DNS domain.
   run openstack server create "$INSTANCE" \
     --flavor "$FLAVOR" \
     --image "$IMAGE" \
@@ -153,8 +133,7 @@ say "Attach $VOLUME to $INSTANCE"
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '   WOULD RUN: openstack server add volume %s %s\n' "$INSTANCE" "$VOLUME"
 else
-  # The attachments field records the server's UUID, never its name, so the
-  # name has to be resolved before it can be looked for.
+  # Attachments record the server's UUID, not its name.
   SERVER_ID="$(openstack server show "$INSTANCE" -f value -c id)"
   if openstack volume show "$VOLUME" -f value -c attachments | grep -q "$SERVER_ID"; then
     skip "attachment"
@@ -171,10 +150,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf '   WOULD RUN: openstack floating ip create public; openstack server add floating ip %s <IP>\n' "$INSTANCE"
   FLOATING_IP="<dry-run>"
 else
-  # An address already on the instance is reused rather than a second allocated.
-  # The instance reports its fixed and floating addresses in one list, in an
-  # order Nova does not promise, so the floating one is identified by looking
-  # each address up rather than by taking a position in that list.
+  # Reuse a floating IP already attached, found by looking each address up,
+  # since Nova lists fixed and floating addresses in no promised order.
   FLOATING_IP=""
   for addr in $(openstack server show "$INSTANCE" -f value -c addresses \
                 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'); do
@@ -195,9 +172,7 @@ fi
 
 # ---------------------------------------------------------------------- DNS
 
-# Jetstream2 runs OpenStack Designate and creates a record automatically when a
-# floating IP is attached. Instance names are lowercased and underscores become
-# dashes, so the record is read rather than predicted.
+# Designate creates this record when the floating IP is attached.
 say "Automatic DNS record"
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '   WOULD RUN: openstack recordset list <zone>\n'
@@ -216,27 +191,9 @@ fi
 
 cat <<REPORT
 
-============================================================
-Provisioning complete.
-
-  Instance     $INSTANCE
-  Flavor       $FLAVOR
-  Floating IP  $FLOATING_IP
-  Data volume  $VOLUME (${VOLUME_GB} GB), attached
-  SSH          ssh -i ${KEY_FILE%.pub} ubuntu@$FLOATING_IP
-
-Next, by hand:
-
-  1. Add an A record for forum.qupa-cafe.com -> $FLOATING_IP at the registrar.
-  2. Wait for it:  dig +short forum.qupa-cafe.com
-     This MUST return the floating IP before you install Discourse, or the
-     Let's Encrypt HTTP-01 challenge fails and leaves a half-configured
-     container.
-  3. Lock the instance against accidental deletion:
-       openstack server lock $INSTANCE
-  4. Continue at docs/02-host-setup.md.
-
-Re-run this script to confirm it is a no-op. An idempotent script that has
-only been run once is an untested claim.
-============================================================
+Done: $INSTANCE ($FLAVOR), $VOLUME attached, floating IP $FLOATING_IP.
+  ssh -i ${KEY_FILE%.pub} ubuntu@$FLOATING_IP
+Next: point the forum's A record at $FLOATING_IP and set EXPECTED_IP in .env,
+openstack server lock $INSTANCE, re-run this to confirm a no-op, then
+docs/02-host-setup.md.
 REPORT

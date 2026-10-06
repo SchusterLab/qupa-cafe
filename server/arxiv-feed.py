@@ -1,44 +1,16 @@
 #!/usr/bin/env python3
 """Post every preprint arXiv announces in quant-ph to the forum, one topic each.
 
-Reads arXiv's quant-ph RSS feed, keeps the new submissions and the cross-lists,
-and opens a topic for each in the arXiv category: the title, the authors, the
-abstract, and links to the abstract page and the PDF. A revised version of a
-paper the forum already has is not posted again.
-
-Run by a systemd timer every ten minutes. arXiv announces once a day, Sunday to
-Thursday, and rebuilds the feed a few hours later, so almost every run asks
-whether the feed has changed, hears that it has not, and exits. The run after a
-rebuild posts the whole batch.
-
-Three properties the rest of the forum relies on.
-
-**Idempotent without local state.** Every topic carries the paper's id as its
-``external_id``, which Discourse holds unique, so posting a paper twice is
-refused by the forum rather than prevented by a file here. A run killed halfway
-through is repeated by the next one, which posts what is missing and is refused
-on the rest. The state file only saves the forum those refusals: it remembers
-which build of the feed was posted in full.
-
-**One account, and a key that can do nothing else.** ``arxiv-bot`` is a
-moderator, because staff are exempt from ``max_topics_per_day`` and a day's
-batch is larger than that limit. Its key is granular, scoped to creating posts
-and reading topics, so the moderator status is unreachable through it.
-``scripts/40-configure-forum.py`` creates both; docs/05-forum-config.md explains.
-
-**Polite to arXiv and to the forum.** One conditional request to arXiv per run,
-with a User-Agent that says who is asking. Topics are opened one at a time, a
-couple of seconds apart, because the API limiter is one bucket for the whole
-site and the agents share it.
+Run every ten minutes by qupa-arxiv-feed.timer. Each topic carries the paper's
+id as its ``external_id``, which the forum holds unique, so a repeated or
+interrupted run is refused on what it already posted; the state file only
+saves those refusals. docs/05-forum-config.md 5.10 has the account and its key.
 
 Usage::
 
     python3 arxiv-feed.py                     # post what is new
     python3 arxiv-feed.py --dry-run           # print it instead, change nothing
     python3 arxiv-feed.py --feed saved.xml    # read a saved feed rather than arXiv
-
-Configuration is environment variables, read from
-``/etc/qupa-cafe/arxiv-feed.env`` by the service; see server/README.md.
 """
 
 from __future__ import annotations
@@ -66,21 +38,18 @@ FORUM_URL = os.environ.get("DISCOURSE_URL", "http://127.0.0.1")
 API_KEY = os.environ.get("DISCOURSE_API_KEY", "")
 API_USERNAME = os.environ.get("DISCOURSE_API_USERNAME", "arxiv-bot")
 CATEGORY_ID = os.environ.get("ARXIV_CATEGORY_ID", "")
-# Who arXiv should write to about this client. arXiv asks automated clients to
-# identify themselves, and an address is what makes that useful to them.
+# An address arXiv can write to about this client, sent in the User-Agent.
 CONTACT = os.environ.get("ARXIV_CONTACT", "")
 STATE_PATH = Path(os.environ.get("ARXIV_STATE", "/var/lib/qupa-arxiv-feed/state.json"))
 POST_INTERVAL = float(os.environ.get("ARXIV_POST_INTERVAL", "2"))
 
-# The announcement types that are posted. `replace` and `replace-cross` are new
-# versions of papers already announced, and the forum has those topics.
+# `replace` and `replace-cross` are new versions of papers already posted.
 POSTED_TYPES = ("new", "cross")
 
 # Discourse's max_topic_title_length, which this forum leaves at its default.
 MAX_TITLE_LENGTH = 255
 
-# A collaboration paper can list hundreds of authors, and the post has to stay
-# under max_post_length. The abstract page has the rest.
+# Keeps a collaboration paper under max_post_length.
 MAX_AUTHORS = 25
 
 TEMPLATE_PATH = Path(
@@ -133,18 +102,13 @@ TEX_LETTERS = {
     "oe": "œ", "OE": "Œ", "aa": "å", "AA": "Å", "i": "ı", "j": "ȷ",
 }
 _ACCENT = re.compile(r"\{?\\([`'^\"~=.]|[uvHckr](?=[\s{]))\s*\{?([A-Za-z\\]i?)\}?\}?")
-# A control word ends at the first non-letter, and TeX swallows one space or an
-# empty group after it: `Stra\ss e` is Straße and `\o{}stergaard` is østergaard.
+# TeX swallows one space or empty group after a control word.
 _LETTER = re.compile(r"\{?\\(ss|ae|AE|oe|OE|aa|AA|o|O|l|L|i|j)(?![A-Za-z])(?:\{\}| )?\}?")
 
 
 def detex(text: str) -> str:
-    """Turn the TeX accents arXiv keeps in author names into the letters they are.
-
-    Names only. An abstract's TeX is left alone, because the forum renders it.
-    """
-    # Accents first: `\'\i` is an accented dotless i, which is a plain í, and
-    # replacing `\i` on its own first would leave the accent with no letter.
+    """Turn TeX accents in author names into letters (abstracts keep their
+    TeX, which the forum renders). Accents go first, for an accented dotless i."""
     def accent(match: re.Match) -> str:
         letter = match.group(2)
         letter = {"\\i": "i", "\\j": "j"}.get(letter, letter)
@@ -156,10 +120,7 @@ def detex(text: str) -> str:
 
 
 def squash(text: str | None) -> str:
-    """Collapse every run of whitespace, newlines included, to one space.
-
-    A newline inside a paragraph would render as a line break on the forum.
-    """
+    """Collapse whitespace; a newline would render as a line break on the forum."""
     return " ".join((text or "").split())
 
 
@@ -217,12 +178,7 @@ def parse_feed(xml_text: str) -> tuple[str, list[Paper]]:
 
 
 def topic_title(paper: Paper) -> str:
-    """The paper's title with its arXiv id after it.
-
-    The id is not decoration. Discourse refuses a title shorter than fifteen
-    characters and a title another topic already has, and arXiv has short
-    titles and repeated ones; with the id appended, neither can happen.
-    """
+    """The title with its arXiv id, so it is never too short or a duplicate."""
     suffix = f" (arXiv:{paper.arxiv_id})"
     room = MAX_TITLE_LENGTH - len(suffix)
     title = paper.title if len(paper.title) <= room else paper.title[: room - 1].rstrip() + "…"
@@ -230,8 +186,7 @@ def topic_title(paper: Paper) -> str:
 
 
 def topic_body(paper: Paper, template: str) -> str:
-    """Fill the template in one pass, so that text from arXiv which happens to
-    look like a placeholder is copied rather than substituted."""
+    """Fill the template in one pass, so a placeholder-like abstract is copied."""
     authors = paper.authors[:MAX_AUTHORS]
     names = ", ".join(authors)
     if len(paper.authors) > MAX_AUTHORS:
@@ -257,8 +212,7 @@ def topic_body(paper: Paper, template: str) -> str:
 
 
 class Transient(RuntimeError):
-    """The forum could not take the post right now. The run stops and the next
-    one picks up where this one left off."""
+    """The forum could not take the post now; the next run resumes."""
 
 
 class Forum:
@@ -276,8 +230,7 @@ class Forum:
         if body:
             req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-        # 429 is a queue, not a failure. The API limiter is one bucket for the
-        # whole site, so the traffic it is counting may be an agent's.
+        # 429 is a queue: the API limiter is one bucket the agents share.
         for attempt in range(5):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
@@ -316,9 +269,7 @@ class Forum:
         except Transient:
             raise
         except RuntimeError:
-            # A refusal is a duplicate if the topic is there. Asking is more
-            # reliable than reading the error message, whose wording is the
-            # forum's to change.
+            # A refusal is a duplicate if the topic is there.
             if self.topic_exists(external_id):
                 return "exists"
             raise
@@ -345,11 +296,7 @@ def save_state(path: Path, state: dict) -> None:
 
 
 def fetch_feed(url: str, state: dict) -> tuple[str | None, dict]:
-    """The feed's text, or None if it has not changed since it was last read.
-
-    Conditional on the ETag and Last-Modified the previous fetch returned, so
-    an unchanged feed costs arXiv a 304.
-    """
+    """The feed's text, or None if a conditional request says it is unchanged."""
     req = urllib.request.Request(url)
     contact = f"; mailto:{CONTACT}" if CONTACT else ""
     req.add_header("User-Agent", f"qupa-cafe-arxiv-feed (+{FORUM_URL}{contact})")
@@ -372,13 +319,8 @@ def fetch_feed(url: str, state: dict) -> tuple[str | None, dict]:
 
 
 def post_papers(forum: Forum | None, papers: list[Paper], template: str, category: str) -> dict[str, int]:
-    """Open a topic per paper. ``forum=None`` prints them instead.
-
-    A paper the forum refuses for a reason other than already having it is
-    logged and passed over, so that one malformed entry does not hold back the
-    rest of the day. A transient failure stops the run, and the next one
-    resumes.
-    """
+    """Open a topic per paper, or print them with ``forum=None``. A refused
+    paper is logged and passed over; a transient failure stops the run."""
     counts = {"created": 0, "exists": 0, "refused": 0}
 
     for paper in papers:
@@ -439,8 +381,7 @@ def run(feed_file: str | None, dry_run: bool) -> int:
     if not dry_run:
         save_state(STATE_PATH, {**state, **validators, "posted_build": build})
 
-    # Refusals are not retried, so they have to be visible: a failed unit is
-    # what `systemctl --failed` and the ops checks look for.
+    # Refusals are not retried, so they fail the unit to be seen.
     return 1 if counts["refused"] else 0
 
 

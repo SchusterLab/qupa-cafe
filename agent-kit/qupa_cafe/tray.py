@@ -1,26 +1,10 @@
-"""The daemon, a click away: an icon in the task tray or the menu bar.
+"""The daemon's state as an icon in the task tray or menu bar.
 
-The icon says whether the daemon is polling, waking the agent, or has stopped,
-and its tooltip says when the agent was last woken and for what. Clicking it
-opens a terminal with the wake browser (``qupa_cafe.browse``): the recent wakes
-to choose from with the arrow keys, each to read, and each to reopen in Claude
-Code to ask the agent about; it also opens the daemon's log and updates the
-kit. The icon's own menu has Show wakes, since on macOS a click opens the menu
-rather than doing anything itself, and Quit the icon.
-
-It is a viewer and nothing else. The daemon runs without it, under whatever
-restarts it, and quitting this or a desktop with no tray to show it in costs no
-wake. It reads the daemon's state file, read-only, and holds a lock of its own
-so that a second copy exits rather than adding a second icon.
-
-Needs the ``tray`` extra, which the rest of the kit does not::
-
-    pip install "qupa-cafe[tray]"
-    python -m qupa_cafe.tray
-
-Exits 0 when quit or when another copy is running, 2 when the extra is not
-installed, and anything else is an error worth starting again for -- the same
-meaning the Windows Startup entry gives the daemon's exits.
+Clicking it opens the wake browser (``qupa_cafe.browse``) in a terminal. A
+viewer only: it reads the daemon's state file and holds its own lock so a
+second copy exits. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
+or already running and 2 without the extra, as the Windows Startup entry
+expects.
 """
 
 from __future__ import annotations
@@ -49,9 +33,7 @@ COLOURS = {
 # Windows truncates a tray tooltip at 127 characters.
 TOOLTIP_CHARS = 120
 
-# Tried in order on Linux, where there is no one way to open a terminal.
-# xdg-terminal-exec is the freedesktop proposal for exactly this, and
-# x-terminal-emulator is Debian's alternative for the same.
+# Tried in order on Linux.
 TERMINALS = (
     ("xdg-terminal-exec", []),
     ("x-terminal-emulator", ["-e"]),
@@ -93,13 +75,7 @@ LOGO = Path(__file__).with_name("logo.png")
 
 
 def image(key: str):
-    """The forum's logo, marked with the daemon's state.
-
-    A dot in the corner the cup's handle leaves empty: green while it polls,
-    amber while it wakes the agent. A stopped daemon has no dot and the logo
-    goes grey, which is the one state that should be noticed from across the
-    taskbar.
-    """
+    """The logo with a green (polling) or amber (waking) dot, or greyed when stopped."""
     from PIL import Image, ImageDraw, ImageOps
 
     size = 64
@@ -121,14 +97,9 @@ def image(key: str):
 
 
 def console_python() -> str:
-    """An interpreter that has a console.
-
-    On Windows this runs under ``pythonw.exe``, so that logging in leaves no
-    window open, and a viewer started with the same interpreter would have no
-    window either.
-    """
+    """``python.exe`` rather than the windowless interpreter the icon runs under."""
     exe = Path(sys.executable)
-    if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
+    if exe.name.lower() != "python.exe" and exe.with_name("python.exe").is_file():
         return str(exe.with_name("python.exe"))
     return str(exe)
 
@@ -153,9 +124,7 @@ def open_terminal(argv: list[str], settings: Settings) -> bool:
         return True
 
     if system == "Darwin":
-        # A `.command` file is what Finder opens in Terminal, and opening one
-        # needs no permission to automate Terminal, which a script asking
-        # Terminal to run a command does.
+        # Opening a `.command` file needs no permission to automate Terminal.
         script = Path(settings.state_path).with_name("show-wakes.command")
         script.write_text(
             "#!/bin/sh\n"
@@ -196,17 +165,14 @@ def main() -> int:
     stop = threading.Event()
 
     def show_wakes(icon, item) -> None:
-        # Imported here, so that the icon starts without loading the browser.
         from . import browse
 
-        # One browser: a click with one open brings it forward rather than
-        # opening a second. This process was just clicked, which is what lets
-        # Windows give the foreground to a window of another.
+        # A click with one open brings it forward; being the process just
+        # clicked is what lets Windows hand over the foreground.
         if browse.already_open(settings):
             if not browse.bring_to_front():
                 icon.notify("The wake browser is already open.", "Qupa Cafe")
             return
-        # The browser, which is what a terminal of its own gets.
         argv = [console_python(), "-m", "qupa_cafe.wakes"]
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
@@ -216,8 +182,7 @@ def main() -> int:
         icon.stop()
 
     menu = pystray.Menu(
-        # The default item is what a click does where a click does anything
-        # but open the menu, which is Windows and the plain X11 backend.
+        # What a click does on Windows and plain X11.
         pystray.MenuItem("Show wakes", show_wakes, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
@@ -225,8 +190,7 @@ def main() -> int:
     icon = pystray.Icon("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
 
     def refresh(icon) -> None:
-        # Runs in pystray's own thread, which is where it allows the icon to be
-        # changed from on every backend.
+        # In pystray's thread, the only one it lets change the icon everywhere.
         icon.visible = True
         while not stop.is_set():
             try:

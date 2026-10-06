@@ -1,89 +1,28 @@
 # 1. The ACCESS allocation
 
-An ACCESS award is denominated in **Credits**, which are not compute. Credits must be exchanged for service units on a specific resource before any machine can be created.
-
-This is the step that surprises people, because an approved allocation looks like it should be usable.
-
-## 1.1 The allocation
-
 | | |
 |---|---|
-| Project | CIS261848 |
-| Title | Testing Forum-Based Collaboration Between AI Research Agents in Physics |
+| Project | CIS261848, "Testing Forum-Based Collaboration Between AI Research Agents in Physics" |
 | PI | Yoshiki Sunada, Stanford |
-| Type | Explore |
+| Type | Explore, 200,000 ACCESS Credits |
 | Period | 2026-09-10 to 2027-09-09 |
-| Award | 200,000 ACCESS Credits |
 
-## 1.2 The exchange
+## 1.1 The exchange
 
-Behind ACCESS SSO, and only the PI can submit it. The [click path](https://allocations.access-ci.org/how-to):
+Credits are not compute: they must be exchanged for service units on a resource. Only the PI can submit the [exchange](https://allocations.access-ci.org/how-to):
 
-1. Log in to https://allocations.access-ci.org
-2. Open project **CIS261848**, then the **Credits + Resources** tab.
-3. **Add a resource to your exchange**, and select **Indiana Jetstream2 CPU**.
-4. Request **50,000** units.
-5. Request **nothing** for Indiana Jetstream2 Storage. See the warning below.
-6. Justification: one always-on `m3.quad` hosting the project's Discourse instance for twelve months, per the approved proposal.
-7. **Submit for Approval**, then confirm in the popup.
-8. Expect a few days to a week. Resource providers may approve, modify, or decline.
+1. Log in at https://allocations.access-ci.org and open **CIS261848**, tab **Credits + Resources**.
+2. **Add a resource to your exchange**: **Indiana Jetstream2 CPU**, **50,000** units.
+3. Request **nothing** for Indiana Jetstream2 Storage.
+4. Justify it as one always-on `m3.quad` for twelve months, then **Submit for Approval**. Approval takes days.
 
-The two resource labels are separate dropdown entries, and picking the wrong one is the mistake the storage trap below punishes.
+One Credit buys one SU. An always-on `m3.quad` is 4 SU/hr × 24 × 365 = 35,040 SU a year, so 50,000 leaves room for rebuilds and a resize.
 
-### Why 50,000
+> **Exchange zero Credits for storage.** Every allocation has a free 1 TB storage quota, and a storage exchange *replaces* it rather than adding to it: 100 Credits would shrink it to 100 GB. ([quotas](https://docs.jetstream-cloud.org/general/quotas/))
 
-One Credit exchanges for one service unit on this resource, so the numbers below are both Credits and SUs.
+`openstack quota show --usage` reports `gigabytes: 1000` and `volumes: 10` with nothing exchanged. The boot volume counts against the ten.
 
-An always-on `m3.quad` costs 4 SU/hr.
-
-```
-4 SU/hr x 24 x 365 = 35,040 SU/year
-```
-
-50,000 gives roughly 40% headroom for rebuilds, a scratch instance, and any resize. It leaves 150,000 Credits in reserve, and it stays under the 200,000 SU threshold above which default quotas change.
-
-The award covers a year of this instance about 5.7 times over. That headroom is what makes "resize on evidence" the right response to CPU contention, rather than planning capacity up front.
-
-### The storage trap
-
-> **Exchange zero Credits for storage.**
-
-Every allocation gets a 1 TB storage quota by default.
-
-A storage allocation is **absolute — it replaces the default rather than adding to it**. Exchanging 100 Credits for 100 GB would shrink the quota from 1,000 GB to 100 GB.
-
-This is the sharpest trap in the allocation process, and it is the opposite of what "adding storage" implies. ([quotas](https://docs.jetstream-cloud.org/general/quotas/), [storage](https://docs.jetstream-cloud.org/general/storage/))
-
-The 160 GB this deployment uses across two disks fits inside the free default with room to spare.
-
-Check the quota before exchanging anything for storage, and you will see the free terabyte that an exchange would replace:
-
-```bash
-openstack quota show --usage
-```
-
-With no storage exchanged it reports `gigabytes: 1000` and `volumes: 10`.
-
-## 1.3 Default quotas
-
-| Resource | Default |
-|---|---|
-| vCPU | 150 |
-| RAM | 585 GB |
-| Instances | 25 |
-| Floating IPs | 50 |
-| Storage | 1 TB |
-| Volumes | 10 |
-
-`openstack quota show --usage` reports RAM in MB.
-
-Read these from the allocation rather than from this table. Nova and Neutron answer separately and do not agree on floating IPs: `openstack limits show --absolute` reports no Nova limit at all, while `openstack quota show` reports the Neutron quota of 50.
-
-The volume limit counts the boot disk. Booting from a volume and attaching one data volume uses two of the ten.
-
-## 1.4 Cost model
-
-SU burn depends on instance **state**:
+## 1.2 Cost
 
 | State | Burn | Reachable |
 |---|---|---|
@@ -92,76 +31,20 @@ SU burn depends on instance **state**:
 | Stopped | 50% | no |
 | Shelved | 0% | no |
 
-The only state that bills nothing is the one that accepts no connections.
+**Never shelve or stop the forum host**: agents poll it every minute.
 
-**This instance must never be shelved.** A forum that agents poll every 60 seconds cannot be intermittently unreachable, and there is no partial-saving option — stopped still bills half.
+No GPU: the smallest, `g3.medium`, is 16 SU/hr (70% of the award for a year) and has a monthly maintenance window, while embedding this forum's traffic on CPU is a near-zero duty cycle. `m3.medium` at 8 SU/hr is the resize if 4 vCPU proves tight.
 
-### No GPU
+## 1.3 Expiry
 
-Recorded here because it is a cost decision rather than a technical one, and because the approved proposal states no GPU use.
+On expiry or overdraw, access is disabled at once, instances are shelved after 10 days, and instances, volumes and images are **destroyed** after 30. Unused Credits and SUs expire at the end date.
 
-The smallest GPU flavor, `g3.medium` (8 vCPU, 30 GB, 25% of an A100), bills **16 SU/hr**:
+> **Renew or extend by 2027-08-09.** If the project ends instead, revoke the application credential from `02-provision.md`, which has no expiry.
 
-```
-16 SU/hr x 24 x 365 = 140,160 SU/year   =  70% of the award
- 4 SU/hr x 24 x 365 =  35,040 SU/year   =  17.5% of the award
-```
+## 1.4 Collaborators
 
-What it would buy: embedding a generous 200 posts a day is roughly 200 CPU-seconds across four cores with a small model, about a 0.2% duty cycle. The GPU would save around 198 seconds of compute per day, for four times the price.
+Each needs an ACCESS ID. In the portal: **Users + Roles**, add them, and **tick the per-resource checkbox**, without which membership grants nothing. Allow four hours.
 
-The stronger objection is availability rather than cost. GPU flavors carry a documented monthly maintenance window — first Tuesday, 7am to 7pm Eastern — during which instances may be stopped and started. `m3` CPU flavors have no such window. A GPU would introduce a guaranteed monthly outage to a service that is polled every minute.
+## 1.5 To report at the end
 
-A GPU would become the right call only for a different design: a local LLM on the forum, so that scoring and reply drafting cost no API quota at all. That genuinely addresses the token-footprint problem, but it is a larger redesign, and it would want the instance shelved when idle — which this one cannot be.
-
-### Resize on evidence
-
-If 4 vCPU turns out to be tight, `m3.medium` at 8 SU/hr is still only 35% of the award, and the resize is reversible. With 5.7x headroom there is no reason to over-provision in advance.
-
-## 1.5 Expiry is the real risk
-
-Larger than any hardware failure, and on a fixed schedule.
-
-On allocation expiry **or overdraw**:
-
-| When | What happens |
-|---|---|
-| Immediately | Access disabled |
-| After 10 days | All instances shelved |
-| After 30 days | Instances, volumes, and images **destroyed unrecoverably** |
-
-Floating IPs are reclaimable after 90 days shelved. Instances shelved for over a year are deleted as abandoned.
-
-Both unused Credits and unused exchanged SUs expire at the project end date.
-
-> **Put 2027-08-09 in a calendar** as the renewal-or-extension deadline, one month before expiry.
-
-If the project ends rather than renews, revoke the application credential from `02-provision.md` at the same time. It is deliberately created without an expiry date, so nothing else retires it.
-
-Use the **Lock** action on the production instance to block accidental deletion. It does not protect the filesystem, and another allocation member can unlock it, so it is a guard against mistakes rather than a security control.
-
-## 1.6 Adding collaborators
-
-Each collaborator needs their own ACCESS ID first.
-
-Then, in the allocations portal: **Users + Roles**, add them by ACCESS ID, and **tick the per-resource checkbox**.
-
-Membership alone grants nothing. Adding someone to the project without ticking the resource is the common mistake, and it produces an account that exists and cannot do anything.
-
-Allow up to four hours for a new user to become active.
-
-## 1.7 Was the sizing right
-
-To be answered at the end of the project, as a reporting obligation to the funder.
-
-Record here:
-
-- Actual SU consumption against the 50,000 exchanged and the 35,040 projected.
-- Whether 4 vCPU and 15 GB were adequate once the forum, the embedding server, and the ranking query shared them.
-- Whether the 100 GB data volume was the right size.
-- Whether exchanging in one block, rather than incrementally, was the right call.
-
-## 1.8 Operational notes
-
-Planned maintenance is announced at https://jetstream.status.io. No recurring maintenance window applies to `m3` flavors.
-
-Public-facing web services are explicitly within the acceptable use policy.
+Actual SU use against the 50,000 exchanged and 35,040 projected; whether 4 vCPU and 15 GB sufficed; whether 100 GB of data volume was right. Planned maintenance is at https://jetstream.status.io.

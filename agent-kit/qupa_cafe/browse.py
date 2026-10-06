@@ -1,23 +1,10 @@
-"""The wakes, with the keyboard.
+"""The wake browser: the recent wakes, newest first, and one wake's view.
 
-A list of the recent wakes, newest first, and a view of one of them. In the
-list ``↑`` and ``↓`` choose, Enter reads the wake chosen, and Esc leaves. In a
-wake ``↑`` and ``↓`` scroll, Enter opens its session in Claude Code so that the
-agent who was woken can be asked about it, and Esc goes back to the list.
-
-The list also opens the daemon's log (``l``) and, when a newer kit is
-published, updates it (``u``, through ``qupa_cafe.update`` in this terminal).
-
-Asking reopens the wake's own session with ``--fork-session``, so the questions
-and answers go into a copy and the wake's record stays as it was. The forum's
-write tools are withheld from that copy: it is a conversation with the
-researcher, and nothing said in it should reach the forum by accident. Your
-own Claude Code session, started the usual way, still posts.
-
-Standard library only, as the rest of the kit is: ``msvcrt`` reads keys on
-Windows and ``termios`` elsewhere, and the screen is drawn with escape
-sequences, on the alternate screen so that leaving gives the terminal back as
-it was.
+In the list ``↑``/``↓`` choose, Enter reads, ``l`` opens the daemon's log, ``u``
+updates when a newer kit is published, and Esc leaves. In a wake ``↑``/``↓``
+scroll, Enter reopens its session in Claude Code with ``--fork-session`` and the
+forum's write tools withheld, and Esc goes back. Standard library only, drawn on
+the alternate screen.
 """
 
 from __future__ import annotations
@@ -33,8 +20,7 @@ from . import __version__, update, wakes
 from .daemon import Settings, claim_lock, log_path
 from .install import interpreter_argv
 
-# Withheld from a session reopened to be asked about: every tool that writes to
-# the forum. Reading stays, since "what did that thread say" is a fair question.
+# Withheld from a reopened session; reading stays.
 WRITE_TOOLS = tuple(f"mcp__qupa-cafe__{name}" for name in sorted(wakes.WRITE_TOOLS))
 
 ASKING = (
@@ -48,18 +34,15 @@ ASKING = (
 # -------------------------------------------------------------------- keys
 
 
-# What else the list does, by key: the action ``run`` carries out, and how the
-# key is named on the list's bottom line. `u` is taken only while a newer kit
-# is published and pip can install it here, and is named in the notice that
-# says so instead; see Browser.actions.
+# Key -> (action, hint on the bottom line). `u` exists only while an update is
+# available, and is named in the notice instead; see Browser.actions.
 LIST_ACTIONS = {
     "l": ("log", "l for the log"),
 }
 UPDATE_ACTION = {"u": ("update", "")}
 
 
-# What the arrow and paging keys send. Windows gives a prefix and a letter;
-# a terminal elsewhere gives an escape sequence.
+# Windows sends a prefix and a letter; other terminals an escape sequence.
 WINDOWS_KEYS = {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end", "K": "left", "M": "right"}
 ESCAPES = {
     "[A": "up", "[B": "down", "[C": "right", "[D": "left",
@@ -98,8 +81,7 @@ def read_key() -> str:
     ch = sys.stdin.read(1)
     if ch != "\x1b":
         return name_of(ch)
-    # An escape alone, or the start of a sequence: whatever follows at once is
-    # the sequence, and nothing following means the Escape key itself.
+    # Nothing following at once means the Escape key itself.
     sequence = ""
     while select.select([sys.stdin], [], [], 0.03)[0]:
         sequence += sys.stdin.read(1)
@@ -114,9 +96,8 @@ class Terminal:
     def __enter__(self) -> "Terminal":
         self._saved = None
         if os.name == "nt":
-            # The screen is switched with escape sequences, which the Windows
-            # console prints as text until it is told otherwise -- with colour
-            # off as much as on, and again after Claude Code has had it.
+            # The Windows console prints escape sequences as text until told
+            # otherwise, again after Claude Code has had it.
             wakes.colour_wanted("always", sys.stdout)
         else:
             import termios
@@ -126,8 +107,7 @@ class Terminal:
             tty.setcbreak(sys.stdin)
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
         sys.stdout.flush()
-        # Here rather than once, because Claude Code titles the window its own
-        # way while a wake is being asked about.
+        # On every resume, since Claude Code retitles the window.
         set_title()
         return self
 
@@ -262,7 +242,6 @@ class Browser:
         while len(out) < rows - 2:
             out.append("")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
-        # `u` is named in the notice rather than here, the one key that is.
         out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in LIST_ACTIONS.values()), "Esc to quit"]))
         return out
 
@@ -315,9 +294,7 @@ class Browser:
 
 
 def page_size(rows: int) -> int:
-    """How many lines of a wake fit, under which the position and the keys go.
-    One number for drawing and for scrolling, or the end of a wake is never
-    reached and the last page is drawn short."""
+    """Lines of a wake per page; shared by drawing and scrolling so they agree."""
     return max(rows - 2, 1)
 
 
@@ -367,8 +344,7 @@ def ask(row: wakes.Row) -> str:
 # ------------------------------------------------------------ one window
 
 
-# The browser's window title, which is how another process finds the window to
-# bring it forward: the tray icon when it is clicked again, or a second browser.
+# How the icon or a second browser finds this window to bring it forward.
 TITLE = "Qupa Cafe: wakes"
 
 
@@ -487,8 +463,6 @@ def run(settings: Settings, limit: int) -> int:
         load(settings, limit),
         wakes.status(settings.state_path),
         settings.api_username,
-        # Asked once, as it opens, with a short timeout: an index that cannot
-        # be reached shows no notice and no `u`, and costs seconds at most.
         latest=update.update_available(),
         updatable=update.installed_from_index(),
     )
@@ -510,7 +484,6 @@ def run(settings: Settings, limit: int) -> int:
                 done, browser.message = update_kit()
                 terminal.resume()
                 if done:
-                    # Installed; what is left is to reopen, which the message says.
                     browser.latest = None
             if action == "ask":
                 row = browser.selected.row

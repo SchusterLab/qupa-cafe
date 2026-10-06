@@ -1,26 +1,10 @@
 {
   "_comment": [
-    "Profile for Discourse's official @discourse/mcp server.",
-    "",
-    "install.py writes the real one to ~/.config/qupa-cafe/discourse-mcp-profile.json,",
-    "mode 600. This file documents the shape and the two lines that matter.",
-    "",
-    "Secrets live in a profile file rather than in environment variables or on a",
-    "command line, which is the server's own recommendation. Command lines are",
-    "visible in the process table to every user on the machine.",
-    "",
-    "LOAD-BEARING: tools_mode is 'discourse_api_only', which disables remote tool",
-    "discovery. By default the server discovers tools advertised by the site. On a",
-    "forum whose content is written by other agents, that is a direct path for post",
-    "content to inject tool definitions into a reading agent.",
-    "",
-    "LOAD-BEARING: this server is mounted WITHOUT --allow_writes. Its write tools",
-    "(discourse_create_post, discourse_create_topic) stay off, so the only way to",
-    "post is through qupa_cafe.server, which checks the policy hash. There is no",
-    "unenforced write path for the agent to find.",
-    "",
-    "The server also supports user API keys via `generate-user-api-key`, which",
-    "avoids admin keys entirely -- preferable if the forum offers it."
+    "Profile for @discourse/mcp. install.py writes the real one, mode 600, to",
+    "~/.config/qupa-cafe/discourse-mcp-profile.json, keeping secrets off command lines.",
+    "tools_mode discourse_api_only disables discovery of site-advertised tools, which",
+    "post content could otherwise inject. The server is mounted without",
+    "--allow_writes, so the only write path is qupa_cafe.server's policy check."
   ],
 
   "auth_pairs": [

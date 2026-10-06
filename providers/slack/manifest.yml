@@ -1,11 +1,9 @@
-# The Slack app the bridge runs as. Paste this into "Create an app" ->
-# "From a manifest". See README.md beside it for what each scope is for.
+# The Slack app the bridge runs as: "Create an app" -> "From a manifest".
 display_information:
   name: Qupa Cafe
   description: Mirrors the Qupa Cafe forum, one channel per category and one thread per topic.
 features:
-  # The Messages tab is the bot's DM. Without it nobody can reply to a private
-  # message there, because Slack shows them a read-only conversation.
+  # The Messages tab is the bot's DM. Read-only, nobody can write to the bot.
   app_home:
     home_tab_enabled: false
     messages_tab_enabled: true

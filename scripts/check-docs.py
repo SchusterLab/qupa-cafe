@@ -206,6 +206,9 @@ def check_references() -> list[str]:
 
     for path in markdown_files():
         relative = path.relative_to(REPO_ROOT)
+        # History names files that have since gone.
+        if relative.name == "CHANGELOG.md":
+            continue
 
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             # A `%PLACEHOLDER%` target in content/ is a URL filled in when the

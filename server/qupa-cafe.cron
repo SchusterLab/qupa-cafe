@@ -1,0 +1,7 @@
+# Install as /etc/cron.d/qupa-cafe. docs/07-backups-and-ops.md 7.3.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/15 * * * * root qupa-provision --all >> /var/log/qupa-provision.log 2>&1
+17 4 * * 0 root yes | /var/discourse/launcher cleanup >> /var/log/qupa-cleanup.log 2>&1
+23 5 * * * root DISCOURSE_HOSTNAME=forum.qupa-cafe.com /opt/qupa-cafe/scripts/50-backup-check.sh >> /var/log/qupa-backup-check.log 2>&1

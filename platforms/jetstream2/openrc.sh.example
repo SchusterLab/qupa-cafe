@@ -1,34 +1,11 @@
 #!/usr/bin/env bash
 #
-# Application credential for the OpenStack CLI.
+# The shape of the application credential file. Do not fill this in: download
+# the real one from Horizon (02-provision.md 2.1) and save it beside this file as
+# app-cred-qupa-cafe-openrc.sh, which .gitignore covers.
 #
-# Do NOT fill this file in. Download the real one:
-#
-#   In Horizon -- OpenStack's dashboard at https://js2.jetstream-cloud.org,
-#   not Exosphere -- go to Identity, then Application Credentials, then
-#   Create Application Credential. The success screen has a "Download openrc
-#   file" button.
-#
-# and save it next to this one under the name it arrives with -- Horizon
-# derives that from the credential, so ours is app-cred-qupa-cafe-openrc.sh.
-# .gitignore matches *openrc*.sh anywhere, so no renaming is needed.
-# This file exists to document the shape and the traps.
-#
-# Trap 1: we leave both expiration fields blank, so this credential does not
-#         expire -- revoke it in Horizon when the allocation ends. If you do
-#         set an expiry: a time with no date means TODAY at that time, and a
-#         date with no time means 00:00 on that date.
-#
-# Trap 2: the secret is shown once. Download it on the success screen; there
-#         is no way back to it, only a new credential.
-#
-# Trap 3: sourcing this over a previously sourced openrc fails with
-#         "Application credentials cannot request a scope".
-#         Use a fresh terminal. The error message does not tell you that.
-#
-# Usage:
-#   source app-cred-qupa-cafe-openrc.sh
-#   openstack flavor list          # smoke test
+# Source it in a fresh terminal; sourcing over another openrc fails with
+# "Application credentials cannot request a scope".
 
 export OS_AUTH_TYPE=v3applicationcredential
 export OS_AUTH_URL=https://js2.jetstream-cloud.org:5000/v3

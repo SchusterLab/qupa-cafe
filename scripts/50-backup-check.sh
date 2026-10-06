@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 #
-# Report on the health of the things that fail quietly.
-#
-# Reports; does not fix and does not move backups anywhere. Exits non-zero if
-# any check fails, so it can be run from cron with output mailed or piped
-# somewhere that a human reads.
-#
-# Usage:
-#   ./50-backup-check.sh
-#   ./50-backup-check.sh --quiet      only print failures
-#
-# Corresponds to docs/07-backups-and-ops.md.
+# Report on the things that fail quietly: backups, disk, certificate,
+# embedding server, pending reboot. Exits non-zero if any check fails.
+#   ./50-backup-check.sh [--quiet]      --quiet prints only failures
+# docs/07-backups-and-ops.md.
 
 set -uo pipefail
 
@@ -18,11 +11,7 @@ BACKUP_DIR="${BACKUP_DIR:-/mnt/qupa-cafe/shared/standalone/backups/default}"
 DATA_MOUNT="${DATA_MOUNT:-/mnt/qupa-cafe}"
 HOSTNAME_TO_CHECK="${DISCOURSE_HOSTNAME:-}"
 
-# The embedding server binds to the Docker bridge gateway, not to loopback, so
-# that the Discourse container can reach it and the internet cannot. Probing
-# localhost here would report it down while it is healthy -- see
-# docs/04-embeddings.md 4.4. The gateway is read from Docker rather than
-# hardcoded, because it is only 172.17.0.1 on a default installation.
+# The embedding server is on the docker bridge gateway, not on loopback.
 if [ -z "${TEI_URL:-}" ]; then
   TEI_HOST="$(docker network inspect bridge \
                 --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
@@ -67,8 +56,7 @@ else
       ok "newest backup is ${AGE_HOURS}h old: $(basename "$LATEST_PATH")"
     fi
 
-    # A backup far smaller than expected usually means it was truncated by a
-    # full disk, which is the failure this catches that an age check does not.
+    # A truncated backup, typically from a full disk.
     if [ "$SIZE" -lt "$MIN_BACKUP_BYTES" ]; then
       fail "newest backup is only ${SIZE} bytes -- suspiciously small"
     else
@@ -78,10 +66,6 @@ else
     ok "count: $(find "$BACKUP_DIR" -name '*.tar.gz' -type f | wc -l)"
   fi
 fi
-
-# An age-and-size check is not a restore test. Nothing here proves the archive
-# can be restored; docs/07-backups-and-ops.md has the drill, which is the part
-# that makes a backup real.
 
 # --------------------------------------------------------------------- disk
 
@@ -102,9 +86,6 @@ for mount in / "$DATA_MOUNT"; do
   fi
 done
 
-# The root filesystem fills with Docker images from previous rebuilds. Schedule
-# `./launcher cleanup`, which this script does not do for you.
-
 # ---------------------------------------------------------------------- TLS
 
 section "TLS"
@@ -119,9 +100,6 @@ else
   else
     DAYS_LEFT=$(( ( $(date -d "$EXPIRY" +%s) - $(date +%s) ) / 86400 ))
     if [ "$DAYS_LEFT" -lt "$CERT_WARN_DAYS" ]; then
-      # Renewal is automatic and fails silently. It works right up until
-      # something changes in the HTTP-01 path -- a firewall rule, a DNS edit --
-      # and then nobody finds out for sixty days.
       fail "certificate expires in ${DAYS_LEFT} days. Automatic renewal may be broken."
     else
       ok "certificate valid for ${DAYS_LEFT} more days"
@@ -146,8 +124,6 @@ fi
 section "Pending reboot"
 
 if [ -f /var/run/reboot-required ]; then
-  # unattended-upgrades installs kernel updates and never reboots, so this is
-  # the normal steady state of the host until somebody acts on it.
   warn "a reboot is pending (kernel updates are installed but not active)"
 else
   ok "none"

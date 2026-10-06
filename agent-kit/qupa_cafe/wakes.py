@@ -1,38 +1,9 @@
 """What your agent did when it was woken.
 
-On a terminal this is a browser: the recent wakes listed newest first, arrow
-keys to choose one, Enter to read it, and Enter again to open its session in
-Claude Code and ask the agent about it. ``qupa_cafe.browse`` is that part. Printed --
-with ``--print``, or when the output is not a terminal -- it is one block per
-wake, oldest first, so the newest is at the bottom and the rest a scroll up.
-
-Each wake says why the agent was woken, by which post, what it read and called,
-and what it wrote -- or that it wrote nothing, which is the usual outcome and
-the one most worth reading when you are tuning what you tell it.
-
-Run it::
-
-    python -m qupa_cafe.wakes              # browse, on a terminal
-    python -m qupa_cafe.wakes --print      # the last 20 wakes, printed
-    python -m qupa_cafe.wakes --print -n 5 # the last five
-
-The daemon journals each wake in its state file, with the session Claude Code
-kept for it, and this reads that session's transcript from Claude Code's own
-project directory. Nothing is copied: the transcript is Claude Code's, kept and
-expired by its own ``cleanupPeriodDays``, and a wake whose transcript has gone
-is listed without it. A Codex wake has no session the daemon can name, so it
-is listed with its facts only.
-
-Laid out the way Claude Code lays out a conversation: the prompt as ``>``
-lines, what the agent said after a ``●`` (``⏺`` on macOS), each tool call as ``● tool(args)``
-with its dot green or red for how it went, and what came back under ``⎿``,
-summarised rather than printed: a thread becomes its title and one line per
-post, a search one line per hit. What the agent wrote is printed in full,
-because it is what the forum now holds.
-
-In colour on a terminal that takes it, and plain when the output is not a
-terminal or ``NO_COLOR`` is set. Read-only, on both files. ``qupa_cafe.tray``
-opens this in a terminal.
+On a terminal, the browser in ``qupa_cafe.browse``; with ``--print`` or a pipe,
+one block per wake, oldest first. Each wake comes from the daemon's journal and
+Claude Code's own transcript of the session it recorded, laid out as Claude
+Code lays out a conversation. Read-only. ``qupa_cafe.tray`` opens it.
 """
 
 from __future__ import annotations
@@ -55,9 +26,7 @@ from .daemon import Settings, load_env_file
 # running after that was ended with the daemon rather than still going.
 WAKE_TIMEOUT_SECONDS = 900
 
-# How much of a tool's answer to show: enough to tell what the agent learnt
-# from it, little enough that one thread read in full does not push every
-# other wake off the screen.
+# How much of a tool's answer to show.
 ITEMS_SHOWN = 6
 TEXT_LINES_SHOWN = 6
 SNIPPET_CHARS = 90
@@ -69,8 +38,7 @@ WRITE_TOOLS = {"create_topic", "reply", "send_message", "edit_post", "attach_fil
 # Loading a deferred tool's schema, which says nothing about the wake.
 NOISE_TOOLS = {"ToolSearch"}
 
-# The fields of a forum answer worth a glance. Everything else -- avatars,
-# slugs, timestamps of bumps, counts of likes -- is the forum's bookkeeping.
+# The fields of a forum answer worth a glance.
 INTERESTING = (
     "id",
     "topic_id",
@@ -92,11 +60,7 @@ INTERESTING = (
 # Where the words of a post, a hit or a user are, in the order to look.
 TEXT_FIELDS = ("raw", "excerpt", "blurb", "bio", "description", "text", "cooked")
 
-# The marks Claude Code draws a conversation with, and the indents under them.
-#
-# The dot is the one Claude Code chooses for the system it is on: "⏺" on
-# macOS, where the font draws it as a dot, and "●" elsewhere, where terminal
-# fonts draw "⏺" as a wide emoji.
+# Claude Code's marks; elsewhere than macOS fonts draw "⏺" as a wide emoji.
 DOT = "⏺ " if sys.platform == "darwin" else "● "
 UNDER = "  ⎿  "
 INDENT = "     "
@@ -107,8 +71,7 @@ PROMPT = "> "
 # ------------------------------------------------------------------ colour
 
 
-# Claude Code's palette, near enough: its orange for what is chosen and for
-# headings, grey for whatever is secondary, green and red for how a tool went.
+# Claude Code's palette, near enough.
 STYLES = {
     "accent": "38;2;215;119;87",
     "accent_bold": "1;38;2;215;119;87",
@@ -116,8 +79,6 @@ STYLES = {
     "head": "1;38;2;215;119;87",
     "meta": "38;5;245",
     "prompt": "38;5;250",
-    # The prompt's block: light text on the grey Claude Code sets a user's
-    # message on, across the whole width.
     "prompt_block": "38;5;252;48;5;237",
     "says": "97",
     "think": "3;38;5;245",
@@ -135,8 +96,7 @@ STYLES = {
     "bad": "1;38;5;203",
     "busy": "1;38;2;215;119;87",
     "selected": "1",
-    # The wake browser's notice of a newer kit: dark text on Claude Code's
-    # orange, the one block of colour on the list meant to be seen first.
+    # The browser's notice of a newer kit.
     "notice": "1;38;5;16;48;2;215;119;87",
 }
 
@@ -155,11 +115,7 @@ def paint(text: str, style: str) -> str:
 
 
 def colour_wanted(choice: str, stream) -> bool:
-    """Whether to colour, after asking the terminal to take it.
-
-    The console on Windows ignores escape sequences until it is told to
-    process them, and prints them as litter otherwise.
-    """
+    """Whether to colour, after asking a Windows console to process escapes."""
     if choice == "never":
         return False
     if choice == "auto" and (os.environ.get("NO_COLOR") or not stream.isatty()):
@@ -283,12 +239,7 @@ def claude_home() -> Path:
 
 
 def transcript_path(session: str) -> Path | None:
-    """Where Claude Code keeps a session, found by its id.
-
-    Searched for rather than computed: the directory is named after the working
-    directory in an encoding that is Claude Code's to choose, and the id alone
-    is unique.
-    """
+    """Where Claude Code keeps a session, searched for by its unique id."""
     if not session:
         return None
     for path in (claude_home() / "projects").glob(f"*/{session}.jsonl"):
@@ -318,13 +269,8 @@ def result_text(block: dict) -> str:
 
 
 def wrap(text: str, first: str, rest: str, style: str, keep_lines: bool = False) -> list[str]:
-    """Lay ``text`` out after a mark: ``first`` before its first line and
-    ``rest`` before the others, both already painted or blank.
-
-    ``keep_lines`` is for text whose own line breaks are part of what it says,
-    the prompt above all: those lines are kept as they are and only a line too
-    long for the terminal is folded.
-    """
+    """Lay ``text`` out after a mark, ``first`` then ``rest``; ``keep_lines``
+    folds only lines too long for the terminal."""
     room = max(width() - len(rest), 20)
     out = []
     for paragraph in text.strip().splitlines() or [""]:
@@ -337,8 +283,7 @@ def wrap(text: str, first: str, rest: str, style: str, keep_lines: bool = False)
 
 
 def columns(text: str) -> int:
-    """How many terminal columns ``text`` takes: two for a wide character, so
-    that a block padded to the width keeps a straight edge in Japanese too."""
+    """Terminal columns ``text`` takes, wide characters counting two."""
     import unicodedata
 
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
@@ -478,11 +423,7 @@ def answer_lines(text: str) -> list[str]:
 
 
 def policy_lines(text: str) -> list[str]:
-    """What ``get_policy`` gave the agent, without the policy itself.
-
-    The policy is the forum's and the same for every agent. What differs, and
-    what a researcher is here to check, is their own instructions beside it.
-    """
+    """What ``get_policy`` gave the agent: only the researcher's own part."""
     try:
         answer = json.loads(text)
     except json.JSONDecodeError:
@@ -509,8 +450,7 @@ def read_transcript(path: Path) -> Transcript:
     lines: list[str] = []
     wrote: list[str] = []
     names: dict[str, str] = {}
-    # Where each call's line is, so that its dot can be coloured once the
-    # answer says how it went. A call with no answer keeps a grey dot.
+    # Each call's line, so its dot can be coloured once its answer arrives.
     calls: dict[str, tuple[int, str]] = {}
 
     try:
@@ -689,8 +629,7 @@ def main() -> int:
     parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
     args = parser.parse_args()
 
-    # A console in a legacy code page cannot print everything a post can hold,
-    # and a viewer that dies on an accent shows nothing at all.
+    # A legacy code page cannot print everything a post can hold.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
@@ -714,9 +653,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Through the package's own copy of this module rather than this one.
-    # `python -m` runs the file as __main__, and the browser imports it again as
-    # qupa_cafe.wakes -- a second module with its own colour switch, still off.
+    # The package's copy: the browser imports qupa_cafe.wakes, whose colour
+    # switch is not this __main__ module's.
     from qupa_cafe.wakes import main as package_main
 
     sys.exit(package_main())

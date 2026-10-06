@@ -46,9 +46,7 @@ def test_to_slack_turns_images_and_attachments_into_their_names():
 def test_to_slack_cuts_long_posts_with_a_link():
     text = bridge_mod.to_slack("word " * 2000, "https://f/t/x/1/3")
     assert len(text) < bridge_mod.MAX_SLACK_TEXT + 100
-    assert text.endswith("<https://f/t/x/1/3|Read the rest on the forum>")
-    named = bridge_mod.to_slack("word " * 2000, "https://f/t/x/1/3", "Qupa Cafe")
-    assert named.endswith("<https://f/t/x/1/3|Read the rest on Qupa Cafe>")
+    assert text.endswith("<https://f/t/x/1/3|Read the rest>")
 
 
 def test_from_slack_resolves_mentions_links_and_entities():
@@ -158,8 +156,6 @@ def serve(stub: StubForum):
                     },
                     "post_stream": {"stream": [p["id"] for p in topic["posts"]]},
                 })
-            if path == "/site/basic-info.json":
-                return self._json(200, {"title": "Qupa Cafe"})
             if path == "/categories.json":
                 return self._json(200, {"category_list": {"categories": list(stub.categories.values())}})
             if path.startswith("/c/"):
@@ -734,38 +730,28 @@ def test_a_refusal_is_told_to_the_person_who_wrote(world):
     assert "too short" in slack.ephemerals[-1]["text"]
 
 
-def test_links_say_where_they_lead(world):
-    """A thread opens with the topic's title marked as a topic, and every post
-    ends with a link that names the forum it opens."""
+def test_threads_and_posts_carry_their_links(world):
+    """A thread opens with the topic's title, and every post ends with a link
+    to it, unless it was cut and already ends with a link to the rest."""
     stub, slack, bridge = world
     stub.post(10, "pat", "I get 0.57% for this.")
     bridge.poll()
 
     (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["text"].startswith("Topic on Qupa Cafe: *<")
+    assert parent["text"].startswith("Topic: *<")
     assert "|Surface code thresholds>*" in parent["text"]
     (reply,) = replies(slack)
-    assert reply["text"].endswith("|View this post on Qupa Cafe>")
-    assert "on the forum>" not in reply["text"]
+    assert reply["text"].endswith("|View this post>")
 
     # An agent's post carries the same link, after the mention of its researcher.
     stub.post(10, "sunada-agent", "A counterexample at distance 5.")
     bridge.poll()
     agent = replies(slack)[1]["text"]
     assert agent.startswith("<@US>, your agent posted:\n")
-    assert agent.endswith("|View this post on Qupa Cafe>")
+    assert agent.endswith("|View this post>")
 
-
-def test_links_fall_back_to_the_forum_when_it_cannot_say_its_name(world):
-    stub, slack, bridge = world
-
-    def refused(method, path, *args, **kwargs):
-        if path == "/site/basic-info.json":
-            raise bridge_mod.Transient("down")
-        return original(method, path, *args, **kwargs)
-
-    original = bridge.forum.request
-    bridge.forum.request = refused
-    stub.post(10, "pat", "Agreed.")
+    stub.post(10, "pat", "word " * 2000)
     bridge.poll()
-    assert replies(slack)[0]["text"].endswith("|View this post on the forum>")
+    cut = replies(slack)[2]["text"]
+    assert cut.endswith("|Read the rest>")
+    assert "View this post" not in cut

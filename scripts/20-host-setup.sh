@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
 #
-# Prepare a Debian-family host to run Discourse.
-#
-# Platform-independent: assumes a Linux host, a block device, and apt. Nothing
-# about where those came from. Anything platform-specific belongs in platforms/.
-#
-# Idempotent. Safe to re-run.
-#
-# Usage:
-#   sudo ./20-host-setup.sh /dev/sdb
-#   sudo ./20-host-setup.sh --dry-run /dev/sdb
-#
-# Corresponds to docs/02-host-setup.md, which explains the two judgement calls
-# this script makes (mount by UUID with nofail, and add fail2ban).
+# Prepare a Debian-family host to run Discourse. Idempotent.
+#   sudo ./20-host-setup.sh [--dry-run] /dev/sdb
+# docs/02-host-setup.md.
 
 set -euo pipefail
 
@@ -44,7 +34,7 @@ run() {
 [ -n "$DEVICE" ]     || die "Usage: $0 [--dry-run] /dev/sdX  (the data volume, not the root disk)"
 [ -b "$DEVICE" ]     || die "$DEVICE is not a block device. Run lsblk."
 
-# Refusing to touch a mounted device is the guard that makes a typo survivable.
+# Refusing a mounted device or the root disk makes a typo survivable.
 if findmnt --source "$DEVICE" > /dev/null 2>&1; then
   MOUNTED_AT="$(findmnt -n -o TARGET --source "$DEVICE" | head -1)"
   [ "$MOUNTED_AT" = "$MOUNT_POINT" ] \
@@ -72,9 +62,6 @@ say "Docker"
 if command -v docker > /dev/null 2>&1; then
   printf '   %s\n' "$(docker --version)"
 else
-  # Deliberately not automated. Install from Docker's own repository rather than
-  # the distribution's: distribution packages lag, and launcher enforces a
-  # minimum version. https://docs.docker.com/engine/install/ubuntu/
   die "Docker is not installed. Install it from Docker's repository, then re-run."
 fi
 
@@ -86,8 +73,7 @@ if blkid "$DEVICE" > /dev/null 2>&1; then
   skip "$DEVICE already has a filesystem"
 else
   printf '   making ext4 on %s\n' "$DEVICE"
-  # -F because this is a bare device with no partition table, which is what a
-  # single-purpose data volume wants. mkfs would otherwise prompt.
+  # -F: a bare device with no partition table, without the prompt.
   run mkfs.ext4 -F "$DEVICE"
 fi
 
@@ -96,13 +82,8 @@ printf '   UUID: %s\n' "$UUID"
 
 run mkdir -p "$MOUNT_POINT"
 
-# By UUID, not by device path: device letters are assigned in discovery order
-# and are not stable across reboots.
-#
-# With nofail: without it, a missing or detached device stops the boot at an
-# emergency prompt, which on a remote host with no console is an outage needing
-# platform-level recovery. With it, the machine boots, the forum fails to start,
-# and you can log in and fix it.
+# By UUID, since device letters move between boots; nofail, so a missing
+# device leaves a bootable host rather than an emergency prompt.
 FSTAB_LINE="UUID=$UUID  $MOUNT_POINT  ext4  defaults,noatime,nofail  0 2"
 
 if grep -q "$MOUNT_POINT" /etc/fstab; then
@@ -128,26 +109,16 @@ fi
 say "Automatic security updates"
 run systemctl enable --now unattended-upgrades
 
-# It installs security updates and NEVER reboots, so kernel updates sit
-# installed but inactive until someone reboots. docs/07-backups-and-ops.md
-# schedules the check for /var/run/reboot-required.
-printf '   note: installs updates, does not reboot\n'
-
 # ------------------------------------------------------------------ fail2ban
 
 say "fail2ban"
 run systemctl enable --now fail2ban
 
-# Our addition, not a Discourse requirement. Its value here is bounded and
-# specific: it rate-limits SSH brute force against port 22.
-
 # ---------------------------------------------------------------------- ufw
 
 say "Firewall"
 
-# SKIP_UFW=1 for environments where a host firewall is not the right tool and
-# enabling it can break networking: a WSL distro, a container, or a host whose
-# ingress is managed elsewhere. The scratch forum runs with it set.
+# SKIP_UFW=1 where a host firewall breaks networking: WSL, a container.
 if [ "${SKIP_UFW:-0}" = "1" ]; then
   printf '   skipped (SKIP_UFW=1)\n'
 else
@@ -156,23 +127,7 @@ else
   run ufw allow 443/tcp
   run ufw --force enable
 fi
-
-cat <<'WARNING'
-
-   READ THIS BEFORE TRUSTING `ufw status`.
-
-   Docker publishes container ports by writing its own iptables chain, which is
-   consulted before ufw's. A published container port is reachable whether or
-   not ufw allows it, and `ufw status` will not tell you that.
-
-   So ufw here protects services running ON the host, outside a container, and
-   nothing else. The real ingress control for the forum is whatever your
-   platform puts in front of the host -- a security group, a cloud firewall.
-
-   Enabling ufw, seeing "Status: active", and concluding the host is firewalled
-   is wrong in exactly the case that matters.
-
-WARNING
+printf '   ufw does not filter published container ports: Docker bypasses it.\n'
 
 # ------------------------------------------------------------------- report
 
@@ -189,19 +144,4 @@ docker run --rm hello-world > /dev/null 2>&1 \
   || printf '   docker: FAILED to run hello-world\n'
 systemctl is-enabled unattended-upgrades fail2ban || true
 
-cat <<REPORT
-
-============================================================
-Host setup complete.
-
-The reboot below is part of the test, not a formality. A data volume that
-mounts by hand but not from fstab is a failure that otherwise surfaces months
-later during an unrelated restart.
-
-  sudo reboot
-  # then, once it is back:
-  df -h $MOUNT_POINT
-
-Then continue at docs/03-install.md.
-============================================================
-REPORT
+printf '\nDone. Now reboot, and check that %s remounted (docs/02-host-setup.md).\n' "$MOUNT_POINT"

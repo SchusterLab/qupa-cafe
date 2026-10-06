@@ -1,42 +1,34 @@
 # Object storage
 
-The forum's uploads live here. `docs/05-forum-config.md` covers the Discourse side; this is what the platform provides and what it takes to get at it.
+The forum's uploads live here; `docs/05-forum-config.md` 5.6 covers the Discourse side.
 
-## The endpoint
+**The endpoint** is Ceph RGW, answering S3 at `https://js2.jetstream-cloud.org:8001/` and Swift at `https://js2.jetstream-cloud.org:8001/swift/v1`. It addresses buckets by path only: there is no wildcard DNS and the certificate names only `js2.jetstream-cloud.org`, which is why the `qupa-s3-path-style` plugin exists.
 
-The service catalog lists `object-store`, Swift, at `https://js2.jetstream-cloud.org:8001/swift/v1`. It is Ceph RGW, so the same namespace answers the S3 API at `https://js2.jetstream-cloud.org:8001/` -- an unauthenticated `GET` there returns an S3 `ListAllMyBucketsResult` rather than a Swift error, which is the quickest way to tell.
-
-**It addresses buckets by path only.** A request carrying `Host: <bucket>.js2.jetstream-cloud.org` is answered as though the first path segment were the bucket: signing the request Discourse would send and delivering it with that Host returned `NoSuchBucket` naming `original`, the leading segment of `original/1X/probe.pdf`. There is no wildcard DNS for a bucket subdomain and the endpoint's certificate carries one name, `js2.jetstream-cloud.org`, so the virtual-host form fails three ways over. This is what `plugins/qupa-s3-path-style` exists for.
-
-That check needs no credentials, because the error names the bucket the server inferred:
-
-```bash
-curl https://<endpoint>/probe-b/key                 # NoSuchBucket: probe-b = path style
-curl https://probe-a.<endpoint>/probe-b/key         # NoSuchBucket: probe-a = virtual host
-```
-
-## Credentials
-
-S3 credentials come from Keystone as an EC2 credential:
+**Credentials** are an EC2 credential, which the application credential can create:
 
 ```bash
 openstack ec2 credentials create
+openstack ec2 credentials delete <access>     # revoke
 ```
 
-The application credential in `app-cred-qupa-cafe-openrc.sh` can issue one through `POST /v3/users/<user>/credentials/OS-EC2`, which is not guaranteed -- application credentials are restricted by default. `openstack ec2 credentials delete <access>` revokes one, and issuing a replacement before revoking the old leaves a working credential if something fails in between.
+They go in `/etc/qupa-cafe/s3.env` on the host, mode 600, with LF line endings:
 
-The pair in use is in `/etc/qupa-cafe/s3.env` on the host, mode 600.
+```ini
+QUPA_S3_ACCESS_KEY_ID=<access>
+QUPA_S3_SECRET_ACCESS_KEY=<secret>
+QUPA_S3_BUCKET=qupa-cafe-uploads
+QUPA_S3_ENDPOINT=https://js2.jetstream-cloud.org:8001
+QUPA_S3_REGION=us-east-1
+```
 
-## Buckets
-
-Either API can create one. Over Swift it needs no request signing, which is convenient from a machine whose Python does not trust the endpoint's certificate chain:
+**The bucket** is created over Swift, which needs no request signing:
 
 ```bash
-curl -X PUT -H "X-Auth-Token: $TOKEN" https://js2.jetstream-cloud.org:8001/swift/v1/<bucket>
+TOKEN=$(openstack token issue -f value -c id)
+curl -X PUT -H "X-Auth-Token: $TOKEN" https://js2.jetstream-cloud.org:8001/swift/v1/qupa-cafe-uploads   # 201
+curl -o /dev/null -w '%{http_code}\n' https://js2.jetstream-cloud.org:8001/qupa-cafe-uploads/              # 403
 ```
 
-Buckets are private: an unauthenticated listing answers 403, and so does an unauthenticated fetch of an object in one. Names are unique across the whole cluster rather than per project.
+Buckets are private, and their names are unique across the whole cluster.
 
-## The certificate chain
-
-InCommon by way of an emSign root. The Linux host verifies it, and so does Ruby inside the container with `VERIFY_PEER` -- which is what matters, since that is the stack `aws-sdk-s3` uses. `botocore` on a Windows machine rejects it, because `certifi` does not carry that root while the Windows store does. That is a property of the client, not of the endpoint.
+The certificate chain (InCommon via an emSign root) verifies on the Linux host and in the container's Ruby. `botocore` on Windows rejects it, because `certifi` lacks that root.

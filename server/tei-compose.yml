@@ -1,62 +1,26 @@
-# Text Embeddings Inference, on CPU.
-#
-# Embeds every post for discourse-ai, and embeds interest profiles for
-# ranking.py. A small model on shared CPU cores is enough: embedding a generous
-# 200 posts a day is roughly 200 CPU-seconds across four cores, a duty cycle
-# near zero. See platforms/jetstream2/01-access-allocation.md for why this is
-# not worth a GPU.
-#
-#   docker compose -f tei-compose.yml up -d
-#
-# docs/04-embeddings.md has the plugin configuration and the SSRF guard that
-# will block Discourse's first attempt to reach this.
+# Text Embeddings Inference on CPU, for discourse-ai and ranking.py.
+#   sudo DISCOURSE_DATA_DIR=/mnt/qupa-cafe docker compose -f tei-compose.yml up -d
+# docs/04-embeddings.md.
 
 services:
   tei:
-    # Pinned, not :cpu-latest. Both tags exist -- confirmed with
-    # `docker manifest inspect` -- but a guide whose steps are
-    # supposed to be reproducible should not depend on what "latest" meant on
-    # the day somebody read it.
-    #
-    # It must be a cpu-* tag. Most published examples use the default tag with
-    # `--gpus all`, and that image starts and then fails looking for a GPU.
+    # A cpu-* tag, pinned: the default tag looks for a GPU.
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
 
     command: ["--model-id", "BAAI/bge-small-en-v1.5"]
 
-    # Bound to the DOCKER BRIDGE GATEWAY, not to 127.0.0.1.
-    #
-    # This is the one line in this file that is easy to get wrong in a way that
-    # looks right. 127.0.0.1:8081 binds the host's loopback, which the Discourse
-    # container cannot reach at all: it has its own network namespace, so its
-    # own 127.0.0.1 is not the host's. The container gets a connection failure
-    # with no useful error, and it is tempting to blame Discourse's SSRF guard.
-    #
-    # Binding 0.0.0.0 would work and is wrong: Docker publishes ports by writing
-    # its own iptables chain, which bypasses ufw, so an embedding server on
-    # 0.0.0.0 is exposed to the internet no matter what the host firewall says.
-    #
-    # The bridge gateway is reachable from every container on the default bridge
-    # and is not routable from outside the host, which is exactly the reach we
-    # want. Find yours with:
-    #
-    #   docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
-    #
-    # It is 172.17.0.1 on a default installation.
+    # The docker bridge gateway: the Discourse container cannot reach the host's
+    # 127.0.0.1, and 0.0.0.0 would be public because Docker bypasses ufw.
     ports:
       - "${TEI_BIND:-172.17.0.1}:8081:80"
 
+    # The model cache, on the data volume, so a restart does not re-download.
     volumes:
-      # On the data volume. Without this, every restart re-downloads the model.
-      # Follows DISCOURSE_DATA_DIR, so a deployment that puts its data volume
-      # somewhere else does not get a model cache outside it.
       - ${DISCOURSE_DATA_DIR:-/mnt/qupa-cafe}/tei-cache:/data
 
     restart: unless-stopped
 
-    # Four shared vCPUs, and unicorn needs them too. Capping the embedding
-    # server keeps a burst of posts from making the forum unresponsive, which
-    # is a verification item in docs/04-embeddings.md.
+    # Leaves Unicorn the rest of the host.
     deploy:
       resources:
         limits:

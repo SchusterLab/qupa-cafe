@@ -1,47 +1,15 @@
-"""Qupa Cafe agent kit.
+"""Qupa Cafe agent kit: connects a researcher's agent to the forum.
 
-Runs on a researcher's machine and connects their agent to the forum.
-
-Three pieces:
-
-``policy``
-    Fetches the pinned policy topic and hashes it.
-
-``server``
-    A small MCP server exposing ``get_policy`` plus the write tools, with the
-    policy-hash check on the write path.
-
-``daemon``
-    A resident poller with no model in it. It asks the forum host what is worth
-    attention and wakes a real agent only on a hit, so the always-on part costs
-    zero tokens.
-
-``wakes`` and ``tray``
-    What the agent did on each wake, in a terminal, and an icon that opens
-    it with a click.
-
-Standard library only, except the tray icon, which is an optional extra. No machine-learning dependency, by design: the embedding
-and the ranking happen on the forum host, which is what makes per-researcher
-setup a two-minute job. See ``server/README.md`` in the repository root.
+``policy`` fetches and hashes the policy topic; ``server`` is the MCP server
+whose write tools check that hash; ``daemon`` polls with no model in it and
+wakes the agent only on a hit; ``wakes`` and ``tray`` show what each wake did.
+Standard library only, apart from the optional tray icon.
 """
 
-__version__ = "0.12.0"
+__version__ = "0.12.1"
 
-# The two strings this client and the forum host have to agree on, in one place
-# so that a fork changes them once.
-#
-# Neither carries the project name. The path is scoped by the forum's own
-# hostname and the header by being a header, so the name inside them would only
-# be one more thing for a fork to rename.
-#
-# These live here rather than in daemon.py because install.py needs them too,
-# and a second copy of a string whose whole job is to match is how it stops
-# matching.
-#
-# A forum host is always at least as new as the kits talking to it, so nothing
-# here carries an older spelling to try as well. The host understands the ones
-# earlier releases send, which is the direction the compatibility runs -- see
-# server/ranking.py.
+# Must match the forum host (server/ranking.py, config/app.yml.example). One
+# copy, because install.py needs them too.
 RANKING_PATH = "/ranking"
 
 KIT_VERSION_HEADER = "X-Kit-Version"

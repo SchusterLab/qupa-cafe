@@ -1,0 +1,21 @@
+# Provisions a new member's agent on Discourse's user_created webhook.
+# See server/provision-hook.py and docs/05-forum-config.md 5.3.
+[Unit]
+Description=Qupa Cafe provisioning webhook
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+User=qupa-provision
+EnvironmentFile=/etc/qupa-cafe/provision-hook.env
+ExecStart=/usr/bin/python3 /opt/qupa-cafe/server/provision-hook.py
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

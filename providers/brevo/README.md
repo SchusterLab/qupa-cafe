@@ -1,138 +1,50 @@
 # Brevo
 
-The transactional email relay for `forum.qupa-cafe.com`.
+The transactional mail relay for `forum.qupa-cafe.com`.
 
 > **Status:** Outstanding: a password reset that actually arrives.
-> The account exists, the SMTP key is in use by the forum, and all four records are published and resolving — including both DKIM records followed through to the 2048-bit keys they point at.
-
-## Why a relay at all
-
-Discourse cannot complete a password reset without SMTP, and mail sent straight from a freshly allocated cloud address lands in spam. `docs/01-requirements.md` has the rest.
-
-## Why this one
 
 | | |
 |---|---|
-| Free tier | **300 emails per day** |
+| Free tier | 300 messages per day |
 | Endpoint | `smtp-relay.brevo.com:587`, STARTTLS |
-| Domain authentication | Yes, per subdomain |
+| Domain authentication | per subdomain |
 
-> **The allowance is 300 per _day_, which is what Discourse's own `INSTALL-email.md` says.**
-> Take quota figures from the provider.
-
-300 a day is ample for password resets and for onboarding a research group. What it would not survive is something that sends on a timer: a job firing every five minutes can reach 288 messages a day on its own, which is the whole allowance for one sender. That is why `docs/05-forum-config.md` turns notification mail off and closes the paths that wake on a schedule.
-
-Rejected alternatives, recorded so they are not revisited without cause:
-
-**Stanford's `smtp.stanford.edu`** authenticates with a SUNet ID and password, which would put personal Stanford credentials on an internet-facing VM — a credential far more valuable than the forum. Stanford's bypass policy also requires servers to sit on a University-IT-provisioned campus network, which a cloud VM does not.
-
-**SendGrid** withdrew its permanent free plan in May 2025.
-
-## Do this in Phase 1, not at install time
-
-None of it needs the forum, the host, or an IP address, and doing it early keeps DNS propagation off the critical path.
-
-> **Free tiers sometimes hold sending pending account review.**
-> Create the account and send a throwaway test message.
-> Discovering a hold while the forum is half-built is the avoidable version of this problem.
+300 a day covers resets and onboarding, not a job that mails on a timer, which is why `docs/05-forum-config.md` turns notification mail off. Take quota figures from the provider.
 
 ## Steps
 
-1. Create a Brevo account.
-2. Send a test message from their panel, to confirm sending is actually enabled and not pending review.
-3. Go to **Senders, Domains & Dedicated IPs** -> **Domains** -> **Add a domain**.
-4. Enter **`forum.qupa-cafe.com`**.
+Do this early: none of it needs the host, and DNS propagation is then off the critical path.
 
-> **Authenticate the subdomain you send from, not the apex.**
-> Discourse's own documentation is explicit that verifying `qupa-cafe.com` while sending as `forum.qupa-cafe.com` leaves mail misconfigured.
+1. Create an account and send a test message from the panel, to find out whether sending is held for review.
+2. **Senders, Domains & Dedicated IPs → Domains → Add a domain**: `forum.qupa-cafe.com`, the subdomain you send from, not the apex.
+3. Skip the branded subdomain. Choose **Individual DNS records**, then **Manual**.
+4. Add the four records at Porkbun, with hosts relative to the zone:
 
-5. **Skip the branded subdomain.** It rewrites tracked links and images to a domain of yours, and this forum sends neither.
-6. For how to authenticate the domain, choose **Individual DNS records**. That is what produces the four records in the next step.
-7. For how the records will be added, choose **Manual**. The alternative asks Brevo to write them through a registrar integration, which Porkbun is not.
-8. Brevo shows four records on one page, all of them on the subdomain. Add them in the Porkbun DNS panel for `qupa-cafe.com`.
-
-| Kind | Name | Type | Value |
+| Kind | Porkbun host | Type | Value |
 |---|---|---|---|
-| Ownership | `forum.qupa-cafe.com` | TXT | `brevo-code:<32 hex characters>` |
-| DKIM 1 | `brevo1._domainkey.forum.qupa-cafe.com` | CNAME | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
-| DKIM 2 | `brevo2._domainkey.forum.qupa-cafe.com` | CNAME | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
-| DMARC | `_dmarc.forum.qupa-cafe.com` | TXT | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
+| Ownership | `forum` | TXT | `brevo-code:<32 hex>` |
+| DKIM 1 | `brevo1._domainkey.forum` | CNAME | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
+| DKIM 2 | `brevo2._domainkey.forum` | CNAME | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
+| DMARC | `_dmarc.forum` | TXT | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
 
-> **Copy the DKIM values from the panel rather than typing them.**
-> They embed the domain with hyphens — `forum-qupa-cafe-com` — and a hand-typed `forum.qupa-cafe.com` in that position resolves to nothing.
-> The only symptom is a verification that never completes.
+Copy the DKIM values from the panel: they spell the domain with hyphens. Leave DMARC at `p=none` until delivery is confirmed.
 
-> **Porkbun's host field is relative to the zone.**
-> The DKIM host is `brevo1._domainkey.forum`, not the full name Brevo displays.
-> The ownership TXT goes on `forum` itself, with no `brevo-code.` label in front of it.
+5. Check the records, below, then press verify.
+6. **SMTP & API → SMTP**: create an SMTP key. Put the **SMTP login** (ending `@smtp-brevo.com`) and the key, shown once, into `.env` as `DISCOURSE_SMTP_USER_NAME` and `DISCOURSE_SMTP_PASSWORD`, unquoted.
 
-> **Leave DMARC at the `p=none` Brevo offers.**
-> Tightening it to `p=reject` before delivery is confirmed silently destroys your own mail, password resets included.
-
-9. Check the records resolve, below, then press verify in Brevo's panel.
-10. Create an **SMTP key** under **SMTP & API** -> **SMTP**.
-
-    That page gives you two separate values: an **SMTP login**, which looks like an address ending `@smtp-brevo.com`, and the **SMTP key** itself.
-    You have to paste both into `.env` by hand.
-    Nothing fetches them for you, and the install refuses to start until they are set.
-
-    `.env` lives at the root of this repository.
-    Create it with `cp .env.example .env` if it is not there yet, then fill in these two lines:
-
-    ```
-    DISCOURSE_SMTP_USER_NAME=<paste the SMTP login here>
-    DISCOURSE_SMTP_PASSWORD=<paste the SMTP key here>
-    ```
-
-    No quotes, and no spaces around the `=`.
-    `.env` is gitignored, so the key does not get committed.
-
-> **The key is shown once.**
-> Copy it before leaving the page.
-> There is no way to read it back afterwards, only to generate a replacement and paste that instead.
-
-> **If the key contains a `#`, quote it in `app.yml`.**
-> An unquoted `#` begins a YAML comment and the rest of the password is silently discarded.
-> `config/app.yml.example` quotes it already; this matters if you ever hand-edit.
-
-## Check the records resolve
-
-`dig` on a Linux host, `nslookup` on Windows:
+## Check the records
 
 ```bash
 dig +short @1.1.1.1 TXT forum.qupa-cafe.com
 dig +short @1.1.1.1 CNAME brevo1._domainkey.forum.qupa-cafe.com
 dig +short @1.1.1.1 CNAME brevo2._domainkey.forum.qupa-cafe.com
 dig +short @1.1.1.1 TXT _dmarc.forum.qupa-cafe.com
-dig +short @1.1.1.1 TXT b1.forum-qupa-cafe-com.dkim.brevo.com
+dig +short @1.1.1.1 TXT b1.forum-qupa-cafe-com.dkim.brevo.com    # k=rsa;p=<2048-bit key>
 ```
 
-Name the resolver explicitly, as above, or `nslookup -type=TXT forum.qupa-cafe.com 1.1.1.1`. A stale negative answer in a local cache looks exactly like a record you forgot to add.
+Name the resolver, since a stale local negative cache looks like a missing record. The last query follows DKIM through to the key, which is the one that proves signing will work.
 
-The last query is the one to remember. It follows the DKIM record through to the key itself, and a DKIM record that resolves while its target holds no key verifies in the panel and signs nothing.
+## Then
 
-A correctly published zone answers like this:
-
-| Query | Answer |
-|---|---|
-| `TXT forum.qupa-cafe.com` | `brevo-code:<32 hex>` |
-| `CNAME brevo1._domainkey.forum` | `b1.forum-qupa-cafe-com.dkim.brevo.com` |
-| `CNAME brevo2._domainkey.forum` | `b2.forum-qupa-cafe-com.dkim.brevo.com` |
-| `TXT _dmarc.forum.qupa-cafe.com` | `v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com` |
-| `TXT b1.forum-qupa-cafe-com.dkim.brevo.com` | `k=rsa;p=<2048-bit key>` |
-
-The DKIM lookup takes two hops, and only the second one proves anything. Brevo's `b1...` name is itself a CNAME onto a numbered signing host, so the key arrives from a third name again — which is why following the chain matters more than confirming that the record you typed exists.
-
-## Then send a real message
-
-Once the forum is up: Discourse admin -> Email -> send a test to an address at a major mailbox provider. Open the received headers and confirm `dkim=pass` with `d=forum.qupa-cafe.com`, the same domain as the one in `From:`.
-
-`spf=none` is expected here and is not a fault.
-
-`docs/03-install.md` §3.6 treats this as a gate on declaring the install finished.
-
-## After it works
-
-Watch the usage counter.
-
-On a 300-a-day quota, a counter climbing when nobody is joining means something is sending on a timer, and the consequence is not cosmetic: the day's allowance drains and password resets stop working silently. `docs/08-runbook.md` says to check this counter **first** when a reset email does not arrive.
+Send a test from Discourse's admin Email page and confirm `dkim=pass` with `d=forum.qupa-cafe.com`; `spf=none` is expected. Afterwards, a usage counter climbing while nobody joins means something is mailing on a timer, and resets will stop when the day's allowance runs out.

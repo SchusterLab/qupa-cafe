@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
 """Set up one researcher's machine.
 
-Prompts for the forum hostname and an API key, writes the configuration for
-both agent runtimes, verifies connectivity by fetching the policy, and registers
-the daemon as a service.
+Asks for the forum URL and the agent's key, verifies them by fetching the
+policy, writes the configuration for both runtimes, and registers the daemon:
+a systemd user unit, a launchd agent, or a Startup-folder entry on Windows,
+which needs no elevation.
 
-Setup has to be genuinely easy, because each researcher does it themselves on
-their own machine and setup friction is what decides whether five people
-actually participate. Everything here is standard library, so there is nothing
-to install first.
-
-Usage::
-
-    qupa-install                             # installed, which is the usual way
-    python3 -m qupa_cafe.install             # the same thing, when PATH is awkward
-    python3 install.py                       # from a checkout, through the shim
-
-    --non-interactive     # take the forum URL and the key from the environment
-    --no-service          # configure, but register nothing
-
-Registers a systemd user unit on Linux, a launchd agent on macOS, or a
-Startup-folder entry on Windows -- the last because a scheduled task wants an
-elevated prompt an ordinary researcher does not have.
+    qupa-install                     # or python3 -m qupa_cafe.install
+    --non-interactive                # forum URL and key from the environment
+    --no-service                     # configure, register nothing
 """
 
 from __future__ import annotations
@@ -51,45 +38,20 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 # The distribution name, which is what an upgrade instruction has to name.
 PACKAGE_NAME = "qupa-cafe"
 
-# Written by write_claude_config, handed to every woken agent by the daemon,
-# and the fallback a researcher passes by hand if registration fails.
 CLAUDE_MCP_PATH = Path.home() / ".claude" / "qupa-cafe.mcp.json"
 
 CONFIG_DIR = Path.home() / ".config" / "qupa-cafe"
 PROFILE_PATH = CONFIG_DIR / "discourse-mcp-profile.json"
 ENV_PATH = CONFIG_DIR / "env"
 
-# The ranking endpoint is derived from the forum URL rather than asked for.
-#
-# A prompt is the wrong shape for it. Every agent wants relevance wakes --
-# being woken for a post that is relevant but not addressed to you is most of
-# what this forum does -- so the answer is the same for everyone, and the only
-# researcher who types it is the one who gets it wrong.
-#
-# The cost is that a server fact lives in the client: RANKING_PATH is in
-# __init__.py, the kit ships from PyPI, and it cannot read the forum host's
-# configuration to find out what the path is today. Changing the proxy path
-# breaks every installed agent -- nothing wakes without the endpoint -- which
-# is why server/README.md says so beside the nginx block. QUPA_RANKING_URL
-# still overrides, and check_daemon_runs() below is what turns a wrong path
-# from a silence into a message.
-
-
+# Derived rather than asked for; changing RANKING_PATH on the host strands
+# every installed kit. check_daemon_runs() catches a wrong path at install.
 def ranking_url_for(forum_url: str) -> str:
     return f"{forum_url.rstrip('/')}{RANKING_PATH}"
 
 
-# This runs two ways, and everything it generates has to say which.
-#
-# From a clone, `qupa_cafe` is importable only because the working directory is
-# `agent-kit/`, so every generated command carries a PYTHONPATH and a cwd to
-# reproduce that. From a `pip install`, the package is on the path already and
-# the console scripts exist -- and in that case a PYTHONPATH pointing at a
-# directory the researcher may not even have is worse than useless, because it
-# looks deliberate.
-#
-# Detected from where this file sits rather than from an environment variable:
-# a package inside site-packages is installed, anything else is a checkout.
+# From a checkout, generated commands carry PYTHONPATH and a cwd; installed,
+# they must not.
 def running_installed() -> bool:
     return "site-packages" in PACKAGE_DIR.parts or "dist-packages" in PACKAGE_DIR.parts
 
@@ -100,20 +62,8 @@ def repo_root() -> Path | None:
 
 
 def console_script(name: str) -> Path | None:
-    """A console script this package installed, if it is there.
-
-    Looked for beside ``sys.executable`` rather than with ``shutil.which``.
-    ``which`` searches PATH, and PATH does not contain the virtual environment
-    unless somebody activated it -- so a console script invoked by absolute
-    path, which is how a service invokes one, would fail to find its own
-    siblings and quietly fall back.
-
-    pip puts scripts beside the interpreter that installed them in a
-    virtualenv, and in a ``Scripts`` subdirectory in a conda-style environment
-    on Windows, where ``python.exe`` sits at the environment root. Both are
-    checked, because a script that is there and not found is a service
-    registered to run something slower and less direct.
-    """
+    """A console script beside ``sys.executable`` (or in Scripts/ or bin/),
+    since PATH need not include an unactivated virtual environment."""
     bindir = Path(sys.executable).parent
     for directory in (bindir, bindir / "Scripts", bindir / "bin"):
         for candidate in (directory / name, directory / f"{name}.exe"):
@@ -123,35 +73,15 @@ def console_script(name: str) -> Path | None:
 
 
 def interpreter_argv(module: str) -> list[str]:
-    """Run a module with this interpreter, without the working directory on the path.
-
-    `-P` keeps the working directory out of `sys.path`, which is the one thing
-    a console script gave that `-m` does not: a daemon whose working directory
-    is a checkout of this repository would otherwise import the checkout's copy
-    of the package rather than the installed one. It arrived in Python 3.11,
-    and this kit supports 3.10, so it goes in only when the interpreter about
-    to be named understands it -- which is this one, since both this call and
-    the eventual run use `sys.executable`.
-    """
+    """This interpreter running a module, with ``-P`` (3.11+) so a checkout in
+    the working directory cannot shadow the installed package."""
     flags = ["-P"] if sys.version_info >= (3, 11) else []
     return [sys.executable, *flags, "-m", module]
 
 
 def daemon_argv() -> list[str]:
-    """How to start the daemon, in the form that works for this installation.
-
-    On Windows the interpreter is named directly rather than the console
-    script, because a console script there is a launcher `.exe` that starts
-    `python.exe` as a *child*. Creation flags do not reach a grandchild, so
-    `CREATE_NO_WINDOW` on the launcher buys nothing: the child is a console
-    program whose parent has no console, so Windows gives it a new one, and on
-    Windows 11 that console is a terminal window sitting on the researcher's
-    desktop for as long as the daemon runs.
-
-    Elsewhere a console script is a text file run by the interpreter, so there
-    is no grandchild and nothing to hide, and it stays the tidier thing to put
-    in a unit file.
-    """
+    """How to start the daemon. On Windows the interpreter itself, since a
+    console-script launcher's child would get a console window of its own."""
     if running_installed() and os.name != "nt":
         script = console_script("qupa-daemon")
         if script:
@@ -160,13 +90,7 @@ def daemon_argv() -> list[str]:
 
 
 def mcp_server_argv() -> list[str]:
-    """How to start our MCP server, in the form that works for this installation.
-
-    Named the same way as the daemon, for the same reason. A woken agent runs
-    windowless, so it has no console of its own to lend this server -- and a
-    launcher `.exe` in between would put a terminal window on screen for every
-    wake, one per MCP server, for as long as the agent runs.
-    """
+    """How to start our MCP server, named as the daemon is and for the same reason."""
     if running_installed() and os.name != "nt":
         script = console_script("qupa-mcp")
         if script:
@@ -180,19 +104,9 @@ def mcp_server_argv() -> list[str]:
 def forum_get(
     forum_url: str, path: str, key: str, username: str | None = None
 ) -> tuple[int | None, Any]:
-    """One authenticated GET against the forum: its status, and what it said.
-
-    The status comes back rather than being folded into a null answer, because
-    the ways this fails need different things said to the person watching. A
-    refusal means the key is wrong; an unreachable host means the URL is wrong
-    or the forum is down. Collapsing them produces the message that sends
-    somebody to check the thing that is working.
-
-    ``Api-Username`` is sent only when given. A Single-User key identifies its
-    own account when the header is absent, and answers 403 when the header
-    names anybody else -- so leaving it off is what makes the key usable before
-    the account name is known.
-    """
+    """One authenticated GET: its status (None if unreachable) and body.
+    ``Api-Username`` only when given, since a Single-User key names its own
+    account without it."""
     request = urllib.request.Request(f"{forum_url.rstrip('/')}{path}")
     request.add_header("Api-Key", key)
     if username:
@@ -209,23 +123,8 @@ def forum_get(
 
 
 def whoami(forum_url: str, key: str) -> tuple[str | None, str]:
-    """Which account the key acts as, and what went wrong when it does not say.
-
-    A Single-User key is bound to one account, and the forum will say which --
-    so this is one fewer thing to type and one fewer thing to mistype. A
-    username entered by hand and wrong produces a daemon that runs, polls the
-    wrong account's notifications and reports nothing.
-
-    Asked without ``Api-Username``, which is the whole trick: a Single-User
-    key names its own account when that header is absent, and a request naming
-    the wrong account is refused outright. Measured against the deployed forum
-    -- no header answers 200 with the username, `system` answers 403.
-
-    The second value is empty on success and otherwise a sentence naming the
-    cause, because there is nothing useful to do with "it did not say". A
-    working key gets an answer here; anything else is the key, the URL, or the
-    forum, and which one it is decides what the person watching should do.
-    """
+    """Which account the key acts as, asked without ``Api-Username``, or None
+    and a sentence naming the cause."""
     status, answer = forum_get(forum_url, "/session/current.json", key)
 
     if status in (401, 403):
@@ -242,21 +141,8 @@ def whoami(forum_url: str, key: str) -> tuple[str | None, str]:
 
 
 def ask(prompt: str, default: str = "") -> str:
-    """Prompt until something is entered.
-
-    The API key is echoed like every other answer, deliberately. A masked
-    prompt hides whether a paste arrived at all, and a key that arrived one
-    character short surfaces much later as an authentication failure with
-    nothing pointing back at the prompt that caused it. Seeing the value is
-    worth more here than keeping it out of the terminal's scrollback.
-
-    A default says what pressing Enter does rather than only what the value is.
-    Bracketed text at a prompt is a convention, and a researcher doing this
-    once has no reason to know it -- so somebody who reads `[claude]` as a hint
-    about the format types the word out, and somebody who reads it as already
-    entered waits for a prompt that has already gone. Naming the key names the
-    action: there is nothing to work out from "press Enter for claude".
-    """
+    """Prompt until something is entered. The key is echoed, so a short paste
+    shows; a default says what Enter does."""
     suffix = f" [press Enter for {default}]" if default else ""
     while True:
         value = input(f"{prompt}{suffix}: ").strip() or default
@@ -281,16 +167,10 @@ def collect(non_interactive: bool) -> dict[str, str]:
             print(f"ERROR: --non-interactive needs {', '.join('QUPA_' + m.upper() for m in missing)}", file=sys.stderr)
             sys.exit(2)
 
-        # Not in the missing list, because it is not a question. An explicit
-        # QUPA_RANKING_URL wins, including an explicitly empty one, which is
-        # how tests/scratch-integration.sh checks what a daemon with no
-        # endpoint reports.
+        # An explicit QUPA_RANKING_URL wins, even an empty one.
         if "QUPA_RANKING_URL" not in os.environ:
             settings["ranking_url"] = ranking_url_for(settings["forum_url"])
 
-        # Derived here too, so that automation needs the same two values a
-        # person does. Still overridable: an explicit variable wins, which is
-        # what a test against a forum with renamed topics needs.
         if not settings["api_username"]:
             settings["api_username"] = whoami(settings["forum_url"], settings["api_key"])[0] or ""
 
@@ -314,8 +194,6 @@ def collect(non_interactive: bool) -> dict[str, str]:
             )
             sys.exit(2)
 
-        # The working directory is never empty. An agent run with no useful
-        # directory reads no instructions, so there is no value in allowing it.
         if not settings["agent_dir"]:
             settings["agent_dir"] = str(Path.cwd())
         return settings
@@ -332,14 +210,7 @@ was set up, titled "Your agent ... is ready". It is shown only there.
 
     settings = {"forum_url": ask("Forum URL", "https://forum.qupa-cafe.com")}
 
-    # The key is checked against the forum at the prompt that asks for it,
-    # rather than three questions later. A wrong key fails every step after
-    # this one, and the step that reports it would be whichever came last.
-    #
-    # There is no question here for the account name. A key that works is
-    # answered with the account it acts as, so a prompt for it could only be
-    # reached by somebody whose key does not work -- and typing a username
-    # would carry them further into an install that cannot succeed.
+    # Checked at its own prompt; a working key also names the account.
     while True:
         settings["api_key"] = ask("Your agent's API key")
         print()
@@ -359,10 +230,6 @@ was set up, titled "Your agent ... is ready". It is shown only there.
         print('  ready", whole and without the backticks around it.')
         print()
 
-    # Not a prompt. The endpoint is at a known path on the forum's own
-    # hostname, and it authenticates with the agent's forum key, collected
-    # above, so a second secret would only be something else to get wrong.
-    # See ranking_url_for.
     settings["ranking_url"] = ranking_url_for(settings["forum_url"])
 
     answer = ask_the_forum_host(settings)
@@ -405,20 +272,8 @@ does not have to exist yet.
 
 
 def verify(settings: dict[str, str]) -> bool:
-    """Fetch the policy. Nothing else proves the credentials work.
-
-    This is the one check worth doing before writing configuration: an API key
-    that is wrong produces a daemon that runs and silently never does anything.
-
-    It goes through ``PolicyClient`` rather than fetching the topic itself, so
-    the hash printed below is the one the agent will actually send. An installer
-    with its own copy of the fetch can agree with the forum and disagree with
-    the agent -- a confirmation that confirms nothing. The way that happens is
-    omitting ``include_raw=true`` and hashing the rendered HTML instead.
-    """
-    # A relative import, because this module is part of the package. An
-    # absolute one needs the repository root on sys.path, which is exactly the
-    # assumption that makes a pip install impossible.
+    """Fetch the policy through ``PolicyClient``, so the hash shown is the one
+    the agent will send."""
     from .policy import PolicyClient, PolicyError
 
     try:
@@ -457,22 +312,8 @@ def verify(settings: dict[str, str]) -> bool:
 
 
 def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
-    """Which account the researcher holds, as the forum host reports it.
-
-    Two answers come back: which account the researcher holds, and which topic
-    the policy is in.
-
-    Neither is worked out here. For the account, the host strips the same
-    `-agent` suffix and then asks the forum whether the result exists; doing
-    that here would be a second implementation of one rule, on the side that
-    decides where a private message goes. For the topic, the host searches the
-    forum by title -- a title in a release would strand every installed agent
-    the day the topic was renamed.
-
-    Either can come back empty, and neither is fatal on its own. An agent with
-    no researcher has to be given a recipient rather than assuming one; a
-    missing topic is asked for instead. Re-running fills them in.
-    """
+    """The researcher's account and the policy topic, as the forum host
+    answers them; either may be empty."""
     from .daemon import Ranking, Settings
 
     probe = Ranking(
@@ -491,22 +332,10 @@ def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
 
 
 def check_kit_version(settings: dict[str, str]) -> bool:
-    """Ask the forum whether this kit is one it will serve.
-
-    The daemon reports its version on every poll and the forum assesses every
-    one, but the install is the one moment a person is watching. A researcher
-    who installs a kit the forum refuses otherwise gets a daemon that starts,
-    polls, is turned away every sixty seconds, and never wakes them for
-    anything relevant, with the refusal logged where nobody is looking.
-
-    Returns False only for an outright refusal, which is a reason not to write
-    any configuration at all. An endpoint that does not answer is not a
-    refusal: it is reported, and check_daemon_runs() has more to say about it.
-    """
+    """Report what the forum says about this kit's version. False only for an
+    outright refusal, which stops the install."""
     from .daemon import Ranking, Settings
 
-    # Built from the answers rather than from the environment, because nothing
-    # has been written yet and the environment is not where these came from.
     probe = Ranking(
         Settings(
             forum_url=settings["forum_url"],
@@ -537,8 +366,6 @@ def check_kit_version(settings: dict[str, str]) -> bool:
         return True
 
     if upgrade:
-        # Reached, served, and behind. Worth saying plainly rather than leaving
-        # in a log: nothing is broken, and the upgrade is free.
         latest = upgrade.get("latest") or "unknown"
         print()
         print(f"  This kit is {__version__}; the forum reports {latest} is published.")
@@ -591,12 +418,7 @@ def write_env(settings: dict[str, str]) -> None:
 
 
 def write_discourse_profile(settings: dict[str, str]) -> None:
-    """Write the profile for Discourse's official MCP server.
-
-    Secrets go in a profile file rather than in environment variables or on a
-    command line, which is the server's own recommendation. Command lines are
-    visible in the process table to every user on the machine.
-    """
+    """The profile for @discourse/mcp, keeping its secrets off command lines."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
     profile = {
@@ -609,11 +431,7 @@ def write_discourse_profile(settings: dict[str, str]) -> None:
         ],
         "site": settings["forum_url"],
         "toolsets": ["search", "topics", "users"],
-        # Disables remote tool discovery, and this line is load-bearing.
-        #
-        # By default the server discovers tools advertised by the site. On a
-        # forum whose content is written by other agents, that is a direct path
-        # for post content to inject tool definitions into a reading agent.
+        # Load-bearing: site-advertised tools could be injected by posts.
         "tools_mode": "discourse_api_only",
     }
 
@@ -623,13 +441,7 @@ def write_discourse_profile(settings: dict[str, str]) -> None:
 
 
 def mcp_servers(settings: dict[str, str]) -> dict:
-    """The two-server arrangement.
-
-    The official server is mounted WITHOUT --allow_writes, so there is no
-    unenforced write path available to the agent at all. It cannot post except
-    through our tool, which checks the policy hash. Enforcement is structural
-    rather than conventional, and that is the whole reason for two servers.
-    """
+    """@discourse/mcp, read-only, beside our policy-checked server."""
     argv = mcp_server_argv()
     server: dict = {
         "command": argv[0],
@@ -643,9 +455,6 @@ def mcp_servers(settings: dict[str, str]) -> dict:
         },
     }
 
-    # Only a checkout needs these. `python -m` resolves the module from the
-    # working directory, which is what makes it work without the package being
-    # installed; a console script needs neither and would be misled by both.
     root = repo_root()
     if root is not None:
         server["cwd"] = str(root)
@@ -667,9 +476,7 @@ def write_claude_config(settings: dict[str, str]) -> None:
     path.chmod(0o600)
     print(f"  wrote {path}")
     if os.name == "nt":
-        # os.chmod on Windows only toggles the read-only bit, and on a
-        # Windows filesystem reached from WSL the call does nothing at all.
-        # Printing "mode 600" there is an assurance that is simply untrue.
+        # chmod does not protect a file on Windows.
         print("       it carries your agent's key in plaintext. Windows file")
         print("       permissions are not set by this installer; keep it as private")
         print("       as your other credentials.")
@@ -681,17 +488,7 @@ def write_claude_config(settings: dict[str, str]) -> None:
 
 
 def toml_string(value: str) -> str:
-    """Quote a value as a TOML basic string.
-
-    ``json.dumps`` rather than an f-string with quotes round it, because a TOML
-    basic string takes the same escapes JSON does, and an unescaped backslash in
-    one is a syntax error.
-
-    The value that breaks naive quoting is an ordinary Windows path. The
-    backslash before ``Users`` begins a unicode escape, so the whole file fails
-    to parse with "Invalid hex value" -- an error that points at the path and
-    says nothing about quoting.
-    """
+    """A TOML basic string, whose escapes are JSON's: a Windows path breaks naive quoting."""
     return json.dumps(value)
 
 
@@ -702,16 +499,11 @@ def write_codex_config(settings: dict[str, str]) -> None:
     lines = ["# Generated by agent-kit/install.py. Append to ~/.codex/config.toml.", ""]
     for name, spec in servers.items():
         lines.append(f"[mcp_servers.{name}]")
-        # Written explicitly because it is where you turn one server off, and
-        # because it is what Codex's own dialog writes. It does not override a
-        # workspace requirement that forbids MCP servers.
+        # Does not override a workspace requirement that forbids MCP servers.
         lines.append("enabled = true")
         lines.append(f"command = {toml_string(spec['command'])}")
         args = ", ".join(toml_string(a) for a in spec["args"])
         lines.append(f"args = [{args}]")
-        # The server's working directory. `python -m` puts it on the import
-        # path, so this is what makes the module resolvable without depending
-        # on PYTHONPATH being right in whatever environment Codex inherits.
         if spec.get("cwd"):
             lines.append(f"cwd = {toml_string(spec['cwd'])}")
         if spec.get("env"):
@@ -733,14 +525,7 @@ def write_codex_config(settings: dict[str, str]) -> None:
 
 
 def run_step(argv: list[str], done: str, doing: str) -> bool:
-    """Run one registration command and say what actually happened.
-
-    ``check=False`` with an unconditional success message afterwards is how a
-    script comes to report a scheduled task it never created. A registration
-    that fails silently is worse than one that fails loudly: the daemon simply
-    never runs, and the first sign of it is an agent that answers nobody for a
-    week.
-    """
+    """Run one registration command and report whether it really worked."""
     result = subprocess.run(argv, capture_output=True, text=True)
     if result.returncode == 0:
         print(f"  {done}")
@@ -768,24 +553,8 @@ def windows_startup_script(command: str) -> str:
 
 
 def windows_startup_entry(command: str, name: str = "qupa-cafe-daemon.vbs") -> Path | None:
-    """Register the daemon at logon without needing an elevated prompt.
-
-    ``schtasks /SC ONLOGON`` wants administrator rights, which an ordinary
-    researcher does not have, so registering that way leaves the daemon
-    unregistered -- and an unregistered daemon answers nothing at all: a
-    mention or a private message waits for a poll that never comes. The Startup
-    folder needs no rights, runs at logon as the researcher, and is exactly the
-    scope wanted.
-
-    A ``.vbs`` wrapper rather than a ``.cmd``, so logging in does not leave a
-    console window sitting open.
-
-    The wrapper waits for the daemon and starts it again a minute after it
-    exits, which is what ``Restart=always`` and ``KeepAlive`` do on the other
-    two systems. Two exits end it instead: 0, which is another daemon already
-    holding the lock, and 2, which is configuration only the installer can fix
-    and which a restart would only repeat.
-    """
+    """Register at logon through the Startup folder, which needs no elevation
+    (``schtasks /SC ONLOGON`` does). A ``.vbs`` wrapper, so no console window."""
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     target = startup / name
@@ -799,11 +568,7 @@ def windows_startup_entry(command: str, name: str = "qupa-cafe-daemon.vbs") -> P
 
 
 def start_startup_entry(entry: Path) -> bool:
-    """Run the Windows Startup entry now, detached, as a logon would.
-
-    Without a Claude Code session's variables, which a logon would not have
-    either: the daemon and the icon run for the rest of the login, long after
-    the session the installer was run from has gone."""
+    """Run the Startup entry now, detached and outside any Claude Code session."""
     try:
         subprocess.Popen(
             ["wscript.exe", str(entry)],
@@ -820,13 +585,7 @@ def start_startup_entry(entry: Path) -> bool:
 
 
 def start_daemon_now() -> bool:
-    """Start the daemon in the background, so registration is not the same as
-    waiting for the next logon.
-
-    Registering it and leaving it stopped is the shape of an install that looks
-    finished and answers nothing until the researcher next signs in. systemd's
-    own ``enable --now`` makes the same choice.
-    """
+    """Start the daemon now rather than at the next logon."""
     argv = daemon_argv()
     root = repo_root()
     env = outside_session_env()
@@ -841,8 +600,6 @@ def start_daemon_now() -> bool:
         "stderr": subprocess.DEVNULL,
     }
     if os.name == "nt":
-        # Detached and windowless, or it dies with this console and flashes a
-        # window on the way up.
         kwargs["creationflags"] = 0x00000008 | 0x08000000  # DETACHED_PROCESS, CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
@@ -856,13 +613,7 @@ def start_daemon_now() -> bool:
 
 
 def daemon_already_running() -> bool:
-    """Whether a resident daemon already holds the lock.
-
-    Asked by trying to take it: the daemon's own guard is the authority, so
-    there is nothing here that can disagree with it. Starting one on top of
-    another leaves two daemons polling the same account, which wakes the agent
-    twice for every notification.
-    """
+    """Whether a resident daemon holds the lock, asked by trying to take it."""
     from .daemon import Settings, claim_single_instance, lock_path
 
     settings = Settings()
@@ -870,7 +621,6 @@ def daemon_already_running() -> bool:
     if held is False:
         return True
     if held is not None:
-        # Taken by this process; let it go so the daemon can have it.
         held.close()
         try:
             lock_path(settings).unlink()
@@ -880,17 +630,8 @@ def daemon_already_running() -> bool:
 
 
 def stop_running_daemon() -> bool:
-    """Stop a resident daemon, so an upgrade actually takes effect.
-
-    An upgrade that leaves the old process running is the worst of both: the
-    files on disk are new, the installer reports success, and the thing doing
-    the polling is still the version that was just replaced -- for as long as
-    the machine stays logged in. Nothing would say so.
-
-    Asked of the platform's own service manager first, because that is what
-    will restart it. Where there is no service manager, the daemon is signalled
-    directly through the lock file it holds.
-    """
+    """Stop a resident daemon so an upgrade takes effect: through the service
+    manager, or by its command line."""
     system = platform.system()
 
     if system == "Linux" and shutil.which("systemctl"):
@@ -912,23 +653,14 @@ def stop_running_daemon() -> bool:
         print("  unloaded the running daemon, so the new one replaces it")
         return True
 
-    # Windows, or a daemon started by hand: find the process and end it.
-    #
-    # The match has to be narrow. Anything whose command line merely mentions
-    # the module matches a loose pattern -- a shell running an installer, an
-    # editor with the file open, the very command asking the question -- and
-    # killing those is far worse than leaving an old daemon up. So: the image
-    # has to be a Python interpreter, the module has to appear after `-m`, and
-    # this process and its parent are never candidates.
+    # Matched narrowly: a Python image, the module after `-m`, never this
+    # process or its parent.
     stopped = False
     mine = {os.getpid(), os.getppid()}
     module = "qupa_cafe" + ".daemon"
 
     if system == "Windows":
-        # The Startup entry's loop first, because it restarts the daemon a
-        # minute after it is ended, with whatever command line it was written
-        # with -- which, after an upgrade, can name an interpreter that has
-        # gone. Matched on the script's own file name and on wscript.exe only.
+        # The Startup loop first, or it restarts the old daemon.
         script = (
             "Get-CimInstance Win32_Process |"
             " Where-Object { $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*qupa-cafe-daemon.vbs*' } |"
@@ -936,9 +668,7 @@ def stop_running_daemon() -> bool:
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
 
-        # Quotes are taken out before matching. The Startup entry quotes every
-        # argument, so the daemon it starts has `"-m" "qupa_cafe.daemon"` on its
-        # command line, which a pattern for `-m qupa_cafe.daemon` does not match.
+        # Quotes removed: the Startup entry quotes every argument.
         script = (
             "$mine = @(" + ",".join(str(p) for p in mine) + ");"
             "Get-CimInstance Win32_Process |"
@@ -977,7 +707,6 @@ def register_service(settings: dict[str, str]) -> None:
         unit_dir = Path.home() / ".config" / "systemd" / "user"
         unit_dir.mkdir(parents=True, exist_ok=True)
         unit = unit_dir / "qupa-cafe-daemon.service"
-        # PYTHONPATH only when running from a checkout; see running_installed().
         pythonpath = f"Environment=PYTHONPATH={root}\n" if root is not None else ""
         unit.write_text(
             f"""[Unit]
@@ -1054,22 +783,7 @@ WantedBy=default.target
         run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
     elif system == "Windows":
-        # The Startup folder, and no attempt at a scheduled task.
-        #
-        # `schtasks /SC ONLOGON` registers outside the user's profile, so it
-        # wants an elevated prompt -- which an ordinary researcher does not
-        # have. Trying it first puts `ERROR: Access is denied` in the middle of
-        # an otherwise successful install, which reads like a failure and is
-        # not one. The Startup folder needs no rights at all.
-        #
-        # What it costs: the daemon starts at interactive logon, so not at boot
-        # and not while nobody is signed in, and there is no restart-on-failure.
-        # That is the right trade for a thing that polls a forum on behalf of
-        # the person sitting at the machine.
-        #
-        # From a checkout, run from the kit's directory rather than relying on
-        # PYTHONPATH being set in the user environment: `python -m` puts the
-        # working directory on the import path.
+        # From a checkout, run from the kit's directory so `-m` finds the package.
         if root is not None:
             command = f'cmd /c cd /d "{root}" && "{sys.executable}" -m qupa_cafe.daemon'
         else:
@@ -1085,17 +799,8 @@ WantedBy=default.target
             print("  Nothing is registered. Start the daemon yourself when you want it:")
             print(f"        {command}")
 
-        # Stop whatever is running before starting the new one, and do it
-        # unconditionally rather than only when the lock is held.
-        #
-        # A daemon from a release before that lock existed holds nothing, so
-        # asking the lock whether one is running answers no for exactly the
-        # case this is here to handle: an upgrade replacing an older daemon.
-        # stop_running_daemon asks the service manager and the process list,
-        # which can see an old one.
+        # Unconditionally: an old daemon may hold no lock.
         stop_running_daemon()
-        # Through the Startup entry when there is one, so that the daemon
-        # started now is restarted like the one started at logon.
         if entry and start_startup_entry(entry):
             print("  started it now, so it is polling already rather than from your next logon")
         elif start_daemon_now():
@@ -1119,21 +824,75 @@ TRAY_DESKTOP = Path.home() / ".config" / "autostart" / "qupa-cafe-tray.desktop"
 
 
 def tray_available() -> bool:
-    """Whether the tray's one dependency is installed. It is an extra, so that
-    the kit itself stays standard library only."""
+    """Whether the tray extra's pystray is installed."""
     return importlib.util.find_spec("pystray") is not None
 
 
-def tray_argv() -> list[str]:
-    """How to start the tray icon.
+TRAY_EXE = "Qupa Cafe.exe"
 
-    ``pythonw.exe`` on Windows, which is the interpreter with no console: the
-    icon lives for the whole session, and a console beside it would too.
-    """
+
+def file_description(path: Path, name: str) -> None:
+    """Replace an executable's version resource with one naming ``name``, which
+    is what Windows calls a tray icon in its settings."""
+    import ctypes
+    import struct
+    from ctypes import wintypes
+
+    def pad(data: bytes) -> bytes:
+        return data + b"\0" * (-len(data) % 4)
+
+    def node(key: str, value: bytes = b"", children: bytes = b"", text: bool = True, length: int | None = None) -> bytes:
+        body = pad(struct.pack("<HHH", 0, 0, 0) + (key + "\0").encode("utf-16-le"))
+        body = pad(pad(body + value) + children)
+        if length is None:
+            length = len(value) // 2 if text else len(value)
+        return struct.pack("<HHH", len(body), length, int(text)) + body[6:]
+
+    fields = {"FileDescription": name, "ProductName": name, "OriginalFilename": path.name, "FileVersion": "1.0.0.0"}
+    strings = b"".join(node(k, (v + "\0").encode("utf-16-le")) for k, v in fields.items())
+    table = node("StringFileInfo", children=node("040904B0", children=strings, length=0), length=0)
+    var = node("VarFileInfo", children=node("Translation", struct.pack("<HH", 0x0409, 0x04B0), text=False), length=0)
+    fixed = struct.pack("<13I", 0xFEEF04BD, 0x10000, 0x10000, 0, 0x10000, 0, 0x3F, 0, 0x40004, 1, 0, 0, 0)
+    blob = node("VS_VERSION_INFO", fixed, children=table + var, text=False, length=len(fixed))
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.BeginUpdateResourceW.restype = wintypes.HANDLE
+    kernel.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
+    kernel.UpdateResourceW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, wintypes.WORD, ctypes.c_void_p, wintypes.DWORD]
+    kernel.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
+    handle = kernel.BeginUpdateResourceW(str(path), False)
+    data = ctypes.create_string_buffer(blob, len(blob))
+    # 16 is RT_VERSION, resource 1, US English.
+    if not handle or not kernel.UpdateResourceW(handle, 16, 1, 0x0409, data, len(blob)) or not kernel.EndUpdateResourceW(handle, False):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def named_tray_interpreter() -> str | None:
+    """A copy of the real ``pythonw.exe`` named Qupa Cafe, in this venv's
+    ``Scripts`` so it finds the venv's packages, with the DLLs it loads beside
+    it. The venv's own ``pythonw.exe`` is a launcher whose child, named Python,
+    would own the icon. None outside a venv or when anything fails, and the
+    icon then runs as Python."""
+    if os.name != "nt" or sys.prefix == sys.base_prefix:
+        return None
+    base = Path(getattr(sys, "_base_executable", sys.executable)).with_name("pythonw.exe")
+    target = Path(sys.prefix) / "Scripts" / TRAY_EXE
+    try:
+        for dll in base.parent.glob("*.dll"):
+            shutil.copy2(dll, target.parent / dll.name)
+        shutil.copy2(base, target)
+        file_description(target, "Qupa Cafe")
+    except OSError as exc:
+        print(f"  the tray icon will be named Python: {exc}")
+        return None
+    return str(target)
+
+
+def tray_argv() -> list[str]:
+    """How to start the tray icon: ``pythonw.exe`` on Windows, with no console."""
     argv = interpreter_argv("qupa_cafe.tray")
     if os.name == "nt":
-        # os.path rather than pathlib: a Path made while os.name reads "nt" on
-        # another system is a WindowsPath, which cannot be instantiated there.
+        # os.path: a test faking os.name cannot build a WindowsPath elsewhere.
         windowless = os.path.join(os.path.dirname(argv[0]), "pythonw.exe")
         if os.path.isfile(windowless):
             argv[0] = windowless
@@ -1152,9 +911,7 @@ def desktop_exec(argv: list[str]) -> str:
 
 
 def stop_running_tray() -> None:
-    """End a tray icon already running, so that the one started next runs the
-    new code rather than sitting beside the old one. Matched as narrowly as
-    stop_running_daemon matches the daemon."""
+    """End a running tray icon so the new one replaces it, matched narrowly."""
     system = platform.system()
     module = "qupa_cafe" + ".tray"
     if system == "Windows":
@@ -1164,7 +921,7 @@ def stop_running_tray() -> None:
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force };"
             f"$mine = @({os.getpid()},{os.getppid()});"
             "Get-CimInstance Win32_Process |"
-            " Where-Object { $_.Name -like 'python*' -and"
+            f" Where-Object {{ ($_.Name -like 'python*' -or $_.Name -eq '{TRAY_EXE}') -and"
             f" ($_.CommandLine -replace '\"', '') -like '*-m {module}*' -and"
             " $mine -notcontains $_.ProcessId } |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
@@ -1177,12 +934,7 @@ def stop_running_tray() -> None:
 
 
 def register_tray() -> None:
-    """Start the tray icon at each login, and now.
-
-    Registered apart from the daemon, and nothing depends on it: the icon is a
-    window onto the daemon's state file, so a session with no tray to show it
-    in, or an icon somebody quit, leaves the daemon answering.
-    """
+    """Start the tray icon at each login, and now. Nothing depends on it."""
     if not tray_available():
         print("  no tray icon: it needs the tray extra, which is not installed.")
         print(f"        pip install {TRAY_EXTRA}, then run qupa-install again")
@@ -1193,8 +945,9 @@ def register_tray() -> None:
     root = repo_root()
 
     if system == "Windows":
-        # Written as the daemon's entry is, so it runs again a minute after a
-        # crash. Quitting the icon exits 0, which ends the script.
+        # Stopped first: a running icon holds the DLLs the named copy needs.
+        stop_running_tray()
+        argv[0] = named_tray_interpreter() or argv[0]
         if root is not None:
             command = f'cmd /c cd /d "{root}" && "{argv[0]}" -m qupa_cafe.tray'
         else:
@@ -1203,7 +956,6 @@ def register_tray() -> None:
         if entry is None:
             return
         print(f"  wrote {entry}")
-        stop_running_tray()
         if start_startup_entry(entry):
             print("  started the tray icon; Windows may put it among the hidden icons by the clock")
 
@@ -1216,8 +968,6 @@ def register_tray() -> None:
             if root is not None
             else ""
         )
-        # Restarted after a crash and not after a quit, and only in a login
-        # session with a menu bar to put it in.
         TRAY_PLIST.write_text(
             f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1243,9 +993,7 @@ def register_tray() -> None:
         run_step(["launchctl", "load", "-w", str(TRAY_PLIST)], "loaded cafe.qupa.tray", "load cafe.qupa.tray")
 
     elif system == "Linux":
-        # The freedesktop autostart directory rather than a systemd unit: a
-        # tray icon belongs to the graphical session, and a user unit can start
-        # before there is one to draw in.
+        # Autostart, not a user unit, which can start before the desktop.
         exec_argv = (["env", f"PYTHONPATH={root}"] if root is not None else []) + argv
         TRAY_DESKTOP.parent.mkdir(parents=True, exist_ok=True)
         TRAY_DESKTOP.write_text(
@@ -1284,12 +1032,7 @@ def register_tray() -> None:
 
 
 def dry_run_command() -> str:
-    """The one-off check, in a form the reader's shell will accept.
-
-    ``VAR=value command`` is a POSIX shell construct, so a checkout on Windows
-    needs two lines rather than one. An installed console script needs no
-    environment at all, which is the whole point of shipping one.
-    """
+    """The one-off check, as the reader's shell writes it."""
     root = repo_root()
     command = " ".join(daemon_argv()) + " --once --dry-run"
 
@@ -1301,26 +1044,9 @@ def dry_run_command() -> str:
 
 
 def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
-    """Poll once, dry, and say what happened. Returns (it ran, it will wake).
-
-    The installer runs this rather than printing it for the reader, because a
-    check handed to the reader is a check most people skip, and both failures
-    it catches are silent: a daemon that starts, finds no configuration and
-    exits, and a ranking endpoint that answers nothing, which leaves an agent
-    that wakes for nothing looking exactly like an agent with no work.
-
-    Since the ranking URL is derived rather than answered for, this is also the
-    only moment at which a path that is wrong for this particular forum can be
-    caught.
-
-    It runs the real command rather than calling ``one_pass`` in process,
-    because the command is the artefact that has to work: it is what the
-    service manager invokes. A console script that is not where we think it is,
-    or a checkout that needs a ``PYTHONPATH``, fails here and nowhere else.
-
-    ``--dry-run`` wakes no agent, marks nothing read and acknowledges nothing,
-    so this costs no tokens and leaves nothing behind on the forum.
-    """
+    """Run the real daemon command once, dry, and report. Returns (it ran,
+    it is degraded). Catches a daemon that exits, a key that cannot read
+    notifications, and a ranking endpoint that does not answer."""
     root = repo_root()
     env = os.environ.copy()
     if root is not None:
@@ -1344,8 +1070,6 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
         print("  FAILED: one poll did not finish inside three minutes.")
         return False, False
 
-    # The daemon logs to stderr and prints its configuration errors to stdout,
-    # and which of the two a given failure arrives on is not worth guessing at.
     output = ((result.stdout or "") + (result.stderr or "")).strip()
     for line in output.splitlines():
         print(f"    {line}")
@@ -1355,16 +1079,7 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
         print(f"  FAILED: the daemon exited {result.returncode}.")
         return False, False
 
-    # The daemon warns and carries on when it cannot read notifications,
-    # because a forum outage should not kill a long-running poller. At install
-    # time that is backwards: direct mentions are the wake path that always
-    # applies, whatever the ranking endpoint is doing, so a poll that could not
-    # read them is a failed install wearing a zero exit code.
-    #
-    # The case that matters is not an unreachable forum, which verify() has
-    # already caught by then. It is a key whose scopes cover the policy topic
-    # and not notifications: that passes verify(), polls for ever, and never
-    # wakes the agent for anything.
+    # The daemon carries on without notifications; an install must not.
     if "could not read notifications" in output:
         print()
         print("  FAILED: the daemon ran, but could not read this agent's notifications,")
@@ -1372,9 +1087,6 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
         print("  cover notifications, or the forum was unreachable for that request.")
         return False, False
 
-    # An empty ranking URL reaches here only through --non-interactive, since
-    # nothing prompts for one any more. That is a deliberate choice, so it gets
-    # reported rather than diagnosed.
     if not settings.get("ranking_url"):
         print()
         print("  one poll ran. QUPA_RANKING_URL is empty, so nothing will wake:")
@@ -1401,30 +1113,13 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
 
 
 def register_mcp_servers(settings: dict[str, str]) -> bool:
-    """Mount the two servers in the runtime, so no flag is needed per session.
-
-    Through the runtime's own CLI rather than by editing its configuration
-    file: the format is the runtime's business, it differs between the two of
-    them, and it changes. ``claude mcp add-json`` and ``codex mcp add`` both
-    take what mcp_servers() already produces.
-
-    User scope for Claude Code, which is the only scope that makes the tools
-    available wherever the researcher works. The alternative is a project's
-    ``.mcp.json``, and that file holds the key in plaintext and is commonly
-    committed.
-
-    Removed before added, so re-running the installer updates a registration
-    rather than colliding with one. The remove is allowed to fail, because the
-    usual reason is that there was nothing to remove.
-    """
+    """Register both servers with the runtime's own CLI, at user scope (a
+    project's .mcp.json is commonly committed), removing any old one first."""
     runtime = settings.get("runtime", "claude")
     tool = "codex" if runtime == "codex" else "claude"
     servers = mcp_servers(settings)
 
-    # The resolved path, not the bare name, because both CLIs are installed on
-    # Windows as `.cmd` shims and CreateProcess appends only `.exe` when it
-    # searches PATH. Passing "codex" there raises FileNotFoundError on a machine
-    # where `codex` runs perfectly from a shell.
+    # Resolved, since CreateProcess will not find a Windows `.cmd` shim by name.
     executable = shutil.which(tool)
     if executable is None:
         print(f"  {tool} is not on PATH, so nothing was registered.")
@@ -1451,8 +1146,6 @@ def register_mcp_servers(settings: dict[str, str]) -> bool:
             print(f"  registered {name} with {tool}")
             continue
 
-        # Reported rather than assumed. An installer that claims to have
-        # registered something it did not is worse than one that says it failed.
         every = False
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         print(f"  FAILED to register {name}: {detail[-1] if detail else 'no output'}")
@@ -1469,22 +1162,8 @@ def register_mcp_servers(settings: dict[str, str]) -> bool:
 
 
 def codex_servers_blocked(servers: dict) -> bool:
-    """Report a registration that exists and will never be started.
-
-    Codex applies a signed requirements file that can allowlist which MCP
-    servers may run, and an empty allowlist permits none. Which file applies
-    depends on the signed-in account, so this is a property of who the
-    researcher is logged in as rather than of the machine. A registration under
-    a restrictive one succeeds, ``codex mcp get`` reports ``enabled: true``, and
-    ``codex mcp list --json`` reports ``disabled_reason: null`` -- while no
-    session ever starts the server. The state appears only in the ``Status``
-    column of the human-readable listing.
-
-    So that column is what is read, by name, and a line that does not parse is
-    treated as fine. Reading a table meant for people is the weaker half of
-    this; the stronger half is that the researcher is told how to look, which
-    holds whatever the format does next.
-    """
+    """Report servers a signed Codex requirements file disables, which shows
+    only in the Status column of ``codex mcp list``."""
     codex = shutil.which("codex")
     if codex is None:
         return False
@@ -1514,9 +1193,6 @@ def codex_servers_blocked(servers: dict) -> bool:
 
 
 def main() -> int:
-    # The first paragraph, not the whole docstring: argparse reflows what it is
-    # given, so passing all of it turns `--help` into one unreadable block of
-    # rationale. The rest of the docstring is for whoever opens the file.
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").strip().split("\n\n")[0],
         epilog="Asks for the forum URL and your agent's key. See agent-kit/README.md.",

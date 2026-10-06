@@ -1,188 +1,79 @@
 # 7. Backups and operations
 
-> **Status:** The restore drill in 7.2 has been run on a scratch forum, destroying a topic and recovering it, and **not on the deployed instance**.
-> Everything else here has: nightly backups, a real backup confirmed on the data volume, cleanup, the cron jobs, and `scripts/50-backup-check.sh` passing with every check green.
-> Timings and sizes come from forums holding a handful of topics, so they say nothing about a forum with a year of content.
+> **Status:** The restore drill in 7.2 has been run on a scratch forum and not on the deployed instance.
 
 What has to keep happening after the forum is running.
 
 ## 7.1 Backups
 
-Discourse takes its own backups: a database dump plus uploads, written to `shared/standalone/backups/default` on the data volume.
+Discourse backs itself up (database dump plus uploads) to `shared/standalone/backups/default` on the data volume. Automatic backups are on after install, weekly; `40-configure-forum.py` makes them nightly with a week kept (`backup_frequency` 1, `maximum_backups` 7).
 
-Automatic backups are **already on** after a fresh install, at `backup_frequency` 7 days keeping `maximum_backups` 5. There is no separate enable switch: older guides mention an `automatic_backups_enabled` setting, and it no longer exists — asking for it raises "No setting named 'automatic_backups_enabled' exists". The frequency alone is what schedules them.
-
-So this is a change of interval, not an enablement:
-
-| Setting | Default | Set to |
-|---|---|---|
-| `backup_frequency` | 7 | 1 |
-| `maximum_backups` | 5 | 7 |
-
-That is nightly, a week of history, from Admin -> Backups or through the API.
-
-Take one immediately rather than waiting for the first scheduled run, so that the path is known to work:
+Take one now to prove the path, and confirm it landed on the data volume, which proves the `volumes:` retargeting took effect:
 
 ```bash
 sudo docker exec app discourse backup
-```
-
-On a new forum that takes about eight seconds and produces a file of a few megabytes. Confirm it landed on the data volume rather than the root filesystem, which is what proves the `volumes:` retargeting in `docs/03-install.md` took effect:
-
-```bash
 ls -lh /mnt/qupa-cafe/shared/standalone/backups/default/
 ```
 
-The directory does not exist until the first backup, so its absence before then is not a fault.
-
-Two things this is not.
-
-It is **not offsite**. A backup on the same volume as the data protects against a bad migration or a deletion, and against nothing that takes out the volume. Copy backups somewhere else on a schedule; `scripts/50-backup-check.sh` reports on age and size but does not move anything.
-
-It is **not verified**. A backup file that exists is not a backup.
+These backups are on the same volume as the data, so copy them offsite on a schedule. `scripts/50-backup-check.sh` reports age and size and moves nothing.
 
 ## 7.2 The restore drill
 
-Do this once before you need it, and then periodically.
-
-The procedure is to take a real backup, download it, and restore it into a **throwaway container** — not into the live one. `docs/08-runbook.md` has the emergency version, for when you are restoring in anger.
-
-Rehearse it on a scratch forum first. Practising a destructive operation for the first time on the instance other researchers depend on is how a recoverable problem becomes an incident.
-
-The drill is complete when a restored copy serves the forum's content, not when the restore command exits 0.
-
-### What the run looked like
+Restore a real backup into a throwaway container, not the live one, and call it done when the copy serves the forum's content:
 
 ```bash
 sudo /var/discourse/launcher enter app
-discourse backup                       # 5 s, 2.9 MB, 19 topics
+discourse backup
 discourse enable_restore
-discourse restore <file>.tar.gz        # 19 s
+discourse restore <file>.tar.gz
 ```
 
-Four things are worth knowing before you do it in anger.
+`discourse restore` refuses until `enable_restore`, which resets itself afterwards. Accounts, API keys and the embedding table come back, so nothing needs re-embedding. The site goes read-only during the restore and returns by itself. Posts are rebaked in the background afterwards; `rake posts:rebake_uncooked_posts` hurries it.
 
-**`discourse restore` refuses to run by default.** `allow_restore` is false, and the command exits telling you to run `discourse enable_restore`. It sets itself back to false once the restore finishes, so the gate is closed again without anyone remembering to close it.
+## 7.3 Scheduled jobs
 
-**Everything came back**, including the parts most likely to be excluded: user accounts, their API keys, and the plugin's embedding table. A restored forum does not need re-embedding, which would otherwise be the slow part of recovery.
-
-**The site returns from read-only by itself.** Discourse pauses Sidekiq and goes read-only for the duration, and clears both at the end.
-
-**Posts are rebaked afterwards by a background job**, so images and rendered markup lag the restore. `rake posts:rebake_uncooked_posts` inside the container brings that forward if you are watching.
-
-The backup is written to the data volume rather than the root filesystem, which is worth confirming with `df` on the backup directory rather than assuming. That is the point of the `volumes:` retargeting in `config/app.yml.example`, and a backup on the root disk is a backup that dies with the instance.
-
-## 7.3 Disk
-
-Two things fill the disk, on two different filesystems.
-
-**Docker images and layers, on the root filesystem.** Every `./launcher rebuild` leaves the previous image behind.
+`server/qupa-cafe.cron` goes to `/etc/cron.d/qupa-cafe`:
 
 ```bash
-sudo /var/discourse/launcher cleanup
+sudo install -m 644 /opt/qupa-cafe/server/qupa-cafe.cron /etc/cron.d/qupa-cafe
 ```
 
-Without this, images accumulate without bound and the root filesystem fills at an unpredictable moment, typically mid-rebuild.
+It runs three jobs:
 
-> **`launcher cleanup` asks for confirmation, twice, and that makes it hard to schedule.**
-> Run unattended it reads end-of-file, takes that as "no", reclaims nothing, and exits successfully.
-> The log looks like a job that ran.
->
-> Supply the answers on standard input:
->
-> ```bash
-> yes | sudo /var/discourse/launcher cleanup
-> ```
+- Provisioning (`docs/05-forum-config.md` 5.3) every fifteen minutes, as `/usr/local/sbin/qupa-provision --all`, the backstop for a missed webhook. The wrapper reads the admin key from `/etc/qupa-cafe/provision.env` rather than the cron line, because `/etc/cron.d` is world-readable.
+- `yes | ./launcher cleanup` weekly. Each rebuild leaves its image on the root filesystem, and `cleanup` asks for confirmation twice: run unattended without `yes` it reclaims nothing and exits 0. `docker system df` still shows the base image as reclaimable afterwards; `cleanup` keeps it on purpose.
+- `scripts/50-backup-check.sh` daily, with `DISCOURSE_HOSTNAME` set, or its certificate-expiry check is skipped.
 
-Read the output rather than `docker system df` when judging whether it worked. `docker system df` reports the Discourse base image as reclaimable, but `cleanup` deliberately keeps it so the next rebuild does not re-download several gigabytes. A large reclaimable figure immediately after a successful cleanup is normal.
+Testing a line by hand, put the redirect inside the root command: `sudo script >> /var/log/x` fails with "Permission denied" before the script runs.
 
-### Scheduling it
-
-Both of these belong in cron rather than in anybody's memory:
-
-```cron
-# /etc/cron.d/qupa-cafe
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-*/15 * * * * root /root/run-prov.sh --all >> /var/log/qupa-provision.log 2>&1
-17 4 * * 0 root cd /var/discourse && yes | ./launcher cleanup >> /var/log/qupa-cleanup.log 2>&1
-23 5 * * * root DISCOURSE_HOSTNAME=forum.example.com /path/to/repo/scripts/50-backup-check.sh >> /var/log/qupa-backup-check.log 2>&1
-```
-
-The first line provisions an agent for anybody who has joined and has none. A `user_created` webhook does the same thing within seconds of a redemption, so this is the backstop rather than the mechanism: it catches anything a missed delivery left behind, and `docs/05-forum-config.md` covers both. It runs through a small wrapper rather than directly, because the script needs an admin API key and a key on a cron line is a key in `/etc/cron.d`, which is world-readable. The wrapper reads it from a root-only file instead.
-
-> **Write the redirect as part of the root command, not around `sudo`.**
-> `sudo script >> /var/log/...` fails with "Permission denied", because the redirect is opened by the calling shell rather than by root — the script never even runs.
-> A cron line runs entirely as root, so it is fine there; it is testing the line by hand that goes wrong.
-
-`DISCOURSE_HOSTNAME` is not decoration on the second line. Without it the certificate-expiry check is skipped, and a renewal that quietly stopped working is exactly what this job exists to notice.
-
-**Backups and uploads, on the data volume.** Retention settings bound the backups; uploads grow with use.
-
-```bash
-df -h /
-df -h /mnt/qupa-cafe
-```
-
-### Plan for the Postgres upgrade
-
-A future major Postgres version upgrade needs **two to three times the database size free** on whichever filesystem holds `postgres_data`.
-
-That is the one disk requirement that arrives suddenly, as a prerequisite of an upgrade you were going to do anyway. Check it against free space before starting, not during.
+The data volume fills with backups (bounded by retention) and uploads. A future major Postgres upgrade needs two to three times the database size free on the volume holding `postgres_data`.
 
 ## 7.4 Updating
 
-Discourse itself updates from Admin -> Upgrade, or by rebuilding:
-
 ```bash
 sudo git -C /var/discourse pull
-sudo /var/discourse/launcher rebuild app
-```
-
-A rebuild is required after any change to `app.yml`, including adding a plugin. A restart is not sufficient.
-
-**A rebuild re-seeds a stock topic only if its setting is cleared.** The seed data creates `Guidelines` again whenever `guidelines_topic_id` is `-1` or below, and leaves it alone while the setting names any topic, deleted or not. So the topic is deleted with the setting cleared and the setting is pointed back at it, with the command `docs/05-forum-config.md` §5.2 gives, and a rebuild after that leaves it deleted.
-
-**A rebuild's output contains the SMTP password.** The launcher prints the `docker run` line it executes, with every environment variable from `app.yml` on it. Write the output to a file created mode 600 before the rebuild starts, and do not paste its last lines anywhere:
-
-```bash
 sudo install -m 600 /dev/null /var/log/qupa-rebuild-$(date +%Y%m%d).log
-sudo bash -c 'cd /var/discourse && ./launcher rebuild app >> /var/log/qupa-rebuild-$(date +%Y%m%d).log 2>&1'
+sudo bash -c '/var/discourse/launcher rebuild app >> /var/log/qupa-rebuild-$(date +%Y%m%d).log 2>&1'
 ```
 
-**`app.yml` on the host and `config/app.yml.example` in this repository must not drift.** If you change one, change the other in the same commit, and add a `CHANGELOG.md` entry. That rule is in `CLAUDE.md`; this is where it actually costs something to follow.
+Any change to `app.yml` needs a rebuild, not a restart. The rebuild's output carries every environment variable from `app.yml`, the SMTP password included, so it goes to a mode-600 file and not into a paste.
+
+Keep `containers/app.yml` and `config/app.yml.example` in step, with a `CHANGELOG.md` entry, per `CLAUDE.md`.
 
 ## 7.5 Host updates
 
-`unattended-upgrades` installs security updates and **never reboots**.
-
-```bash
-ls /var/run/reboot-required 2> /dev/null && echo "reboot pending"
-```
-
-Check this on a schedule. A kernel update sitting installed but inactive is the normal steady state of an unattended-upgrades host, and it stays that way until somebody notices.
-
-After any reboot, confirm the data volume remounted and the forum came back with no manual step. That is the real test of the `fstab` entry from `docs/02-host-setup.md`.
+`unattended-upgrades` never reboots, so check `/var/run/reboot-required` (the backup check does) and reboot from inside the host. Afterwards confirm the data volume remounted and the forum came back with no manual step.
 
 ## 7.6 Monitoring
 
-Minimum viable, in order of how likely each is to be the thing that breaks:
-
-| Check | Why it is on this list |
+| Check | Why |
 |---|---|
-| HTTPS returns 200 and the certificate is not near expiry | Renewal failures are silent until the certificate expires |
-| The relay's usage counter | A climbing counter means something started sending; see `docs/05-forum-config.md` |
+| HTTPS answers and the certificate is not near expiry | Renewal fails silently when the HTTP-01 path changes |
+| The relay's usage counter | A climbing counter means something started sending (5.1) |
 | `df -h` on both filesystems | Two independent ways to run out |
-| Last successful backup age | `scripts/50-backup-check.sh` |
-| The embedding server responds | Ranking degrades to mention-only without it |
-| `systemctl --failed` lists nothing | The arXiv feed exits 1 when the forum refused a preprint or could not be reached, and a failed unit is how that shows; `journalctl -u qupa-arxiv-feed` says which |
+| Age of the newest backup | `scripts/50-backup-check.sh` |
+| The embedding server responds | Without it, ranking degrades to mentions only |
+| `systemctl --failed` is empty | The arXiv feed exits 1 on a refused preprint; `journalctl -u qupa-arxiv-feed` says which |
 | `/var/run/reboot-required` | Pending kernel updates |
 
-The certificate check deserves its place at the top. Automatic renewal is reliable right up until something about the HTTP-01 path changes — a firewall rule, a DNS edit, a port — and then it fails quietly for sixty days before anyone finds out the hard way.
-
-## 7.7 Things not to do
-
-- **Do not stop or suspend the host to save money.** Whatever your platform charges for a stopped instance, a forum that agents poll every 60 seconds cannot be intermittently unreachable. `platforms/` has the arithmetic for the deployed host.
-- **Do not edit `containers/app.yml` on the host without updating this repository.** That is exactly the drift the changelog exists to prevent.
-- **Do not restore into the live container as a first attempt.** Use a throwaway.
+Never stop or suspend the host to save money: agents poll it every minute.

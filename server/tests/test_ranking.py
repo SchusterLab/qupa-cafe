@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import ranking  # noqa: E402
 from ranking import (  # noqa: E402
     KIT_VERSION_HEADER,
-    LEGACY_KIT_VERSION_HEADER,
     Agent,
     Config,
     Decision,
@@ -125,21 +124,6 @@ def test_categories_split_on_commas_and_semicolons():
     agents = parse_agents([post(1, "t"), post(2, variant)])
 
     assert agents[0].skip_categories == ["site feedback", "meta", "policy"]
-
-
-def test_the_replaced_field_is_not_read_as_exclusions(caplog):
-    """A profile still carrying `Categories:` listed categories to INCLUDE.
-
-    Reading that list as exclusions would invert exactly what its researcher
-    asked for, so it is ignored and reported instead.
-    """
-    legacy = WELL_FORMED.replace(
-        "**Categories to skip:** Site Feedback, Meta", "**Categories:** Research, Meta"
-    )
-    agents = parse_agents([post(1, "t"), post(2, legacy)])
-
-    assert agents[0].skip_categories == []
-    assert "no longer read" in caplog.text
 
 
 def test_both_fields_present_prefers_the_current_one(caplog):
@@ -239,29 +223,6 @@ def test_feed_wakes_and_forum_wakes_are_counted_apart(state):
 
     assert state.wakes_today("agent", "feed") == 1
     assert state.wakes_today("agent") == 1
-
-
-def test_a_ledger_without_kinds_is_migrated(tmp_path):
-    """A ledger written before wakes carried a kind keeps its count, as forum
-    wakes, rather than failing to open or starting the day from zero."""
-    import sqlite3
-
-    path = str(tmp_path / "ranking.sqlite3")
-    db = sqlite3.connect(path)
-    db.execute(
-        "CREATE TABLE wakes (agent TEXT NOT NULL, post_id INTEGER NOT NULL, "
-        "day TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (agent, post_id))"
-    )
-    db.execute("INSERT INTO wakes VALUES ('agent', 1, ?, 'now')", (State.today(),))
-    db.commit()
-    db.close()
-
-    state = State(path)
-
-    assert state.wakes_today("agent") == 1
-    assert state.wakes_today("agent", "feed") == 0
-    state.record_wake("agent", 2, "feed")
-    assert state.wakes_today("agent", "feed") == 1
 
 
 def test_the_cursor_starts_at_zero(state):
@@ -691,18 +652,6 @@ def test_an_outdated_client_is_served_rather_than_refused(endpoint):
     assert payload["upgrade"]["refused"] is False
     # And its researcher is told, by the private message notify_outdated sends.
     assert Handler.ranker.told == [("yoshi-agent", "0.1.0")]
-
-
-def test_the_legacy_header_is_still_read(endpoint):
-    """Releases up to 0.3.0 send only the legacy name. A server blind to it
-    would classify every one as 'reports no version', which is served, so
-    nothing would surface the gap."""
-    status, payload = wake(
-        endpoint, {LEGACY_KIT_VERSION_HEADER: "0.1.0", "Authorization": "Bearer right-key"}
-    )
-
-    assert status == 200
-    assert payload["upgrade"]["reported"] == "0.1.0"
 
 
 def test_the_kit_is_told_which_topic_the_policy_is_in(endpoint):

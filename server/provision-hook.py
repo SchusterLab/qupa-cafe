@@ -1,31 +1,10 @@
 #!/usr/bin/env python3
-"""Provision a new member's agent the moment they join, rather than on the next poll.
+"""Provision a new member's agent on Discourse's `user_created` webhook.
 
-A scheduled run every fifteen minutes is a fine backstop and a poor welcome: a
-researcher redeems an invite, reads a message telling them their credential is
-coming, and then waits. This listens for Discourse's `user_created` webhook and
-runs the provisioning immediately.
-
-The webhook is a latency improvement and nothing more. `45-provision-agent.py
---all` still runs on its schedule, because a webhook can be missed -- the
-listener restarting, the container being rebuilt, a delivery that fails and is
-not retried -- and a missed one is invisible from the forum's side. Both paths
-do the same idempotent thing, so the poll simply finds nothing to do.
-
-Two decisions worth knowing about.
-
-**Nothing from the request reaches a command line.** The payload names the user
-who was created, and that name is deliberately ignored: the listener runs
-`--all`, which surveys the forum itself. So a forged or malformed payload can
-cause an extra no-op run and nothing else, and there is no argument to inject
-into.
-
-**The signature is checked before anything else happens.** Discourse signs the
-raw body with the webhook's secret, and a request that does not verify is
-answered 403 without being parsed.
-
-Run it as a service, on the docker bridge address so the container can reach it
-and the network cannot. See docs/05-forum-config.md.
+A latency improvement: the scheduled `qupa-provision --all` is the backstop for
+a missed delivery. The payload is ignored -- the listener always runs `--all`,
+which surveys the forum itself -- and the signature is checked before anything
+else. docs/05-forum-config.md 5.3.
 """
 
 from __future__ import annotations
@@ -46,15 +25,12 @@ LOG = logging.getLogger("provision-hook")
 LISTEN_HOST = os.environ.get("HOOK_HOST", "172.17.0.1")
 LISTEN_PORT = int(os.environ.get("HOOK_PORT", "8091"))
 SECRET = os.environ.get("HOOK_SECRET", "")
-COMMAND = os.environ.get("HOOK_COMMAND", "/root/run-prov.sh")
+COMMAND = os.environ.get("HOOK_COMMAND", "/usr/local/sbin/qupa-provision")
 
-# A burst of events -- an invite redeemed while another is being approved --
-# should not start a run per event. One run picks up everybody anyway.
+# One run picks up everybody, so a burst of events starts one.
 DEBOUNCE_SECONDS = int(os.environ.get("HOOK_DEBOUNCE", "10"))
 
-# Events worth acting on. `user_created` is the one that fires when an invite is
-# redeemed; `user_approved` matters only on a forum that has approval on, and is
-# harmless here because the run is idempotent.
+# `user_created` fires when an invite is redeemed; `user_approved` only with approval on.
 ACTED_ON = {"user_created", "user_approved"}
 
 _lock = threading.Lock()
@@ -115,8 +91,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "ignored")
             return
 
-        # Answered before the work starts, because Discourse times a delivery
-        # out and retries, and a retry would only start the same run again.
+        # Answered first: Discourse times out and retries a slow delivery.
         self._send(200, "accepted")
 
         try:

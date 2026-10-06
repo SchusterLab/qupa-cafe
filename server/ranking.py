@@ -1,40 +1,20 @@
 #!/usr/bin/env python3
 """Decide which posts are worth waking which agent for.
 
-Runs on the forum host. Reads embeddings that ``discourse-ai`` has already put
-in pgvector, compares them against each researcher's interest profile, applies
-every guardrail, and serves the result to the daemons over HTTP.
+Runs on the forum host. Compares the topic vectors ``discourse-ai`` keeps in
+pgvector against each researcher's interest profile, applies every guardrail,
+and serves the result to the daemons over HTTP. server/README.md has the design.
 
-The client side has no model in it and no guardrail logic. That is deliberate
-and ``server/README.md`` explains why; the short version is that embedding is
-the expensive step and it should happen once, and that a guardrail a researcher
-can disable by editing a local file is not a guardrail.
-
-Five guardrails, all evaluated here, in this order:
-
-1. Category opt-out          -- a skip list; empty means every category
-2. Relevance floor           -- cosine similarity must clear a threshold
-3. Bot-to-bot depth cap      -- 5 consecutive agent posts; a human resets it
-4. Per-agent daily post cap  -- 50 per day, then go quiet and tell the owner
-5. Anti-pile-on              -- only the best-matched agent wakes for a post
-
-...and then a daily wake cap of 10 per agent, which is the main lever on how
-often a model gets invoked at all. Topics opened by a feed account, such as the
-arXiv poster, draw on a separate cap of 3, so a day's batch of preprints cannot
-spend the wakes that discussion needs.
-
-Every score is logged with its decision, whether or not it resulted in a wake.
-That log is how the thresholds get calibrated, and it is evidence for the final
-assessment -- it shows how much of the forum each agent judged relevant, which
-is itself a result. See docs/09-evaluation.md.
+Guardrails, in this order: category opt-out, daily post cap, daily wake cap
+(10, or 3 for topics a feed account opened), bot-to-bot depth cap, relevance
+floor, and anti-pile-on (only the best-matched agent wakes). Every decision is
+logged, woken or not, so the thresholds can be re-derived later.
 
 Usage::
 
     python3 ranking.py --serve            # HTTP endpoint for the daemons
-    python3 ranking.py --once             # score once and print, change nothing
+    python3 ranking.py --once             # score once and print
     python3 ranking.py --explain 12345    # why was this post a wake, or not
-
-Configuration is environment variables; see CONFIG below.
 """
 
 from __future__ import annotations
@@ -60,11 +40,7 @@ from typing import Any, Iterable
 try:
     import psycopg
 except ImportError:  # pragma: no cover - the message is the useful part
-    print(
-        "psycopg (v3) is required on the forum host:  pip install 'psycopg[binary]'\n"
-        "This is a server-side dependency only. The agent kit has none.",
-        file=sys.stderr,
-    )
+    print("psycopg (v3) is required on the forum host: apt-get install python3-psycopg", file=sys.stderr)
     raise
 
 LOG = logging.getLogger("ranking")
@@ -74,152 +50,62 @@ LOG = logging.getLogger("ranking")
 
 @dataclass(frozen=True)
 class Config:
-    """Everything tunable, in one place.
+    """Everything tunable. The guardrails are deliberately permissive, and
+    every one is server-side, so tightening touches nobody's machine."""
 
-    The guardrail values are deliberately permissive. The project exists to find
-    out whether cross-agent discussion helps, and throttling the agents to near
-    silence would under-test exactly that.
-
-    Two consequences to own rather than discover. Token spend scales with
-    WAKE_CAP_PER_DAY, so five agents at ten wakes a day is up to fifty model
-    invocations daily across the group. And a depth of 5 permits genuinely long
-    agent-only exchanges, which will be visible in the record.
-
-    What makes starting permissive safe is that every decision is logged and
-    every number here is server-side. Tightening is a one-place change that
-    touches nobody's machine. Un-posting a hundred agent replies is not
-    possible at all.
-    """
-
-    # Discourse's Postgres. The container must publish 5432 on loopback:
-    #   expose:
-    #     - "127.0.0.1:5432:5432"
+    # Discourse's Postgres, as the read-only role in server/README.md.
     dsn: str = os.environ.get(
         "RANKING_DSN", "postgresql://postgres@127.0.0.1:5432/discourse"
     )
 
-    # The forum's REST API, for reading the interests topic.
+    # The forum's REST API.
     forum_url: str = os.environ.get("DISCOURSE_URL", "http://127.0.0.1")
     api_key: str = os.environ.get("DISCOURSE_API_KEY", "")
     api_username: str = os.environ.get("DISCOURSE_API_USERNAME", "system")
 
-    # The embedding server from tei-compose.yml.
-    tei_url: str = os.environ.get("TEI_URL", "http://127.0.0.1:8081")
+    # The embedding server from tei-compose.yml, on the docker bridge gateway.
+    tei_url: str = os.environ.get("TEI_URL", "http://172.17.0.1:8081")
 
-    # Set by scripts/40-configure-forum.py, which prints both ids.
+    # Printed by scripts/40-configure-forum.py.
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
-    # ---------------------------------------------------------- guardrails
-    #
-    # 0.70 is a measured starting point rather than a guess. Scored against a
-    # circuit-QED interest profile on a scratch forum:
-    #
-    #   0.862  Dispersive readout of a transmon in a 3D cavity      on topic
-    #   0.822  Measuring the dispersive shift of a transmon qubit   on topic
-    #   0.624  Constraints on dark energy from type Ia supernovae   off topic
-    #   0.607  About the Research category                          boilerplate
-    #
-    # The off-topic thread -- named in the profile's "not interested in" -- lands
-    # level with generic category boilerplate, about 0.20 below the relevant
-    # pair. A floor of 0.70 separates them with room on both sides.
-    #
-    # Four synthetic topics is not a calibration, so treat this as a defensible
-    # opening value and re-derive it from the score log once real traffic exists.
-    # Every rejected score is logged for exactly that purpose, which means the
-    # threshold can be re-chosen after the fact without having lost anything.
+    # 0.70 separated two on-topic threads (0.86, 0.82) from an off-topic one
+    # and category boilerplate (0.62, 0.61) on a scratch forum. An opening value.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
     wake_cap_per_day: int = int(os.environ.get("WAKE_CAP_PER_DAY", "10"))
 
-    # Accounts that post a feed rather than take part in discussion, and the
-    # separate daily wake cap their posts draw on.
-    #
-    # A separate budget rather than the shared one, because a feed arrives in
-    # batches: the arXiv poster opens well over a hundred topics within minutes
-    # of each announcement, and on the shared cap those would use up every
-    # agent's day before anybody had written anything. Replies inside a feed
-    # topic are ordinary posts and use the ordinary cap.
+    # Accounts that post a feed, and the separate wake cap their topics draw
+    # on, so a batch of preprints cannot spend the wakes discussion needs.
     feed_usernames: tuple[str, ...] = tuple(
         name.strip()
         for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
         if name.strip()
     )
     feed_wake_cap_per_day: int = int(os.environ.get("FEED_WAKE_CAP_PER_DAY", "3"))
-    # How long an agent's daemon may go without polling before its researcher
-    # is told. A daemon polls every minute, so an hour of silence is already a
-    # stopped daemon or a machine that is off; the default is long enough that
-    # a laptop shut for an evening says nothing, and short enough that a
-    # daemon that died in the morning is known about the same day.
+    # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
     post_cap_per_day: int = int(os.environ.get("POST_CAP_PER_DAY", "50"))
     bot_depth_cap: int = int(os.environ.get("BOT_DEPTH_CAP", "5"))
 
-    # ---------------------------------------------------------------- state
     state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
     score_log: str = os.environ.get("RANKING_SCORE_LOG", "/var/lib/qupa-cafe/scores.jsonl")
 
-    listen_host: str = os.environ.get("RANKING_HOST", "127.0.0.1")
+    # The bridge gateway, where the container's nginx proxies /ranking/wake.
+    listen_host: str = os.environ.get("RANKING_HOST", "172.17.0.1")
     listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
     poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
 
-    # ------------------------------------------------- agent-kit freshness
-    #
-    # The name to ask PyPI about, and how long to trust the answer.
-    #
-    # One hour because the question is "has a release happened", which is not a
-    # per-poll question: a daemon polls every 60 seconds, and asking the index
-    # 1440 times a day to learn something that changes monthly is rude and
-    # fragile in equal measure.
+    # The package to ask PyPI about, and how long to trust the answer.
     kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
-
-    # A JSON file of wording to override in the agent kit's MCP server: its
-    # connection instructions, and any tool's description. Unset, nothing is
-    # overridden and the kit's own wording stands -- which is why this is a
-    # file of exceptions rather than a copy of the text. A copy here would be
-    # the version served to every agent, so the kit's would rot unread, and
-    # the two would be discovered to disagree at the worst moment.
+    # JSON overriding wording in the kit's MCP server. Unset, nothing is.
     texts_file: str = os.environ.get("RANKING_TEXTS_FILE", "")
     kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
 
-    # There is deliberately no version floor.
-    #
-    # Refusing to serve an agent because its kit is old punishes the researcher
-    # for something they have not been told about, and it punishes them by
-    # making their agent quietly useless -- relevance wakes stop, which is a
-    # state an agent reports only to a log nobody reads. The forum knows which
-    # version is published and who is behind, so the useful thing to do with
-    # that is say so to the person who can act on it. See Ranker.notify_outdated.
-
-    # TOPIC embeddings, not post embeddings.
-    #
-    # discourse-ai creates ai_posts_embeddings but never populates it, and there
-    # is no site setting that changes that: its features -- semantic search,
-    # related topics -- are topic-level. Verified on a forum with
-    # embeddings enabled and backfilled: ai_topics_embeddings had a row for every
-    # topic, ai_posts_embeddings had none.
-    #
-    #   ai_topics_embeddings(topic_id, model_id, model_version, strategy_id,
-    #                        strategy_version, digest, embeddings, ...)
-    #
-    # This is a better fit than it sounds. The daemon hands the agent the whole
-    # thread anyway, so "is this thread worth your attention" is the question
-    # being asked, and the topic vector is the answer to it.
-    #
-    # The cost is staleness rather than absence: a topic's vector is recomputed
-    # as the topic changes, so a brand-new post may be scored against the thread
-    # as it was a moment ago. For deciding whether a thread is in a researcher's
-    # area that is immaterial, since a thread's subject moves slowly.
-    #
-    # pgvector 0.8.6 is already installed in the Discourse Postgres, so nothing
-    # needs adding. Confirm the schema for your own version:
-    #   \d ai_topics_embeddings     inside the container's psql
+    # Topic embeddings: discourse-ai leaves ai_posts_embeddings empty.
     embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_topics_embeddings")
     embeddings_key_column: str = os.environ.get("EMBEDDINGS_KEY_COLUMN", "topic_id")
     embeddings_column: str = os.environ.get("EMBEDDINGS_COLUMN", "embeddings")
-
-    # The table is keyed on (topic_id, model_id, strategy_id), so a forum with
-    # more than one embedding definition holds several rows per topic. With one
-    # definition this can stay empty; set it if you ever add a second, or the
-    # similarity query will compare against whichever row comes back first.
+    # Needed only with more than one embedding definition.
     embeddings_model_id: str = os.environ.get("EMBEDDINGS_MODEL_ID", "")
 
 
@@ -235,8 +121,7 @@ class Agent:
 
     username: str
     researcher: str
-    # Categories this agent does NOT want to be woken for. Empty means every
-    # category, which is what a profile gets by not naming any.
+    # Categories this agent is never woken for. Empty means none.
     skip_categories: list[str]
     interests: str
     not_interested: str = ""
@@ -244,13 +129,8 @@ class Agent:
 
     @property
     def profile_text(self) -> str:
-        """What actually gets embedded.
-
-        The negative half is included because "not interested in X" is itself
-        information about the region of the space this agent occupies. It is a
-        crude way to use it, and whether it helps is a calibration question the
-        score log can answer.
-        """
+        """What gets embedded. An embedding cannot subtract, so the exclusions
+        are appended rather than removed."""
         if self.not_interested:
             return f"{self.interests}\n\nLess relevant: {self.not_interested}"
         return self.interests
@@ -258,12 +138,7 @@ class Agent:
 
 @dataclass
 class Decision:
-    """One (post, agent) pair, scored, with the reason for the outcome.
-
-    Written to the score log whether or not it resulted in a wake. The rejected
-    ones are the more useful half: they are what lets the thresholds be
-    re-evaluated after the fact, at values nobody had data for up front.
-    """
+    """One (post, agent) pair, scored, with the reason for the outcome."""
 
     post_id: int
     topic_id: int
@@ -271,8 +146,7 @@ class Decision:
     similarity: float | None
     woke: bool
     reason: str
-    # Which daily wake budget the post drew on: "forum", or "feed" for a topic
-    # a feed account opened. The evaluation counts the two separately.
+    # Which daily wake budget the post drew on: "forum" or "feed".
     kind: str = "forum"
     at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -281,12 +155,8 @@ class Decision:
 
 
 class State:
-    """Wake and post ledgers, and the cursor.
-
-    SQLite rather than in-memory, because a daily cap that resets when the
-    process restarts is not a cap. A crash loop would otherwise hand an agent
-    unlimited wakes.
-    """
+    """Wake ledger, cursor, daemon polls and sent notices, in SQLite so that a
+    restart cannot reset a daily cap."""
 
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -309,19 +179,15 @@ class State:
                 value INTEGER NOT NULL
             );
 
-            -- One row per notice actually delivered, so a restart does not
-            -- send it again. Keyed on the content it was about rather than on
-            -- the agent, so a researcher who edits a profile and is still over
-            -- the limit hears about it once more, and one who fixes it and
-            -- breaks it again hears about it again.
-            -- When each agent's daemon last asked for its wakes, which is the
-            -- only sign this host has that the daemon is alive.
+            -- When each agent's daemon last asked for its wakes.
             CREATE TABLE IF NOT EXISTS daemons (
                 agent     TEXT PRIMARY KEY,
                 last_poll TEXT NOT NULL,
                 kit       TEXT NOT NULL DEFAULT ''
             );
 
+            -- One row per notice delivered, keyed on what it was about, so a
+            -- restart does not resend and a changed subject earns a new one.
             CREATE TABLE IF NOT EXISTS notices (
                 kind    TEXT NOT NULL,
                 subject TEXT NOT NULL,
@@ -331,11 +197,6 @@ class State:
             );
             """
         )
-        # A ledger created before wakes carried a kind gets the column here,
-        # and every wake already in it counts as a forum wake.
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}
-        if "kind" not in columns:
-            self.db.execute("ALTER TABLE wakes ADD COLUMN kind TEXT NOT NULL DEFAULT 'forum'")
         self.db.commit()
 
     @staticmethod
@@ -372,9 +233,7 @@ class State:
         self.db.commit()
 
     def silent_daemons(self, before: datetime) -> list[tuple[str, str]]:
-        """(agent, last poll) for every daemon that has polled at least once
-        and not since ``before``. One that never polled was never installed,
-        which is a different conversation."""
+        """(agent, last poll) for every daemon that has polled, but not since ``before``."""
         return list(
             self.db.execute(
                 "SELECT agent, last_poll FROM daemons WHERE last_poll < ? ORDER BY agent",
@@ -421,35 +280,9 @@ class ScoreLog:
                 fh.write(json.dumps(asdict(decision)) + "\n")
 
 
-# How a wake is worded.
-#
-# A file rather than a string here, beside the forum's other published texts,
-# because it is one: prose somebody reads and edits, in the directory where
-# the policy topic and the welcome topic already live. Editing it and waiting
-# a poll is the whole of changing what a woken agent is told.
-#
-# Here rather than in the agent kit, because wording that can only be changed
-# by a release is wording that stays wrong until three researchers upgrade.
-# The kit keeps no copy: it fills these tokens in, and a pass that finds no
-# wording defers its wakes and logs that, so an empty or missing file costs
-# wakes rather than spending a researcher's tokens on a prompt with nothing
-# written in it. Which is why the service refuses to start without it.
-#
-# The kit supplies the one line about post content being data, and adds it
-# whether or not this text asks for it: nothing served from here may remove
-# the sentence that tells an agent the post is somebody else's writing.
-#
-# %BODY% is substituted last by the kit, so a post containing a token of its
-# own cannot rewrite the prompt around it.
-#
-# %FROM_YOUR_RESEARCHER% is whatever the researcher put in their own wake.md,
-# which is the other half of an agent's instructions and is nothing to do with
-# this host. Empty for most of them. The kit appends it if this text leaves it
-# out, so it cannot be dropped from here either.
-# Where the repository keeps the text it publishes: the policy topic, the
-# welcome topic, the private messages. Every one of them is prose somebody
-# reads, and every one of them is edited by the person it is written for
-# rather than by whoever is comfortable in Python.
+# The texts this service sends or serves: the wake prompt and the private
+# messages. The kit keeps no copy of the wake prompt, which is why the service
+# refuses to start without it.
 CONTENT_DIR = Path(
     os.environ.get("RANKING_CONTENT_DIR")
     or Path(__file__).resolve().parent.parent / "content"
@@ -459,45 +292,24 @@ WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or CONTENT_DIR / "
 
 
 def message(name: str, **tokens: str) -> str:
-    """One of the messages in `config/`, with its placeholders filled in.
-
-    Plain replacement rather than a formatting call, so that a percent sign or
-    a brace somebody adds to one of those files later cannot turn into an
-    exception in the middle of sending a notification.
-
-    Raises if the file is missing, which reaches the caller as a message not
-    sent and a line in the log. The alternative -- sending the template, or
-    sending nothing quietly -- is worse in both directions: nobody wants
-    `%TOKENS%` in their inbox, and a notice nobody gets is exactly the silence
-    these messages exist to break. Nothing is recorded as notified, so the next
-    poll tries again.
-    """
+    """One of the messages in content/, with ``%TOKEN%`` placeholders filled in
+    by plain replacement. Raises if the file is missing, so nothing is recorded
+    as sent and the next poll retries."""
     text = (CONTENT_DIR / name).read_text(encoding="utf-8").strip()
     for token, value in tokens.items():
         text = text.replace(f"%{token}%", value)
     return text
 
 
-# The pinned wiki topic the policy lives in, as `40-configure-forum.py` titles
-# it, and a phrase from its opening line. The title finds candidates and the
-# phrase confirms one: an agent pinned to the wrong topic would hold a hash for
-# text nobody wrote as policy, and it would look like it worked.
+# The policy topic's title as 40-configure-forum.py writes it, and a phrase
+# from its opening line that tells it from the category's About topic.
 POLICY_TOPIC_TITLE = "Agent policy"
 POLICY_MARKER = "authority on how agents behave"
 
 
 class PolicyTopic:
-    """Which topic the policy is in, answered for the agent kit.
-
-    Here rather than in the kit because it is a fact about this forum, found by
-    searching this forum, and the kit would need the title and the confirming
-    phrase compiled into a release to ask for itself -- so a retitled topic
-    would strand every installed agent until each researcher upgraded.
-
-    Cached for the life of the process. The topic is created once by
-    `40-configure-forum.py`; a forum where it moves has had something unusual
-    done to it, and restarting this service is the smaller half of that job.
-    """
+    """Which topic the policy is in, answered for the agent kit so that no
+    release has to know the title. Cached for the life of the process."""
 
     def __init__(self, forum: "Forum"):
         self.forum = forum
@@ -524,8 +336,6 @@ class PolicyTopic:
             except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
                 continue
             posts = (full.get("post_stream") or {}).get("posts") or []
-            # A search can return the category's "About" topic, whose title
-            # matches and whose body is not policy.
             if posts and POLICY_MARKER in (posts[0].get("raw") or ""):
                 return int(topic["id"])
 
@@ -534,24 +344,11 @@ class PolicyTopic:
 
 
 class Texts:
-    """Everything the agent kit says that this host gets to word.
+    """What the kit is told to say: ``wake_prompt`` from content/wake-prompt.md,
+    plus ``instructions`` and ``descriptions`` overrides from RANKING_TEXTS_FILE.
 
-    One key per thing: `wake_prompt` from `content/wake-prompt.md`,
-    `instructions` for what the kit's
-    MCP server hands a client on connecting, and `descriptions` keyed by tool
-    name. The kit writes the answer to a file and reads it from there, so what
-    is served reaches an MCP server the runtime starts, which never calls here
-    itself.
-
-    `RANKING_TEXTS_FILE` overrides any of them and is unset by default. The
-    wording of the tools ships with the kit and is good; what this exists for
-    is the afternoon one sentence of it turns out to be wrong, which would
-    otherwise need a release and three upgrades.
-
-    Re-read when the file's timestamp moves, so an edit takes effect on the
-    next poll without a restart -- there is nothing to restart for, and a
-    wording fix people have to remember to restart for is a wording fix that
-    gets deployed half the time.
+    Both are re-read when their timestamp moves, and a bad read keeps the last
+    good text, so an operator mid-edit reverts nobody.
     """
 
     def __init__(self, config: Config):
@@ -563,17 +360,7 @@ class Texts:
         self.wake_prompt()
 
     def wake_prompt(self) -> str:
-        """The wake's wording, re-read when the file changes.
-
-        Raises on the first read and never afterwards. A service that starts
-        without this serves every agent a wake with no wording, which they
-        defer and report only to their own logs -- a forum that has gone quiet
-        while every component says it is healthy. Refusing to start says it
-        once, to whoever is standing there.
-
-        After that a bad read keeps the last good text. An operator saving a
-        half-finished edit should cost nobody their wakes.
-        """
+        """The wake's wording. Raises on the first read only."""
         try:
             stamp = os.path.getmtime(WAKE_PROMPT_PATH)
             if stamp != self._wake_stamp:
@@ -595,9 +382,6 @@ class Texts:
         try:
             stamp = os.path.getmtime(self.config.texts_file)
         except OSError:
-            # A path that names nothing is an operator's intent that has not
-            # arrived yet, not a reason to stop answering. The kit's own
-            # wording is what agents get in the meantime.
             return {}
 
         if stamp != self._stamp:
@@ -607,9 +391,6 @@ class Texts:
                 self._overrides = loaded if isinstance(loaded, dict) else {}
                 self._stamp = stamp
             except (OSError, json.JSONDecodeError) as exc:
-                # Held rather than dropped: an operator editing this file and
-                # leaving a trailing comma should not silently revert every
-                # agent's wording to the package default mid-edit.
                 LOG.warning("could not read %s: %s", self.config.texts_file, exc)
 
         return self._overrides
@@ -622,7 +403,7 @@ class Texts:
 
 
 class Forum:
-    """The bits of the REST API this needs, which is one endpoint."""
+    """The bits of the REST API this needs."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -637,14 +418,8 @@ class Forum:
             return json.loads(resp.read().decode())
 
     def user(self, username: str) -> dict[str, Any] | None:
-        """The user, or None if the forum says there is no such user.
-
-        Raises for anything else. "There is no such account" and "I could not
-        ask" are different answers, and collapsing them into None makes a key
-        without the scope to perform the lookup indistinguishable from a
-        researcher who does not exist -- which sends whoever reads the log to
-        check a username when the problem is a credential.
-        """
+        """The user, or None if there is no such user. Anything else raises,
+        since "no such account" and "could not ask" are different answers."""
         try:
             return self.get(f"/u/{username}.json").get("user")
         except urllib.error.HTTPError as exc:
@@ -653,13 +428,8 @@ class Forum:
             raise
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
-        """Send one private message. The only write this service makes.
-
-        Needs `posts#create` on the service's API key. A key without it answers
-        403, which is logged with the scope named rather than retried: the
-        service has no way to grant itself the scope and a loop would send the
-        same refusal every poll.
-        """
+        """Send one private message, the only write this service makes. A 403
+        means the key lacks posts#create, and is logged rather than retried."""
         body = urllib.parse.urlencode(
             {
                 "title": title,
@@ -696,17 +466,8 @@ class Forum:
             return False
 
     def owns_key(self, agent: str, key: str) -> bool:
-        """Does this key act as this agent?
-
-        Asked of the forum rather than answered here, because the forum is the
-        only thing that can answer: Discourse stores keys hashed, so there is
-        nothing on this side to compare against.
-
-        `/session/current.json` replies as whoever the key is bound to, so a
-        Single-User key presented for somebody else's agent is refused by
-        Discourse and fails this check. That is what stops `?agent=` from being
-        a claim the caller simply makes about itself.
-        """
+        """Does this key act as this agent? `/session/current.json` answers as
+        whoever the key is bound to, which is what makes `?agent=` more than a claim."""
         url = f"{self.config.forum_url.rstrip('/')}/session/current.json"
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/json")
@@ -721,31 +482,15 @@ class Forum:
         return bool(who) and who == agent.lower()
 
     def interests_posts(self, topic_id: int) -> list[dict[str, Any]]:
-        # include_raw=true is NOT optional. Without it the topic endpoint omits
-        # `raw` and returns only `cooked` HTML, in which "**Researcher:**"
-        # has become "<strong>Researcher:</strong>" -- so parse_agents matches
-        # nothing, finds no agents, and nothing is ever woken. Silently.
+        # Without include_raw the topic endpoint returns only cooked HTML.
         return self.get(f"/t/{topic_id}.json?include_raw=true")["post_stream"]["posts"]
 
 
 def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
-    """Read agent profiles out of the interests topic.
-
-    The profiles are forum posts rather than a config file, which is the same
-    pattern as the policy topic: human-readable, editable by the person they
-    describe, and visible to collaborators.
-
-    The cost is that parsing is best-effort against prose someone typed. A post
-    that does not match the template is skipped with a warning rather than
-    failing the run, because one malformed profile should not take down
-    everybody else's ranking.
-    """
-    # `[^\S\n]*` rather than `\s*` on the single-line fields: `\s` matches a
-    # newline, so a field left empty would consume its own line break and
-    # capture whatever came next. "Categories to skip:" is meant to be left
-    # empty and sits at the end of the template, where the next thing in the
-    # post is whatever the author typed after it -- so the lax form would turn
-    # a sign-off into an exclusion list, with nothing to show it had happened.
+    """Read agent profiles out of the interests topic. A post that does not
+    match the template is skipped with a warning."""
+    # `[^\S\n]*` rather than `\s*`, so an empty single-line field cannot
+    # swallow its line break and capture the next line.
     HORIZONTAL = r"[^\S\n]*"
     fields = {
         "researcher": re.compile(r"\*\*Researcher:\*\*" + HORIZONTAL + r"(.+)", re.I),
@@ -753,40 +498,23 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
         "skip_categories": re.compile(
             r"\*\*Categories to skip:\*\*" + HORIZONTAL + r"(.+)", re.I
         ),
-        # The field this replaced. Parsed only so that a profile still carrying
-        # it can be reported rather than silently misread: it listed categories
-        # to include, and reading that list as exclusions would invert exactly
-        # what the researcher asked for.
-        "legacy_categories": re.compile(
-            r"\*\*Categories:\*\*" + HORIZONTAL + r"(.+)", re.I
-        ),
         "watching": re.compile(r"\*\*Watching for:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
         "not": re.compile(r"\*\*Not interested in:\*\*\s*(.+?)(?=\n\s*>?\s*\*\*|\Z)", re.I | re.S),
     }
 
     agents: list[Agent] = []
     for post in posts:
-        # post_number 1 is the topic's own body, which is the template itself.
+        # Post 1 is the template itself.
         if post.get("post_number") == 1:
             continue
 
-        # Skip anything that is not a real post.
-        #
-        # Discourse records pinning and wiki changes as "small action" posts
-        # with post_type 3 and an empty body, so a pinned topic carries one of
-        # these permanently. Without this filter each one fails the parse and
-        # logs a "no agent account" warning on every pass -- once per poll, for
-        # the life of the forum. The SQL further down already filters
-        # post_type = 1; this is the same rule, applied to the same data
-        # arriving by a different route.
+        # Pinning and wiki changes leave empty "small action" posts.
         if post.get("post_type", 1) != 1:
             continue
 
         raw = post.get("raw") or ""
 
         if not raw and post.get("cooked"):
-            # Fetched without include_raw=true. Parsing the HTML would find
-            # nothing, so say what is wrong rather than reporting no agents.
             LOG.error(
                 "post %s has cooked HTML but no raw markdown; the topic was fetched "
                 "without ?include_raw=true",
@@ -794,8 +522,7 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
             )
             continue
 
-        # The template in the interests topic is a blockquote, so people copy it
-        # as one. Stripping the markers keeps them out of the embedded text.
+        # The template is a blockquote, so people copy it as one.
         raw = re.sub(r"^\s*>\s?", "", raw, flags=re.M)
         found = {key: pattern.search(raw) for key, pattern in fields.items()}
 
@@ -807,19 +534,8 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
             continue
 
         skip_categories = []
-        if found["legacy_categories"] and not found["skip_categories"]:
-            LOG.warning(
-                "post %s carries a 'Categories:' line, which is no longer read. "
-                "That field listed categories to include; the field now read is "
-                "'Categories to skip:'. Until the post is updated this agent is "
-                "scored in every category.",
-                post.get("id"),
-            )
         if found["skip_categories"]:
-            # Folded to lower case here, and the comparison folds the forum's
-            # name too. These are names a person typed into a forum post, and
-            # "research" failing to match the Research category would be a
-            # profile that silently matches nothing.
+            # Case-folded here, and the comparison folds the forum's name too.
             skip_categories = [
                 c.strip().lower()
                 for c in re.split(r"[,;]", found["skip_categories"].group(1))
@@ -843,36 +559,22 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
 
 
 def embed(text: str, config: Config = CONFIG) -> list[float]:
-    """Embed one string through the local embedding server.
-
-    ``truncate`` is sent per request because the server is run with
-    ``auto_truncate`` off, and without it an input over the model's limit is
-    **refused** with 413 rather than shortened. A refusal here drops the agent
-    out of the ranking entirely: no vector, no entry in ``self.agents``, no
-    relevance wakes at all. Truncating instead costs the tail of a profile,
-    which ``report_profile_length`` is there to tell its researcher about.
-    """
+    """Embed one string. ``truncate`` makes an over-long profile lose its tail
+    rather than be refused with 413, which would drop the agent entirely."""
     body = json.dumps({"inputs": text, "truncate": True}).encode()
     req = urllib.request.Request(f"{config.tei_url.rstrip('/')}/embed", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as resp:
         result = json.loads(resp.read().decode())
-    # TEI returns a list of vectors, one per input.
     return result[0] if result and isinstance(result[0], list) else result
 
 
-# The embedding server's own input limit, asked for once and remembered.
-# Falsy means "not asked yet"; a negative value means asked and unavailable, so
-# a server that cannot answer is not asked again on every profile.
+# The embedding server's input limit, asked once. Negative: asked, no answer.
 _INPUT_LIMIT: int | None = None
 
 
 def embedding_limit(config: Config = CONFIG) -> int | None:
-    """How many tokens the embedding server accepts, or None if it will not say.
-
-    Read from the server rather than configured, because it is the model's
-    property and a number written down here would be a second copy of it.
-    """
+    """How many tokens the embedding server accepts, or None if it will not say."""
     global _INPUT_LIMIT
     if _INPUT_LIMIT is not None:
         return _INPUT_LIMIT if _INPUT_LIMIT > 0 else None
@@ -891,14 +593,7 @@ def embedding_limit(config: Config = CONFIG) -> int | None:
 
 
 def token_count(text: str, config: Config = CONFIG) -> int | None:
-    """How many tokens the embedding server makes of this text, or None.
-
-    The same tokeniser that will truncate the text, asked directly, because
-    the alternative is a characters-per-token rule of thumb and this forum's
-    prose breaks those: measured against this model, 2300 characters of
-    ordinary English is 604 tokens and 2300 characters carrying notation like
-    ``Nb-HfOx-Nb`` and ``NbN-AlN-NbN`` is 787.
-    """
+    """How many tokens the embedding server's own tokeniser makes of this text."""
     try:
         body = json.dumps({"inputs": text}).encode()
         req = urllib.request.Request(
@@ -916,16 +611,8 @@ def token_count(text: str, config: Config = CONFIG) -> int | None:
 
 
 def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, int] | None:
-    """Say how much of a profile was embedded, and warn when some was not.
-
-    Returns ``(tokens, limit)`` when the profile is at or over the limit, and
-    None otherwise -- including when the server will not say, because no
-    answer is not the same as a profile that fits.
-
-    Truncation at the limit is silent: the server accepts the text, returns a
-    vector, and drops the tail. What is dropped is the end of the profile,
-    which is where "Not interested in" sits.
-    """
+    """``(tokens, limit)`` when a profile is at or over the limit, else None.
+    Truncation is silent at the server, and the tail it drops is the exclusions."""
     tokens = token_count(agent.profile_text, config)
     if tokens is None:
         return None
@@ -966,17 +653,8 @@ class Ranker:
     # ------------------------------------------------------------ notices
 
     def researcher_for(self, agent: str) -> str | None:
-        """The forum username of whoever owns this agent account.
-
-        Derived from the naming convention rather than stored, because nothing
-        records the link: 45-provision-agent.py creates `<researcher>-agent`.
-        Verified against the forum before it is used, so a guess that happens
-        not to be anybody is not sent a message.
-
-        Returns None for an agent whose researcher name was truncated to fit
-        the username limit, which the convention cannot be inverted through.
-        That case is logged rather than guessed at.
-        """
+        """The researcher behind `<researcher>-agent`, checked against the
+        forum. None for a name that cannot be inverted or names nobody."""
         suffix = "-agent"
         if not agent.endswith(suffix):
             return None
@@ -986,20 +664,8 @@ class Ranker:
         return candidate if self.forum.user(candidate) else None
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
-        """Tell the researcher, and their agent, that the kit is behind.
-
-        Service is never refused for a version. An agent turned away goes quiet
-        in a way it reports only to a log, so its researcher learns nothing and
-        loses relevance wakes for something nobody told them about. Telling
-        them costs one message and leaves the agent working meanwhile.
-
-        Addressed to both, deliberately: the researcher is the one who can run
-        the commands, and a private message wakes the agent, so it can raise it
-        with them if they have not got round to it.
-
-        Once per reported version, so an upgrade that is still behind earns
-        another message and a poll every sixty seconds does not.
-        """
+        """Tell the researcher and their agent that the kit is behind, once
+        per reported version. Service is never refused for a version."""
         reported = str(upgrade.get("reported") or "")
         if not reported:
             return
@@ -1040,21 +706,8 @@ class Ranker:
             self.state.record_notice("kit-outdated", agent, digest)
 
     def check_daemons(self, now: datetime | None = None) -> list[str]:
-        """Tell each researcher whose agent's daemon has gone quiet.
-
-        A daemon that has stopped cannot report that it has, and on the
-        researcher's machine nothing else is watching it, so this host is the
-        one place its absence can be seen: every daemon asks ``/wake`` once a
-        minute. Silence longer than ``daemon_silence_hours`` earns the
-        researcher a private message.
-
-        Once per silence. The notice is keyed on the time of the last poll, so
-        the next poll ends the silence and a later one starts a new one.
-        Researcher only, and not the agent, which nothing can wake while its
-        daemon is down. Sent as this service's account, which the Slack bridge
-        carries to the researcher's DM with the bot like any other message.
-        Returns the agents whose researchers were told.
-        """
+        """Tell each researcher whose daemon has not polled for
+        ``daemon_silence_hours``, once per silence. Returns the agents told."""
         now = now or datetime.now(timezone.utc)
         hours = self.config.daemon_silence_hours
         told = []
@@ -1090,23 +743,8 @@ class Ranker:
         return told
 
     def notify_truncated(self, agent: Agent, tokens: int, limit: int) -> None:
-        """Tell the agent its profile is being cut off.
-
-        The agent rather than the researcher, because the agent is the one who
-        can act: the post belongs to its account, so `edit_post` is its tool
-        and nobody else's. A private message also wakes it, so the message and
-        the ability to fix what it describes arrive together -- where telling
-        the researcher meant relaying an instruction to their agent, which is
-        the same message with a person inserted into it.
-
-        The researcher is not copied. They can read the post and the edit on
-        the forum, and this is a mechanical fact about a token limit rather
-        than something to decide.
-
-        Once per distinct profile, so an edit that is still too long is worth
-        another message and a poll that changes nothing is not. The state table
-        is what survives a restart.
-        """
+        """Tell the agent, whose post it is and whose `edit_post` can fix it,
+        that its profile is cut off. Once per distinct profile."""
         digest = hashlib.sha256(agent.profile_text.encode()).hexdigest()[:16]
         if self.state.notice_sent("profile-truncated", agent.username, digest):
             return
@@ -1135,12 +773,7 @@ class Ranker:
     # ----------------------------------------------------------- profiles
 
     def refresh_agents(self) -> None:
-        """Re-read the interests topic and re-embed anything that changed.
-
-        Re-embedding only on change matters less for cost than for stability:
-        an unchanged profile keeps an identical vector, so a post's score does
-        not drift between runs for no reason.
-        """
+        """Re-read the interests topic and re-embed if anything changed."""
         if not self.config.interests_topic_id:
             LOG.error("INTERESTS_TOPIC_ID is not set. No agents will be ranked.")
             return
@@ -1160,13 +793,7 @@ class Ranker:
             return
 
         for agent in agents:
-            # Before the embedding rather than after it, so that a profile the
-            # server will not accept is still measured and still reported. The
-            # order was the other way round and the exception jumped over the
-            # notification, which is the case this most needs to cover.
-            #
-            # Reached only when the digest changed, so this is the poll after a
-            # profile was posted or edited rather than every poll.
+            # Measured before embedding, so a profile the server refuses is still reported.
             over = report_profile_length(agent, self.config)
 
             try:
@@ -1189,30 +816,10 @@ class Ranker:
     def new_posts(self, since_id: int, limit: int = 200) -> list[dict[str, Any]]:
         """Posts created since the cursor, with what the guardrails need.
 
-        ``is_agent`` is a group membership test rather than Discourse's own
-        ``bot?`` flag. That flag means "user id <= 0" and is reserved for system
-        and discobot; an API-created account gets a positive id and is
-        permanently "human" to the framework, with no way to change it. The
-        ``agents`` group is the supported marker, and it is what the bot-to-bot
-        depth cap counts.
-
-        **Private messages are excluded, and that is load-bearing twice over.**
-
-        They are not embedded -- ``discourse-ai`` embeds topics and does not
-        embed a personal message -- so a PM post reaching ``pass_once`` scores
-        as ``no-embedding-yet``, which stops the pass without advancing the
-        cursor. The next pass starts at the same post and stops again, so one
-        private message ends relevance wakes for every agent on the forum,
-        permanently, while ``/health`` still reports ok and direct mentions
-        still work. Provisioning an agent sends one, so the forum breaks the
-        moment somebody joins.
-
-        And the credential messages carry each agent's API key in plaintext.
-        Selecting ``p.raw`` for them means those keys were candidates to be
-        scored against every agent's interest profile; nothing was leaked only
-        because the embedding they would have needed does not exist. That is an
-        accident to rely on rather than a control, and it would stop being true
-        if ``ai_embeddings_per_post_enabled`` were ever turned on.
+        ``is_agent`` is membership of the `agents` group, since Discourse's
+        ``bot?`` covers only ids <= 0. Private messages are excluded: they are
+        never embedded, so one would stop the cursor for good, and the
+        credential messages carry API keys.
         """
         sql = """
             SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw,
@@ -1240,16 +847,8 @@ class Ranker:
             return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     def similarity(self, topic_id: int, vector: list[float]) -> float | None:
-        """Cosine similarity between a topic and a profile, computed in pgvector.
-
-        Keyed on the topic rather than the post, because that is what
-        discourse-ai actually embeds -- see the note on ``embeddings_table``.
-
-        Returns None when the topic has no embedding yet, which is a normal race
-        rather than an error: discourse-ai embeds asynchronously, so a new topic
-        can be visible for a few seconds before its vector exists. The caller
-        treats None as "not yet" and reconsiders it on the next pass.
-        """
+        """Cosine similarity between a topic and a profile, or None when the
+        topic has no embedding yet, which the caller treats as "not yet"."""
         parameters: list[Any] = [str(vector), topic_id]
         model_filter = ""
         if self.config.embeddings_model_id:
@@ -1277,11 +876,7 @@ class Ranker:
             return None
 
     def consecutive_agent_posts(self, topic_id: int, before_post_number: int) -> int:
-        """How many agent posts in a row end this thread, counting backwards.
-
-        A human post resets the count, which is the whole mechanism: two agents
-        can go back and forth up to the cap, and one human sentence re-opens it.
-        """
+        """How many agent posts in a row end this thread. A human post resets it."""
         sql = """
             SELECT EXISTS (
                 SELECT 1 FROM group_users gu
@@ -1318,19 +913,11 @@ class Ranker:
     # ---------------------------------------------------------- the decision
 
     def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
-        """Score one post against every agent, and pick at most one winner.
-
-        Guardrails are applied cheapest-first, so that an agent that has
-        skipped a category never costs a similarity query.
-
-        ``record=False`` scores without touching the wake ledger, which is what
-        ``--explain`` needs: explaining a decision must not consume a day's
-        budget for the agent being asked about.
-        """
+        """Score one post against every agent, cheapest guardrail first, and
+        wake at most one. ``record=False`` leaves the ledger alone (--explain)."""
         decisions: list[Decision] = []
         candidates: list[tuple[Agent, float]] = []
 
-        # Which daily wake budget this post draws on.
         if post["username"] in self.config.feed_usernames:
             kind, wake_cap, cap_reason = "feed", self.config.feed_wake_cap_per_day, "daily-feed-wake-cap"
         else:
@@ -1339,8 +926,6 @@ class Ranker:
         for agent in self.agents:
             base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
 
-            # Never wake an agent for its own post. Not really a guardrail --
-            # without it, an agent replies to itself forever.
             if post["username"] == agent.username:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="own-post"))
                 continue
@@ -1349,36 +934,25 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="already-woken"))
                 continue
 
-            # 1. Category opt-out. Empty means every category, so a profile
-            # that says nothing about categories is scored everywhere and the
-            # similarity floor is what keeps the volume down.
             category = (post.get("category_name") or "").lower()
             if category in agent.skip_categories:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="category-skipped"))
                 continue
 
-            # 4. Daily post cap. Checked before scoring, because an agent that
-            # has gone quiet should not be scored at all.
             if self.posts_today(agent.username) >= self.config.post_cap_per_day:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="daily-post-cap"))
                 continue
 
-            # Daily wake cap. The main lever on model invocations. A feed post
-            # is counted against the feed's own cap and leaves this one alone.
             if self.state.wakes_today(agent.username, kind) >= wake_cap:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason=cap_reason))
                 continue
 
-            # 3. Bot-to-bot depth. A human post resets it.
             if post["is_agent"]:
                 depth = self.consecutive_agent_posts(post["topic_id"], post["post_number"])
                 if depth >= self.config.bot_depth_cap:
                     decisions.append(Decision(**base, similarity=None, woke=False, reason="bot-depth-cap"))
                     continue
 
-            # 2. Relevance floor.
-            # Scored against the topic, because that is what discourse-ai
-            # embeds. The guardrails above and below stay per-post.
             similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
             if similarity is None:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
@@ -1390,11 +964,7 @@ class Ranker:
 
             candidates.append((agent, similarity))
 
-        # 5. Anti-pile-on. Only the best-matched agent wakes.
-        #
-        # This attacks bot-to-bot noise at its source: without it, one
-        # interesting post wakes every subscribed agent, and they all reply to
-        # it, and then they all see each other's replies.
+        # Anti-pile-on: only the best-matched agent wakes.
         if candidates:
             candidates.sort(key=lambda pair: pair[1], reverse=True)
             winner, winning_score = candidates[0]
@@ -1434,23 +1004,13 @@ class Ranker:
             decisions = self.score_post(post)
             all_decisions.extend(decisions)
 
-            # Do not advance the cursor past a post whose embedding has not
-            # landed yet, or it is skipped permanently. discourse-ai embeds
-            # asynchronously, so this race is normal and happens on every busy
-            # minute.
+            # Stop at a post whose embedding has not landed, or it is skipped for good.
             if any(d.reason == "no-embedding-yet" for d in decisions):
                 break
             highest_settled = post["id"]
 
-        # Log before advancing the cursor, not after. These decisions are the
-        # only record that a post was considered and rejected, and a post the
-        # cursor has passed is never scored again -- so a failed write with the
-        # cursor already moved loses them for good.
-        #
-        # "no-embedding-yet" is a race rather than a decision, and the post is
-        # reconsidered next pass. Logging it would add a row per agent per pass
-        # for as long as the embedding takes, which is noise in the one dataset
-        # the final assessment depends on.
+        # Logged before the cursor moves, so a failed write loses no decision.
+        # "no-embedding-yet" is a race, not a decision, and is reconsidered.
         self.log.write(d for d in all_decisions if d.reason != "no-embedding-yet")
 
         self.state.set_cursor(highest_settled)
@@ -1459,10 +1019,7 @@ class Ranker:
     # ------------------------------------------------------------ read side
 
     def pending_for(self, agent: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Wakes recorded for one agent today, newest first.
-
-        The daemon asks for this; the daemon does not decide anything.
-        """
+        """Wakes recorded for one agent today, newest first."""
         rows = self.state.db.execute(
             "SELECT post_id, at FROM wakes WHERE agent = ? AND day = ? ORDER BY post_id DESC LIMIT ?",
             (agent, State.today(), limit),
@@ -1484,19 +1041,8 @@ class Ranker:
 
 
 class KeyChecker:
-    """Verifies an agent's key against the forum, remembering the answer briefly.
-
-    Each daemon polls once a minute, so verifying on every request would add a
-    forum call per agent per minute to learn nothing new. Sixty seconds of
-    memory is short enough that a revoked key stops working within a minute,
-    which is the same order as the poll interval it is protecting.
-
-    Only successes are remembered. Caching a failure would let one transient
-    error from the forum lock a valid agent out for the rest of the minute, and
-    the failure path is the one that must not be sticky.
-
-    The key itself is never stored, only a digest of it.
-    """
+    """Verifies an agent's key against the forum, remembering successes (never
+    failures) for a minute. Only a digest of the key is kept."""
 
     TTL_SECONDS = 60
 
@@ -1515,7 +1061,6 @@ class KeyChecker:
             return False
 
         self._seen[(agent, token)] = now + self.TTL_SECONDS
-        # Bounded, so a stream of made-up agents cannot grow this without end.
         for entry, expiry in list(self._seen.items()):
             if expiry <= now:
                 del self._seen[entry]
@@ -1525,33 +1070,15 @@ class KeyChecker:
 # -------------------------------------------------------------------- http api
 
 
-# The header a client reports its kit version in.
-#
-# The current name carries no project name, so a fork that renames everything
-# else does not have to rename the wire protocol too. The legacy name is read
-# as well, and has to be: releases up to 0.3.0 send only that, and a server
-# blind to it would classify every one of them as "reports no version" --
-# which is served, so nothing would surface the gap.
 KIT_VERSION_HEADER = "X-Kit-Version"
-LEGACY_KIT_VERSION_HEADER = "X-Qupa-Kit-Version"
 
 
 RELEASE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
 
 
 def release_tuple(text: str) -> tuple[int, ...] | None:
-    """The numeric release part of a version string.
-
-    Deliberately not a full PEP 440 implementation, because `packaging` is a
-    dependency and this file has none. It takes the leading dotted integers and
-    ignores any suffix, so `1.2.0rc1` and `1.2.0.dev3` both compare as
-    `(1, 2, 0)`.
-
-    That is the right kind of wrong here. The question being asked is "is this
-    agent running something much older than what is published", and treating a
-    release candidate as its release answers it. A pre-release that reports as
-    current is a far smaller problem than a comparison that throws.
-    """
+    """The leading dotted integers of a version, suffix ignored, so `1.2.0rc1`
+    compares as `(1, 2, 0)`. Enough for "much older or not"."""
     match = RELEASE.match(text or "")
     if not match:
         return None
@@ -1568,30 +1095,14 @@ def older_than(reported: str, reference: str) -> bool:
 
 
 class KitVersions:
-    """What version of the agent kit is published, and who is behind it.
+    """The newest kit on PyPI, and who is behind it.
 
-    **This fails open, and that is the most important thing about it.**
-
-    The version is looked up from PyPI, which means an external service is
-    involved in answering a question the forum asks on the wake path. If that
-    lookup were allowed to fail closed, an index outage -- or a package that has
-    not been published yet -- would stop every agent on the forum from being
-    woken. An agent running last month's kit is a small problem; a forum where
-    nothing wakes because pypi.org returned a 503 is a much larger one.
-
-    So: unreachable, malformed, or unpublished all mean "no opinion", and the
-    ranker serves the request exactly as it would have anyway.
-
-    **And note what this is not.** The version is self-reported by the client, so
-    a modified daemon can claim anything. This catches an honest researcher who
-    has not upgraded, which is the common case and worth catching. It is not a
-    control against a client that lies, and nothing here should be relied on as
-    one.
+    Fails open: PyPI unreachable, malformed or unpublished means "no opinion"
+    and every agent is served as usual. The version is self-reported, so this
+    catches an honest researcher who has not upgraded and is not a control.
     """
 
-    # A cap on the throttle dict below, because some of its keys come from a
-    # request header now. An unbounded dict keyed on anything a caller controls
-    # is a way to grow this process's memory from outside it.
+    # Bounds the throttle dict, whose keys a caller can influence.
     COMPLAINT_KEYS = 256
 
     def __init__(self, config: Config = CONFIG):
@@ -1626,8 +1137,6 @@ class KitVersions:
                 self._latest = json.load(response)["info"]["version"]
                 LOG.info("agent kit published version is %s", self._latest)
         except urllib.error.HTTPError as exc:
-            # 404 is the expected answer until the package is published, and it
-            # is not an error worth a stack trace every hour.
             LOG.info("agent kit version unknown: PyPI returned %s for %s", exc.code, self.config.kit_package)
             self._latest = None
         except Exception as exc:  # noqa: BLE001 - any failure here means "no opinion"
@@ -1636,12 +1145,7 @@ class KitVersions:
         return self._latest
 
     def verdict(self, reported: str) -> dict[str, Any] | None:
-        """Describe the client's staleness, or None if there is nothing to say.
-
-        Holds no per-client state and logs nothing about the client, which is
-        what makes it safe to call before the caller's credential has been
-        checked -- see ``Handler.do_GET`` for why that ordering matters.
-        """
+        """The client's staleness, or None. Keeps no per-client state."""
         if not reported:
             return {"reported": None, "advice": "This client does not report its version."}
 
@@ -1657,13 +1161,8 @@ class KitVersions:
         }
 
     def assess(self, agent: str, reported: str) -> dict[str, Any] | None:
-        """``verdict``, plus one log line per agent per TTL.
-
-        Called once the credential has been checked, so the agent name is known
-        to be this caller's and is safe to key the throttle on. Once per agent
-        per TTL rather than once per poll: a daemon polls every 60 seconds and
-        would otherwise fill the log with the same sentence.
-        """
+        """``verdict``, plus one log line per agent per TTL. Call only after
+        the credential has been checked."""
         verdict = self.verdict(reported)
         if verdict and self._complain_once("agent:" + agent):
             LOG.warning(
@@ -1708,11 +1207,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "agents": len(self.ranker.agents),
-                    # Cached, so this costs nothing per call. Null means the
-                    # package is unpublished or PyPI could not be reached, and
-                    # in that case no client is judged stale.
+                    # Null when PyPI could not say; then nobody is judged stale.
                     "kit_latest": self.kit.latest(),
-                    # No floor: every client is served whatever it reports.
                     "kit_minimum": None,
                 },
             )
@@ -1724,14 +1220,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "agent is required"})
                 return
 
-            # Self-reported by the daemon. A client that sends nothing is told
-            # so rather than assumed current, because "no version" is what a
-            # client older than the header looks like.
-            reported = self.headers.get(KIT_VERSION_HEADER) or self.headers.get(LEGACY_KIT_VERSION_HEADER) or ""
+            reported = self.headers.get(KIT_VERSION_HEADER) or ""
 
-            # The agent's own forum key, which is the only credential in play:
-            # there is no separate ranking secret to distribute, and revoking
-            # the key revokes this too.
+            # The agent's own forum key is the only credential.
             presented = self._bearer()
             if not presented:
                 self._send(401, {"error": "send the agent's forum key as a bearer token"})
@@ -1740,34 +1231,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, {"error": "that key does not act as that agent"})
                 return
 
-            # Proof of life, and only from a caller that holds the agent's key.
             self.ranker.state.record_poll(agent, reported)
 
-            # Now that the caller is known to act as this agent, the staleness
-            # gets a log line against its name, rides along in the payload, and
-            # -- once per version -- reaches the researcher as a message.
             upgrade = self.kit.assess(agent, reported)
             if upgrade and upgrade.get("reported"):
                 self.ranker.notify_outdated(agent, upgrade)
 
             payload: dict[str, Any] = {
                 "agent": agent,
-                # Answered here rather than worked out on the researcher's
-                # machine. The kit can strip a suffix as well as anybody; what
-                # it cannot do without a second request of its own is check the
-                # account exists, and one implementation of a rule is worth
-                # more than two when the rule decides where a message goes.
                 "researcher": self.ranker.researcher_for(agent),
-                # What the kit should say: the wake's wording, and anything of
-                # its MCP server's that this host is overriding. It writes this
-                # to a file, so an answer carrying nothing withdraws whatever
-                # it was told before.
+                # The kit writes this to a file, so an empty answer withdraws
+                # whatever it was told before.
                 "texts": self.texts.serve(),
-                # Which topic holds the policy, for the kit to configure its
-                # MCP server with. Found by searching this forum, so a
-                # retitled topic is one restart here rather than a release and
-                # three upgrades. Null when the search found nothing, which
-                # the installer reports rather than papers over.
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
                 "budget": self.ranker.budget_for(agent),
@@ -1788,12 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(ranker: Ranker) -> None:
-    """Score in a loop, and answer the daemons between passes.
-
-    Single-threaded scoring on the main thread, with the HTTP server in the
-    background. The forum's volume does not warrant anything cleverer, and a
-    simple loop is a simple thing to reason about at three in the morning.
-    """
+    """Score in a loop on the main thread; answer the daemons from another."""
     import threading
 
     Handler.ranker = ranker
@@ -1824,11 +1294,7 @@ def serve(ranker: Ranker) -> None:
 
 
 def explain(ranker: Ranker, post_id: int) -> None:
-    """Re-score one post and print every agent's outcome.
-
-    For the runbook question "why did nothing wake for this?", which is
-    otherwise answered by reading a JSONL file with grep.
-    """
+    """Re-score one post, without touching the ledger, and print every agent's outcome."""
     ranker.refresh_agents()
 
     with ranker._connect() as conn, conn.cursor() as cur:  # noqa: SLF001 - same module
@@ -1856,7 +1322,6 @@ def explain(ranker: Ranker, post_id: int) -> None:
     print(f"  agent-authored: {post['is_agent']}")
     print(f"  raw: {(post['raw'] or '')[:200]}...\n")
 
-    # read-only: explaining a decision must not consume the agent's daily budget.
     for decision in ranker.score_post(post, record=False):
         similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
         mark = "WOKE" if decision.woke else "    "

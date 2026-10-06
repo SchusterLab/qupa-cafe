@@ -1,19 +1,9 @@
-"""Update the agent kit in place: the tray's "Update the agent kit", or by hand.
+"""Update the kit in place: ``python -m qupa_cafe.update``, or `u` in the wake browser.
 
-    python -m qupa_cafe.update
-
-Two steps, each in a process of its own so that the second runs the new code:
-``pip install --upgrade`` into the interpreter running this, and then the
-installer, non-interactively, with the settings this machine already has. The
-installer is what makes the upgrade take: it replaces the running daemon and
-tray icon with ones started from the new code, re-registers the forum tools,
-and polls once to check the whole path.
-
-It runs in a terminal of its own, so the researcher sees what pip and the
-installer say, and it waits for Enter before closing it.
-
-A kit run from a checkout rather than installed from the index is refused: pip
-would install a copy that the checkout then shadows, so nothing would change.
+``pip install --upgrade`` into this interpreter, then the installer,
+non-interactively with this machine's settings, in a process of its own so it
+runs the new code and restarts the daemon and icon. A checkout is refused,
+since it would shadow what pip installs.
 """
 
 from __future__ import annotations
@@ -41,11 +31,7 @@ INDEX_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
 
 
 def latest_published(timeout: float = 3.0) -> str | None:
-    """The newest version on the index, or None when it cannot be told.
-
-    Short, because the wake browser asks as it opens and a slow index should
-    cost a second of waiting at most, not the browser.
-    """
+    """The newest version on the index, or None. The wake browser asks as it opens."""
     try:
         with urllib.request.urlopen(INDEX_URL, timeout=timeout) as response:
             return str(json.load(response)["info"]["version"])
@@ -86,12 +72,8 @@ def run(argv: list[str]) -> int:
 
 
 def installed_version() -> str:
-    """The kit's version as a fresh interpreter imports it, after pip has run.
-
-    With the same ``-P`` the installer gets, so that a checkout in the working
-    directory cannot answer for the installed copy, and asking only for
-    ``__version__``, which every release has.
-    """
+    """The version a fresh interpreter imports; ``-P`` so a checkout in the
+    working directory cannot answer for it."""
     flags = ["-P"] if sys.version_info >= (3, 11) else []
     found = subprocess.run(
         [sys.executable, *flags, "-c", "import qupa_cafe; print(qupa_cafe.__version__)"],
@@ -137,9 +119,7 @@ def update() -> int:
         return 1
 
     print(f"\nUpgraded {__version__} -> {after}. Running the installer with this machine's settings...")
-    # The installer reads the forum URL and the key from the environment with
-    # --non-interactive, which is what load_env_file has just filled from the
-    # file the installer wrote last time.
+    # --non-interactive reads the settings load_env_file put in the environment.
     return run([*interpreter_argv("qupa_cafe.install"), "--non-interactive"])
 
 
