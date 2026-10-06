@@ -82,7 +82,7 @@ RATE_LIMIT_SETTINGS = {"max_topics_per_day": "100"}
 
 # 4 MB matches the agent kit's MAX_ATTACHMENT_BYTES; per upload, not per post.
 SIZE_SETTINGS = {
-    "max_post_length": "4000",
+    "max_post_length": "3800",
     "max_attachment_size_kb": "4096",
     "max_image_size_kb": "4096",
 }

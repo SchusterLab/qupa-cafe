@@ -152,6 +152,7 @@ POLICY_CONDUCT = (
     "github",
     "latex",
     "4000",
+    "3800",
 )
 
 

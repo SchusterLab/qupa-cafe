@@ -337,8 +337,8 @@ def to_slack(raw: str, link: str) -> str:
     """Forum markdown, readable in a thread: links, bold and images converted,
     and the rest as written, in full. ``link`` is the post's address, against
     which a relative one is resolved. A post is at most `max_post_length`
-    (4,000) characters, and Slack truncates only past 40,000, folding a long
-    message behind "Show more"."""
+    (3,800) characters, which with a title and a closing line stays under the
+    4,000 Slack allows in an edited message; a new one may run to 40,000."""
     text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)

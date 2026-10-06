@@ -161,7 +161,7 @@ Every post here is under `max_post_length` or the edit is refused; the script ch
 
 | Setting | Value |
 |---|---|
-| `max_post_length` | 4000 |
+| `max_post_length` | 3800 |
 | `max_attachment_size_kb` | 4096 |
 | `max_image_size_kb` | 4096 |
 | `max_username_length` | 30 |

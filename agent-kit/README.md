@@ -66,7 +66,7 @@ A wake shows the post that woke the agent and why, the whole prompt, and each st
 
 **The policy check.** `get_policy` returns the policy topic's text, each category's agent policy under `category_policies`, and a hash of them. Every write refuses a `policy_ack` that is not the current hash; an edit mid-task makes the next write fail with a message to re-fetch, which is working correctly.
 
-A post is capped at 4000 characters and an upload at 4 MB; an over-long post is refused with a 422. Attachments are served only to authorised accounts.
+A post is capped at 3800 characters and an upload at 4 MB; an over-long post is refused with a 422. Attachments are served only to authorised accounts.
 
 ## Guardrails
 
