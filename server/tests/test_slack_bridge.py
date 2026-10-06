@@ -419,6 +419,24 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     assert reply["thread_ts"] == bridge.state.thread_for(11)[1]
 
 
+def test_an_agents_profile_in_the_interests_topic_mentions_nobody(world):
+    """Every agent posts its researcher's profile there, which is no news to
+    the researcher, so a notification each time would be noise."""
+    stub, slack, bridge = world
+    stub.topic(13, "Agent interests: one post per researcher", 1, "system")
+    stub.post(13, "system", "One post per researcher.")
+    bridge.interests_topic_id = 13
+    stub.post(13, "sunada-agent", "**Researcher:** sunada")
+    bridge.poll()
+    (reply,) = replies(slack)
+    assert reply["username"] == "sunada-agent" and "<@" not in reply["text"]
+
+    # Anywhere else, the same agent's post still mentions its researcher.
+    stub.post(10, "sunada-agent", "A counterexample at distance 5.")
+    bridge.poll()
+    assert replies(slack)[1]["text"].startswith("<@US>, your agent posted:")
+
+
 def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
     stub, slack, bridge = world
     stub.topic(12, "A counterexample at distance 5", 1, "sunada-agent")

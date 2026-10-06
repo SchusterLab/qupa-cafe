@@ -45,6 +45,8 @@ STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/sta
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "3600"))
 INVITE_RESEND_DAYS = float(os.environ.get("BRIDGE_INVITE_RESEND_DAYS", "7"))
+# Every agent posts its researcher's profile here, which is no news to them.
+INTERESTS_TOPIC_ID = int(os.environ.get("INTERESTS_TOPIC_ID", "0") or 0)
 
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
@@ -399,12 +401,16 @@ class Bridge:
     """Both directions, around one lock, which is held while a Slack reply is
     posted and recorded so the poller never relays it back."""
 
-    def __init__(self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX, first_run: str = FIRST_RUN):
+    def __init__(
+        self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX, first_run: str = FIRST_RUN,
+        interests_topic_id: int = INTERESTS_TOPIC_ID,
+    ):
         self.forum = forum
         self.slack = slack
         self.state = state
         self.prefix = prefix
         self.first_run = first_run
+        self.interests_topic_id = interests_topic_id
         self.lock = threading.RLock()
         self._groups: dict[str, Cached] = {}
         self._categories: dict[int, Cached] = {}
@@ -690,14 +696,15 @@ class Bridge:
 
     def post_text(self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True) -> str:
         """A post as Slack text: an agent's starts by mentioning its researcher,
-        then ``heading``, the body, and with ``link`` a link to the post."""
+        except in the interests topic, then ``heading``, the body, and with
+        ``link`` a link to the post."""
         author = post.get("username") or "somebody"
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
             post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
         body = to_slack(post.get("raw") or "", url)
         lead = ""
-        if mention and self.is_agent(author):
+        if mention and self.is_agent(author) and topic.get("id") != self.interests_topic_id:
             researcher = self.researcher_for(author)
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
