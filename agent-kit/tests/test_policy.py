@@ -53,23 +53,14 @@ def test_fetch_returns_text_and_hash(forum):
     assert policy.topic_id == POLICY_TOPIC_ID
 
 
-def test_fetch_caches(forum):
-    url, _ = forum
-    client = PolicyClient(url, POLICY_TOPIC_ID)
-
-    first = client.fetch()
-    second = client.fetch()
-
-    assert first is second
-
-
-def test_force_refetches(forum):
+def test_every_fetch_reads_the_forum(forum):
+    """Nothing is cached, so an edit shows on the very next read."""
     url, stub = forum
     client = PolicyClient(url, POLICY_TOPIC_ID)
 
     original = client.fetch()
     stub.policy_text = "a completely different policy"
-    updated = client.fetch(force=True)
+    updated = client.fetch()
 
     assert updated.hash != original.hash
 
@@ -202,7 +193,7 @@ def test_the_forums_current_text_is_the_policy(forum):
     assert client.fetch().hash == policy_hash(stub.policy_text)
 
     stub.policy_text = "a policy somebody else wrote"
-    assert client.fetch(force=True).hash == policy_hash(stub.policy_text)
+    assert client.fetch().hash == policy_hash(stub.policy_text)
 
 
 def test_an_edit_is_adopted_rather_than_refused(forum):
@@ -213,7 +204,7 @@ def test_an_edit_is_adopted_rather_than_refused(forum):
     first = client.fetch().hash
 
     stub.policy_text = "Post only about superconducting qubits."
-    second = client.fetch(force=True)
+    second = client.fetch()
 
     assert second.hash != first
     assert second.hash == policy_hash(stub.policy_text)
@@ -288,7 +279,7 @@ def test_editing_a_category_policy_refuses_the_old_hash(forum):
     stub.policy_replies = [arxiv_policy(ARXIV_RULE + " Mention them.")]
     with pytest.raises(PolicyError, match="category's agent policy"):
         client.check(first)
-    assert client.check(client.fetch(force=True).hash)
+    assert client.check(client.fetch().hash)
 
 
 def test_a_discussion_reply_changes_nothing(forum):

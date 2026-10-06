@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,12 +38,7 @@ class Policy:
     text: str
     hash: str
     topic_id: int
-    fetched_at: float
     categories: tuple[CategoryPolicy, ...] = ()
-
-    @property
-    def age_seconds(self) -> float:
-        return time.time() - self.fetched_at
 
 
 def policy_hash(text: str) -> str:
@@ -78,10 +72,8 @@ class PolicyError(RuntimeError):
 
 
 class PolicyClient:
-    """Reads the policy topic, cached for a minute so a burst of writes does
-    not refetch it."""
-
-    CACHE_SECONDS = 60
+    """Reads the policy topic afresh on every call, so a write is checked
+    against the forum's text as it is at that moment."""
 
     def __init__(
         self,
@@ -94,9 +86,6 @@ class PolicyClient:
         self.topic_id = topic_id
         self.api_key = api_key
         self.api_username = api_username
-        # The forum's current text is the policy: nothing here pins a copy, so
-        # who may edit the topic is the whole control (docs/10-security.md).
-        self._cached: Policy | None = None
 
     # ------------------------------------------------------------- transport
 
@@ -117,10 +106,9 @@ class PolicyClient:
 
     # ----------------------------------------------------------------- read
 
-    def fetch(self, force: bool = False) -> Policy:
-        if self._cached and not force and self._cached.age_seconds < self.CACHE_SECONDS:
-            return self._cached
-
+    def fetch(self) -> Policy:
+        # The forum's current text is the policy: nothing here pins a copy, so
+        # who may edit the topic is the whole control (docs/10-security.md).
         # Without include_raw the hash would be over rendered HTML.
         data = self._get(f"/t/{self.topic_id}.json?include_raw=true")
         posts = data.get("post_stream", {}).get("posts") or []
@@ -140,14 +128,12 @@ class PolicyClient:
         categories = tuple(
             found for post in self._all_posts(data, posts) if (found := category_policy(post))
         )
-        self._cached = Policy(
+        return Policy(
             text=text,
             hash=policy_hash(hashed_text(text, categories)),
             topic_id=self.topic_id,
-            fetched_at=time.time(),
             categories=categories,
         )
-        return self._cached
 
     def _all_posts(self, data: dict, posts: list[dict]) -> list[dict]:
         """Every post in the topic, past the first page too. A failure fails the
@@ -167,7 +153,7 @@ class PolicyClient:
 
     def check(self, policy_ack: str) -> Policy:
         """Raise unless ``policy_ack`` matches the current hash, saying how to recover."""
-        current = self.fetch(force=True)
+        current = self.fetch()
 
         if not policy_ack:
             raise PolicyError(

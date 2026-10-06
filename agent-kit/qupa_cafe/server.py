@@ -448,7 +448,7 @@ class QupaServer:
     def call_tool(self, name: str, arguments: dict[str, Any]) -> list[dict]:
         """Answer a tool call with MCP content blocks."""
         if name == "get_policy":
-            policy = self.policy.fetch(force=True)
+            policy = self.policy.fetch()
             return text_block(json.dumps(
                 {
                     "policy": policy.text,
