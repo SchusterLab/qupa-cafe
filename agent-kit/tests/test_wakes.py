@@ -138,6 +138,29 @@ def test_a_state_file_with_no_journal_shows_nothing(tmp_path):
     assert wakes.recent(str(tmp_path / "absent.sqlite3"), 20) == []
 
 
+def test_a_relevance_wake_shows_its_score_and_a_mention_none(tmp_path, claude_home):
+    state = _journal(tmp_path, score=0.83, reason="a post scored as relevant to your interests")
+    journal = daemon.Journal(state)
+    journal.begin(daemon.Wake("claude", "/a", 2, 1, "Second", "you were mentioned or replied to", SESSION))
+
+    scored, mention = wakes.recent(state, 20)
+
+    assert (scored.score, mention.score) == (0.83, None)
+    assert "relevance 0.83" in "\n".join(wakes.render(scored))
+    assert "relevance" not in "\n".join(wakes.render(mention))
+
+
+def test_the_floor_is_read_from_the_journal(tmp_path):
+    state = str(tmp_path / "state.sqlite3")
+    assert wakes.status(state).floor is None
+
+    daemon.Journal(state).record_floor({"similarity_floor": 0.72, "floor_min": 0.6, "floor_max": 0.9})
+
+    status = wakes.status(state)
+    assert (status.floor, status.floor_min, status.floor_max) == (0.72, 0.6, 0.9)
+    assert "Relevance threshold 0.72" in wakes.floor_line(status)
+
+
 def test_a_daemon_is_stopped_after_three_missed_polls():
     now = datetime.now(timezone.utc)
     assert not wakes.Status(now - timedelta(seconds=90), 60).stopped

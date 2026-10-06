@@ -8,13 +8,14 @@ from qupa_cafe import browse, wakes
 from qupa_cafe.daemon import Settings, claim_lock
 
 
-def _row(topic: int, session: str = "s-1", status: str = "finished") -> wakes.Row:
+def _row(topic: int, session: str = "s-1", status: str = "finished", score: float | None = None) -> wakes.Row:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    return wakes.Row(now, now, status, "claude", session, "/agent", topic, 1, f"Topic {topic}", "you were mentioned")
+    return wakes.Row(now, now, status, "claude", session, "/agent", topic, 1, f"Topic {topic}", "you were mentioned", score)
 
 
-def _browser(*items: browse.Wake) -> browse.Browser:
-    return browse.Browser(list(items), wakes.Status(None, 60), "sunada-agent")
+def _browser(*items: browse.Wake, floor: float | None = None) -> browse.Browser:
+    status = wakes.Status(None, 60, floor, 0.60, 0.90) if floor is not None else wakes.Status(None, 60)
+    return browse.Browser(list(items), status, "sunada-agent")
 
 
 SAID = wakes.Transcript("You were woken.", ["⏺ get_policy()"], [])
@@ -56,6 +57,71 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
         "↑↓ to select · Enter to read · l for the log · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
+
+
+def test_the_title_is_a_cup_and_the_box_stays_square():
+    frame = _browser(browse.Wake(_row(1), SAID), floor=0.72).frame(100, 20)
+    box = [browse.visible(line) for line in frame[:5]]
+    assert box[1].startswith("│ ☕ Qupa Cafe")
+    assert "✻" not in "".join(box)
+    # The cup is two columns wide, and every line of the box ends in the same column.
+    assert len({wakes.columns(line) for line in box}) == 1
+
+
+def test_the_list_shows_each_wake_s_score_and_the_threshold():
+    b = _browser(browse.Wake(_row(1, score=0.83), SAID), browse.Wake(_row(2), SAID), floor=0.72)
+    frame = b.frame(100, 20)
+    rows = [line for line in frame if "Topic" in line]
+    assert "0.83" in rows[0] and "0.8" not in rows[1].split("Topic")[0]
+    assert any("Relevance threshold 0.72" in line for line in frame)
+    assert "+/- for the threshold" in frame[-1]
+
+
+def test_plus_and_minus_ask_for_a_threshold_one_step_away_within_range():
+    b = _browser(browse.Wake(_row(1), SAID), floor=0.72)
+    assert b.handle("+") == "raise" and b.handle("=") == "raise"
+    assert b.handle("-") == "lower" and b.handle("_") == "lower"
+    assert b.nudged("raise") == 0.73
+    assert b.nudged("lower") == 0.71
+    b.state.floor = 0.90
+    assert b.nudged("raise") is None
+    b.state.floor = 0.60
+    assert b.nudged("lower") is None
+
+
+def test_with_no_threshold_known_plus_and_minus_do_nothing():
+    b = _browser(browse.Wake(_row(1), SAID))
+    assert b.handle("+") is None and b.handle("-") is None
+    frame = b.frame(100, 20)
+    assert "threshold" not in frame[-1]
+    assert any("not known yet" in line for line in frame)
+
+
+def test_a_threshold_the_host_accepts_is_shown(monkeypatch):
+    b = _browser(browse.Wake(_row(1), SAID), floor=0.72)
+    asked = []
+
+    def accept(self, agent, floor):
+        asked.append(floor)
+        return {"similarity_floor": floor, "floor_min": 0.6, "floor_max": 0.9}
+
+    monkeypatch.setattr(browse.Ranking, "set_floor", accept)
+    message = browse.set_floor(Settings(api_username="sunada-agent"), b, "raise")
+
+    assert asked == [0.73]
+    assert b.state.floor == 0.73 and "0.73" in message
+
+
+def test_a_threshold_the_host_refuses_leaves_it_as_it_was(monkeypatch):
+    b = _browser(browse.Wake(_row(1), SAID), floor=0.72)
+
+    def refuse(self, agent, floor):
+        raise browse.RankingError("HTTP 403")
+
+    monkeypatch.setattr(browse.Ranking, "set_floor", refuse)
+    message = browse.set_floor(Settings(api_username="sunada-agent"), b, "lower")
+
+    assert b.state.floor == 0.72 and "not changed" in message and "403" in message
 
 
 def test_a_wake_without_a_transcript_cannot_be_asked():

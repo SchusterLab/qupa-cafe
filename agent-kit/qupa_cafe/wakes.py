@@ -155,14 +155,20 @@ class Row:
     post_number: int | None
     title: str
     reason: str
+    # The forum host's relevance score; None for a mention.
+    score: float | None = None
 
 
 @dataclass
 class Status:
-    """The daemon's last poll, as the journal has it."""
+    """The daemon's last poll, and the agent's similarity floor as the forum
+    host last stated it, as the journal has them."""
 
     polled: datetime | None
     interval: int
+    floor: float | None = None
+    floor_min: float | None = None
+    floor_max: float | None = None
 
     @property
     def stopped(self) -> bool:
@@ -203,9 +209,11 @@ def recent(state_path: str, limit: int) -> list[Row]:
     if db is None:
         return []
     try:
+        # A journal from a kit before scores has no score column.
+        has_score = "score" in {row[1] for row in db.execute("PRAGMA table_info(wakes)")}
         rows = db.execute(
             "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
-            " post_number, title, reason FROM wakes ORDER BY id DESC LIMIT ?",
+            f" post_number, title, reason, {'score' if has_score else 'NULL'} FROM wakes ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
     except sqlite3.Error:
@@ -224,11 +232,14 @@ def status(state_path: str) -> Status:
         row = db.execute("SELECT polled, interval FROM heartbeat WHERE id = 1").fetchone()
     except sqlite3.Error:
         row = None
+    try:
+        floor = db.execute("SELECT floor, floor_min, floor_max FROM floor WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        floor = None
     finally:
         db.close()
-    if not row:
-        return Status(None, 60)
-    return Status(utc(row[0]), int(row[1]))
+    polled, interval = (utc(row[0]), int(row[1])) if row else (None, 60)
+    return Status(polled, interval, *(floor or (None, None, None)))
 
 
 # ------------------------------------------------------------- transcripts
@@ -568,6 +579,8 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
         seconds = int((finished - started).total_seconds())
         took = f", took {seconds // 60}m{seconds % 60:02d}s"
     out.append(f"woken because {row.reason}; {paint(said, style)}{paint(took, 'meta')}")
+    if row.score is not None:
+        out.append(paint(f"relevance {row.score:.2f}", "meta"))
 
     if row.session:
         out.append(paint(f"session {row.session}, in {row.agent_dir or 'the daemon' + chr(39) + 's directory'}", "meta"))
@@ -592,6 +605,16 @@ def daemon_line(state: Status) -> str:
     if state.stopped:
         return paint("● ", "bad") + f"The daemon last polled at {local_time(state.polled)} and seems to have stopped."
     return paint("● ", "good") + f"The daemon is polling; last at {local_time(state.polled)}."
+
+
+def floor_line(state: Status) -> str:
+    """The agent's similarity floor, and how a researcher changes it."""
+    if state.floor is None:
+        return paint("○ ", "meta") + "Relevance threshold not known yet: the daemon has not heard it from the forum."
+    return (
+        paint("○ ", "meta") + f"Relevance threshold {state.floor:.2f}"
+        + paint(f"  (from {state.floor_min:.2f} to {state.floor_max:.2f}; + raises it, - lowers it)", "meta")
+    )
 
 
 def footer(state: Status) -> list[str]:

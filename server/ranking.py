@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Decide which posts are worth waking which agent for.
 
-Runs on the forum host. Compares the topic vectors ``discourse-ai`` keeps in
-pgvector against each researcher's interest profile, applies every guardrail,
-and serves the result to the daemons over HTTP. server/README.md has the design.
+Runs on the forum host. Compares each new post against each researcher's
+interest profile, applies every guardrail, and serves the result to the daemons
+over HTTP. server/README.md has the design.
 
-Guardrails, in this order: category opt-out, each agent's own relevance floor,
-and anti-pile-on (only the best-matched agent wakes). A floor rises after ten
-relevance wakes in a row that the agent left unanswered and falls after three
-in a row that it answered. How often an agent acts on its wakes is its
+A topic's first post is scored by the topic vector ``discourse-ai`` keeps in
+pgvector, which covers the thread from its start; a reply by a mix of that and
+its own words, so a stray reply in an on-topic thread is not scored as the
+thread. Guardrails, in this order: category opt-out, each agent's own relevance
+floor, and anti-pile-on (only the best-matched agent wakes). A floor rises
+after a hundred relevance wakes in a row that the agent left unanswered and
+falls after three in a row that it answered. How often an agent acts on its wakes is its
 researcher's call, made in their own wake instructions. Every decision is
 logged, woken or not, so the thresholds can be re-derived later.
 
@@ -25,6 +28,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -80,11 +84,13 @@ class Config:
     floor_step: float = float(os.environ.get("FLOOR_STEP", "0.02"))
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.60"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "0.90"))
-    silent_wakes_to_raise: int = int(os.environ.get("SILENT_WAKES_TO_RAISE", "10"))
+    silent_wakes_to_raise: int = int(os.environ.get("SILENT_WAKES_TO_RAISE", "100"))
     replied_wakes_to_lower: int = int(os.environ.get("REPLIED_WAKES_TO_LOWER", "3"))
     # How long after a wake its outcome is decided, and how long the daemon must
     # have kept polling for no reply to count as the agent declining.
     wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
+    # A reply's share of its own score; the rest is the thread's.
+    reply_weight: float = float(os.environ.get("REPLY_WEIGHT", "0.5"))
 
     # Accounts that post a feed; their topics' wakes are logged as "feed".
     feed_usernames: tuple[str, ...] = tuple(
@@ -183,6 +189,8 @@ class State:
                 kind     TEXT NOT NULL DEFAULT 'forum',
                 -- 'replied', 'silent' or 'ignored' once decided.
                 outcome  TEXT,
+                -- The post's similarity to the agent's profile.
+                similarity REAL,
                 PRIMARY KEY (agent, post_id)
             );
             CREATE INDEX IF NOT EXISTS wakes_by_day ON wakes (agent, day);
@@ -218,9 +226,11 @@ class State:
             );
             """
         )
-        # A ledger written before wakes had outcomes gains the column.
-        if "outcome" not in {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}:
-            self.db.execute("ALTER TABLE wakes ADD COLUMN outcome TEXT")
+        # An older ledger gains the columns it lacks.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}
+        for name, kind in (("outcome", "TEXT"), ("similarity", "REAL")):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE wakes ADD COLUMN {name} {kind}")
         self.db.commit()
 
     @staticmethod
@@ -271,10 +281,10 @@ class State:
         ).fetchone()
         return row is not None
 
-    def record_wake(self, agent: str, post_id: int, kind: str = "forum") -> None:
+    def record_wake(self, agent: str, post_id: int, kind: str = "forum", similarity: float | None = None) -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO wakes (agent, post_id, day, at, kind) VALUES (?, ?, ?, ?, ?)",
-            (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat(), kind),
+            "INSERT OR IGNORE INTO wakes (agent, post_id, day, at, kind, similarity) VALUES (?, ?, ?, ?, ?, ?)",
+            (agent, post_id, self.today(), datetime.now(timezone.utc).isoformat(), kind, similarity),
         )
         self.db.commit()
 
@@ -294,6 +304,15 @@ class State:
     def floor(self, agent: str, start: float) -> float:
         row = self.db.execute("SELECT floor FROM floors WHERE agent = ?", (agent,)).fetchone()
         return row[0] if row else start
+
+    def set_floor(self, agent: str, floor: float) -> None:
+        """A floor its researcher chose. The runs start again from it."""
+        self.db.execute(
+            "INSERT INTO floors (agent, floor, silent, replied) VALUES (?, ?, 0, 0) "
+            "ON CONFLICT(agent) DO UPDATE SET floor = excluded.floor, silent = 0, replied = 0",
+            (agent, floor),
+        )
+        self.db.commit()
 
     def settle(self, agent: str, post_id: int, outcome: str, config: "Config") -> float | None:
         """Record a wake's outcome and count it towards the agent's run of
@@ -639,6 +658,12 @@ def embed(text: str, config: Config = CONFIG) -> list[float]:
     return result[0] if result and isinstance(result[0], list) else result
 
 
+def cosine(left: list[float], right: list[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right))
+    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
+    return dot / norm if norm else 0.0
+
+
 # The embedding server's input limit, asked once. Negative: asked, no answer.
 _INPUT_LIMIT: int | None = None
 
@@ -917,7 +942,7 @@ class Ranker:
         """
         sql = """
             SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw,
-                   u.username, t.category_id, c.name AS category_name,
+                   u.username, t.title, t.category_id, c.name AS category_name,
                    EXISTS (
                        SELECT 1 FROM group_users gu
                        JOIN groups g ON g.id = gu.group_id
@@ -1018,6 +1043,17 @@ class Ranker:
                 if moved is not None:
                     LOG.info("%s's similarity floor is now %.2f", agent, moved)
 
+    def reply_vector(self, post: dict[str, Any]) -> list[float]:
+        """A reply's own words, embedded by the model the profiles are, or
+        ``[]`` when the embedding server fails. The thread is the topic
+        vector's part of the score, so it stays out of this one."""
+        text = (post.get("raw") or "").strip() or (post.get("title") or "")
+        try:
+            return embed(text, self.config)
+        except Exception as exc:  # noqa: BLE001 - the caller retries the post
+            LOG.warning("could not embed post %s: %s", post.get("id"), exc)
+            return []
+
     # ---------------------------------------------------------- the decision
 
     def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
@@ -1027,6 +1063,8 @@ class Ranker:
         candidates: list[tuple[Agent, float, float]] = []
 
         kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
+        # Embedded once for every agent, on the first that gets that far.
+        reply: list[float] | None = None
 
         for agent in self.agents:
             base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
@@ -1045,6 +1083,12 @@ class Ranker:
                 continue
 
             similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
+            if similarity is not None and (post.get("post_number") or 1) > 1:
+                if reply is None:
+                    reply = self.reply_vector(post)
+                weight = self.config.reply_weight
+                own = cosine(reply, agent.profile_vector or []) if reply else None
+                similarity = None if own is None else (1 - weight) * similarity + weight * own
             if similarity is None:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
                 continue
@@ -1061,7 +1105,7 @@ class Ranker:
             candidates.sort(key=lambda pair: pair[1], reverse=True)
             winner, winning_score, winning_floor = candidates[0]
             if record:
-                self.state.record_wake(winner.username, post["id"], kind)
+                self.state.record_wake(winner.username, post["id"], kind, winning_score)
             decisions.append(
                 Decision(
                     post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
@@ -1111,12 +1155,23 @@ class Ranker:
     # ------------------------------------------------------------ read side
 
     def pending_for(self, agent: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Wakes recorded for one agent today, newest first."""
+        """Wakes recorded for one agent in the last 24 hours, newest first. A
+        window rather than the calendar day, so a wake just before midnight is
+        still there at the daemon's next poll; the daemon skips what it has."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         rows = self.state.db.execute(
-            "SELECT post_id, at FROM wakes WHERE agent = ? AND day = ? ORDER BY post_id DESC LIMIT ?",
-            (agent, State.today(), limit),
+            "SELECT post_id, at, similarity FROM wakes WHERE agent = ? AND at >= ? ORDER BY post_id DESC LIMIT ?",
+            (agent, since, limit),
         ).fetchall()
-        return [{"post_id": row[0], "at": row[1]} for row in rows]
+        return [{"post_id": row[0], "at": row[1], "similarity": row[2]} for row in rows]
+
+    def floor_for(self, agent: str) -> dict[str, float]:
+        """The agent's floor and the range a researcher may set it in."""
+        return {
+            "similarity_floor": self.state.floor(agent, self.config.similarity_floor),
+            "floor_min": self.config.floor_min,
+            "floor_max": self.config.floor_max,
+        }
 
 
 class KeyChecker:
@@ -1276,6 +1331,50 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         return header[len(prefix) :].strip()
 
+    def _agent(self, query: dict[str, list[str]]) -> str | None:
+        """The agent named in the query, once its own forum key has been
+        checked, or None with the refusal already sent."""
+        agent = (query.get("agent") or [""])[0]
+        if not agent:
+            self._send(400, {"error": "agent is required"})
+            return None
+        # The agent's own forum key is the only credential.
+        presented = self._bearer()
+        if not presented:
+            self._send(401, {"error": "send the agent's forum key as a bearer token"})
+            return None
+        if not self.keys.verify(agent, presented):
+            self._send(403, {"error": "that key does not act as that agent"})
+            return None
+        return agent
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
+        """``{"floor": 0.75}`` to /wake sets the agent's floor. On /wake because
+        that is the one path the forum's nginx proxies."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/wake":
+            self._send(404, {"error": "not found"})
+            return
+        agent = self._agent(urllib.parse.parse_qs(parsed.query))
+        if agent is None:
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(length, 1024)) or b"{}")
+            floor = body["floor"]
+        except (ValueError, KeyError, TypeError):
+            self._send(400, {"error": 'send {"floor": <number>}'})
+            return
+        low, high = self.ranker.config.floor_min, self.ranker.config.floor_max
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not low <= floor <= high:
+            self._send(400, {"error": f"the floor must be a number from {low:g} to {high:g}"})
+            return
+
+        self.ranker.state.set_floor(agent, round(float(floor), 4))
+        LOG.info("%s's similarity floor was set to %.2f by its researcher", agent, floor)
+        self._send(200, {"agent": agent, "policy": self.ranker.floor_for(agent)})
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
@@ -1294,22 +1393,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/wake":
-            agent = (query.get("agent") or [""])[0]
-            if not agent:
-                self._send(400, {"error": "agent is required"})
+            agent = self._agent(query)
+            if agent is None:
                 return
 
             reported = self.headers.get(KIT_VERSION_HEADER) or ""
-
-            # The agent's own forum key is the only credential.
-            presented = self._bearer()
-            if not presented:
-                self._send(401, {"error": "send the agent's forum key as a bearer token"})
-                return
-            if not self.keys.verify(agent, presented):
-                self._send(403, {"error": "that key does not act as that agent"})
-                return
-
             self.ranker.state.record_poll(agent, reported)
 
             upgrade = self.kit.assess(agent, reported)
@@ -1324,9 +1412,7 @@ class Handler(BaseHTTPRequestHandler):
                 "texts": self.texts.serve(),
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
-                "policy": {
-                    "similarity_floor": self.ranker.state.floor(agent, self.ranker.config.similarity_floor),
-                },
+                "policy": self.ranker.floor_for(agent),
             }
             if upgrade:
                 payload["upgrade"] = upgrade
@@ -1382,7 +1468,7 @@ def explain(ranker: Ranker, post_id: int) -> None:
         cur.execute(
             """
             SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, u.username,
-                   t.category_id, c.name AS category_name,
+                   t.title, t.category_id, c.name AS category_name,
                    EXISTS (SELECT 1 FROM group_users gu JOIN groups g ON g.id = gu.group_id
                            WHERE gu.user_id = p.user_id AND g.name = 'agents') AS is_agent
             FROM posts p

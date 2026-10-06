@@ -299,6 +299,107 @@ def test_no_number_of_wakes_stops_an_agent_being_woken(state):
     assert state.wakes_today("a-agent") == 50
 
 
+class ReplyRanker(OfflineRanker):
+    """Topics score 0.9; a reply's own words score by the vector reply_vector returns."""
+
+    def __init__(self, config, state, agents, reply):
+        super().__init__(config, state, agents)
+        self.reply = reply
+        self.embedded: list[str] = []
+
+    def reply_vector(self, post):
+        self.embedded.append(post.get("raw"))
+        return self.reply
+
+
+def a_reply(post_id: int, raw: str = "Thanks, that helps.") -> dict:
+    return {**a_post(post_id, "someone"), "post_number": 2, "title": "Dispersive readout", "raw": raw}
+
+
+def test_a_stray_reply_in_an_on_topic_thread_is_not_scored_as_the_thread(state):
+    """The thread scores 0.9; the reply's own words point elsewhere, so the
+    reply scores halfway, under the floor."""
+    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
+    ranker = ReplyRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [agent], reply=[0.0, 1.0])
+
+    [decision] = ranker.score_post(a_reply(5))
+
+    assert decision.reason == "below-floor"
+    assert round(decision.similarity, 2) == 0.45
+    assert ranker.embedded == ["Thanks, that helps."]
+
+
+def test_a_reply_on_topic_in_an_on_topic_thread_wakes_its_agent(state):
+    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
+    ranker = ReplyRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [agent], reply=[0.96, 0.28])
+
+    [decision] = ranker.score_post(a_reply(5))
+
+    assert decision.reason == "woken"
+    assert round(decision.similarity, 2) == 0.93
+
+
+def test_the_reply_weight_sets_how_much_the_thread_counts(state):
+    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
+    thread_only = ReplyRanker(Config(reply_weight=0.0), state, [agent], reply=[0.0, 1.0])
+    reply_only = ReplyRanker(Config(reply_weight=1.0), state, [agent], reply=[0.0, 1.0])
+
+    assert thread_only.score_post(a_reply(5))[0].similarity == 0.9
+    assert reply_only.score_post(a_reply(6))[0].similarity == 0.0
+
+
+def test_a_reply_is_embedded_once_for_every_agent(state):
+    agents = [Agent(f"{n}-agent", n, [], "anything", profile_vector=[1.0, 0.0]) for n in "abc"]
+    ranker = ReplyRanker(Config(), state, agents, reply=[1.0, 0.0])
+
+    ranker.score_post(a_reply(5))
+
+    assert len(ranker.embedded) == 1
+
+
+def test_a_reply_the_embedding_server_cannot_embed_waits_for_the_next_pass(state):
+    """As a topic with no vector yet does, so the reply is retried, not lost."""
+    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
+    ranker = ReplyRanker(Config(), state, [agent], reply=[])
+
+    [decision] = ranker.score_post(a_reply(5))
+
+    assert decision.reason == "no-embedding-yet"
+
+
+def test_a_first_post_is_still_scored_by_its_topic(state):
+    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
+    ranker = ReplyRanker(Config(), state, [agent], reply=[0.0, 1.0])
+
+    [decision] = ranker.score_post(a_post(5, "arxiv-bot"))
+
+    assert decision.reason == "woken" and decision.similarity == 0.9
+    assert ranker.embedded == []
+
+
+def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
+    """The daemon polls a minute later, on the next UTC day."""
+    ranker = OfflineRanker(Config(), state, [])
+    an_hour_ago = (datetime.now(timezone.utc) - HOUR).isoformat()
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    state.db.execute(
+        "INSERT INTO wakes (agent, post_id, day, at, kind) VALUES ('a-agent', 7, ?, ?, 'forum')",
+        (yesterday, an_hour_ago),
+    )
+
+    assert [item["post_id"] for item in ranker.pending_for("a-agent")] == [7]
+
+
+def test_a_wake_more_than_a_day_old_is_no_longer_pending(state):
+    ranker = OfflineRanker(Config(), state, [])
+    old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    state.db.execute(
+        "INSERT INTO wakes (agent, post_id, day, at, kind) VALUES ('a-agent', 7, '2026-01-01', ?, 'forum')", (old,)
+    )
+
+    assert ranker.pending_for("a-agent") == []
+
+
 # ------------------------------------------------------- each agent's floor
 
 
@@ -712,6 +813,8 @@ class StubRanker:
     def pending_for(self, agent: str) -> list[dict]:
         return []
 
+    floor_for = Ranker.floor_for
+
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")
 
@@ -771,6 +874,71 @@ def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
             return response.status, json.load(response)
     except urllib.error.HTTPError as exc:
         return exc.code, json.load(exc)
+
+
+def set_floor(base: str, body: bytes, key: str = "right-key") -> tuple[int, dict]:
+    import urllib.error
+    import urllib.request
+
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(f"{base}/wake?agent=yoshi-agent", data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.load(exc)
+
+
+def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoint):
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", "Authorization": "Bearer right-key"})
+
+    assert status == 200
+    assert payload["policy"] == {"similarity_floor": 0.70, "floor_min": 0.60, "floor_max": 0.90}
+
+
+def test_a_researcher_sets_their_agent_s_floor(endpoint):
+    status, payload = set_floor(endpoint, b'{"floor": 0.75}')
+
+    assert status == 200
+    assert payload["policy"]["similarity_floor"] == 0.75
+    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.75
+    assert wake(endpoint, {"Authorization": "Bearer right-key"})[1]["policy"]["similarity_floor"] == 0.75
+
+
+@pytest.mark.parametrize("body", [b'{"floor": 0.95}', b'{"floor": 0.5}', b'{"floor": "high"}', b'{"floor": true}', b"{}", b"not json"])
+def test_a_floor_outside_the_range_or_not_a_number_is_refused(endpoint, body):
+    status, payload = set_floor(endpoint, body)
+
+    assert status == 400
+    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
+
+
+def test_setting_a_floor_needs_the_agent_s_key(endpoint):
+    status, _ = set_floor(endpoint, b'{"floor": 0.75}', key="")
+
+    assert status == 401
+    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
+
+
+def test_a_floor_set_by_hand_starts_the_runs_again(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
+    settle_all(state, config, ["silent"] * 9)
+
+    state.set_floor("a-agent", 0.80)
+    state.record_wake("a-agent", 100)
+
+    assert state.settle("a-agent", 100, "silent", config) is None
+    assert state.floor("a-agent", config.similarity_floor) == 0.80
+
+
+def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):
+    ranker = OfflineRanker(Config(), state, [Agent("a-agent", "a", [], "anything")])
+
+    ranker.score_post(a_post(1, "someone"))
+
+    assert ranker.pending_for("a-agent") == [{"post_id": 1, "at": ranker.pending_for("a-agent")[0]["at"], "similarity": 0.9}]
 
 
 def test_an_outdated_client_is_served_rather_than_refused(endpoint):

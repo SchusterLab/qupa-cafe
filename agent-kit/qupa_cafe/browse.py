@@ -1,7 +1,8 @@
 """The wake browser: the recent wakes, newest first, and one wake's view.
 
-In the list ``↑``/``↓`` choose, Enter reads, ``l`` opens the daemon's log, ``u``
-updates when a newer kit is published, and Esc leaves. In a wake ``↑``/``↓``
+In the list ``↑``/``↓`` choose, Enter reads, ``+`` and ``-`` raise and lower the
+agent's relevance threshold, ``l`` opens the daemon's log, ``u`` updates when a
+newer kit is published, and Esc leaves. In a wake ``↑``/``↓``
 scroll, Enter reopens its session in Claude Code with ``--fork-session`` and the
 forum's write tools withheld, and Esc goes back. Standard library only, drawn on
 the alternate screen.
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, update, wakes
-from .daemon import Settings, claim_lock, log_path
+from .daemon import Ranking, RankingError, Settings, claim_lock, log_path
 from .install import interpreter_argv
 
 # Withheld from a reopened session; reading stays.
@@ -40,6 +41,11 @@ LIST_ACTIONS = {
     "l": ("log", "l for the log"),
 }
 UPDATE_ACTION = {"u": ("update", "")}
+# Shown only once the threshold is known; "=" and "_" are the unshifted keys.
+FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-": ("lower", ""), "_": ("lower", "")}
+
+# How far one press moves the threshold.
+FLOOR_STEP = 0.01
 
 
 # Windows sends a prefix and a letter; other terminals an escape sequence.
@@ -169,9 +175,20 @@ class Browser:
     @property
     def actions(self) -> dict[str, tuple[str, str]]:
         """The list's keys besides moving and reading, as they stand now."""
+        actions = dict(LIST_ACTIONS)
+        if self.state.floor is not None:
+            actions.update(FLOOR_ACTIONS)
         if self.latest and self.updatable:
-            return {**UPDATE_ACTION, **LIST_ACTIONS}
-        return LIST_ACTIONS
+            actions.update(UPDATE_ACTION)
+        return actions
+
+    def nudged(self, action: str) -> float | None:
+        """The threshold one press of ``raise`` or ``lower`` asks for, kept in
+        range, or None when it is already at that end."""
+        state = self.state
+        step = FLOOR_STEP if action == "raise" else -FLOOR_STEP
+        target = round(min(max(state.floor + step, state.floor_min), state.floor_max), 2)
+        return None if target == round(state.floor, 2) else target
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
@@ -219,16 +236,17 @@ class Browser:
         inner = cols - 4
         out = [wakes.paint("╭" + "─" * (cols - 2) + "╮", "rule")]
         for text, plain in [(title, visible(title))] + [(line, visible(line)) for line in lines]:
-            pad = max(inner - len(plain), 0)
+            # Measured in columns: the cup in the title is two wide.
+            pad = max(inner - wakes.columns(plain), 0)
             out.append(wakes.paint("│ ", "rule") + text + " " * pad + wakes.paint(" │", "rule"))
         out.append(wakes.paint("╰" + "─" * (cols - 2) + "╯", "rule"))
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
-        title = wakes.paint("✻ ", "accent") + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
+        title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  wakes of {self.agent}" if self.agent else "  wakes", "meta"
         )
-        out = self._box(cols, title, [wakes.daemon_line(self.state)])
+        out = self._box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
         out.extend(self._notice(cols))
         out.append("")
 
@@ -242,7 +260,8 @@ class Browser:
         while len(out) < rows - 2:
             out.append("")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
-        out.append(hints(["↑↓ to select", "Enter to read", *(hint for _, hint in LIST_ACTIONS.values()), "Esc to quit"]))
+        named = [hint for _, hint in self.actions.values() if hint]
+        out.append(hints(["↑↓ to select", "Enter to read", *named, "Esc to quit"]))
         return out
 
     def _notice(self, cols: int) -> list[str]:
@@ -265,7 +284,9 @@ class Browser:
         said, style = wakes.outcome(row, item.transcript)
         mark = {"good": "●", "quiet": "○", "bad": "✕", "busy": "◐"}.get(style, "·")
         when = wakes.local_time(wakes.utc(row.started))[5:]  # MM-DD HH:MM
-        left = f"{when}  "
+        # The relevance score, blank for a mention.
+        score = f"{row.score:.2f}" if row.score is not None else "    "
+        left = f"{when}  {score}  "
         middle = f"{said:<16} "
         room = max(cols - 4 - len(left) - 2 - len(middle), 10)
         title = wakes.clip(f"{row.title}  (topic {row.topic_id})", room)
@@ -435,6 +456,25 @@ def show_log(settings: Settings) -> str:
     return f"Opened {path}."
 
 
+def set_floor(settings: Settings, browser: Browser, action: str) -> str:
+    """Ask the forum host for the threshold one press asks for, and show what
+    it now says. Returns a message for the list."""
+    state = browser.state
+    target = browser.nudged(action)
+    if target is None:
+        end = "highest" if action == "raise" else "lowest"
+        return f"The threshold is already at the {end} the forum allows."
+    try:
+        policy = Ranking(settings).set_floor(settings.api_username, target)
+        floor = float(policy["similarity_floor"])
+    except (RankingError, KeyError, TypeError, ValueError) as exc:
+        return f"The threshold was not changed: {exc}"
+    state.floor = floor
+    state.floor_min = float(policy.get("floor_min", state.floor_min))
+    state.floor_max = float(policy.get("floor_max", state.floor_max))
+    return f"Relevance threshold set to {floor:.2f}. It still moves with what your agent does."
+
+
 def update_kit() -> tuple[bool, str]:
     """Run the update in this terminal, which pip and the installer print to.
     Whether it finished, and a message for the list."""
@@ -479,6 +519,8 @@ def run(settings: Settings, limit: int) -> int:
                 return 0
             if action == "log":
                 browser.message = show_log(settings)
+            if action in ("raise", "lower"):
+                browser.message = set_floor(settings, browser, action)
             if action == "update":
                 terminal.suspend()
                 done, browser.message = update_kit()

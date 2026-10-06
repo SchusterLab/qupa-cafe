@@ -207,15 +207,27 @@ class Journal:
                 topic_id    INTEGER,
                 post_number INTEGER,
                 title       TEXT NOT NULL,
-                reason      TEXT NOT NULL
+                reason      TEXT NOT NULL,
+                -- How relevant the forum host scored the post; empty for a mention.
+                score       REAL
             );
             CREATE TABLE IF NOT EXISTS heartbeat (
                 id       INTEGER PRIMARY KEY CHECK (id = 1),
                 polled   TEXT NOT NULL,
                 interval INTEGER NOT NULL
             );
+            -- The agent's similarity floor, as the forum host last stated it.
+            CREATE TABLE IF NOT EXISTS floor (
+                id        INTEGER PRIMARY KEY CHECK (id = 1),
+                floor     REAL NOT NULL,
+                floor_min REAL NOT NULL,
+                floor_max REAL NOT NULL,
+                at        TEXT NOT NULL
+            );
             """
         )
+        if "score" not in {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}:
+            self.db.execute("ALTER TABLE wakes ADD COLUMN score REAL")
         self.db.commit()
 
     # A failed journal write costs the record, never the wake.
@@ -231,8 +243,8 @@ class Journal:
     def _begin(self, wake: Wake) -> sqlite3.Cursor:
         cursor = self.db.execute(
             "INSERT INTO wakes (started, status, runtime, session, agent_dir, topic_id,"
-            " post_number, title, reason)"
-            " VALUES (datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?)",
+            " post_number, title, reason, score)"
+            " VALUES (datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 wake.runtime,
                 wake.session,
@@ -241,6 +253,7 @@ class Journal:
                 wake.post_number,
                 wake.title,
                 wake.reason,
+                wake.score,
             ),
         )
         self.db.commit()
@@ -267,6 +280,24 @@ class Journal:
             self.db.commit()
         except sqlite3.Error as exc:
             LOG.warning("could not record the poll: %s", exc)
+
+    def record_floor(self, policy: dict) -> None:
+        """Keep the floor the forum host stated, for the wake browser."""
+        try:
+            floor = float(policy["similarity_floor"])
+            low, high = float(policy["floor_min"]), float(policy["floor_max"])
+        except (KeyError, TypeError, ValueError):
+            return
+        try:
+            self.db.execute(
+                "INSERT INTO floor (id, floor, floor_min, floor_max, at) VALUES (1, ?, ?, ?, datetime('now'))"
+                " ON CONFLICT (id) DO UPDATE SET floor = excluded.floor, floor_min = excluded.floor_min,"
+                " floor_max = excluded.floor_max, at = excluded.at",
+                (floor, low, high),
+            )
+            self.db.commit()
+        except sqlite3.Error as exc:
+            LOG.warning("could not record the floor: %s", exc)
 
 
 # ---------------------------------------------------------------------- forum
@@ -316,6 +347,10 @@ class Forum:
 # -------------------------------------------------------------------- ranking
 
 
+class RankingError(Exception):
+    """The forum host refused a request, or could not be reached."""
+
+
 class Ranking:
     """The forum host's relevance endpoint, with graceful degradation."""
 
@@ -324,6 +359,8 @@ class Ranking:
         self.available = bool(settings.ranking_url)
         self._warned = False
         self._told_about_upgrade = False
+        # The agent's floor and its range, from the last poll.
+        self.policy: dict = {}
 
     def _wake_request(self, agent: str) -> urllib.request.Request:
         """The /wake request, for the poll loop and the installer's handshake."""
@@ -394,6 +431,7 @@ class Ranking:
             self._report_upgrade(payload.get("upgrade"))
             # The only thing that hears from the host; the MCP server reads it back.
             texts.save(payload.get("texts"))
+            self.policy = payload.get("policy") or {}
             return payload.get("pending") or []
         except urllib.error.HTTPError as exc:
             # 426: refused as too old, which is not the endpoint being down.
@@ -419,6 +457,27 @@ class Ranking:
             LOG.warning("ranking endpoint unavailable (%s). Degraded: mentions only.", exc)
             self._warned = True
         return []
+
+    def set_floor(self, agent: str, floor: float) -> dict:
+        """Ask the forum host to set the agent's floor. Returns the floor and
+        its range as the host now states them; raises ``RankingError``."""
+        if not self.settings.ranking_url:
+            raise RankingError("no ranking URL is configured")
+        request = self._wake_request(agent)
+        request.data = json.dumps({"floor": round(floor, 2)}).encode()
+        request.add_header("Content-Type", "application/json")
+        request.method = "POST"
+        try:
+            with urllib.request.urlopen(request, timeout=20) as resp:
+                return json.loads(resp.read().decode()).get("policy") or {}
+        except urllib.error.HTTPError as exc:
+            try:
+                said = json.loads(exc.read().decode()).get("error") or ""
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                said = ""
+            raise RankingError(said or f"HTTP {exc.code}") from exc
+        except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+            raise RankingError(str(getattr(exc, "reason", exc))) from exc
 
     def _report_upgrade(self, upgrade: dict | None) -> None:
         """Log the forum's version opinion, once per process."""
@@ -512,6 +571,8 @@ class Wake:
     title: str
     reason: str
     session: str = ""
+    # The forum host's relevance score for a relevance wake; None for a mention.
+    score: float | None = None
 
     @property
     def label(self) -> str:
@@ -520,7 +581,7 @@ class Wake:
         return f"qupa wake: topic {self.topic_id} post {self.post_number}, {self.reason}"
 
 
-def wake_for(settings: Settings, reason: str, topic: dict) -> Wake:
+def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None) -> Wake:
     posts = topic.get("post_stream", {}).get("posts") or []
     latest = posts[-1] if posts else {}
     return Wake(
@@ -531,6 +592,7 @@ def wake_for(settings: Settings, reason: str, topic: dict) -> Wake:
         title=str(topic.get("title") or "(untitled)"),
         reason=reason,
         session=str(uuid.uuid4()) if settings.runtime == "claude" else "",
+        score=score,
     )
 
 
@@ -681,6 +743,13 @@ class Candidate:
     reason: str
     notification_ids: list[int] = field(default_factory=list)
     post_ids: list[int] = field(default_factory=list)
+    # The forum host's relevance score for each of post_ids it sent one for.
+    scores: list[float] = field(default_factory=list)
+
+    @property
+    def score(self) -> float | None:
+        """The best of the relevance scores, or None for a mention alone."""
+        return max(self.scores) if self.scores else None
 
 
 def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled) -> list[Candidate]:
@@ -720,7 +789,10 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
             LOG.warning("could not resolve post %s to a topic: %s", post_id, exc)
             continue
         if topic_id:
-            candidate_for(topic_id, "a post scored as relevant to your interests").post_ids.append(post_id)
+            candidate = candidate_for(topic_id, "a post scored as relevant to your interests")
+            candidate.post_ids.append(post_id)
+            if isinstance(item.get("similarity"), (int, float)):
+                candidate.scores.append(float(item["similarity"]))
 
     return list(candidates.values())
 
@@ -735,6 +807,8 @@ def one_pass(
 ) -> int:
     """One poll. Returns the number of agent invocations made."""
     candidates = collect(settings, forum, ranking, handled)
+    if journal is not None and not dry_run and ranking.policy:
+        journal.record_floor(ranking.policy)
     if not candidates:
         return 0
 
@@ -757,7 +831,7 @@ def one_pass(
             continue
 
         prompt = build_prompt(settings, candidate.reason, topic, wording)
-        wake = wake_for(settings, candidate.reason, topic)
+        wake = wake_for(settings, candidate.reason, topic, candidate.score)
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
         ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake)

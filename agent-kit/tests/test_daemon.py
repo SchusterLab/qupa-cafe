@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import subprocess
+
+import pytest
 
 import qupa_cafe.daemon as daemon
 from qupa_cafe import texts
@@ -445,15 +448,17 @@ class FakeForum:
 
 
 class FakeRanking:
-    def __init__(self, post_ids):
+    def __init__(self, post_ids, scores=None, policy=None):
         self.post_ids = post_ids
+        self.scores = scores or {}
+        self.policy = policy or {}
 
     def pending(self, agent):
         # The real one also writes down how the host wants a wake worded, and
         # one_pass defers everything when nothing has. These tests are about
         # what gets acknowledged, so they stand in for that here.
         texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
-        return [{"post_id": post_id} for post_id in self.post_ids]
+        return [{"post_id": post_id, "similarity": self.scores.get(post_id)} for post_id in self.post_ids]
 
 
 def _topic(topic_id):
@@ -768,6 +773,80 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
     assert [row[0] for row in rows] == ["failed", "finished"]
     assert rows[0][1] == seen["wake"].session and rows[0][2] == 10
     assert all(row[3] for row in rows)
+
+
+def test_a_relevance_wake_journals_its_best_score_and_the_floor(tmp_path, monkeypatch):
+    state = str(tmp_path / "state.sqlite3")
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    journal = daemon.Journal(state)
+    policy = {"similarity_floor": 0.72, "floor_min": 0.6, "floor_max": 0.9}
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    ranking = FakeRanking([101, 102], scores={101: 0.74, 102: 0.81}, policy=policy)
+    daemon.one_pass(settings, FakeForum({10: _topic(10)}), ranking, Handled(state), dry_run=False, journal=journal)
+
+    assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.81,)]
+    assert journal.db.execute("SELECT floor, floor_min, floor_max FROM floor").fetchall() == [(0.72, 0.6, 0.9)]
+
+
+def test_a_journal_from_before_scores_gains_the_column(tmp_path):
+    import sqlite3
+
+    state = str(tmp_path / "state.sqlite3")
+    old = sqlite3.connect(state)
+    old.execute(
+        "CREATE TABLE wakes (id INTEGER PRIMARY KEY, started TEXT NOT NULL, finished TEXT, status TEXT NOT NULL,"
+        " runtime TEXT NOT NULL, session TEXT NOT NULL, agent_dir TEXT NOT NULL, topic_id INTEGER,"
+        " post_number INTEGER, title TEXT NOT NULL, reason TEXT NOT NULL)"
+    )
+    old.commit()
+    old.close()
+
+    journal = daemon.Journal(state)
+    journal.begin(daemon.Wake("claude", "/a", 1, 1, "T", "r", "s", score=0.8))
+
+    assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.8,)]
+
+
+def test_setting_the_floor_posts_it_with_the_agent_s_key(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    heard = {}
+
+    class Host(BaseHTTPRequestHandler):
+        def do_POST(self):
+            heard["path"] = self.path
+            heard["key"] = self.headers.get("Authorization")
+            heard["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            floor = heard["body"]["floor"]
+            code, answer = (200, {"policy": {"similarity_floor": floor, "floor_min": 0.6, "floor_max": 0.9}})
+            if floor > 0.9:
+                code, answer = 400, {"error": "the floor must be a number from 0.6 to 0.9"}
+            body = json.dumps(answer).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Host)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        settings = Settings(api_key="the-key", ranking_url=f"http://127.0.0.1:{server.server_port}/ranking")
+        ranking = daemon.Ranking(settings)
+
+        assert ranking.set_floor("u-agent", 0.734)["similarity_floor"] == 0.73
+        assert heard["path"] == "/ranking/wake?agent=u-agent"
+        assert heard["key"] == "Bearer the-key"
+        with pytest.raises(daemon.RankingError, match="from 0.6 to 0.9"):
+            ranking.set_floor("u-agent", 0.95)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_a_dry_run_journals_nothing(tmp_path, monkeypatch):
