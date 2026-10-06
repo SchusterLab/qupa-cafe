@@ -4,7 +4,9 @@
 Run every ten minutes by qupa-arxiv-feed.timer. Each topic carries the paper's
 id as its ``external_id``, which the forum holds unique, so a repeated or
 interrupted run is refused on what it already posted; the state file only
-saves those refusals. docs/05-forum-config.md 5.10 has the account and its key.
+saves those refusals. Before a build is posted, every earlier preprint topic
+nobody has replied to is deleted. docs/05-forum-config.md 5.10 has the account
+and its key.
 
 Usage::
 
@@ -185,6 +187,10 @@ def topic_title(paper: Paper) -> str:
     return title + suffix
 
 
+# The id topic_title puts at the end, which marks a topic as one of the feed's.
+TITLE_ID = re.compile(r"\(arXiv:([^()\s]+)\)$")
+
+
 def topic_body(paper: Paper, template: str) -> str:
     """Fill the template in one pass, so a placeholder-like abstract is copied."""
     authors = paper.authors[:MAX_AUTHORS]
@@ -257,6 +263,19 @@ class Forum:
         except RuntimeError:
             return False
 
+    def category_topics(self, category: str) -> list[dict]:
+        """Every topic the category's page lists, read in full before any change."""
+        topics: list[dict] = []
+        for page in range(1000):
+            listed = self._request("GET", f"/c/{category}/l/latest.json?page={page}").get("topic_list", {})
+            topics.extend(listed.get("topics", []))
+            if not listed.get("more_topics_url") or not listed.get("topics"):
+                return topics
+        raise RuntimeError(f"category {category} lists more than 1000 pages")
+
+    def delete_topic(self, topic_id: int) -> None:
+        self._request("DELETE", f"/t/{topic_id}.json")
+
     def create_topic(self, title: str, raw: str, category: str, external_id: str) -> str:
         """Open one topic. Returns "created" or "exists"; raises on anything else."""
         try:
@@ -318,6 +337,45 @@ def fetch_feed(url: str, state: dict) -> tuple[str | None, dict]:
         raise
 
 
+def unreplied_preprints(topics: list[dict], keep: set[str]) -> list[dict]:
+    """The feed's topics that are only their first post, minus the ids in
+    ``keep``. A pinned topic, or one without the id in its title, is not the
+    feed's."""
+    return [
+        topic for topic in topics
+        if (match := TITLE_ID.search(topic.get("title", "")))
+        and match.group(1) not in keep
+        and topic.get("posts_count") == 1
+        and not topic.get("pinned")
+    ]
+
+
+def prune(forum: Forum, category: str, papers: list[Paper], dry_run: bool) -> tuple[int, int]:
+    """Delete the category's unreplied preprints, except this build's own, so
+    a resumed build keeps what it already posted. Returns (deleted, refused)."""
+    candidates = unreplied_preprints(forum.category_topics(category), {p.arxiv_id for p in papers})
+    deleted = refused = 0
+
+    for topic in candidates:
+        if dry_run:
+            print(f"--- would delete topic {topic['id']}: {topic['title']}")
+            deleted += 1
+            continue
+        try:
+            forum.delete_topic(topic["id"])
+        except Transient:
+            raise
+        except RuntimeError as exc:
+            LOG.error("could not delete topic %s: %s", topic["id"], exc)
+            refused += 1
+            continue
+        deleted += 1
+        LOG.info("deleted unreplied topic %s: %s", topic["id"], topic["title"])
+        time.sleep(POST_INTERVAL)
+
+    return deleted, refused
+
+
 def post_papers(forum: Forum | None, papers: list[Paper], template: str, category: str) -> dict[str, int]:
     """Open a topic per paper, or print them with ``forum=None``. A refused
     paper is logged and passed over; a transient failure stops the run."""
@@ -368,21 +426,33 @@ def run(feed_file: str | None, dry_run: bool) -> int:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     forum = None if dry_run else Forum(FORUM_URL, API_KEY, API_USERNAME)
 
+    # A dry run with a key reads the category to show what would go.
+    pruner = forum or (Forum(FORUM_URL, API_KEY, API_USERNAME) if API_KEY and CATEGORY_ID else None)
+    deleted = prune_refused = 0
     try:
+        if pruner and papers:
+            try:
+                deleted, prune_refused = prune(pruner, CATEGORY_ID, papers, dry_run)
+            except Transient:
+                raise
+            except RuntimeError as exc:
+                # A key without the scopes to list or delete must not stop the feed.
+                LOG.error("could not read the category to delete unreplied topics: %s", exc)
+                prune_refused = 1
         counts = post_papers(forum, papers, template, CATEGORY_ID)
     except Transient as exc:
         LOG.error("stopping: %s. The next run resumes from here.", exc)
         return 1
 
     LOG.info(
-        "build %s: %d papers, %d posted, %d already on the forum, %d refused",
-        build, len(papers), counts["created"], counts["exists"], counts["refused"],
+        "build %s: %d unreplied topics deleted, %d papers, %d posted, %d already on the forum, %d refused",
+        build, deleted, len(papers), counts["created"], counts["exists"], counts["refused"],
     )
     if not dry_run:
         save_state(STATE_PATH, {**state, **validators, "posted_build": build})
 
     # Refusals are not retried, so they fail the unit to be seen.
-    return 1 if counts["refused"] else 0
+    return 1 if counts["refused"] or prune_refused else 0
 
 
 def main() -> int:

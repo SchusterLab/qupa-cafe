@@ -200,7 +200,7 @@ CATEGORIES = [
 # moderator status out of reach.
 FEED_USERNAME = "arxiv-bot"
 FEED_KEY_DESCRIPTION = "feed: arxiv-bot"
-FEED_KEY_SCOPES = ("topics:write", "topics:read")
+FEED_KEY_SCOPES = ("topics:write", "topics:read", "topics:read_lists", "topics:delete")
 
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 POLICY_TOPIC_BODY = content("policy-topic.md")

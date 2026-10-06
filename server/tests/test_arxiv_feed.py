@@ -147,10 +147,15 @@ def test_no_placeholder_is_left_unfilled():
 
 
 class StubForum(BaseHTTPRequestHandler):
-    """Discourse's two endpoints the poster uses, with external ids unique."""
+    """The Discourse endpoints the poster uses, with external ids unique."""
 
     topics: dict[str, dict] = {}
     refuse: set[str] = set()
+    # The category's page, two topics to a page, and what was deleted from it.
+    listed: list[dict] = []
+    deleted: list[int] = []
+    refuse_delete: set[int] = set()
+    forbid_lists = False
 
     def log_message(self, *args):  # noqa: D401 - silence the test output
         pass
@@ -164,11 +169,30 @@ class StubForum(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
+        if self.path.startswith("/c/7/l/latest.json"):
+            if self.forbid_lists:
+                self.reply(403, {"error_type": "invalid_access"})
+                return
+            page = int(self.path.partition("page=")[2] or 0)
+            more = len(self.listed) > 2 * (page + 1)
+            body = {"topics": self.listed[2 * page: 2 * page + 2]}
+            if more:
+                body["more_topics_url"] = f"/c/7/l/latest?page={page + 1}"
+            self.reply(200, {"topic_list": body})
+            return
         external_id = urllib.parse.unquote(self.path.removeprefix("/t/external_id/").removesuffix(".json"))
         if external_id in self.topics:
             self.reply(200, {"id": 1})
         else:
             self.reply(404, {"errors": ["not found"]})
+
+    def do_DELETE(self):
+        topic_id = int(self.path.removeprefix("/t/").removesuffix(".json"))
+        if topic_id in self.refuse_delete:
+            self.reply(403, {"error_type": "invalid_access"})
+        else:
+            self.deleted.append(topic_id)
+            self.reply(200, {})
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -186,6 +210,10 @@ class StubForum(BaseHTTPRequestHandler):
 def forum(monkeypatch, tmp_path):
     StubForum.topics = {}
     StubForum.refuse = set()
+    StubForum.listed = []
+    StubForum.deleted = []
+    StubForum.refuse_delete = set()
+    StubForum.forbid_lists = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), StubForum)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -245,3 +273,57 @@ def test_a_dry_run_posts_nothing_and_keeps_no_state(forum, capsys):
     assert forum.topics == {}
     assert not feed.STATE_PATH.exists()
     assert "arxiv-2610_00112" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ unreplied topics
+
+
+def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False) -> dict:
+    return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned}
+
+
+def test_unreplied_preprints_are_deleted_before_a_build_is_posted(forum):
+    forum.listed = [
+        listed(1, "About the arXiv quant-ph category"),
+        listed(2, "Old and unanswered (arXiv:2609.00001)"),
+        listed(3, "Old and answered (arXiv:2609.00002)", posts_count=2),
+        listed(4, "Pinned by staff (arXiv:2609.00003)", pinned=True),
+        listed(5, "Also unanswered (arXiv:2609.00004)"),
+        listed(6, "In this build already (arXiv:2610.00129)"),
+    ]
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert forum.deleted == [2, 5]
+    assert set(forum.topics) == {"arxiv-2610_00129", "arxiv-2610_00112"}
+
+
+def test_a_build_already_posted_deletes_nothing(forum):
+    feed.run(str(FIXTURE), dry_run=False)
+    forum.listed = [listed(2, "Unanswered (arXiv:2609.00001)")]
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert forum.deleted == []
+
+
+def test_a_refused_deletion_still_posts_the_build_and_fails_the_unit(forum):
+    forum.listed = [listed(2, "Kept (arXiv:2609.00001)"), listed(5, "Gone (arXiv:2609.00004)")]
+    forum.refuse_delete = {2}
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 1
+    assert forum.deleted == [5]
+    assert len(forum.topics) == 2
+
+
+def test_a_key_that_cannot_list_the_category_still_posts_the_build(forum):
+    forum.forbid_lists = True
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 1
+    assert len(forum.topics) == 2
+
+
+def test_a_dry_run_with_a_key_names_what_it_would_delete(forum, capsys):
+    forum.listed = [listed(2, "Unanswered (arXiv:2609.00001)")]
+
+    assert feed.run(str(FIXTURE), dry_run=True) == 0
+    assert forum.deleted == []
+    assert "would delete topic 2" in capsys.readouterr().out
