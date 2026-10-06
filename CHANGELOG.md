@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-06 (a private message's Slack thread says where a reply goes)
+
+- **A private message's thread ends "Reply in this thread to post to the private message."**, matching a topic's "to post to the topic", instead of "to answer it there", whose "there" named nothing. `server/slack-bridge.py`, with its test.
+- **Deployed** on 6 October at 04:25 UTC (`slack-bridge.py.bak-20261006042528`); `--check` passed. The parents of private messages 152 and 153 were regenerated with the new line.
+
 ### 2026-10-06 (HTML links reach Slack as links)
 
 - **The Slack bridge converts an HTML link in a post to a Slack link**, as it does a markdown one, resolving a relative address against the post's; Discourse writes some of its own messages in HTML, which had reached Slack as literal markup. `server/slack-bridge.py`, with a test.

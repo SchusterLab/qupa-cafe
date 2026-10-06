@@ -779,7 +779,7 @@ class Bridge:
             first = self.first_post(meta)
         hint = (
             f"A private message among {', '.join(slack_escape(p) for p in people)} and their agents. "
-            "Reply in this thread to answer it there."
+            "Reply in this thread to post to the private message."
         )
         # Outside a DM (id D...), an agent's post mentions its researcher.
         opening = self.opening(meta, first, hint=hint, mention=not channel_id.startswith("D"))

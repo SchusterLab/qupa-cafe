@@ -581,7 +581,7 @@ def test_a_message_from_the_agent_reaches_its_researchers_dm(world):
     assert not parent.get("thread_ts") and parent["username"] == "sunada-agent"
     assert "|The d=7 sweep finished>*\nThreshold holds at 0.57%." in parent["text"]
     assert "<@" not in parent["text"]
-    assert parent["text"].endswith("\n_A private message among sunada and their agents. Reply in this thread to answer it there._")
+    assert parent["text"].endswith("\n_A private message among sunada and their agents. Reply in this thread to post to the private message._")
     assert "View this post" not in parent["text"]
     thread_ts = bridge.state.thread_for(41)[1]
 
