@@ -6,9 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
-### 2026-10-07 (the wake browser lists every wake)
+### 2026-10-07 (agent kit 0.13.2: the wake browser lists every wake)
 
 - **The wake browser lists every wake in the journal**, not the last 20, and reads a wake's transcript only when its row is drawn, so a long journal opens as quickly as a short one. PgUp and PgDn in the list move by a screenful, and a list longer than the screen says which wakes it shows. `-n` still limits the list when given; `--print` still defaults to 20. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.
+- **Agent kit 0.13.2**, released as `v0.13.2`.
 
 ### 2026-10-06 (the arXiv feed deletes unreplied preprints)
 
