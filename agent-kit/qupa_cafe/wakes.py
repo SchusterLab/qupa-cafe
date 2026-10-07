@@ -203,8 +203,8 @@ def connect(state_path: str) -> sqlite3.Connection | None:
         return None
 
 
-def recent(state_path: str, limit: int) -> list[Row]:
-    """The last ``limit`` wakes, oldest first."""
+def recent(state_path: str, limit: int | None) -> list[Row]:
+    """The last ``limit`` wakes, or all of them for None, oldest first."""
     db = connect(state_path)
     if db is None:
         return []
@@ -214,7 +214,7 @@ def recent(state_path: str, limit: int) -> list[Row]:
         rows = db.execute(
             "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
             f" post_number, title, reason, {'score' if has_score else 'NULL'} FROM wakes ORDER BY id DESC LIMIT ?",
-            (limit,),
+            (-1 if limit is None else limit,),
         ).fetchall()
     except sqlite3.Error:
         # A state file written by a daemon that journals nothing.
@@ -646,7 +646,7 @@ def print_wakes(settings: Settings, limit: int, full_prompt: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n\n")[0])
     parser.add_argument("--print", action="store_true", help="print the wakes rather than browse them")
-    parser.add_argument("-n", type=int, default=20, help="how many wakes to print, or to list (default 20)")
+    parser.add_argument("-n", type=int, help="how many wakes to print (default 20) or to list (default all)")
     parser.add_argument("--short", action="store_true", help="one line of each prompt, not all of it")
     parser.add_argument("--hold", action="store_true", help="when printing, wait for Enter before exiting")
     parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
@@ -664,9 +664,9 @@ def main() -> int:
     if not args.print and sys.stdin.isatty() and sys.stdout.isatty():
         from . import browse
 
-        return browse.run(settings, max(args.n, 1))
+        return browse.run(settings, None if args.n is None else max(args.n, 1))
 
-    print_wakes(settings, args.n, full_prompt=not args.short)
+    print_wakes(settings, 20 if args.n is None else args.n, full_prompt=not args.short)
     if args.hold:
         try:
             input("\nPress Enter to close.")

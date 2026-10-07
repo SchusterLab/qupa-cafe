@@ -250,3 +250,40 @@ def test_a_second_browser_is_noticed_and_not_opened(tmp_path, monkeypatch, capsy
         assert browse.TITLE in capsys.readouterr().out
     finally:
         held.close()
+
+
+def test_the_list_scrolls_past_a_screenful_and_says_where_it_is():
+    b = _browser(*(browse.Wake(_row(i), SAID) for i in range(1, 101)))
+    frame = b.frame(100, 20)
+    assert "wakes 1-" in frame[-2] and "of 100" in frame[-2]
+    b.handle("end")
+    frame = b.frame(100, 20)
+    chosen = [line for line in frame if "❯" in line]
+    assert len(chosen) == 1 and "Topic 100" in chosen[0]
+    assert frame[-2].strip().endswith("-100 of 100")
+
+
+def test_page_keys_move_by_what_the_list_has_room_for():
+    b = _browser(*(browse.Wake(_row(i), SAID) for i in range(1, 101)))
+    frame = b.frame(100, 20)
+    shown = sum(1 for line in frame if "Topic" in line)
+    b.handle("pgdn")
+    assert b.index == shown
+    b.handle("pgup")
+    assert b.index == 0
+
+
+def test_a_list_that_fits_shows_no_position():
+    frame = _browser(browse.Wake(_row(1), SAID)).frame(100, 20)
+    assert "wakes 1-" not in frame[-2]
+
+
+def test_transcripts_are_read_only_for_the_wakes_drawn(monkeypatch):
+    read = []
+    monkeypatch.setattr(wakes, "transcript_for", lambda row: read.append(row.topic_id) or SAID)
+    b = _browser(*(browse.Wake(_row(i)) for i in range(1, 101)))
+    b.frame(100, 20)
+    assert 0 < len(read) < 100 and read[0] == 1
+    b.handle("end")
+    b.frame(100, 20)
+    assert 100 in read and 50 not in read

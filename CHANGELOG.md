@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-07 (the wake browser lists every wake)
+
+- **The wake browser lists every wake in the journal**, not the last 20, and reads a wake's transcript only when its row is drawn, so a long journal opens as quickly as a short one. PgUp and PgDn in the list move by a screenful, and a list longer than the screen says which wakes it shows. `-n` still limits the list when given; `--print` still defaults to 20. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.
+
 ### 2026-10-06 (the arXiv feed deletes unreplied preprints)
 
 - **Before it posts a new build, `server/arxiv-feed.py` deletes every preprint topic nobody has replied to**: a topic whose title ends in `(arXiv:<id>)`, that is not pinned, has only its first post, and is not in the build being posted. A refused deletion is logged, the build is still posted, and the run exits 1. A dry run with a key prints what it would delete. With tests; `docs/05-forum-config.md` 5.10, `server/README.md`.

@@ -1,6 +1,6 @@
-"""The wake browser: the recent wakes, newest first, and one wake's view.
+"""The wake browser: every wake, newest first, and one wake's view.
 
-In the list ``↑``/``↓`` choose, Enter reads, ``+`` and ``-`` raise and lower the
+In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-`` raise and lower the
 agent's relevance threshold, ``l`` opens the daemon's log, ``u`` updates when a
 newer kit is published, and Esc leaves. In a wake ``↑``/``↓``
 scroll, Enter reopens its session in Claude Code with ``--fork-session`` and the
@@ -140,10 +140,23 @@ class Terminal:
 # ------------------------------------------------------------------ the app
 
 
+# A wake whose transcript has not been looked for yet.
+UNREAD = object()
+
+
 @dataclass
 class Wake:
+    """A journalled wake. Its transcript is read when first asked for, so
+    that a long journal opens as quickly as a short one."""
+
     row: wakes.Row
-    transcript: wakes.Transcript | None
+    _transcript: object = UNREAD
+
+    @property
+    def transcript(self) -> wakes.Transcript | None:
+        if self._transcript is UNREAD:
+            self._transcript = wakes.transcript_for(self.row)
+        return self._transcript
 
     @property
     def askable(self) -> bool:
@@ -167,6 +180,8 @@ class Browser:
     # Whether pip can install it: false for a kit run from a checkout.
     updatable: bool = True
     _detail: list[str] = field(default_factory=list)
+    # Rows of wakes the list last had room for, which PgUp and PgDn move by.
+    _room: int = 10
 
     @property
     def selected(self) -> Wake | None:
@@ -217,7 +232,7 @@ class Browser:
 
         if not self.items:
             return None
-        moves = {"up": -1, "down": 1, "pgup": -10, "pgdn": 10, "home": -len(self.items), "end": len(self.items)}
+        moves = {"up": -1, "down": 1, "pgup": -self._room, "pgdn": self._room, "home": -len(self.items), "end": len(self.items)}
         if key in moves:
             self.index = min(max(self.index + moves[key], 0), len(self.items) - 1)
         elif key in ("enter", "right"):
@@ -253,13 +268,18 @@ class Browser:
         if not self.items:
             out.append(wakes.paint("  No wakes recorded yet. The daemon records each one from kit 0.9.0 on.", "meta"))
         room = max(rows - len(out) - 3, 1)
+        self._room = room
         top = min(max(self.index - room + 1, 0), max(len(self.items) - room, 0))
         for i, item in enumerate(self.items[top : top + room], start=top):
             out.append(self._row(item, i == self.index, cols))
 
         while len(out) < rows - 2:
             out.append("")
-        out.append(self.message and wakes.paint("  " + self.message, "yours") or "")
+        where = ""
+        if len(self.items) > room:
+            end = min(top + room, len(self.items))
+            where = wakes.paint(f"  wakes {top + 1}-{end} of {len(self.items)}", "meta")
+        out.append(self.message and wakes.paint("  " + self.message, "yours") or where)
         named = [hint for _, hint in self.actions.values() if hint]
         out.append(hints(["↑↓ to select", "Enter to read", *named, "Esc to quit"]))
         return out
@@ -488,12 +508,12 @@ def update_kit() -> tuple[bool, str]:
 # ------------------------------------------------------------------ run
 
 
-def load(settings: Settings, limit: int) -> list[Wake]:
-    rows = list(reversed(wakes.recent(settings.state_path, limit)))
-    return [Wake(row, wakes.transcript_for(row)) for row in rows]
+def load(settings: Settings, limit: int | None) -> list[Wake]:
+    """The last ``limit`` wakes, or all of them, newest first."""
+    return [Wake(row) for row in reversed(wakes.recent(settings.state_path, limit))]
 
 
-def run(settings: Settings, limit: int) -> int:
+def run(settings: Settings, limit: int | None = None) -> int:
     lock = claim_lock(lock_path(settings))
     if lock is False:
         if not bring_to_front():
