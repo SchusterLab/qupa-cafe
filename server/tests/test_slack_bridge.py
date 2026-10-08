@@ -379,8 +379,8 @@ def replies(slack):
 
 def test_a_new_forums_first_posts_reach_slack(tmp_path):
     """By default the first run starts from the forum's first post, so the
-    topics the configuration made before the bridge -- the welcome topic among
-    them -- and the credential messages are mirrored like any later post."""
+    topics the configuration made before the bridge and the credential messages
+    are mirrored like any later post."""
     stub = StubForum()
     httpd = serve(stub)
     try:

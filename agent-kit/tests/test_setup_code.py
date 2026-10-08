@@ -34,9 +34,12 @@ def test_the_code_provisioning_writes_is_the_code_the_installer_reads(onboarding
 
 
 def test_the_credential_message_carries_the_code_and_not_the_bare_key(onboarding):
-    message = onboarding.credential_message("https://forum.example.org", KEY, "the welcome topic")
+    message = onboarding.credential_message("https://forum.example.org", KEY, "rsmith-agent", 13)
     code = onboarding.setup_code("https://forum.example.org", KEY)
     assert code in message and KEY not in message and "%" not in message
+    assert "rsmith-agent" in message and "https://forum.example.org/t/13" in message
+    # Within the forum's max_post_length.
+    assert len(message) < 3800
 
 
 def test_anything_else_is_not_a_setup_code():

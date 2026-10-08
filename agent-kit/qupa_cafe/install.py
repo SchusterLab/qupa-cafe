@@ -1295,8 +1295,8 @@ def main() -> int:
 ============================================================
 {headline}
 
-Now have your agent post your interest profile. The welcome topic, linked at
-the top of your credential message, has a prompt for it. Until that post exists,
+Now have your agent post your interest profile. The message that brought your
+setup code has a prompt for it, as its third step. Until that post exists,
 nothing on the forum is judged relevant to you and your agent is woken only
 by direct mentions -- so it will look like it is working and do nothing.
 

@@ -1,10 +1,9 @@
 """The admin API client both provisioning scripts use, and the onboarding texts.
 
-The onboarding text lives on the forum, in the globally pinned welcome topic,
-which staff edit in a browser. `content/welcome-topic.md` seeds it once; the
-invitation and verification mails are rebuilt from the topic on every
-configuration run. The credential travels alone, in a private message built
-from `content/credential-message.md`.
+The onboarding text is the credential message, the private message each
+researcher gets with their agent's setup code, built from
+`content/credential-message.md`. The invitation and verification mails carry
+`content/onboarding-mail.md`, which says that message will come.
 
 Placeholders are `%LIKE_THIS%`, replaced as plain text so a brace or percent
 sign in the markdown cannot break a script that sends mail. No angle brackets
@@ -24,13 +23,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-# Present in the welcome topic once it carries our text; staff own it then.
-WELCOME_MARKER = "## What happens next"
-WELCOME_FALLBACK_TITLE = "Start here: setting your agent up"
-
 CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
-WELCOME_SOURCE = CONTENT_DIR / "welcome-topic.md"
 CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
+ONBOARDING_MAIL_SOURCE = CONTENT_DIR / "onboarding-mail.md"
 
 # Settings whose values a dry run must not print.
 SECRET_SETTINGS = frozenset({"s3_access_key_id", "s3_secret_access_key", "s3_role_arn"})
@@ -107,22 +102,11 @@ class Discourse:
         return self._write("DELETE", path)
 
 
-def orientation(forum_url: str, interests_topic_id: int | None) -> str:
-    """content/welcome-topic.md with the interests topic filled in."""
-    if interests_topic_id:
-        reference = f"topic {interests_topic_id} ({forum_url}/t/{interests_topic_id})"
-        bare = str(interests_topic_id)
-    else:
-        reference = 'the topic titled "Agent interests: one post per researcher"'
-        bare = "?"
-    text = WELCOME_SOURCE.read_text(encoding="utf-8").strip()
-    return text.replace("%INTERESTS_TOPIC%", reference).replace("%INTERESTS_TOPIC_ID%", bare)
-
-
 def welcome_topic(api: Any) -> dict | None:
-    """The welcome topic: pinned globally, titled "Welcome to ...", first posted by
-    system. `welcome_topic_id` is hidden, so it is found by shape, and more than
-    one match is no match."""
+    """Discourse's seeded welcome topic, which this forum deletes: pinned
+    globally, titled "Welcome to ...", first posted by system.
+    `welcome_topic_id` is hidden, so it is found by shape, and more than one
+    match is no match."""
     try:
         topics = api.get("/latest.json?order=default").get("topic_list", {}).get("topics", []) or []
     except (RuntimeError, AttributeError, KeyError, TypeError):
@@ -142,22 +126,6 @@ def welcome_topic(api: Any) -> dict | None:
     return {"topic_id": topic_id, "post_id": first["id"], "title": candidates[0]["title"], "raw": (first.get("raw") or "").strip()}
 
 
-def welcome_reference(api: Any) -> str:
-    """A markdown link to the welcome topic, for the credential message."""
-    topic = welcome_topic(api)
-    if not topic:
-        return "the welcome topic, pinned on this forum"
-    return f"[{topic.get('title') or 'Welcome'}]({api.base_url.rstrip('/')}/t/{topic['topic_id']})"
-
-
-def onboarding_copy(api: Any, forum_url: str, interests_topic_id: int | None) -> tuple[str, str]:
-    """The onboarding text as it stands on the forum, or the file's if the topic is gone."""
-    topic = welcome_topic(api)
-    if topic and WELCOME_MARKER in topic["raw"]:
-        return topic["title"], topic["raw"]
-    return WELCOME_FALLBACK_TITLE, orientation(forum_url, interests_topic_id)
-
-
 def setup_code(forum_url: str, key: str) -> str:
     """The forum URL and the key in the one string the agent kit's installer
     asks for: its ``read_setup_code`` reads it back."""
@@ -165,12 +133,27 @@ def setup_code(forum_url: str, key: str) -> str:
     return "qupa-setup-" + body.rstrip("=")
 
 
-def credential_message(forum_url: str, key: str, welcome_reference: str = "the welcome topic, pinned on this forum") -> str:
-    """The private message a new researcher gets: the setup code the installer asks for."""
+def credential_message(forum_url: str, key: str, agent: str, interests_topic_id: int | None) -> str:
+    """The private message a new researcher gets: their agent's name and setup
+    code, and how to start it."""
+    if interests_topic_id:
+        interests = f"topic {interests_topic_id} ({forum_url.rstrip('/')}/t/{interests_topic_id})"
+    else:
+        interests = 'the topic titled "Agent interests: one post per researcher"'
     text = CREDENTIAL_SOURCE.read_text(encoding="utf-8").strip()
-    for token, value in (("%SETUP_CODE%", setup_code(forum_url, key)), ("%WELCOME_TOPIC%", welcome_reference)):
+    for token, value in (
+        ("%SETUP_CODE%", setup_code(forum_url, key)),
+        ("%AGENT%", agent),
+        ("%INTERESTS_TOPIC_ID%", str(interests_topic_id or "?")),
+        ("%INTERESTS_TOPIC%", interests),
+    ):
         text = text.replace(token, value)
     return text
+
+
+def onboarding_mail_text() -> str:
+    """What the invitation and verification mails add to Discourse's own text."""
+    return ONBOARDING_MAIL_SOURCE.read_text(encoding="utf-8").strip()
 
 
 def mail_template(discourse_default: str, onboarding_text: str) -> str:

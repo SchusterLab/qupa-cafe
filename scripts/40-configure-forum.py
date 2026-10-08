@@ -124,7 +124,7 @@ THEME_COMPONENT_SOURCES = {
 THEME_TARGET_EXTRA_JS = "extra_js"
 THEME_TYPE_JS = 6
 
-# The welcome topic is the one onboarding message.
+# The credential message is the one onboarding message.
 ONBOARDING_SETTINGS = {"send_tl1_welcome_message": "false"}
 
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
@@ -134,11 +134,12 @@ LOGO_URL = "/images/qupa-cafe-logo.png"
 LOGO_UPLOAD_ID = -1001
 SITE_IMAGE_SETTINGS = {name: LOGO_URL for name in ("logo", "logo_small", "favicon", "large_icon", "manifest_icon")}
 
-# Seeded boilerplate would be embedded and scored. The welcome topic stays.
+# Seeded boilerplate would be embedded and scored. The welcome topic goes too,
+# found by its shape (onboarding.welcome_topic): the credential message onboards.
 SEED_TOPICS_TO_REMOVE = ("Guidelines", "Admin Guide: Getting Started")
 # Hidden settings that block a delete. Cleared, the seed data recreates the topic
 # on rebuild, so it is pointed back at the deleted topic.
-SEED_TOPIC_SETTINGS = {"Guidelines": "SiteSetting.guidelines_topic_id"}
+SEED_TOPIC_SETTINGS = {"Guidelines": "SiteSetting.guidelines_topic_id", "welcome": "SiteSetting.welcome_topic_id"}
 
 MAIL_TEMPLATES = (
     "user_notifications.signup.text_body_template",  # invite-link redemption
@@ -597,37 +598,33 @@ def remove_seed_topics(api: Discourse) -> None:
             FAILURES.append(f"seeded topic {topic_id} {title!r} is still present: {setting or 'a hidden setting'} names it")
 
 
-def ensure_welcome_topic(api: Discourse, interests_topic_id: int | None, update: bool = False) -> None:
-    """Seed the welcome topic once, while it still holds Discourse's text; after
-    that staff own it, and only --update-welcome overwrites it."""
-    print("\n== Welcome topic, which is where the onboarding text lives")
-
+def remove_welcome_topic(api: Discourse) -> None:
+    """Delete Discourse's welcome topic: the credential message is the onboarding."""
     topic = onboarding.welcome_topic(api)
     if topic is None:
-        print("   not found  no single globally pinned 'Welcome to ...' topic written by system")
-        print("   The mails and the provisioning message fall back to this repository's copy.")
+        print("   unchanged  no welcome topic is present")
         return
-
-    body = onboarding.orientation(api.base_url, interests_topic_id)
-    ours = onboarding.WELCOME_MARKER in topic["raw"]
-    if ours and body.strip() == topic["raw"].strip():
-        print(f"   unchanged  topic {topic['topic_id']} matches this repository")
-    elif ours and not update:
-        print(f"   unchanged  topic {topic['topic_id']} carries the onboarding text, and staff own it")
-        print("   It differs from content/welcome-topic.md; --update-welcome pushes this copy over it.")
-    else:
-        api.put(f"/posts/{topic['post_id']}", {"post[raw]": body})
-        print(f"   {'updated' if ours else 'seeded':10} topic {topic['topic_id']} from content/welcome-topic.md")
+    setting = SEED_TOPIC_SETTINGS["welcome"]
+    try:
+        api.delete(f"/t/{topic['topic_id']}.json")
+        print(f"   deleted    topic {topic['topic_id']} {topic['title']!r}")
+    except RuntimeError as exc:
+        print(f"   REFUSED    topic {topic['topic_id']} {topic['title']!r}: {exc}")
+        print(f"   {setting} names it and is hidden. On the forum host:")
+        print(f"\n     sudo docker exec -i app rails runner 't = Topic.find({topic['topic_id']}); "
+              f"{setting} = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; "
+              f"{setting} = t.id'\n")
+        FAILURES.append(f"the welcome topic {topic['topic_id']} is still present: {setting} names it")
 
 
 def ensure_site_texts(api: Discourse, onboarding_text: str) -> None:
-    """Discourse's own mail template followed by the onboarding text."""
-    print("\n== Onboarding text in the invitation and verification mails")
+    """Discourse's own mail template followed by content/onboarding-mail.md."""
+    print("\n== Onboarding note in the invitation and verification mails")
 
     # An override may not introduce interpolation keys, and %{...} reads as one.
     if "%{" in onboarding_text:
-        print("   REFUSED: the onboarding text contains a %{...} sequence, which Discourse")
-        print("   reads as an interpolation key. Remove it from the welcome topic and re-run.")
+        print("   REFUSED: content/onboarding-mail.md contains a %{...} sequence, which Discourse")
+        print("   reads as an interpolation key. Remove it and re-run.")
         return
 
     for key in MAIL_TEMPLATES:
@@ -674,7 +671,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
     parser.add_argument("--update-policy", action="store_true", help="overwrite the policy topic with this script's copy, changing its hash")
-    parser.add_argument("--update-welcome", action="store_true", help="push content/welcome-topic.md over the forum's copy")
     parser.add_argument("--update-category-policies", action="store_true", help="push content/arxiv-agent-policy.md over its reply, changing every agent's hash")
     parser.add_argument("--update-interests", action="store_true", help="overwrite the interests topic's template post")
     args = parser.parse_args()
@@ -739,12 +735,8 @@ def main() -> int:
     ensure_category_policy(api, policy_id, ARXIV_POLICY_BODY, args.update_category_policies)
 
     remove_seed_topics(api)
-
-    # After the topics: the text names the interests topic by id.
-    ensure_welcome_topic(api, interests_id, args.update_welcome)
-    # Read back, so a staff edit is what the mails carry.
-    _, onboarding_text = onboarding.onboarding_copy(api, api.base_url, interests_id)
-    ensure_site_texts(api, onboarding_text)
+    remove_welcome_topic(api)
+    ensure_site_texts(api, onboarding.onboarding_mail_text())
 
     print(f"""
 ============================================================

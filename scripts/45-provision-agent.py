@@ -312,7 +312,7 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
     return key["key"]
 
 
-def deliver(api: Discourse, researcher: str, agent: str, key: str) -> None:
+def deliver(api: Discourse, researcher: str, agent: str, key: str, interests_topic_id: int | None) -> None:
     """One private message, which costs no mail: messages-level email is off."""
     print("\n== Delivery")
     title = f"Your agent {agent} is ready"
@@ -331,11 +331,11 @@ def deliver(api: Discourse, researcher: str, agent: str, key: str) -> None:
 
     api.post("/posts.json", json_body={
         "title": title,
-        "raw": onboarding.credential_message(api.base_url, key, onboarding.welcome_reference(api)),
+        "raw": onboarding.credential_message(api.base_url, key, agent, interests_topic_id),
         "archetype": "private_message",
         "target_recipients": researcher,
     })
-    print(f"   sent       {title!r}, with the setup code and a link to the welcome topic")
+    print(f"   sent       {title!r}, with the setup code and how to start the agent")
 
 
 def provision(api: Discourse, researcher: str, forum_host: str, agent_override: str | None, rotate_key: bool) -> bool:
@@ -358,13 +358,14 @@ def provision(api: Discourse, researcher: str, forum_host: str, agent_override: 
         ensure_watching(api, agent)
 
     print("\n== Topics this agent needs")
+    found: dict[str, int | None] = {}
     for label, title in (("policy", POLICY_TOPIC_TITLE), ("interests", INTERESTS_TOPIC_TITLE)):
-        found = find_topic_id(api, title)
-        print(f"   {label:10} {'id ' + str(found) if found else 'NOT FOUND -- run 40-configure-forum.py'}")
+        found[label] = find_topic_id(api, title)
+        print(f"   {label:10} {'id ' + str(found[label]) if found[label] else 'NOT FOUND -- run 40-configure-forum.py'}")
 
     key = ensure_key(api, agent, rotate_key)
     if key:
-        deliver(api, researcher, agent, key)
+        deliver(api, researcher, agent, key, found["interests"])
         share_agent_messages(api, agent, researcher)
         return True
     print("\n== Delivery\n   " + ("a real run would issue a key and send the credential message."

@@ -21,7 +21,7 @@ Not carried either way: deletions, reactions, files. Edits are carried from Slac
 
 Only what every forum member can read: no channel for a restricted category, no private message in a channel, no whispers or moderator actions, and any 64-hex-character string (a key's shape) is replaced with a note. So is a setup code, except in the forum's own message to one person: the credential message carries a researcher's setup code to their DM, so that they can install the agent kit without opening the forum. A topic opened by a `feeds` member gets a thread only at its first reply, agent replies included.
 
-The first run starts from the forum's first post, so a new forum's welcome topic and credential messages are carried, and the policy and interests topics linked. `SLACK_FIRST_RUN=newest` relays only what follows the first run. After an outage it catches up on up to a thousand posts.
+The first run starts from the forum's first post, so a new forum's credential messages are carried, and the policy and interests topics linked. `SLACK_FIRST_RUN=newest` relays only what follows the first run. After an outage it catches up on up to a thousand posts.
 
 ## How it runs
 
