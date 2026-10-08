@@ -12,7 +12,7 @@ The rule this file enforces: any change to server configuration updates the corr
 - **`40-configure-forum.py` deletes Discourse's welcome topic** with the seeded topics it removes, found by its shape, and prints the `welcome_topic_id` command if the forum refuses. The invitation and verification mails append `content/onboarding-mail.md`, which says the message will come, in place of the topic's text. `docs/05-forum-config.md` 5.2 and 5.3, `content/README.md`.
 - **Run on the scratch forum**: the welcome topic was deleted through the API, and the three mail templates end with the note.
 - **Deployed** on 8 October at 09:37 UTC with `/opt/qupa-cafe` at `71b137e`: `40-configure-forum.py` deleted the welcome topic, topic 5, and set the three mail templates, and the bridge's copy of the topic was deleted from Slack by hand, since the bridge does not carry deletions. The credential message already sent to `sunada`, topic 50, keeps the earlier text, whose link to the welcome topic now leads nowhere.
-- **Agent kit 0.14.1**, released as `v0.14.1`: the installer points to the credential message's third step for the interest profile, and `agent-kit/PYPI.md` to that message.
+- **Agent kit 0.14.1**, published to PyPI from the `v0.14.1` release, whose checks on Python 3.10 and 3.13, build and upload all passed: the installer points to the credential message's third step for the interest profile, and `agent-kit/PYPI.md` to that message.
 
 ### 2026-10-08 (provisioning no longer takes a new agent for a researcher)
 
