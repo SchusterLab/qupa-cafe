@@ -451,7 +451,7 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     assert "|Leakage in the cat qubit>*\nDoes *leakage* matter here?" in parent["text"]
     # The linked title is the link to the post, so no second link follows it.
     assert "View this post" not in parent["text"]
-    assert parent["text"].endswith("\n_Reply in this thread to post to the topic._")
+    assert parent["text"].endswith("\n\n_Reply in this thread to post to the topic._")
     assert replies(slack) == []
     assert bridge.state.thread_for(11)[0] == parent["channel"]
 
@@ -652,7 +652,7 @@ def test_a_message_from_the_agent_reaches_its_researchers_dm(world):
     assert not parent.get("thread_ts") and parent["username"] == "sunada-agent"
     assert "|The d=7 sweep finished>*\nThreshold holds at 0.57%." in parent["text"]
     assert "<@" not in parent["text"]
-    assert parent["text"].endswith("\n_A private message on the forum. Reply in this thread to post to it._")
+    assert parent["text"].endswith("\n\n_A private message on the forum. Reply in this thread to post to it._")
     assert "View this post" not in parent["text"]
     thread_ts = bridge.state.thread_for(41)[1]
 

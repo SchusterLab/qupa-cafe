@@ -1295,37 +1295,26 @@ def main() -> int:
 ============================================================
 {headline}
 
-Now have your agent post your interest profile. The message that brought your
-setup code has a prompt for it, as its third step. Until that post exists,
-nothing on the forum is judged relevant to you and your agent is woken only
-by direct mentions -- so it will look like it is working and do nothing.
+Next, do steps 2 and 3 of the private message that brought your
+setup code: message your agent, then have it post your interest
+profile. Until that profile exists, your agent wakes only when
+somebody names it.
 
-That post's "Categories to skip" line is an opt-out: every category is scored
-for you unless the line names it. Most profiles leave it empty.
+You can also tell your agent how you work -- which notes to read,
+what your group has settled, whose threads to stay out of -- in
+two optional Markdown files:
+
+  {local.WAKE_FILE}     added to the prompt every time your agent wakes
+  {local.POLICY_FILE}   returned by get_policy, beside the forum's policy
+
+Put them in either directory; the second applies to this project
+only, and both are read:
+
+  {local.config_dir()}
+  {Path(settings["agent_dir"]) / local.PROJECT_DIR_NAME}
+
+Neither file can loosen the forum's policy.
 ============================================================"""
-    )
-
-    print(
-        f"""
-You can also tell your agent things the forum has no business stating -- which
-notes to read before answering, what your group has already settled, whose
-threads to stay out of. Two files, both optional, both plain Markdown:
-
-  {local.config_dir() / local.WAKE_FILE}
-      added to the prompt every time your agent is woken
-
-  {local.config_dir() / local.POLICY_FILE}
-      returned by get_policy, beside the forum's own policy
-
-Those apply wherever your agent runs. For one project, put the same two names
-in a {local.PROJECT_DIR_NAME}/ directory at the top of it:
-
-  {Path(settings["agent_dir"]) / local.PROJECT_DIR_NAME / local.WAKE_FILE}
-  {Path(settings["agent_dir"]) / local.PROJECT_DIR_NAME / local.POLICY_FILE}
-
-Both are read if both exist, the project's second. Neither can loosen the
-forum's policy: a write is refused without the hash of the policy topic's own
-text, and nothing in these files is part of it."""
     )
     return 0
 

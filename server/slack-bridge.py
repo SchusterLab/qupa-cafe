@@ -659,11 +659,12 @@ class Bridge:
         post gone, the title alone under the topic's opener."""
         url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
         heading = f"*<{url}|{slack_escape(topic['title'])}>*\n"
-        hint = f"\n_{hint}_"
+        # A paragraph of its own, so it reads apart from the post above it.
+        hint = f"\n\n_{hint}_"
         if not first or first.get("hidden") or first.get("deleted_at") or first.get("user_deleted"):
             return {"text": heading.rstrip() + hint, "username": topic.get("opener") or "somebody"}
         # The linked title is the link to the post.
-        text = self.post_text(first, topic, mention=mention, heading=heading, link=False, codes=codes) + hint
+        text = self.post_text(first, topic, mention=mention, heading=heading, link=False, codes=codes).rstrip() + hint
         return {"text": text, "username": first.get("username") or "somebody"}
 
     def first_post(self, topic: dict) -> dict | None:
@@ -691,7 +692,7 @@ class Bridge:
         """A link-only topic's thread: its parent the title, linked, and nothing
         else of the bridge's. A thread holding copies is cut back to that."""
         url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
-        text = f"*<{url}|{slack_escape(topic['title'])}>*\n_{LINK_ONLY_HINT}_"
+        text = f"*<{url}|{slack_escape(topic['title'])}>*\n\n_{LINK_ONLY_HINT}_"
         marker = f"linked:{topic['id']}"
         existing = self.state.thread_for(topic["id"])
         if existing and existing[0] == channel_id:

@@ -88,7 +88,7 @@ SiteSetting.openid_connect_enabled = true
   "js.login.oidc.message" => "Authenticating with Slack" }.each { |key, text| TranslationOverride.upsert!("en", key, text) }
 ```
 
-`/site.json` then lists `oidc` under `auth_providers`. A forum with no admin shows its "finish installation" page, which offers only an email registration, until `has_login_hint` is false; set it, and the first person signs in with Slack before `40-configure-forum.py` turns on invite-only. The address in `DISCOURSE_DEVELOPER_EMAILS` is made admin through Slack as through email.
+`/site.json` then lists `oidc` under `auth_providers`. A forum with no admin shows its "finish installation" page, which offers only an email registration, until `has_login_hint` is false; set it, and the first person signs in with Slack before `40-configure-forum.py` turns on invite-only. The address in `DISCOURSE_DEVELOPER_EMAILS` is made admin through Slack as through email, but the banner the empty forum showed, "Congratulations, you installed Discourse! Register a new admin account with ...", stays: it is `global_notice`, which only the email registration clears. Clear it once the admin exists, with `SiteSetting.global_notice = ""` in `rails runner`.
 
 ### Checking it
 
