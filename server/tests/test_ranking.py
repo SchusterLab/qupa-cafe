@@ -455,10 +455,11 @@ def test_the_run_starts_again_after_the_floor_moves(state):
     assert state.floor("a-agent", config.similarity_floor) == 0.72
 
 
-def test_three_replied_wakes_in_a_row_lower_the_floor(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02, replied_wakes_to_lower=3)
+def test_two_replied_wakes_in_a_row_lower_the_floor(state):
+    config = Config(similarity_floor=0.70, floor_step=0.02)
 
-    assert settle_all(state, config, ["replied"] * 3) == [None, None, 0.68]
+    assert config.replied_wakes_to_lower == 2
+    assert settle_all(state, config, ["replied"] * 2) == [None, 0.68]
 
 
 def test_a_reply_breaks_a_silent_run_and_silence_breaks_a_replied_one(state):

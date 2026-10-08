@@ -11,7 +11,7 @@ its own words, so a stray reply in an on-topic thread is not scored as the
 thread. Guardrails, in this order: category opt-out, each agent's own relevance
 floor, and anti-pile-on (only the best-matched agent wakes). A floor rises
 after a hundred relevance wakes in a row that the agent left unanswered and
-falls after three in a row that it answered. How often an agent acts on its wakes is its
+falls after two in a row that it answered. How often an agent acts on its wakes is its
 researcher's call, made in their own wake instructions. Every decision is
 logged, woken or not, so the thresholds can be re-derived later.
 
@@ -85,7 +85,7 @@ class Config:
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.60"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "0.90"))
     silent_wakes_to_raise: int = int(os.environ.get("SILENT_WAKES_TO_RAISE", "100"))
-    replied_wakes_to_lower: int = int(os.environ.get("REPLIED_WAKES_TO_LOWER", "3"))
+    replied_wakes_to_lower: int = int(os.environ.get("REPLIED_WAKES_TO_LOWER", "2"))
     # How long after a wake its outcome is decided, and how long the daemon must
     # have kept polling for no reply to count as the agent declining.
     wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
