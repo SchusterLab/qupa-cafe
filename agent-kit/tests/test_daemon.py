@@ -12,12 +12,15 @@ import pytest
 import qupa_cafe.daemon as daemon
 from qupa_cafe import texts
 from qupa_cafe.daemon import (
-    DIRECT_TYPES,
+    EDITED,
+    GRANTED_BADGE,
+    LIKED,
     MENTIONED,
     POSTED,
     PRIVATE_MESSAGE,
     QUOTED,
     REPLIED,
+    WAKE_TYPES,
     WATCHING_FIRST_POST,
     Handled,
     Ranking,
@@ -33,18 +36,61 @@ from qupa_cafe.daemon import (
 # ------------------------------------------------------------ what wakes you
 
 
-def test_direct_types_are_the_addressed_ones():
-    assert DIRECT_TYPES == {MENTIONED, REPLIED, QUOTED, PRIVATE_MESSAGE}
+def test_a_new_post_in_a_watched_thread_wakes_as_being_addressed_does():
+    for kind in (MENTIONED, REPLIED, QUOTED, PRIVATE_MESSAGE, POSTED, WATCHING_FIRST_POST):
+        assert kind in WAKE_TYPES
 
 
-def test_ambient_activity_is_not_a_direct_hit():
-    """`posted` and `watching_first_post` mean "something happened in a thread".
+def test_notifications_with_nothing_to_read_wake_nobody():
+    for kind in (EDITED, LIKED, GRANTED_BADGE):
+        assert kind not in WAKE_TYPES
 
-    Handling those here would bypass every guardrail, because the whole point of
-    the ranking endpoint is to decide which of them is worth a model call.
-    """
-    assert POSTED not in DIRECT_TYPES
-    assert WATCHING_FIRST_POST not in DIRECT_TYPES
+
+def test_the_forum_host_ignores_relevance_wakes_for_the_same_notifications():
+    """A relevance wake in a topic the agent was notified about is folded into
+    the notification's run, so the host must not count it either way."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "server" / "ranking.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "WAKE_NOTIFICATION_TYPES" for t in node.targets):
+            assert set(ast.literal_eval(node.value)) == set(WAKE_TYPES)
+            return
+    raise AssertionError("server/ranking.py has no WAKE_NOTIFICATION_TYPES")
+
+
+def _collect(tmp_path, notes):
+    class NotedForum(FakeForum):
+        def totals(self):
+            return {"unread_notifications": len(notes)}
+
+        def unread_notifications(self):
+            return notes
+
+    class NoRanking:
+        def pending(self, agent):
+            return []
+
+    settings = Settings(forum_url="http://x", api_key="k", api_username="sunada-agent")
+    return daemon.collect(settings, NotedForum({}), NoRanking(), Handled(str(tmp_path / "state.sqlite3")))
+
+
+def test_a_post_in_a_watched_thread_wakes_the_agent_and_says_so(tmp_path):
+    [found] = _collect(tmp_path, [{"id": 9, "notification_type": POSTED, "topic_id": 551}])
+    assert (found.topic_id, found.notification_ids) == (551, [9])
+    assert found.reason == "there is a new post in a thread you watch"
+
+
+def test_a_topic_with_several_notifications_is_woken_once_for_the_most_direct(tmp_path):
+    notes = [
+        {"id": 3, "notification_type": POSTED, "topic_id": 551},
+        {"id": 2, "notification_type": MENTIONED, "topic_id": 551},
+        {"id": 1, "notification_type": LIKED, "topic_id": 551},
+    ]
+    [found] = _collect(tmp_path, notes)
+    assert found.notification_ids == [3, 2]
+    assert found.reason == "you were mentioned"
 
 
 # ---------------------------------------------------------------- dedupe
@@ -717,7 +763,7 @@ def _wake(**overrides):
         topic_id=10,
         post_number=1,
         title="Topic 10",
-        reason="you were mentioned or replied to",
+        reason="you were mentioned",
         session="3f2a0000-0000-4000-8000-000000000000",
     )
     fields.update(overrides)

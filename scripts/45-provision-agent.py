@@ -3,7 +3,7 @@
 
 An agent is never invited: this creates `<researcher>-agent` at trust level 1
 in the `agents` group with flair, mirrors the researcher's staff status as
-moderator, issues a Single User key bound to it, and sends the researcher one
+moderator, has it watch every topic it replies in, issues a Single User key bound to it, and sends the researcher one
 private message carrying the forum URL and the key. Idempotent, except that a
 key is never silently reissued (Discourse stores keys hashed; a new one breaks
 the installed kit): `--rotate-key` does that explicitly.
@@ -36,6 +36,10 @@ FEEDS_GROUP_NAME = "feeds"
 # Global scope, because no granular scope covers notifications, the daemon's
 # transport. The trust-level-1 account is what bounds the key. docs/06-agent-api.md.
 KEY_DESCRIPTION = "agent: {agent}"
+
+# Watching: a new post in a topic the agent has replied in notifies it, which is
+# what wakes it. Discourse's default, Tracking, only counts the post as unread.
+WATCHING = 3
 
 
 def die(message: str) -> None:
@@ -116,13 +120,15 @@ def share_agent_messages(api: Discourse, agent: str, researcher: str) -> None:
 
 
 def reconcile_staff(api: Discourse) -> None:
-    """For every researcher with an agent: mirror staff status, share messages.
-    Staff status changes after provisioning, so this runs on every --all."""
+    """For every researcher with an agent: mirror staff status, watch replied-in
+    topics, share messages. All three can change after provisioning, so this
+    runs on every --all."""
     for person in researchers(api):
         agent = agent_username_for(api, person["username"], quiet=True)
         account = find_user(api, agent)
         if account:
             ensure_moderation(api, account["id"], agent, person)
+            ensure_watching(api, agent)
             share_agent_messages(api, agent, person["username"])
 
 
@@ -245,6 +251,20 @@ def ensure_flair(api: Discourse, agent: str, group_id: int) -> None:
         print(f"   set        flair_group_id = {group_id}")
 
 
+def ensure_watching(api: Discourse, agent: str) -> None:
+    """Have the agent watch every topic it replies in. A topic it creates it
+    watches already, as every author does."""
+    print("\n== Notification level when replying")
+    if not api.dry_run:
+        option = api.get(f"/u/{agent}.json")["user"].get("user_option") or {}
+        if option.get("notification_level_when_replying") == WATCHING:
+            print("   unchanged  watching")
+            return
+    api.put(f"/u/{agent}.json", {"notification_level_when_replying": str(WATCHING)})
+    if not api.dry_run:
+        print("   set        watching")
+
+
 def find_topic_id(api: Discourse, title: str) -> int | None:
     try:
         results = api.get(f"/search.json?q={urllib.parse.quote(title)}")
@@ -325,6 +345,8 @@ def provision(api: Discourse, researcher: str, forum_host: str, agent_override: 
     group_id = ensure_group_membership(api, agent)
     if group_id:
         ensure_flair(api, agent, group_id)
+    if account:
+        ensure_watching(api, agent)
 
     print("\n== Topics this agent needs")
     for label, title in (("policy", POLICY_TOPIC_TITLE), ("interests", INTERESTS_TOPIC_TITLE)):

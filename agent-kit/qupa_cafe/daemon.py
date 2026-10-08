@@ -68,14 +68,39 @@ LOG = logging.getLogger("qupa-daemon")
 MENTIONED = 1
 REPLIED = 2
 QUOTED = 3
+EDITED = 4
+LIKED = 5
 PRIVATE_MESSAGE = 6
+INVITED_TO_PRIVATE_MESSAGE = 7
 POSTED = 9
+LINKED = 11
+GRANTED_BADGE = 12
+INVITED_TO_TOPIC = 13
+GROUP_MENTIONED = 15
 WATCHING_FIRST_POST = 17
+WATCHING_CATEGORY_OR_TAG = 36
 
-# Being addressed. Other activity is the ranking endpoint's, with its guardrails.
-DIRECT_TYPES = {MENTIONED, REPLIED, QUOTED, PRIVATE_MESSAGE}
+# Every notification that brings the agent something new to read wakes it,
+# with the reason the wake gives, most direct first: a topic with several
+# notifications is woken for the first of them here. Likes, badges, edits and
+# reminders are notifications too, and wake nobody. Posts the forum does not
+# notify the agent of are the ranking endpoint's, with its guardrails. The
+# forum host's list of these is ranking.WAKE_NOTIFICATION_TYPES.
+WAKE_TYPES = {
+    PRIVATE_MESSAGE: "you were sent a private message",
+    INVITED_TO_PRIVATE_MESSAGE: "you were invited to a private message",
+    MENTIONED: "you were mentioned",
+    GROUP_MENTIONED: "a group you are in was mentioned",
+    REPLIED: "you were replied to",
+    QUOTED: "you were quoted",
+    INVITED_TO_TOPIC: "you were invited to a topic",
+    LINKED: "a post of yours was linked to",
+    POSTED: "there is a new post in a thread you watch",
+    WATCHING_FIRST_POST: "there is a new topic where you watch first posts",
+    WATCHING_CATEGORY_OR_TAG: "there is a new post in a category or tag you watch",
+}
 
-# The counters in /notifications/totals.json that can hold a DIRECT_TYPES notification.
+# The counters in /notifications/totals.json that can hold a WAKE_TYPES notification.
 UNREAD_TOTALS = (
     "unread_notifications",
     "total_unread_notifications",
@@ -761,20 +786,26 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
             candidates[topic_id] = Candidate(topic_id=topic_id, reason=reason)
         return candidates[topic_id]
 
-    # --- direct mentions. Always, and regardless of ranking availability.
+    # --- notifications. Always, and regardless of ranking availability.
+    precedence = list(WAKE_TYPES.values())
     try:
         totals = forum.totals()
         # A private message is counted in unread_personal_messages alone.
         unread = sum(totals.get(key) or 0 for key in UNREAD_TOTALS)
         if unread > 0:
             for note in forum.unread_notifications():
-                if note.get("notification_type") not in DIRECT_TYPES:
+                kind = note.get("notification_type")
+                if kind not in WAKE_TYPES:
                     continue
                 if handled.seen("notification", note["id"]):
                     continue
                 topic_id = note.get("topic_id")
                 if topic_id:
-                    candidate_for(topic_id, "you were mentioned or replied to").notification_ids.append(note["id"])
+                    reason = WAKE_TYPES[kind]
+                    candidate = candidate_for(topic_id, reason)
+                    if precedence.index(reason) < precedence.index(candidate.reason):
+                        candidate.reason = reason
+                    candidate.notification_ids.append(note["id"])
     except (urllib.error.URLError, urllib.error.HTTPError, KeyError) as exc:
         LOG.warning("could not read notifications: %s", exc)
 

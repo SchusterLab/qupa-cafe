@@ -736,15 +736,22 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
 # --------------------------------------------------------------------- ranking
 
 
+# The notification types that wake an agent on its own machine: mentions,
+# replies, quotes, private messages and invitations, links, and new posts in
+# what it watches. Must match the agent kit's daemon.WAKE_TYPES.
+WAKE_NOTIFICATION_TYPES = (1, 2, 3, 6, 7, 9, 11, 13, 15, 17, 36)
+
+
 def wake_outcome(
     woken: datetime, now: datetime, last_poll: datetime | None,
     addressed: bool, replied: bool, settle: timedelta,
 ) -> str | None:
     """What became of one relevance wake, or None while it is too early to say.
 
-    ``addressed`` is a mention, reply, quote or private message to the agent in
-    the same topic within ``settle`` of the wake: the kit folds both into one
-    run, so the run belongs to the mention and the wake is ignored. ``replied``
+    ``addressed`` is a notification that wakes the agent
+    (``WAKE_NOTIFICATION_TYPES``) in the same topic within ``settle`` of the
+    wake: the kit folds both into one run, so the run belongs to the
+    notification and the wake is ignored. ``replied``
     is a post by the agent in the topic since the wake. With neither, the wake
     counts as silent only once the daemon has polled ``settle`` after it, so a
     machine that is off is not an agent declining.
@@ -1003,7 +1010,7 @@ class Ranker:
                 EXISTS (
                     SELECT 1 FROM notifications n
                     WHERE n.user_id = u.id AND n.topic_id = w.topic_id
-                      AND n.notification_type IN (1, 2, 3, 6)
+                      AND n.notification_type = ANY(%(types)s)
                       AND n.created_at BETWEEN %(from)s AND %(to)s
                 ) AS addressed,
                 EXISTS (
@@ -1017,6 +1024,7 @@ class Ranker:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(sql, {
                 "from": woken - settle, "to": woken + settle, "woken": woken,
+                "types": list(WAKE_NOTIFICATION_TYPES),
                 "post_id": post_id, "agent": agent,
             })
             row = cur.fetchone()

@@ -48,7 +48,7 @@ def _journal(tmp_path, **overrides):
         topic_id=59,
         post_number=3,
         title="Test",
-        reason="you were mentioned or replied to",
+        reason="you were mentioned",
         session=SESSION,
     )
     fields.update(overrides)
@@ -141,7 +141,7 @@ def test_a_state_file_with_no_journal_shows_nothing(tmp_path):
 def test_a_relevance_wake_shows_its_score_and_a_mention_none(tmp_path, claude_home):
     state = _journal(tmp_path, score=0.83, reason="a post scored as relevant to your interests")
     journal = daemon.Journal(state)
-    journal.begin(daemon.Wake("claude", "/a", 2, 1, "Second", "you were mentioned or replied to", SESSION))
+    journal.begin(daemon.Wake("claude", "/a", 2, 1, "Second", "you were mentioned", SESSION))
 
     scored, mention = wakes.recent(state, 20)
 
