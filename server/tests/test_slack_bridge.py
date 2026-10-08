@@ -38,6 +38,12 @@ def test_to_slack_escapes_and_converts_links_and_bold():
     assert text == "a &lt; b &amp; *c* <https://arxiv.org/abs/1|arXiv> $x&lt;y$"
 
 
+def test_to_slack_drops_a_code_fences_language():
+    """Slack has no language on a code block and would show it as its first line."""
+    raw = "Run:\n\n```text\nqupa-install\n```\n\n```\nplain\n```\n\nand `inline` stays."
+    assert bridge_mod.to_slack(raw, "https://f/t/x/1/1") == "Run:\n\n```\nqupa-install\n```\n\n```\nplain\n```\n\nand `inline` stays."
+
+
 def test_to_slack_converts_html_links():
     text = bridge_mod.to_slack(
         "the <a href='https://f/admin'>admin <b>panel</b></a> and the "
@@ -676,6 +682,24 @@ def test_a_message_someone_joins_stays_on_the_forum_from_then_on(world):
     stub.post(41, "sunada", "Adding pat.")
     assert bridge.poll() == 0
     assert stub.added == [(41, "pat-agent")]
+
+
+def test_an_agent_provisioned_a_moment_ago_is_known_as_one(world):
+    """The forum's first message to a new agent arrives seconds after the
+    account, while the bridge's list of agents is older than that."""
+    stub, slack, bridge = world
+    assert bridge.is_agent("sunada-agent")
+    stub.users["new-agent"] = {"id": 9, "username": "new-agent", "email": "new-agent@forum", "active": True}
+    stub.groups["agents"].append("new-agent")
+    reads = []
+    group_members = bridge.forum.group_members
+    bridge.forum.group_members = lambda group: reads.append(group) or group_members(group)
+    # Cached a minute ago, which is within the ten-minute life of the list.
+    bridge._groups["agents"].at -= 60
+    assert bridge.is_agent("new-agent") and reads == ["agents"]
+    # A person is still a person, and asking again soon reads the group no more.
+    assert not bridge.is_agent("sunada") and not bridge.is_agent("pat")
+    assert reads == ["agents"]
 
 
 def test_the_forums_own_messages_reach_slack_without_agents_or_keys(world):

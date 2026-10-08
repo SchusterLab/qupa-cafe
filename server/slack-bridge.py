@@ -63,6 +63,9 @@ PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to 
 LINK_ONLY_HINT = "This topic is edited often, so it is not copied here. Read it, and reply, on the forum."
 
 MEMBERSHIP_TTL_SECONDS = 600
+# A name a group's cached members lack reads the group again, at most this
+# often, so an agent provisioned a moment ago is known as one.
+MEMBERSHIP_MISS_SECONDS = 30
 
 MAX_PAGES_PER_POLL = 20
 
@@ -329,6 +332,8 @@ class Forum:
 _MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\((?:[^\s)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+# A fence's language, which Slack has no place for and shows as the first line.
+_FENCE_LANGUAGE = re.compile(r"^([ \t]*(?:```|~~~))[^\s`~]+[ \t]*$", re.M)
 # An attachment link keeps only its name.
 _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
 # Discourse writes some of its own messages in HTML.
@@ -372,6 +377,7 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     run to 40,000."""
     text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw, codes))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
+    text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
     text = slack_escape(text)
     # Links after escaping, so their angle brackets are the only live ones.
@@ -457,17 +463,21 @@ class Bridge:
 
     # -------------------------------------------------------- lookups
 
-    def members(self, group: str) -> set[str]:
+    def members(self, group: str, older_than: float = MEMBERSHIP_TTL_SECONDS) -> set[str]:
         cached = self._groups.get(group)
-        if not cached or time.time() - cached.at > MEMBERSHIP_TTL_SECONDS:
+        if not cached or time.time() - cached.at > older_than:
             cached = self._groups[group] = Cached(self.forum.group_members(group))
         return cached.value
 
+    def in_group(self, group: str, username: str) -> bool:
+        name = username.lower()
+        return name in self.members(group) or name in self.members(group, MEMBERSHIP_MISS_SECONDS)
+
     def is_agent(self, username: str) -> bool:
-        return username.lower() in self.members(AGENTS_GROUP_NAME)
+        return self.in_group(AGENTS_GROUP_NAME, username)
 
     def is_feed(self, username: str) -> bool:
-        return username.lower() in self.members(FEEDS_GROUP_NAME)
+        return self.in_group(FEEDS_GROUP_NAME, username)
 
     def category(self, category_id: int) -> dict:
         cached = self._categories.get(category_id)

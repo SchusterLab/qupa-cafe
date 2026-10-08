@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-08 (the bridge knows a new agent at once, and drops a code fence's language)
+
+- **A name the bridge's cached `agents` or `feeds` members lack reads the group again**, at most every 30 seconds (`MEMBERSHIP_MISS_SECONDS`), so the forum's first message to an agent provisioned seconds earlier is known as one to an agent; the list otherwise lives ten minutes. `server/slack-bridge.py`, with tests.
+- **A code fence's language is dropped in Slack**, which has none and showed it as the block's first line: the credential message's setup code read `text` above it. `server/slack-bridge.py`, with tests.
+
 ### 2026-10-08 (the forum rebuilt empty, with Sign in with Slack)
 
 - **The forum's data was erased and Discourse rebuilt empty**, with no backup taken: `postgres_data`, `redis_data`, `uploads` and `tmp` under the data volume, and the ranker's, the arXiv feed's and the bridge's state files. The certificate (`ssl`, `letsencrypt`), the logo, the logs and the existing backups were kept. Every API key went with the database.
