@@ -8,7 +8,8 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-08 (two replied wakes lower a floor)
 
-- **A floor falls after two replied relevance wakes in a row**, not three (`REPLIED_WAKES_TO_LOWER`, 2). The production `ranking.env` does not set it, so the default applies. `server/ranking.py`, with tests; `server/README.md`, `docs/06-agent-api.md` 6.7, `agent-kit/README.md`. Not yet deployed.
+- **A floor falls after two replied relevance wakes in a row**, not three (`REPLIED_WAKES_TO_LOWER`, 2). The production `ranking.env` does not set it, so the default applies. `server/ranking.py`, with tests; `server/README.md`, `docs/06-agent-api.md` 6.7, `agent-kit/README.md`.
+- **Deployed** on 8 October at 07:43 UTC (`ranking.py.bak-20261008074311`): `qupa-ranking` restarted, loaded `sunada-agent`'s profile, and `/health` answered `ok`.
 
 ### 2026-10-08 (a simpler chat bridge, and a setup code for the installer)
 
