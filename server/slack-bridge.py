@@ -2,8 +2,9 @@
 """Mirror the forum into a Slack workspace, and carry Slack replies back.
 
 One channel per category, one thread per topic; a thread reply is posted to the
-topic as the Slack user's own forum account, matched by email. A DM or group DM
-with the bot is a private message with the people in it and their agents.
+topic as the Slack user's own forum account, matched by email, and an edit to
+it there edits the post. A DM with the bot is a private message with the
+writer's agent. The policy and interests topics are linked, not copied.
 providers/slack/README.md describes the behaviour and the credential.
 
 Usage::
@@ -45,7 +46,9 @@ STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/sta
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "3600"))
 INVITE_RESEND_DAYS = float(os.environ.get("BRIDGE_INVITE_RESEND_DAYS", "7"))
-# Every agent posts its researcher's profile here, which is no news to them.
+# Edited often, so a copy in Slack would soon be out of date: each has a thread
+# holding only a link to it.
+POLICY_TOPIC_ID = int(os.environ.get("POLICY_TOPIC_ID", "0") or 0)
 INTERESTS_TOPIC_ID = int(os.environ.get("INTERESTS_TOPIC_ID", "0") or 0)
 
 AGENTS_GROUP_NAME = "agents"
@@ -56,6 +59,8 @@ AGENT_SUFFIX = "-agent"
 POST_TYPE_REGULAR = 1
 
 TOPIC_HINT = "Reply in this thread to post to the topic."
+PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
+LINK_ONLY_HINT = "This topic is edited often, so it is not copied here. Read it, and reply, on the forum."
 
 MEMBERSHIP_TTL_SECONDS = 600
 
@@ -86,6 +91,10 @@ class State:
                 CREATE TABLE IF NOT EXISTS invites (email TEXT PRIMARY KEY, invited_at REAL NOT NULL);
                 """
             )
+            # A post written in Slack keeps the text it was given, to tell an
+            # edit from Slack's report of a link preview arriving.
+            if "raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(from_slack)")}:
+                self.db.execute("ALTER TABLE from_slack ADD COLUMN raw TEXT")
 
     def _one(self, sql: str, *args) -> tuple | None:
         with self.lock:
@@ -145,8 +154,19 @@ class State:
         row = self._one("SELECT channel_id FROM from_slack WHERE post_id = ?", post_id)
         return row[0] if row else None
 
-    def record_from_slack(self, post_id: int, channel_id: str, ts: str) -> None:
-        self._run("INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts) VALUES (?, ?, ?)", post_id, channel_id, ts)
+    def record_from_slack(self, post_id: int, channel_id: str, ts: str, raw: str | None = None) -> None:
+        self._run(
+            "INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts, raw) VALUES (?, ?, ?, ?)",
+            post_id, channel_id, ts, raw,
+        )
+
+    def written_at(self, channel_id: str, ts: str) -> tuple[int, str | None] | None:
+        """(post id, raw) for the post a Slack message became."""
+        row = self._one("SELECT post_id, raw FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts)
+        return (row[0], row[1]) if row else None
+
+    def set_slack_raw(self, post_id: int, raw: str) -> None:
+        self._run("UPDATE from_slack SET raw = ? WHERE post_id = ?", raw, post_id)
 
     def invited_at(self, email: str) -> float | None:
         row = self._one("SELECT invited_at FROM invites WHERE email = ?", email.lower())
@@ -293,6 +313,9 @@ class Forum:
             as_user=as_user,
         )
 
+    def edit(self, post_id: int, raw: str, as_user: str) -> dict:
+        return self.request("PUT", f"/posts/{post_id}.json", {"post[raw]": raw}, as_user=as_user)
+
     def add_to_message(self, topic_id: int, username: str) -> dict:
         return self.request("POST", f"/t/{topic_id}/invite.json", {"user": username})
 
@@ -315,10 +338,15 @@ _HTML_TAG = re.compile(r"<[^>]+>")
 
 # A Discourse API key; a SHA-256 digest has the same shape and goes too.
 _SECRET = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])")
+# An agent kit setup code, which holds a key: scripts/45-provision-agent.py.
+_SETUP_CODE = re.compile(r"qupa-setup-[A-Za-z0-9_-]{20,}")
 
 
-def redact(text: str) -> str:
-    return _SECRET.sub("[a 64-character hex string, possibly a credential: read it on the forum]", text)
+def redact(text: str, codes: bool = False) -> str:
+    """Keys out of Slack, and setup codes unless ``codes``: the forum's own
+    message to one person carries theirs to their DM."""
+    text = _SECRET.sub("[a 64-character hex string, possibly a credential: read it on the forum]", text)
+    return text if codes else _SETUP_CODE.sub("[a setup code: read it on the forum]", text)
 
 
 def slack_escape(text: str) -> str:
@@ -335,13 +363,14 @@ def html_link(match: re.Match, base: str) -> str:
     return f"[{label or url}]({url})"
 
 
-def to_slack(raw: str, link: str) -> str:
+def to_slack(raw: str, link: str, codes: bool = False) -> str:
     """Forum markdown, readable in a thread: links, bold and images converted,
     and the rest as written, in full. ``link`` is the post's address, against
-    which a relative one is resolved. A post is at most `max_post_length`
-    (3,800) characters, which with a title and a closing line stays under the
-    4,000 Slack allows in an edited message; a new one may run to 40,000."""
-    text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw))
+    which a relative one is resolved; ``codes`` is ``redact``'s. A post is at
+    most `max_post_length` (3,800) characters, which with a title and a closing
+    line stays under the 4,000 Slack allows in an edited message; a new one may
+    run to 40,000."""
+    text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw, codes))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
     text = slack_escape(text)
@@ -379,6 +408,11 @@ def message_title(raw: str) -> str:
     return first if len(first) >= 15 else f"From Slack: {first}" if first else "A message from Slack"
 
 
+def same_text(a: str | None, b: str | None) -> bool:
+    """Equal as the forum stores them, which trims and uses bare newlines."""
+    return (a or "").replace("\r\n", "\n").strip() == (b or "").replace("\r\n", "\n").strip()
+
+
 def channel_name(category: dict, parent: dict | None, prefix: str) -> str:
     """``qupa-<slug>``, or ``qupa-<parent>-<slug>`` for a subcategory."""
     parts = [p.get("slug") or p.get("name") or "" for p in (parent, category) if p]
@@ -403,14 +437,14 @@ class Bridge:
 
     def __init__(
         self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX, first_run: str = FIRST_RUN,
-        interests_topic_id: int = INTERESTS_TOPIC_ID,
+        link_only: tuple[int, ...] = (POLICY_TOPIC_ID, INTERESTS_TOPIC_ID),
     ):
         self.forum = forum
         self.slack = slack
         self.state = state
         self.prefix = prefix
         self.first_run = first_run
-        self.interests_topic_id = interests_topic_id
+        self.link_only = {topic_id for topic_id in link_only if topic_id}
         self.lock = threading.RLock()
         self._groups: dict[str, Cached] = {}
         self._categories: dict[int, Cached] = {}
@@ -590,13 +624,25 @@ class Bridge:
                         self.ensure_name(category.value, channel_id)
             except Exception as exc:
                 LOG.error("cannot make a channel for %s: %s", category.value.get("name"), exc)
+        for topic_id in sorted(self.link_only):
+            try:
+                with self.lock:
+                    topic = self.topic_meta({"topic_id": topic_id})
+                    category_id = topic.get("category_id")
+                    channel_id = self.ensure_channel(self.category(category_id)) if category_id else None
+                    if channel_id:
+                        self.ensure_link(topic, channel_id)
+            except Exception as exc:
+                LOG.error("cannot link topic %d: %s", topic_id, exc)
 
     # -------------------------------------------------------- forum to Slack
 
     def post_url(self, topic: dict, post_number: int) -> str:
         return f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}/{post_number}"
 
-    def opening(self, topic: dict, first: dict | None, hint: str = TOPIC_HINT, mention: bool = True) -> dict:
+    def opening(
+        self, topic: dict, first: dict | None, hint: str = TOPIC_HINT, mention: bool = True, codes: bool = False,
+    ) -> dict:
         """A thread's parent: the title, linked, over the first post, under that
         post's author, so the conversation shows what the topic says without
         opening the thread, and ``hint`` after it in italics. With the first
@@ -607,7 +653,7 @@ class Bridge:
         if not first or first.get("hidden") or first.get("deleted_at") or first.get("user_deleted"):
             return {"text": heading.rstrip() + hint, "username": topic.get("opener") or "somebody"}
         # The linked title is the link to the post.
-        text = self.post_text(first, topic, mention=mention, heading=heading, link=False) + hint
+        text = self.post_text(first, topic, mention=mention, heading=heading, link=False, codes=codes) + hint
         return {"text": text, "username": first.get("username") or "somebody"}
 
     def first_post(self, topic: dict) -> dict | None:
@@ -631,6 +677,40 @@ class Bridge:
         self.state.set_thread(topic["id"], channel_id, result["ts"])
         return result["ts"]
 
+    def ensure_link(self, topic: dict, channel_id: str) -> None:
+        """A link-only topic's thread: its parent the title, linked, and nothing
+        else of the bridge's. A thread holding copies is cut back to that."""
+        url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
+        text = f"*<{url}|{slack_escape(topic['title'])}>*\n_{LINK_ONLY_HINT}_"
+        marker = f"linked:{topic['id']}"
+        existing = self.state.thread_for(topic["id"])
+        if existing and existing[0] == channel_id:
+            if self.state.cursor(marker) is not None:
+                return
+            for message in self.thread_messages(channel_id, existing[1]):
+                ours = message.get("bot_id") or message.get("user") == self.bot_user_id
+                if ours and message.get("ts") != existing[1]:
+                    self.slack.chat_delete(channel=channel_id, ts=message["ts"])
+            self.slack.chat_update(channel=channel_id, ts=existing[1], text=text)
+            LOG.info("topic %d's thread in %s cut back to a link", topic["id"], channel_id)
+        else:
+            result = self.slack.chat_postMessage(
+                channel=channel_id, text=text, username="qupa-cafe", unfurl_links=False, unfurl_media=False,
+            )
+            self.state.set_thread(topic["id"], channel_id, result["ts"])
+            LOG.info("topic %d linked in %s", topic["id"], channel_id)
+        self.state.set_cursor(1, marker)
+
+    def thread_messages(self, channel_id: str, thread_ts: str) -> list[dict]:
+        messages: list[dict] = []
+        cursor = None
+        while True:
+            page = self.slack.conversations_replies(channel=channel_id, ts=thread_ts, cursor=cursor, limit=200)
+            messages += page.get("messages") or []
+            cursor = (page.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                return messages
+
     def relay_post(self, post: dict) -> str:
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
@@ -646,6 +726,9 @@ class Bridge:
         channel_id = self.ensure_channel(category)
         if not channel_id:
             return "restricted category"
+        if topic["id"] in self.link_only:
+            self.ensure_link(topic, channel_id)
+            return "a topic read on the forum: linked, not copied"
 
         # The first post is the thread's parent; a feed topic's waits for a
         # reply, which brings it.
@@ -666,11 +749,12 @@ class Bridge:
         thread_ts: str,
         reopen: Callable[[], str] | None = None,
         mention: bool = True,
+        codes: bool = False,
     ) -> None:
         """One post as a thread reply. ``reopen`` restarts a thread whose parent
-        was deleted in Slack; ``mention`` is off in a DM."""
+        was deleted in Slack; ``mention`` is off in a DM; ``codes`` is ``redact``'s."""
         author = post.get("username") or "somebody"
-        text = self.post_text(post, topic, mention=mention)
+        text = self.post_text(post, topic, mention=mention, codes=codes)
         try:
             self.slack.chat_postMessage(
                 channel=channel_id,
@@ -694,17 +778,18 @@ class Bridge:
                 return
             raise
 
-    def post_text(self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True) -> str:
+    def post_text(
+        self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True, codes: bool = False,
+    ) -> str:
         """A post as Slack text: an agent's starts by mentioning its researcher,
-        except in the interests topic, then ``heading``, the body, and with
-        ``link`` a link to the post."""
+        then ``heading``, the body, and with ``link`` a link to the post."""
         author = post.get("username") or "somebody"
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
             post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
-        body = to_slack(post.get("raw") or "", url)
+        body = to_slack(post.get("raw") or "", url, codes)
         lead = ""
-        if mention and self.is_agent(author) and topic.get("id") != self.interests_topic_id:
+        if mention and self.is_agent(author):
             researcher = self.researcher_for(author)
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
@@ -748,49 +833,47 @@ class Bridge:
                     LOG.error("cannot add %s to message %d: %s", agent, topic["id"], exc)
         return added
 
-    def holds(self, channel_id: str, slack_ids: list[str]) -> bool:
-        """Is every one of these Slack users in this conversation with the bot?
-        A DM is checked by opening it, which avoids needing ``im:read``."""
-        if channel_id.startswith("D"):
-            return len(slack_ids) == 1 and self.dm_with(slack_ids[0]) == channel_id
-        cached = self._conversations.get(channel_id)
-        if not cached or time.time() - cached.at > MEMBERSHIP_TTL_SECONDS:
-            members = set(self.conversation_members({"channel": channel_id, "channel_type": "mpim"}))
-            cached = self._conversations[channel_id] = Cached(members)
-        return set(slack_ids) <= cached.value
+    def one_to_one(self, topic: dict) -> tuple[str, bool] | None:
+        """(person, from the forum) for a private message between one person
+        and their own agent, or from the forum's own accounts to one person:
+        the private messages carried to Slack. None for any other."""
+        details = topic.get("details") or {}
+        if details.get("allowed_groups"):
+            return None
+        people = self.humans_in(topic)
+        if len(people) != 1:
+            return None
+        person = people[0]
+        others = [u for u in details.get("allowed_users") or [] if (u.get("username") or "").lower() != person]
+        from_forum = False
+        for user in others:
+            if user.get("id") is not None and user["id"] <= 0:
+                from_forum = True
+            elif (user.get("username") or "").lower() != self.agent_of(person):
+                return None
+        return person, from_forum
 
     def dm_with(self, slack_id: str) -> str:
-        cached = self._conversations.get(f"dm:{slack_id}")
+        cached = self._conversations.get(slack_id)
         if not cached:
             channel = self.slack.conversations_open(users=slack_id)["channel"]["id"]
-            cached = self._conversations[f"dm:{slack_id}"] = Cached(channel)
+            cached = self._conversations[slack_id] = Cached(channel)
         return cached.value
 
-    def open_thread(
-        self, meta: dict, slack_ids: list[str], people: list[str], first: dict | None = None,
-    ) -> tuple[str, str]:
-        """A new thread for a private message, in the bot's DM or group DM with
-        exactly these Slack users, its parent the message's first post."""
-        channel_id = self.slack.conversations_open(users=",".join(slack_ids))["channel"]["id"]
-        if channel_id.startswith("D"):
-            self._conversations[f"dm:{slack_ids[0]}"] = Cached(channel_id)
-        else:
-            self._conversations[channel_id] = Cached(set(slack_ids))
+    def open_thread(self, meta: dict, slack_id: str, first: dict | None = None, codes: bool = False) -> tuple[str, str]:
+        """A new thread for a private message in the bot's DM with its person,
+        its parent the message's first post."""
+        channel_id = self.dm_with(slack_id)
         if first is None:
             first = self.first_post(meta)
-        hint = (
-            f"A private message among {', '.join(slack_escape(p) for p in people)} and their agents. "
-            "Reply in this thread to post to the private message."
-        )
-        # Outside a DM (id D...), an agent's post mentions its researcher.
-        opening = self.opening(meta, first, hint=hint, mention=not channel_id.startswith("D"))
+        opening = self.opening(meta, first, hint=PRIVATE_HINT, mention=False, codes=codes)
         result = self.slack.chat_postMessage(channel=channel_id, **opening, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(meta["id"], channel_id, result["ts"])
         return channel_id, result["ts"]
 
     def relay_private(self, post: dict) -> str:
-        """One private-message post into the bot's conversation with its people.
-        Somebody added who is not in that conversation moves the thread."""
+        """One private-message post into the bot's DM with its person, if the
+        message is between them and their agent or from the forum to them."""
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
         if post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
@@ -804,6 +887,14 @@ class Bridge:
         added = self.ensure_agents(topic)
         also = f"; added {', '.join(added)}" if added else ""
 
+        found = self.one_to_one(topic)
+        if not found:
+            return "not between one person and their agent" + also
+        person, codes = found
+        slack_id = self.slack_id_for(person)
+        if not slack_id:
+            return f"{person} is not on Slack" + also
+
         meta = {
             "id": post["topic_id"],
             "title": topic.get("title") or post.get("topic_title") or f"Message {post['topic_id']}",
@@ -811,41 +902,21 @@ class Bridge:
             "opener": ((topic.get("details") or {}).get("created_by") or {}).get("username") or "",
             "first_post_id": next(iter((topic.get("post_stream") or {}).get("stream") or []), None),
         }
-        people = self.humans_in(topic)
-        on_slack = {person: self.slack_id_for(person) for person in people}
-        slack_ids = sorted({sid for sid in on_slack.values() if sid})
-        if not slack_ids:
-            return "nobody in it is on Slack" + also
-
         threaded = self.state.thread_for(meta["id"])
-        if not threaded and (post.get("post_number") or 1) == 1:
-            channel_id, _ = self.open_thread(meta, slack_ids, people, first=post)
-            return f"relayed to {channel_id} as its thread's parent" + also
+        if threaded and self.state.origin_of(post["id"]) == threaded[0]:
+            return "came from this conversation" + also
         if not threaded:
-            channel_id, thread_ts = self.open_thread(meta, slack_ids, people)
+            first = post if (post.get("post_number") or 1) == 1 else None
+            channel_id, thread_ts = self.open_thread(meta, slack_id, first=first, codes=codes)
+            if first:
+                return f"relayed to {channel_id} as its thread's parent" + also
         else:
             channel_id, thread_ts = threaded
-            if self.state.origin_of(post["id"]) == channel_id:
-                return "came from this conversation" + also
-            if not self.holds(channel_id, slack_ids):
-                old_channel, old_ts = channel_id, thread_ts
-                channel_id, thread_ts = self.open_thread(meta, slack_ids, people)
-                try:
-                    self.slack.chat_postMessage(
-                        channel=old_channel, thread_ts=old_ts,
-                        text="Somebody new is in this private message, so it continues in a conversation that includes them.",
-                    )
-                except Exception as exc:
-                    LOG.warning("cannot leave a note in %s: %s", old_channel, exc)
-
-        if self.state.origin_of(post["id"]) == channel_id:
-            return "came from this conversation" + also
 
         def reopen() -> str:
-            return self.open_thread(meta, slack_ids, people)[1]
+            return self.open_thread(meta, slack_id, codes=codes)[1]
 
-        # Outside a DM (id D...), an agent's reply mentions its researcher.
-        self.send(post, meta, channel_id, thread_ts, reopen=reopen, mention=not channel_id.startswith("D"))
+        self.send(post, meta, channel_id, thread_ts, reopen=reopen, mention=False, codes=codes)
         return f"relayed to {channel_id}" + also
 
     def new_posts(self, private: bool = False) -> list[dict]:
@@ -911,6 +982,9 @@ class Bridge:
 
     def handle_message(self, event: dict) -> str:
         """One Slack message event. Returns what happened, for the log."""
+        # It names no user of its own: who wrote the message is inside it.
+        if event.get("subtype") == "message_changed":
+            return self.handle_edit(event)
         if event.get("bot_id") or event.get("user") in (None, self.bot_user_id):
             return "not from a person"
         if event.get("channel_type") in ("im", "mpim"):
@@ -945,6 +1019,12 @@ class Bridge:
         if topic_id is None:
             self.ephemeral(channel_id, user, thread_ts, "This thread is not a forum topic, so nothing was posted.")
             return "thread is not a topic"
+        if topic_id in self.link_only:
+            self.ephemeral(
+                channel_id, user, thread_ts,
+                f"This topic is read and answered on the forum, so nothing was posted: {self.forum.base_url}/t/{topic_id}",
+            )
+            return "a topic read on the forum, not posted"
 
         try:
             account, email = self.forum_user_for(user)
@@ -963,6 +1043,51 @@ class Bridge:
             lambda text: self.ephemeral(channel_id, user, thread_ts, text),
         )
 
+    def handle_edit(self, event: dict) -> str:
+        """A message written in Slack, edited there: its post is edited as its
+        writer. Nobody but the bot can edit the bot's own messages, and forum
+        edits are not carried back."""
+        message = event.get("message") or {}
+        user = message.get("user")
+        if message.get("bot_id") or user in (None, self.bot_user_id):
+            return "not an edit by a person"
+        channel_id = event.get("channel") or ""
+        thread_ts = message.get("thread_ts") or message.get("ts")
+        with self.lock:
+            written = self.state.written_at(channel_id, message.get("ts") or "")
+            if written is None:
+                return "an edit to a message that is not on the forum"
+            post_id, stored = written
+            raw = from_slack(message.get("text") or "", self.mention_for)
+            # Slack reports a link preview arriving as an edit too.
+            if same_text(raw, stored):
+                return "unchanged"
+
+            def tell(text: str) -> None:
+                if event.get("channel_type") == "im":
+                    try:
+                        self.slack.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
+                    except Exception as exc:
+                        LOG.warning("cannot answer %s: %s", user, exc)
+                else:
+                    self.ephemeral(channel_id, user, thread_ts, text)
+
+            if not raw:
+                tell("The forum cannot hold an empty post, so it was not changed. To remove it, delete it on the forum.")
+                return "an empty edit"
+            try:
+                author = self.forum.post(post_id).get("username") or ""
+                self.forum.edit(post_id, raw, as_user=author)
+            except Refused as exc:
+                reason = forum_error(exc)
+                tell(f"The forum did not accept that edit: {reason}")
+                return f"refused: {reason}"
+            except Transient as exc:
+                tell("The forum is not answering just now, so that edit was not made. Edit the message again in a minute.")
+                return f"transient: {exc}"
+            self.state.set_slack_raw(post_id, raw)
+        return f"edited post {post_id} as {author}"
+
     def post_as(self, account: dict, topic_id: int, event: dict, tell: Callable[[str], None]) -> str:
         raw = from_slack(event.get("text") or "", self.mention_for)
         if not raw:
@@ -979,29 +1104,27 @@ class Bridge:
                 return f"transient: {exc}"
             post_id = created.get("id")
             if post_id:
-                self.state.record_from_slack(post_id, event.get("channel") or "", event.get("ts") or "")
+                self.state.record_from_slack(post_id, event.get("channel") or "", event.get("ts") or "", raw)
         return f"posted as {account['username']} (post {post_id})"
 
-    def conversation_members(self, event: dict) -> list[str]:
-        if event.get("channel_type") == "im":
-            return [event["user"]]
-        members: list[str] = []
-        cursor = None
-        while True:
-            page = self.slack.conversations_members(channel=event["channel"], limit=200, cursor=cursor)
-            members += page.get("members") or []
-            cursor = (page.get("response_metadata") or {}).get("next_cursor")
-            if not cursor:
-                break
-        return [m for m in members if m != self.bot_user_id]
-
     def handle_conversation(self, event: dict) -> str:
-        """A top-level message opens a private message; a thread reply continues it."""
+        """In a DM with the bot, a top-level message opens a private message
+        with the writer's agent, and a thread reply continues one. A group DM
+        is not carried."""
         subtype = event.get("subtype")
         channel_id = event.get("channel") or ""
         user = event["user"]
         top_level = not event.get("thread_ts") or event.get("thread_ts") == event.get("ts")
         thread_ts = event.get("ts") if top_level else event.get("thread_ts")
+
+        if event.get("channel_type") == "mpim":
+            if top_level and not subtype:
+                self.ephemeral(
+                    channel_id, user, None,
+                    "Group conversations are not carried to the forum. To talk to your agent, message this app "
+                    "directly; to talk with others, write on the forum.",
+                )
+            return "group DM, not relayed"
 
         def tell(text: str) -> None:
             try:
@@ -1032,26 +1155,12 @@ class Bridge:
         return self.open_message(account, event, tell)
 
     def open_message(self, account: dict, event: dict, tell: Callable[[str], None]) -> str:
-        """To everybody else in the conversation with an account, and every agent."""
-        channel_id = event["channel"]
+        """A private message from the writer to their own agent."""
         sender = account["username"]
-        people, absent = [sender], []
-        for member in self.conversation_members(event):
-            if member == event["user"]:
-                continue
-            try:
-                found, _ = self.forum_user_for(member)
-            except Unusable:
-                found = None
-            if found:
-                people.append(found["username"])
-            else:
-                absent.append(self.mention_for(member))
-        agents = [a for a in (self.agent_of(person) for person in people) if a]
-        recipients = [p for p in people if p != sender] + agents
-        if not recipients:
-            tell("You have no agent on the forum yet, and nobody else here has an account there, so there is nobody to send this to.")
-            return "nobody to send to"
+        agent = self.agent_of(sender)
+        if not agent:
+            tell("You have no agent on the forum yet, so there is nobody to send this to.")
+            return "no agent to send to"
 
         raw = from_slack(event.get("text") or "", self.mention_for)
         if not raw:
@@ -1060,13 +1169,13 @@ class Bridge:
         with self.lock:
             try:
                 try:
-                    created = self.forum.private_message(title, raw, recipients, as_user=sender)
+                    created = self.forum.private_message(title, raw, [agent], as_user=sender)
                 except Refused as exc:
                     # A duplicate title, from two messages opening alike.
                     if "title" not in forum_error(exc).lower():
                         raise
                     stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(event.get("ts") or time.time())))
-                    created = self.forum.private_message(f"{title} ({stamp})", raw, recipients, as_user=sender)
+                    created = self.forum.private_message(f"{title} ({stamp})", raw, [agent], as_user=sender)
             except Refused as exc:
                 reason = forum_error(exc)
                 tell(f"The forum did not accept that message: {reason}")
@@ -1076,17 +1185,16 @@ class Bridge:
                 return f"transient: {exc}"
             topic_id = created.get("topic_id")
             if created.get("id"):
-                self.state.record_from_slack(created["id"], channel_id, event.get("ts") or "")
+                self.state.record_from_slack(created["id"], event["channel"], event.get("ts") or "", raw)
             if topic_id:
-                self.state.set_thread(topic_id, channel_id, event["ts"])
+                self.state.set_thread(topic_id, event["channel"], event["ts"])
 
         url = f"{self.forum.base_url}/t/{created.get('topic_slug') or 'message'}/{topic_id}"
-        note = f"Sent on the forum as <{url}|a private message> to {', '.join(recipients)}. "
-        note += "Replies in this thread continue it; a new message outside the thread starts another."
-        if absent:
-            note += f" Not in it, having no forum account: {', '.join(absent)}."
-        tell(note)
-        return f"opened message {topic_id} as {sender} to {', '.join(recipients)}"
+        tell(
+            f"Sent on the forum as <{url}|a private message> to {agent}. Replies in this thread continue it; "
+            "a new message outside the thread starts another."
+        )
+        return f"opened message {topic_id} as {sender} to {agent}"
 
     def mention_for(self, slack_user: str) -> str:
         try:

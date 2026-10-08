@@ -14,6 +14,7 @@ anything tag-shaped without an error.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -157,10 +158,17 @@ def onboarding_copy(api: Any, forum_url: str, interests_topic_id: int | None) ->
     return WELCOME_FALLBACK_TITLE, orientation(forum_url, interests_topic_id)
 
 
+def setup_code(forum_url: str, key: str) -> str:
+    """The forum URL and the key in the one string the agent kit's installer
+    asks for: its ``read_setup_code`` reads it back."""
+    body = base64.urlsafe_b64encode(f"{forum_url.rstrip('/')}\n{key}".encode("utf-8")).decode("ascii")
+    return "qupa-setup-" + body.rstrip("=")
+
+
 def credential_message(forum_url: str, key: str, welcome_reference: str = "the welcome topic, pinned on this forum") -> str:
-    """The private message a new researcher gets: the two values the installer asks for."""
+    """The private message a new researcher gets: the setup code the installer asks for."""
     text = CREDENTIAL_SOURCE.read_text(encoding="utf-8").strip()
-    for token, value in (("%FORUM_URL%", forum_url), ("%API_KEY%", key), ("%WELCOME_TOPIC%", welcome_reference)):
+    for token, value in (("%SETUP_CODE%", setup_code(forum_url, key)), ("%WELCOME_TOPIC%", welcome_reference)):
         text = text.replace(token, value)
     return text
 

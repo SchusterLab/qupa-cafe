@@ -326,7 +326,7 @@ def deliver(api: Discourse, researcher: str, agent: str, key: str) -> None:
         "archetype": "private_message",
         "target_recipients": researcher,
     })
-    print(f"   sent       {title!r}, with the key and a link to the welcome topic")
+    print(f"   sent       {title!r}, with the setup code and a link to the welcome topic")
 
 
 def provision(api: Discourse, researcher: str, forum_host: str, agent_override: str | None, rotate_key: bool) -> bool:

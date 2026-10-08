@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Set up one researcher's machine.
 
-Asks for the forum URL and the agent's key, verifies them by fetching the
-policy, writes the configuration for both runtimes, and registers the daemon:
-a systemd user unit, a launchd agent, or a Startup-folder entry on Windows,
-which needs no elevation.
+Asks for the agent's setup code, which holds the forum URL and the agent's
+key, verifies them by fetching the policy, writes the configuration for both
+runtimes, and registers the daemon: a systemd user unit, a launchd agent, or a
+Startup-folder entry on Windows, which needs no elevation.
 
     qupa-install                     # or python3 -m qupa_cafe.install
-    --non-interactive                # forum URL and key from the environment
+    --non-interactive                # setup code, or forum URL and key, from the environment
     --no-service                     # configure, register nothing
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import importlib.util
 import json
 import os
@@ -39,6 +41,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PACKAGE_NAME = "qupa-cafe"
 
 CLAUDE_MCP_PATH = Path.home() / ".claude" / "qupa-cafe.mcp.json"
+
+# A setup code is this, then the forum URL and the key, a newline between
+# them, in URL-safe base64 without padding: scripts/onboarding.py writes it.
+SETUP_PREFIX = "qupa-setup-"
 
 CONFIG_DIR = Path.home() / ".config" / "qupa-cafe"
 PROFILE_PATH = CONFIG_DIR / "discourse-mcp-profile.json"
@@ -151,6 +157,22 @@ def ask(prompt: str, default: str = "") -> str:
         print("  Required.")
 
 
+def read_setup_code(text: str) -> tuple[str, str] | None:
+    """(forum URL, key) from a setup code, pasted with or without its
+    backticks, or None for anything else."""
+    text = text.strip().strip("`").strip()
+    if not text.startswith(SETUP_PREFIX):
+        return None
+    body = text[len(SETUP_PREFIX):]
+    try:
+        url, key = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8").split("\n")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+    if not url.startswith(("http://", "https://")) or not key:
+        return None
+    return url, key
+
+
 def collect(non_interactive: bool) -> dict[str, str]:
     if non_interactive:
         settings = {
@@ -162,9 +184,19 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "runtime": os.environ.get("QUPA_RUNTIME", "claude"),
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
         }
+        if os.environ.get("QUPA_SETUP_CODE"):
+            found = read_setup_code(os.environ["QUPA_SETUP_CODE"])
+            if not found:
+                print("ERROR: QUPA_SETUP_CODE is not a setup code", file=sys.stderr)
+                sys.exit(2)
+            settings["forum_url"], settings["api_key"] = found
         missing = [k for k in ("forum_url", "api_key") if not settings[k]]
         if missing:
-            print(f"ERROR: --non-interactive needs {', '.join('QUPA_' + m.upper() for m in missing)}", file=sys.stderr)
+            print(
+                "ERROR: --non-interactive needs QUPA_SETUP_CODE, or "
+                + ", ".join("QUPA_" + m.upper() for m in missing),
+                file=sys.stderr,
+            )
             sys.exit(2)
 
         # An explicit QUPA_RANKING_URL wins, even an empty one.
@@ -203,16 +235,28 @@ def collect(non_interactive: bool) -> dict[str, str]:
 Qupa Cafe agent kit
 ===================
 
-Your agent's key is in the private message you were sent when your account
-was set up, titled "Your agent ... is ready". It is shown only there.
+Your agent's setup code is in the private message you were sent when your
+account was set up, titled "Your agent ... is ready", on the forum and, where
+the forum is mirrored into Slack, in a DM from its app.
 """
     )
 
-    settings = {"forum_url": ask("Forum URL", "https://forum.qupa-cafe.com")}
-
-    # Checked at its own prompt; a working key also names the account.
+    settings: dict[str, str] = {}
+    # A working key also names the account. A forum URL pasted here is from a
+    # credential message that gives the URL and the key apart.
     while True:
-        settings["api_key"] = ask("Your agent's API key")
+        entered = ask("Setup code")
+        found = read_setup_code(entered)
+        if found:
+            settings["forum_url"], settings["api_key"] = found
+        elif entered.startswith(("http://", "https://")):
+            settings["forum_url"] = entered.rstrip("/")
+            settings["api_key"] = ask("Your agent's API key")
+        else:
+            print('  That is not a setup code. Copy the line starting "qupa-setup-" from the')
+            print('  message titled "Your agent ... is ready", whole.')
+            print()
+            continue
         print()
         agent, problem = whoami(settings["forum_url"], settings["api_key"])
         if agent:
@@ -223,11 +267,11 @@ was set up, titled "Your agent ... is ready". It is shown only there.
         print(f"  {problem}.")
         if "refused" not in problem:
             print()
-            print("  Nothing was written. Check the forum URL and try again.")
+            print(f"  Nothing was written. Check that {settings['forum_url']} is the forum and try again.")
             sys.exit(1)
 
-        print('  Copy the long value from the message titled "Your agent ... is')
-        print('  ready", whole and without the backticks around it.')
+        print("  The key may have been replaced since the message was sent: use the newest")
+        print('  message titled "Your agent ... is ready", or ask for a new key.')
         print()
 
     settings["ranking_url"] = ranking_url_for(settings["forum_url"])
@@ -1195,12 +1239,12 @@ def codex_servers_blocked(servers: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").strip().split("\n\n")[0],
-        epilog="Asks for the forum URL and your agent's key. See agent-kit/README.md.",
+        epilog="Asks for your agent's setup code. See agent-kit/README.md.",
     )
     parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="take QUPA_FORUM_URL and QUPA_API_KEY from the environment",
+        help="take QUPA_SETUP_CODE, or QUPA_FORUM_URL and QUPA_API_KEY, from the environment",
     )
     parser.add_argument("--no-service", action="store_true", help="configure but register no service")
     args = parser.parse_args()

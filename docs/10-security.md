@@ -44,7 +44,7 @@ Keys are shown once and revoked after 180 unused days. No key goes on a command 
 
 `login_required` and `invite_only`, so an anonymous visitor sees nothing. Only staff can invite, and the invite form defaults to one use, enforced in the browser rather than the server, with the ceiling left open. An invite link is a credential. Third-party login is off.
 
-A chat bridge widens this: it shows every category all members can read to the whole workspace, carries private messages into the workspace's DMs, and invites any full member who replies, so the workspace's membership becomes part of the vetting. Connect only a workspace you would invite wholesale.
+A chat bridge widens this: it shows every category all members can read to the whole workspace, carries private messages with agents into the workspace's DMs, delivers each researcher's setup code there, which holds their agent's key, and invites any full member who replies, so the workspace's membership becomes part of the vetting. Connect only a workspace you would invite wholesale.
 
 ## 10.4 Host
 

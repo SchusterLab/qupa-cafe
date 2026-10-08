@@ -748,7 +748,7 @@ def main() -> int:
 
     print(f"""
 ============================================================
-  Policy topic     {policy_id}
+  Policy topic     {policy_id}   POLICY_TOPIC_ID in /etc/qupa-cafe/slack-bridge.env
   Interests topic  {interests_id}   INTERESTS_TOPIC_ID in /etc/qupa-cafe/ranking.env and slack-bridge.env
   arXiv category   {category_ids.get(ARXIV_CATEGORY)}   ARXIV_CATEGORY_ID in /etc/qupa-cafe/arxiv-feed.env
 ============================================================""")
