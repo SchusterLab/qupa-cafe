@@ -2,7 +2,7 @@
 
 A bridge between the forum and a Slack workspace: `server/slack-bridge.py`, run by `server/qupa-slack-bridge.service`, as the Slack app in `manifest.yml`.
 
-> **Status:** Channel creation, the Socket Mode connection, and a DM to the bot opening a private message whose agent answer came back have each been seen once. Every other path, including edits from Slack, the linked policy and interests topics, and the setup code reaching a DM, has run only in `server/tests/test_slack_bridge.py`.
+> **Status:** Channel creation, the Socket Mode connection, and a DM to the bot opening a private message whose agent answer came back have each been seen once. On the forum rebuilt on 8 October, the credential message carried its setup code whole to its researcher's DM, and Sign in with Slack made the first account, the developer email's, an admin. Unverified: that the sign-in refuses an account outside the workspace, that the sign-up form's username limit applies to it, and, outside the tests in `server/tests/test_slack_bridge.py`, edits from Slack and the linked policy and interests topics.
 
 ## What it does
 
@@ -73,6 +73,22 @@ sudo systemctl enable --now qupa-slack-bridge
 `--check` reads the forum and calls Slack's `auth.test`, changing nothing, names any failing credential, and names any scope the bot token lacks.
 
 `INTERESTS_TOPIC_ID` is the ranking service's, copied from its env file, and `POLICY_TOPIC_ID` is the policy topic's; a topic left unset is copied like any other. Optional settings: `SLACK_CHANNEL_PREFIX` (`qupa-`), `SLACK_FIRST_RUN` (`newest` to skip history), `BRIDGE_POLL_SECONDS` (15), `BRIDGE_CATEGORY_SYNC_SECONDS` (3600), `BRIDGE_INVITE_RESEND_DAYS` (7), `BRIDGE_STATE` (`/var/lib/qupa-slack-bridge/state.db`).
+
+### Sign in with Slack
+
+The same app signs people in to the forum, through Discourse's OpenID Connect plugin, so that a workspace member needs no password. `manifest.yml` carries the redirect URL `https://<forum>/auth/oidc/callback` and the user scopes `openid`, `email` and `profile`. The app is not publicly distributed, which is meant to keep the sign-in to the workspace's members. Its Client ID and Client Secret, under **Basic Information → App Credentials**, go in the repository's `.env` as `SLACK_OIDC_CLIENT_ID=` and `SLACK_OIDC_CLIENT_SECRET=`, and from there into the forum's settings, in the container's console:
+
+```ruby
+SiteSetting.openid_connect_discovery_document = "https://slack.com/.well-known/openid-configuration"
+SiteSetting.openid_connect_client_id = "<SLACK_OIDC_CLIENT_ID>"
+SiteSetting.openid_connect_client_secret = "<SLACK_OIDC_CLIENT_SECRET>"
+SiteSetting.openid_connect_authorize_scope = "openid email profile"
+SiteSetting.openid_connect_enabled = true
+{ "js.login.oidc.name" => "Slack", "js.login.oidc.title" => "with Slack",
+  "js.login.oidc.message" => "Authenticating with Slack" }.each { |key, text| TranslationOverride.upsert!("en", key, text) }
+```
+
+`/site.json` then lists `oidc` under `auth_providers`. A forum with no admin shows its "finish installation" page, which offers only an email registration, until `has_login_hint` is false; set it, and the first person signs in with Slack before `40-configure-forum.py` turns on invite-only. The address in `DISCOURSE_DEVELOPER_EMAILS` is made admin through Slack as through email.
 
 ### Checking it
 

@@ -12,7 +12,14 @@ features:
     display_name: qupa-cafe
     always_online: true
 oauth_config:
+  # Sign in with Slack on the forum: README.md, "Sign in with Slack".
+  redirect_urls:
+    - https://forum.qupa-cafe.com/auth/oidc/callback
   scopes:
+    user:
+      - openid
+      - email
+      - profile
     bot:
       - channels:history
       - channels:join
