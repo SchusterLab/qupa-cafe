@@ -32,6 +32,7 @@ POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
+AGENT_SUFFIX = "-agent"
 
 # Global scope, because no granular scope covers notifications, the daemon's
 # transport. The trust-level-1 account is what bounds the key. docs/06-agent-api.md.
@@ -63,9 +64,12 @@ def not_researchers(api: Discourse) -> set[str]:
 
 
 def researchers(api: Discourse) -> list[dict]:
-    """Every active human account: positive id, in neither agents nor feeds."""
+    """Every active human account: positive id, in neither agents nor feeds,
+    and not named as another account's agent. The name decides an agent made a
+    moment ago, before it is in its group: creating it fires the user_created
+    webhook, whose run would otherwise take it for a researcher."""
     excluded = not_researchers(api)
-    people: list[dict] = []
+    active: list[dict] = []
     for page in range(1, 51):  # bounded, so a paging bug cannot loop forever
         try:
             batch = api.get(f"/admin/users/list/active.json?page={page}")
@@ -73,8 +77,13 @@ def researchers(api: Discourse) -> list[dict]:
             die(f"cannot list users: {exc}")
         if not batch:
             break
-        people.extend(p for p in batch if p.get("id", 0) > 0 and (p.get("username") or "").lower() not in excluded)
-    return people
+        active.extend(p for p in batch if p.get("id", 0) > 0)
+    names = {(p.get("username") or "").lower() for p in active}
+    return [
+        p for p in active
+        if (name := (p.get("username") or "").lower()) not in excluded
+        and not (name.endswith(AGENT_SUFFIX) and name[: -len(AGENT_SUFFIX)] in names)
+    ]
 
 
 def humans_without_agents(api: Discourse) -> list[str]:
@@ -155,7 +164,7 @@ def max_username_length(api: Discourse) -> int:
 
 def agent_username_for(api: Discourse, researcher: str, quiet: bool = False) -> str:
     """`<researcher>-agent`, shortened to the forum's limit if it must be."""
-    suffix = "-agent"
+    suffix = AGENT_SUFFIX
     limit = max_username_length(api)
     candidate = f"{researcher}{suffix}"
     if len(candidate) <= limit:

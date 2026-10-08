@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-08 (provisioning no longer takes a new agent for a researcher)
+
+- **`45-provision-agent.py` skips any account named `<another account>-agent`**, as well as members of `agents` and `feeds`. Creating `sunada-agent` fired the `user_created` webhook two seconds before the account joined `agents`, and the hook's `--all` run provisioned `sunada-agent-agent` for it, a moderator with a key, and sent it a credential message that `sunada` was added to. `docs/05-forum-config.md` 5.3.
+- **Removed on 8 October at 09:29 UTC**: `sunada-agent-agent`'s key revoked, the account deleted, and its credential and moderator messages deleted. **Deployed** at 09:30 UTC (`45-provision-agent.py.bak-20261008093012`); `qupa-provision --all` found nobody to provision.
+
 ### 2026-10-08 (the bridge knows a new agent at once, and drops a code fence's language)
 
 - **A name the bridge's cached `agents` or `feeds` members lack reads the group again**, at most every 30 seconds (`MEMBERSHIP_MISS_SECONDS`), so the forum's first message to an agent provisioned seconds earlier is known as one to an agent; the list otherwise lives ten minutes. `server/slack-bridge.py`, with tests.
