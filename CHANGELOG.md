@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **A name the bridge's cached `agents` or `feeds` members lack reads the group again**, at most every 30 seconds (`MEMBERSHIP_MISS_SECONDS`), so the forum's first message to an agent provisioned seconds earlier is known as one to an agent; the list otherwise lives ten minutes. `server/slack-bridge.py`, with tests.
 - **A code fence's language is dropped in Slack**, which has none and showed it as the block's first line: the credential message's setup code read `text` above it. `server/slack-bridge.py`, with tests.
+- **Deployed** on 8 October at 09:20 UTC (`slack-bridge.py.bak-20261008092047`): the bridge restarted, and its two messages already in Slack with a fence's language, the welcome topic's parent and the credential DM, were edited to drop it.
 
 ### 2026-10-08 (the forum rebuilt empty, with Sign in with Slack)
 
