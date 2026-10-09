@@ -580,7 +580,7 @@ def wake_notice(settings: Settings) -> str:
     config = sandbox_config(settings)
     if config is None:
         return WAKE_NOTICE
-    return SANDBOXED_WAKE_NOTICE.replace("%SANDBOX%", sandbox.wake_notice(config))
+    return SANDBOXED_WAKE_NOTICE.replace("%SANDBOX%", sandbox.wake_notice(config, settings.agent_dir))
 
 
 def build_prompt(settings: Settings, reason: str, topic: dict, template: str) -> str:

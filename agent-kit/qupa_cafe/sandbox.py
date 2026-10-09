@@ -164,17 +164,27 @@ def decide(event: dict, config: dict | None) -> dict | None:
     if not config:
         return None
     workspace = [config["workspace"]]
+    readable = workspace + list(config.get("readable") or [])
+    # Elsewhere the researcher's own settings decide, and an unattended run
+    # usually refuses; the context says where to go instead, since Claude
+    # Code's refusal names no alternative.
     if tool in WRITE_TOOLS:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), workspace, cwd):
             return answer("allow", "Inside the sandbox's workspace.")
-        return None
+        return context(f"{path} is outside the sandbox's workspace. Write under {config['workspace']} instead, "
+                       "with an absolute path.")
     if tool in READ_TOOLS:
         path = arguments.get(READ_TOOLS[tool]) or cwd
-        if within(str(path), workspace + list(config.get("readable") or []), cwd):
+        if within(str(path), readable, cwd):
             return answer("allow", "Readable from the sandbox.")
-        return None
+        return context(f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
     return None
+
+
+def context(text: str) -> dict:
+    """No decision, and a note for the model beside whatever happens."""
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
 
 
 def hook_main() -> int:
@@ -201,19 +211,33 @@ def claude_settings() -> str:
     )
 
 
-def wake_notice(config: dict) -> str:
-    """What a sandboxed wake can do, for the end of its prompt."""
+def wake_notice(config: dict, agent_dir: str = "") -> str:
+    """What a sandboxed wake can do and how, for the end of its prompt."""
+    workspace = config["workspace"]
     readable = list(config.get("readable") or [])
-    reads = f" and can read {', '.join(readable)}" if readable else ""
+    if agent_dir and Path(agent_dir).is_dir():
+        agent_dir = str(Path(agent_dir).resolve())
+    if agent_dir and agent_dir in readable:
+        here = f"Your working directory, {agent_dir}, you can read but not write. "
+    elif agent_dir:
+        here = f"Your working directory, {agent_dir}, is outside the sandbox. "
+    else:
+        here = ""
+    others = [path for path in readable if path != agent_dir]
+    also = f" It can also read {', '.join(others)}." if others else ""
     return (
-        "Bash runs each command in a sandbox with open internet access. It starts in "
-        f"{config['workspace']}, the only place you can write, which keeps what you leave there "
-        f"for later wakes{reads}; nothing else on this machine is reachable. Python there is a "
-        "pixi environment with the scipy-notebook packages, already active, so run python "
-        "directly. To add a package run `pixi add <name>` (conda-forge) or `pixi add --pypi "
-        "<name>`, never pip or conda; it stays for later wakes. Read, Write and Edit work in "
-        "the same places. A figure you save in the workspace can be attached with "
-        "attach_file's path."
+        "Bash runs each command in a sandbox with open internet access, though not to this "
+        f"machine's or its network's own addresses. Every command starts in {workspace}, which is "
+        "also HOME there; it is the only place you can write, and what you leave there is kept for "
+        f"later wakes; put scratch files in $TMPDIR, which is there too, since /tmp may not be "
+        f"writable.{also} {here}Give Write and Edit absolute paths under {workspace}. Python "
+        "there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
+        "matplotlib, sympy, scikit-learn, statsmodels and others), already active, so run python "
+        "directly. To add a package run `pixi add <name>` from conda-forge or `pixi add --pypi "
+        "<name>` from PyPI, never pip or conda; it stays for later wakes. matplotlib draws without "
+        "a display: save a figure with savefig, look at it with Read, and attach it to a post with "
+        "attach_file's path. A command is stopped after two minutes unless you give Bash a longer "
+        "timeout, up to ten, and the whole wake after fifteen."
     )
 
 

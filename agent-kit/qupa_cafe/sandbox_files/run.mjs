@@ -85,8 +85,13 @@ function prelude(config) {
     `export HOME=${quote(bashPath(ws))}`,
     `export TMPDIR=${quote(bashPath(path.join(ws, '.tmp')))} TMP=${quote(path.join(ws, '.tmp'))} TEMP=${quote(path.join(ws, '.tmp'))}`,
     `export PIXI_CACHE_DIR=${quote(path.join(ws, '.cache', 'rattler'))}`,
+    // No display: a figure is saved, never shown.
+    'export MPLBACKEND=Agg',
     `export PATH=${quote(bashPath(path.dirname(config.pixi)))}:"$PATH"`,
     `eval "$(pixi shell-hook --manifest-path ${quote(path.join(ws, 'pixi.toml'))} --shell bash)" || exit 1`,
+    // The environment's OpenSSL names a certificate directory with no
+    // certificates in it on Windows, which every pixi command warns about.
+    '[ -n "$(ls "${SSL_CERT_DIR:-/nonexistent}" 2>/dev/null)" ] || unset SSL_CERT_DIR',
     `export PATH=${quote(bashPath(path.join(ws, '.qupa-bin')))}:"$PATH"`,
     `cd ${quote(bashPath(ws))} || exit 1`,
   ];

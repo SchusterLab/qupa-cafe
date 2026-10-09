@@ -183,9 +183,11 @@ def test_writes_are_approved_only_in_the_workspace(installed, tmp_path):
 
     assert _decision(sandbox.decide(inside, installed)) == "allow"
     # Not refused: left to the researcher's own settings, which refuse it
-    # unless they say otherwise.
-    assert sandbox.decide(research, installed) is None
-    assert sandbox.decide(escape, installed) is None
+    # unless they say otherwise, with a note of where to write instead.
+    for elsewhere in (research, escape):
+        out = sandbox.decide(elsewhere, installed)["hookSpecificOutput"]
+        assert "permissionDecision" not in out
+        assert installed["workspace"] in out["additionalContext"]
 
 
 def test_reads_are_approved_in_the_workspace_and_the_readable_directories(installed, tmp_path):
@@ -193,7 +195,9 @@ def test_reads_are_approved_in_the_workspace_and_the_readable_directories(instal
 
     assert _decision(sandbox.decide(read(Path(installed["readable"][0]) / "notes.md"), installed)) == "allow"
     assert _decision(sandbox.decide(read(Path(installed["workspace"]) / "out.png"), installed)) == "allow"
-    assert sandbox.decide(read(Path.home() / ".ssh" / "id_ed25519"), installed) is None
+    out = sandbox.decide(read(Path.home() / ".ssh" / "id_ed25519"), installed)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
+    assert installed["readable"][0] in out["additionalContext"]
 
 
 def test_a_directory_holding_the_kits_key_is_not_made_readable(monkeypatch, tmp_path):
@@ -251,6 +255,7 @@ def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
 
     assert installed["workspace"] in prompt
     assert installed["readable"][0] in prompt
+    assert "absolute paths" in prompt
     assert "pixi add" in prompt
     assert "cannot draw a plot" not in prompt
     assert prompt.endswith(daemon.OLD_NOTES)
