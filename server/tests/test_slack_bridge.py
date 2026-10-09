@@ -1290,3 +1290,75 @@ def test_a_file_in_a_dm_opens_a_private_message_holding_it(world, slack_files):
     assert bridge.handle_message(event).startswith("opened message")
     title, raw = stub.created_as[-1][1]["title"], stub.created_as[-1][1]["raw"]
     assert title == "Files: shot.png" and raw == "![shot.png|10x20](upload://up1.png)"
+
+
+
+# ------------------------------------------------------- the *Thinking…* post
+
+THINKING = "*Thinking…*\n\n<!-- qupa-cafe:thinking 0123abcd -->"
+
+
+def test_a_thinking_post_becomes_its_answer_in_slack(world):
+    """A forum edit is otherwise not carried, and this copy would say
+    *Thinking…* for good."""
+    stub, slack, bridge = world
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+    post = stub.post(10, "sunada-agent", THINKING)
+    bridge.poll()
+
+    copy = replies(slack)[-1]
+    assert "_Thinking… the reply will replace this post._" in copy["text"]
+    assert "qupa-cafe:thinking" not in copy["text"]
+    assert copy["text"].startswith("<@US>, your agent posted:")
+    ts = next(t for t, m in slack.sent.items() if m is copy)
+
+    bridge.poll()
+    assert not [c for c in slack.calls if c[0] == "update"]
+
+    stub.uploads["upload://aBc.png"] = PNG
+    post["raw"] = "The threshold holds at **0.57%**. ![plot.png](upload://aBc.png)"
+    bridge.poll()
+
+    (update,) = [c[1] for c in slack.calls if c[0] == "update"]
+    assert update["ts"] == ts
+    assert update["text"].startswith("<@US>, your agent posted:")
+    assert "*0.57%*" in update["text"] and "View this post" in update["text"]
+    assert slack.files[0]["thread_ts"] == copy["thread_ts"]
+    # Updated once, and no longer watched.
+    bridge.poll()
+    assert len([c for c in slack.calls if c[0] == "update"]) == 1
+
+
+def test_a_thinking_post_deleted_on_the_forum_is_deleted_in_slack(world):
+    stub, slack, bridge = world
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+    post = stub.post(10, "sunada-agent", THINKING)
+    bridge.poll()
+    ts = next(t for t, m in slack.sent.items() if "_Thinking…" in m["text"])
+
+    post["user_deleted"] = True
+    bridge.poll()
+
+    assert ("delete", {"channel": slack.channels["qupa-research"], "ts": ts}) in slack.calls
+
+
+def test_a_thinking_post_in_a_dm_becomes_its_answer(world):
+    stub, slack, bridge = world
+    stub.topic(41, "The d=7 sweep", None, "sunada", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada", "Can you rerun it?")
+    bridge.poll()
+    post = stub.post(41, "sunada-agent", THINKING)
+    bridge.poll()
+    post["raw"] = "Done: it holds."
+    bridge.poll()
+
+    (update,) = [c[1] for c in slack.calls if c[0] == "update"]
+    assert update["channel"] == "DUS" and "Done: it holds." in update["text"]
+    assert "<@" not in update["text"]
+
+
+def test_to_slack_drops_html_comments():
+    assert bridge_mod.to_slack("Shown.<!-- not shown -->", "u") == "Shown."

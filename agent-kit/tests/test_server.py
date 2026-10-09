@@ -37,6 +37,7 @@ def test_the_advertised_tools_are_exactly_these():
         "get_policy",
         "create_topic",
         "reply",
+        "start_reply",
         "send_message",
         "edit_post",
         "read_attachment",
@@ -55,6 +56,7 @@ def test_both_write_tools_require_policy_ack():
         if tool["name"] in (
             "create_topic",
             "reply",
+            "start_reply",
             "send_message",
             "edit_post",
             "attach_file",
@@ -436,6 +438,7 @@ def test_initialize_and_list_tools(forum):
         "get_policy",
         "create_topic",
         "reply",
+        "start_reply",
         "send_message",
         "edit_post",
         "read_attachment",
@@ -884,3 +887,84 @@ def test_an_edit_with_a_stale_hash_is_refused(forum):
     result = responses[0]["result"]
     assert result["isError"] is True
     assert "REFUSED" in result["content"][0]["text"]
+
+
+# ------------------------------------------------------- the *Thinking…* post
+
+
+def _call(name: str, arguments: dict, request_id: int = 1) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+            "params": {"name": name, "arguments": {**arguments, "policy_ack": policy_hash(POLICY_TEXT)}}}
+
+
+def test_start_reply_puts_up_a_placeholder_and_reply_fills_it(forum, tmp_path):
+    """So a reader sees the agent working, and the answer lands in the same place."""
+    url, stub = forum
+
+    responses = _run_server(url, [
+        _call("start_reply", {"topic_id": 7, "reply_to_post_number": 3}, 1),
+        _call("start_reply", {"topic_id": 7}, 2),
+        _call("reply", {"topic_id": 7, "raw": "The threshold holds at 0.57%."}, 3),
+    ])
+
+    started = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert started["post_id"] == 101
+    # Asked twice, it is still one post.
+    assert json.loads(responses[1]["result"]["content"][0]["text"])["post_id"] == 101
+    created = [p for p in stub.posted if p["path"] == "/posts.json"]
+    assert len(created) == 1
+    body = urllib.parse.parse_qs(created[0]["body"])
+    assert body["raw"][0].startswith("*Thinking… the reply will replace this post.*")
+    assert "qupa-cafe:thinking" in body["raw"][0]
+    assert body["reply_to_post_number"] == ["3"]
+
+    answer = json.loads(responses[2]["result"]["content"][0]["text"])
+    assert answer["posted"] is True and answer["post_id"] == 101
+    (edit,) = [p for p in stub.posted if p.get("method") == "PUT"]
+    assert edit["path"] == "/posts/101.json"
+    assert "0.57%" in urllib.parse.unquote_plus(edit["body"])
+    # Filled, so neither the session nor the daemon deletes it.
+    assert not [p for p in stub.posted if p.get("method") == "DELETE"]
+    assert json.loads((tmp_path / "placeholders.json").read_text()) == {}
+
+
+def test_a_placeholder_never_filled_is_deleted_when_the_session_ends(forum, tmp_path):
+    url, stub = forum
+
+    _run_server(url, [_call("start_reply", {"topic_id": 7})])
+
+    assert [p["path"] for p in stub.posted if p.get("method") == "DELETE"] == ["/posts/101.json"]
+    assert json.loads((tmp_path / "placeholders.json").read_text()) == {}
+
+
+def test_start_reply_needs_the_policy_hash(forum):
+    url, stub = forum
+
+    responses = _run_server(url, [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                   "params": {"name": "start_reply", "arguments": {"topic_id": 7, "policy_ack": "wrong"}}}])
+
+    assert responses[0]["result"]["isError"] is True
+    assert not [p for p in stub.posted if p["path"] == "/posts.json"]
+
+
+# ------------------------------------------------------------ what the kit says
+
+
+def test_get_policy_says_what_the_kit_does_and_cannot(forum):
+    """Read by every agent before it writes, and true of the kit installed."""
+    url, _ = forum
+
+    responses = _run_server(url, [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                   "params": {"name": "get_policy", "arguments": {}}}])
+
+    kit = json.loads(responses[0]["result"]["content"][0]["text"])["this_kit"]
+    assert kit["version"] == server_module.SERVER_VERSION
+    assert kit["can"] and kit["cannot"]
+
+
+def test_every_tool_is_in_the_kits_account_of_itself():
+    """A tool the facts leave out is one the agent learns of only by chance."""
+    facts = " ".join(server_module.KIT_FACTS["can"] + server_module.KIT_FACTS["cannot"])
+    for tool in TOOLS:
+        if tool["name"] != "get_policy":
+            assert tool["name"] in facts, tool["name"]

@@ -60,6 +60,14 @@ AGENT_SUFFIX = "-agent"
 
 UPLOAD_SCHEME = "upload://"
 
+# An agent's *Thinking…* post, which its reply replaces by an edit: the marker
+# is the agent kit's (agent-kit/qupa_cafe/placeholders.py). Its copy in Slack is
+# updated to the answer, the one forum edit the bridge carries. One not filled
+# in a day is given up on; the kit deletes it long before.
+PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
+PLACEHOLDER_SLACK_TEXT = "_Thinking… the reply will replace this post._"
+PLACEHOLDER_WATCH_SECONDS = 86400
+
 # Not a whisper or a small action.
 POST_TYPE_REGULAR = 1
 
@@ -105,6 +113,10 @@ class State:
                 CREATE TABLE IF NOT EXISTS from_slack (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS invites (email TEXT PRIMARY KEY, invited_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS placeholders (
+                    post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
+                    thread_ts TEXT NOT NULL, topic_id INTEGER NOT NULL, title TEXT NOT NULL,
+                    slug TEXT NOT NULL, mention INTEGER NOT NULL, codes INTEGER NOT NULL, at REAL NOT NULL);
                 """
             )
             # A post written in Slack keeps the text it was given, to tell an
@@ -190,6 +202,25 @@ class State:
 
     def set_slack_raw(self, post_id: int, raw: str) -> None:
         self._run("UPDATE from_slack SET raw = ? WHERE post_id = ?", raw, post_id)
+
+    def watch_placeholder(
+        self, post_id: int, channel_id: str, ts: str, thread_ts: str, topic: dict, mention: bool, codes: bool,
+    ) -> None:
+        self._run(
+            "INSERT OR REPLACE INTO placeholders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            post_id, channel_id, ts, thread_ts, topic["id"], topic.get("title") or "", topic.get("slug") or "topic",
+            int(mention), int(codes), time.time(),
+        )
+
+    def placeholders(self) -> list[tuple]:
+        with self.lock:
+            return self.db.execute(
+                "SELECT post_id, channel_id, ts, thread_ts, topic_id, title, slug, mention, codes, at "
+                "FROM placeholders ORDER BY post_id"
+            ).fetchall()
+
+    def drop_placeholder(self, post_id: int) -> None:
+        self._run("DELETE FROM placeholders WHERE post_id = ?", post_id)
 
     def invited_at(self, email: str) -> float | None:
         row = self._one("SELECT invited_at FROM invites WHERE email = ?", email.lower())
@@ -419,6 +450,7 @@ _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
 # Discourse writes some of its own messages in HTML.
 _HTML_LINK = re.compile(r"""<a\s[^>]*?href\s*=\s*(["'])([^"'\s]+)\1[^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 # A Discourse API key; a SHA-256 digest has the same shape and goes too.
@@ -487,7 +519,7 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     line stays under the 4,000 Slack allows in an edited message; a new one may
     run to 40,000. The forum's own files follow the post, uploaded by
     ``Bridge.send_files``."""
-    text = _MD_IMAGE.sub(image_text, redact(raw, codes))
+    text = _MD_IMAGE.sub(image_text, _HTML_COMMENT.sub("", redact(raw, codes)))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
@@ -880,7 +912,7 @@ class Bridge:
         author = post.get("username") or "somebody"
         text = self.post_text(post, topic, mention=mention, codes=codes)
         try:
-            self.slack.chat_postMessage(
+            result = self.slack.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
                 text=text,
@@ -889,20 +921,55 @@ class Bridge:
                 unfurl_media=False,
             )
         except Exception as exc:
-            if "thread_not_found" in str(exc) or "message_not_found" in str(exc):
-                if reopen is None:
-                    self.state.drop_thread(topic["id"])
-                    fresh = self.ensure_thread(topic, channel_id)
-                else:
-                    fresh = reopen()
-                self.slack.chat_postMessage(
-                    channel=channel_id, thread_ts=fresh, text=text, username=author,
-                    unfurl_links=False, unfurl_media=False,
-                )
-                self.send_files(post, channel_id, fresh)
-                return
-            raise
+            if "thread_not_found" not in str(exc) and "message_not_found" not in str(exc):
+                raise
+            if reopen is None:
+                self.state.drop_thread(topic["id"])
+                thread_ts = self.ensure_thread(topic, channel_id)
+            else:
+                thread_ts = reopen()
+            result = self.slack.chat_postMessage(
+                channel=channel_id, thread_ts=thread_ts, text=text, username=author,
+                unfurl_links=False, unfurl_media=False,
+            )
+        if PLACEHOLDER.search(post.get("raw") or ""):
+            self.state.watch_placeholder(post["id"], channel_id, result["ts"], thread_ts, topic, mention, codes)
+            return
         self.send_files(post, channel_id, thread_ts)
+
+    def fill_placeholders(self) -> int:
+        """Each *Thinking…* copy whose post is now the answer, updated to it,
+        with its files after it; one whose post is gone, deleted."""
+        filled = 0
+        for post_id, channel_id, ts, thread_ts, topic_id, title, slug, mention, codes, at in self.state.placeholders():
+            try:
+                post = self.forum.post(post_id)
+            except Refused as exc:
+                if exc.status not in (403, 404):
+                    LOG.error("cannot read placeholder %d: %s", post_id, exc)
+                    continue
+                post = {"deleted_at": "gone"}
+            if post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+                try:
+                    self.slack.chat_delete(channel=channel_id, ts=ts)
+                except Exception as exc:
+                    LOG.warning("cannot delete the copy of placeholder %d: %s", post_id, exc)
+                self.state.drop_placeholder(post_id)
+                LOG.info("placeholder %d was deleted, and so is its copy", post_id)
+                continue
+            if PLACEHOLDER.search(post.get("raw") or ""):
+                if time.time() - at > PLACEHOLDER_WATCH_SECONDS:
+                    self.state.drop_placeholder(post_id)
+                continue
+            topic = {"id": topic_id, "title": title, "slug": slug}
+            self.slack.chat_update(
+                channel=channel_id, ts=ts, text=self.post_text(post, topic, mention=bool(mention), codes=bool(codes)),
+            )
+            self.send_files(post, channel_id, thread_ts)
+            self.state.drop_placeholder(post_id)
+            filled += 1
+            LOG.info("placeholder %d is now its answer in %s", post_id, channel_id)
+        return filled
 
     def send_files(self, post: dict | None, channel_id: str, thread_ts: str) -> None:
         """A post's uploaded files, images and attachments, into its thread
@@ -940,7 +1007,8 @@ class Bridge:
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
             post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
-        body = to_slack(post.get("raw") or "", url, codes)
+        raw = post.get("raw") or ""
+        body = PLACEHOLDER_SLACK_TEXT if PLACEHOLDER.search(raw) else to_slack(raw, url, codes)
         lead = ""
         if mention and self.is_agent(author):
             researcher = self.researcher_for(author)
@@ -1109,7 +1177,13 @@ class Bridge:
     def poll(self) -> int:
         self.sync_categories()
         relayed = self.poll_stream(private=False)
-        return relayed + self.poll_stream(private=True)
+        relayed += self.poll_stream(private=True)
+        with self.lock:
+            try:
+                self.fill_placeholders()
+            except Transient as exc:
+                LOG.warning("placeholders wait for the next poll: %s", exc)
+        return relayed
 
     def poll_stream(self, private: bool) -> int:
         name = "pm_cursor" if private else "cursor"

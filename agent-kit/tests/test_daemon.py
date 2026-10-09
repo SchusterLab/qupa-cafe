@@ -492,6 +492,9 @@ class FakeForum:
     def topic(self, topic_id):
         return self.topics[topic_id]
 
+    def delete_post(self, post_id):
+        self.deleted = getattr(self, "deleted", []) + [post_id]
+
 
 class FakeRanking:
     def __init__(self, post_ids, scores=None, policy=None):
@@ -934,3 +937,70 @@ def test_a_private_message_counted_only_as_personal_wakes_the_agent(tmp_path):
     settings = Settings(forum_url="http://x", api_key="k", api_username="sunada-agent")
     found = daemon.collect(settings, PMForum({}), NoRanking(), Handled(str(tmp_path / "state.sqlite3")))
     assert [(c.topic_id, c.notification_ids) for c in found] == [(154, [6])]
+
+
+# ------------------------------------------------------- the *Thinking…* post
+
+
+def _thinking_topic(topic_id, age_seconds):
+    from datetime import datetime, timedelta, timezone
+
+    from qupa_cafe import placeholders
+
+    created = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat().replace("+00:00", "Z")
+    topic = _topic(topic_id)
+    topic["post_stream"]["posts"].append(
+        {"id": 555, "post_number": 2, "username": "pat-agent", "raw": placeholders.body(), "created_at": created}
+    )
+    return topic
+
+
+def test_a_wake_waits_while_the_newest_post_is_still_thinking(tmp_path, monkeypatch):
+    """Woken now, the agent would read only *Thinking…*. Unacknowledged, the
+    same notification wakes it once the answer is there."""
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+    handled = Handled(str(tmp_path / "state.sqlite3"))
+    forum = FakeForum({10: _thinking_topic(10, age_seconds=30)})
+    woken = []
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: woken.append(1) or True)
+
+    assert daemon.one_pass(settings, forum, FakeRanking([101]), handled, dry_run=False) == 0
+    assert woken == [] and not handled.seen("wake", 101)
+
+    forum.topics[10]["post_stream"]["posts"][-1]["raw"] = "The answer."
+    assert daemon.one_pass(settings, forum, FakeRanking([101]), handled, dry_run=False) == 1
+
+
+def test_a_placeholder_older_than_any_wake_no_longer_holds_one_up():
+    from qupa_cafe import placeholders
+
+    assert daemon.still_thinking(_thinking_topic(10, age_seconds=60)) == 555
+    assert daemon.still_thinking(_thinking_topic(10, age_seconds=placeholders.LIFETIME_SECONDS + 60)) is None
+    assert daemon.still_thinking(_topic(10)) is None
+
+
+def test_the_daemon_deletes_placeholders_a_killed_wake_left(tmp_path):
+    import time
+
+    from qupa_cafe import placeholders
+
+    placeholders.record(555, at=time.time() - placeholders.LIFETIME_SECONDS - 60)
+    placeholders.record(556)
+    forum = FakeForum({})
+
+    daemon.sweep_placeholders(forum)
+
+    assert forum.deleted == [555]
+    assert placeholders.expired(now=time.time() + placeholders.LIFETIME_SECONDS + 60) == [556]
+
+
+def test_a_wake_is_told_what_an_unattended_run_cannot_do():
+    """Otherwise it learns by being refused, and says so to its researcher as
+    if the forum were at fault."""
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+
+    prompt = build_prompt(settings, "you were mentioned", _topic(10), "Reason: %REASON%\n%BODY%")
+
+    assert prompt.endswith(daemon.WAKE_NOTICE)
+    assert "attach_file" in daemon.WAKE_NOTICE

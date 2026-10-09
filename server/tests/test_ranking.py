@@ -1712,3 +1712,40 @@ def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
     assert ranker.check_daemons(later) == []
     forum.refuse = False
     assert ranker.check_daemons(later) == ["yoshi-agent"]
+
+
+# ------------------------------------------------------- the *Thinking…* post
+
+
+class QueuedRanker(ReplyRanker):
+    """Its new posts are a list the test changes between passes."""
+
+    def __init__(self, config, state, agents, posts):
+        super().__init__(config, state, agents, reply=[1.0, 0.0])
+        self.queue = posts
+
+    def refresh_agents(self):
+        pass
+
+    def new_posts(self, since_id, limit=200):
+        return [post for post in self.queue if post["id"] > since_id]
+
+
+def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path):
+    """Scored as *Thinking…*, an agent's reply would wake nobody it should,
+    and it is not scored again once it says something."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    placeholder = {**a_reply(5, "*Thinking…*\n\n<!-- qupa-cafe:thinking abc -->"), "created_at": now}
+    dead = {**a_reply(4, "*Thinking…*\n\n<!-- qupa-cafe:thinking old -->"), "created_at": now - timedelta(hours=1)}
+    later = a_reply(6, "Something else entirely.")
+    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [dead, placeholder, later])
+    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+
+    assert ranker.pass_once() == []
+    assert state.get_cursor() == 4
+
+    placeholder["raw"] = "The answer, at last."
+    assert {d.post_id for d in ranker.pass_once()} == {5, 6}
+    assert state.get_cursor() == 6

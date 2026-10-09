@@ -33,7 +33,7 @@ SNIPPET_CHARS = 90
 VALUE_CHARS = 60
 
 # What the agent writes is shown in full: it is what the forum now holds.
-WRITE_TOOLS = {"create_topic", "reply", "send_message", "edit_post", "attach_file"}
+WRITE_TOOLS = {"create_topic", "reply", "start_reply", "send_message", "edit_post", "attach_file"}
 
 # Loading a deferred tool's schema, which says nothing about the wake.
 NOISE_TOOLS = {"ToolSearch"}

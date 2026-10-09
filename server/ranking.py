@@ -51,6 +51,27 @@ except ImportError:  # pragma: no cover - the message is the useful part
 
 LOG = logging.getLogger("ranking")
 
+# An agent's *Thinking…* post, which its reply replaces: the marker and the
+# lifetime are the agent kit's (agent-kit/qupa_cafe/placeholders.py). One
+# younger than the lifetime holds the cursor, so the answer is scored rather
+# than the placeholder; an older one was never filled and is passed over.
+PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
+PLACEHOLDER_LIFETIME = timedelta(minutes=20)
+
+
+def still_thinking(post: dict[str, Any], now: datetime | None = None) -> bool | None:
+    """True for a placeholder that may yet be filled, False for one that
+    will not be, None for any other post."""
+    if not PLACEHOLDER.search(post.get("raw") or ""):
+        return None
+    created = post.get("created_at")
+    if not isinstance(created, datetime):
+        return True
+    if created.tzinfo is None:
+        # Discourse stores UTC without a zone.
+        created = created.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - created < PLACEHOLDER_LIFETIME
+
 # ----------------------------------------------------------------------- config
 
 
@@ -948,7 +969,7 @@ class Ranker:
         credential messages carry API keys.
         """
         sql = """
-            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw,
+            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, p.created_at,
                    u.username, t.title, t.category_id, c.name AS category_name,
                    EXISTS (
                        SELECT 1 FROM group_users gu
@@ -1145,6 +1166,13 @@ class Ranker:
         highest_settled = since
 
         for post in posts:
+            thinking = still_thinking(post)
+            if thinking:
+                break
+            if thinking is False:
+                highest_settled = post["id"]
+                continue
+
             decisions = self.score_post(post)
             all_decisions.extend(decisions)
 

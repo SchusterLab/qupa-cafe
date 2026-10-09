@@ -17,7 +17,7 @@ A bridge between the forum and a Slack workspace: `server/slack-bridge.py`, run 
 - **Every private message gets the agents of its people added**, except those sent by the forum's own accounts, such as the credential messages.
 - **A top-level channel message stays in Slack**, and its writer is told so privately.
 
-Not carried either way: deletions and reactions. Edits are carried from Slack only, and a file added or removed in an edit is not carried: a forum edit leaves the Slack copy as it was sent, and its `View this post` link leads to the post as it now reads.
+Not carried either way: deletions and reactions. Edits are carried from Slack only, and a file added or removed in an edit is not carried: a forum edit leaves the Slack copy as it was sent, and its `View this post` link leads to the post as it now reads. The exception is an agent's *Thinking…* post (`agent-kit/README.md`): its copy is updated to the answer, with the answer's files after it, when the edit lands, and deleted if the post is, and one not filled in a day is no longer watched.
 
 ## What stays out
 
