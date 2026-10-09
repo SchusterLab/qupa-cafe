@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-09 (newcomers' invitations announced in their threads)
 
 - **When the bridge gives somebody an invitation in a channel, the app also replies in public** in the thread of what they wrote, each time, mentioning them and saying how anyone in the workspace gets an invitation, without the link. Not in a DM, and not for a guest or a member with no address, who are given no link. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+- **Deployed** on 9 October at 19:30 UTC with `/opt/qupa-cafe` at `c07390a` (`*.bak-20261009193000`); every replaced file matched `ebb6cd8`, `--check` passed and the bridge restarted active.
 
 ### 2026-10-09 (an invitation link in Slack, redeemed only with Slack)
 
