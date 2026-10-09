@@ -26,6 +26,7 @@ from typing import Any
 CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
 CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
 ONBOARDING_MAIL_SOURCE = CONTENT_DIR / "onboarding-mail.md"
+LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
 
 # Settings whose values a dry run must not print.
 SECRET_SETTINGS = frozenset({"s3_access_key_id", "s3_secret_access_key", "s3_role_arn"})
@@ -154,6 +155,11 @@ def credential_message(forum_url: str, key: str, agent: str, interests_topic_id:
 def onboarding_mail_text() -> str:
     """What the invitation and verification mails add to Discourse's own text."""
     return ONBOARDING_MAIL_SOURCE.read_text(encoding="utf-8").strip()
+
+
+def login_welcome_text() -> str:
+    """What the logged-out page adds under Discourse's own heading."""
+    return LOGIN_WELCOME_SOURCE.read_text(encoding="utf-8").strip()
 
 
 def mail_template(discourse_default: str, onboarding_text: str) -> str:

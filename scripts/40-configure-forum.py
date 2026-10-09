@@ -17,6 +17,7 @@ import secrets
 import sys
 import urllib.parse
 from pathlib import Path
+from typing import Callable
 
 import onboarding
 from onboarding import SECRET_SETTINGS, Discourse
@@ -62,8 +63,10 @@ ACCESS_SETTINGS = {
     "invite_only": "true",
     # Safe only with invite_only: InviteRedeemer then approves a redemption outright.
     "must_approve_users": "false",
-    # Both must stay true: the first gates invite redemption, the second is password login.
+    # Must stay true: it gates invite redemption.
     "allow_new_registrations": "true",
+    # Password login. access_settings turns it off where a third-party sign-in
+    # exists, which is then the only way to redeem an invite or log in.
     "enable_local_logins": "true",
     "enable_local_logins_via_email": "false",
     "enable_signup_cta": "false",
@@ -149,6 +152,9 @@ MAIL_TEMPLATES = (
     "invite_forum_mailer.text_body_template",  # invite to an address
     "custom_invite_forum_mailer.text_body_template",  # the same, with the inviter's note
 )
+
+# The heading of the page a logged-out visitor sees, at / and /login.
+WELCOME_TEXT = "login_required.welcome_message"
 
 EXPECTED_GLOBAL_SETTINGS = {"max_admin_api_reqs_per_minute": 600}
 
@@ -620,39 +626,59 @@ def remove_welcome_topic(api: Discourse) -> None:
         FAILURES.append(f"the welcome topic {topic['topic_id']} is still present: {setting} names it")
 
 
-def ensure_site_texts(api: Discourse, onboarding_text: str) -> None:
-    """Discourse's own mail template followed by content/onboarding-mail.md."""
-    print("\n== Onboarding note in the invitation and verification mails")
+def access_settings(api: Discourse) -> dict[str, str]:
+    """ACCESS_SETTINGS, with password login off where a third-party sign-in exists."""
+    providers = [p.get("name") for p in api.get("/site.json").get("auth_providers") or []]
+    if not providers:
+        return ACCESS_SETTINGS
+    print(f"\n== Third-party sign-in: {', '.join(providers)}, so no passwords")
+    return {**ACCESS_SETTINGS, "enable_local_logins": "false"}
 
-    # An override may not introduce interpolation keys, and %{...} reads as one.
-    if "%{" in onboarding_text:
-        print("   REFUSED: content/onboarding-mail.md contains a %{...} sequence, which Discourse")
-        print("   reads as an interpolation key. Remove it and re-run.")
+
+def ensure_site_text(api: Discourse, key: str, compose: Callable[[str], str]) -> None:
+    """``key`` overridden with ``compose`` of Discourse's own text."""
+    try:
+        record = api.get(f"/admin/customize/site_texts/{key}?locale=en")["site_text"]
+    except (RuntimeError, KeyError) as exc:
+        print(f"   ERROR: cannot read {key}: {exc}", file=sys.stderr)
+        FAILURES.append(f"site text {key} not configured: {exc}")
         return
 
+    # new_default is today's upstream text once an override exists.
+    original = record.get("new_default") or record.get("old_default") or record.get("value") or ""
+    wanted = compose(original)
+    if record.get("value") == wanted:
+        print(f"   unchanged  {key}")
+        return
+
+    result = api.put(f"/admin/customize/site_texts/{key}", json_body={"site_text": {"value": wanted, "locale": "en"}})
+    already = record.get("overridden", record.get("overridden?", False))
+    print(f"   {'updated' if already else 'set':10} {key}")
+
+    # Overrides are sanitised as HTML; anything tag-shaped is dropped silently.
+    stored = (result.get("site_text") or {}).get("value")
+    if stored is not None and stored != wanted:
+        print(f"   WARNING: the forum kept {len(stored)} bytes of the {len(wanted)} sent; look for angle brackets.")
+
+
+def ensure_site_texts(api: Discourse, onboarding_text: str, welcome_text: str) -> None:
+    """content/onboarding-mail.md after Discourse's mail templates, and
+    content/login-welcome.md after the logged-out page's heading."""
+    # An override may not introduce interpolation keys, and %{...} reads as one.
+    for name, text in (("onboarding-mail.md", onboarding_text), ("login-welcome.md", welcome_text)):
+        if "%{" in text:
+            print(f"\n   REFUSED: content/{name} contains a %{{...}} sequence, which Discourse")
+            print("   reads as an interpolation key. Remove it and re-run.")
+            FAILURES.append(f"content/{name} contains a %{{...}} sequence")
+            return
+
+    print("\n== Onboarding note in the invitation and verification mails")
     for key in MAIL_TEMPLATES:
-        try:
-            record = api.get(f"/admin/customize/site_texts/{key}?locale=en")["site_text"]
-        except (RuntimeError, KeyError) as exc:
-            print(f"   ERROR: cannot read {key}: {exc}", file=sys.stderr)
-            FAILURES.append(f"mail template {key} not configured: {exc}")
-            continue
+        ensure_site_text(api, key, lambda original: onboarding.mail_template(original, onboarding_text))
 
-        # new_default is today's upstream text once an override exists.
-        original = record.get("new_default") or record.get("old_default") or record.get("value") or ""
-        wanted = onboarding.mail_template(original, onboarding_text)
-        if record.get("value") == wanted:
-            print(f"   unchanged  {key}")
-            continue
-
-        result = api.put(f"/admin/customize/site_texts/{key}", json_body={"site_text": {"value": wanted, "locale": "en"}})
-        already = record.get("overridden", record.get("overridden?", False))
-        print(f"   {'updated' if already else 'set':10} {key}")
-
-        # Overrides are sanitised as HTML; anything tag-shaped is dropped silently.
-        stored = (result.get("site_text") or {}).get("value")
-        if stored is not None and stored != wanted:
-            print(f"   WARNING: the forum kept {len(stored)} bytes of the {len(wanted)} sent; look for angle brackets.")
+    # A paragraph under the heading, with no rule between them as in the mails.
+    print("\n== Invite-only note on the logged-out page")
+    ensure_site_text(api, WELCOME_TEXT, lambda original: f"{original.strip()}\n\n{welcome_text}")
 
 
 def configure_upload_store(api: Discourse) -> None:
@@ -692,7 +718,7 @@ def main() -> int:
 
     apply_settings(api, "Site", SITE_SETTINGS)
     apply_settings(api, "Email: password resets only", EMAIL_SETTINGS)
-    apply_settings(api, "Access: invite-only", ACCESS_SETTINGS)
+    apply_settings(api, "Access: invite-only", access_settings(api))
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
     apply_settings(api, "Size limits", SIZE_SETTINGS)
     apply_settings(api, "Attachments", UPLOAD_SETTINGS)
@@ -739,7 +765,7 @@ def main() -> int:
 
     remove_seed_topics(api)
     remove_welcome_topic(api)
-    ensure_site_texts(api, onboarding.onboarding_mail_text())
+    ensure_site_texts(api, onboarding.onboarding_mail_text(), onboarding.login_welcome_text())
 
     print(f"""
 ============================================================

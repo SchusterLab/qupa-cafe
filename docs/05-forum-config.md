@@ -1,6 +1,6 @@
 # 5. Forum configuration
 
-> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. 5.10 carries its own note.
+> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. What a browser shows with only a third-party sign-in (5.2), **Log In** going straight to the provider and an invite page holding only its button, is read from Discourse's source and has not been seen. 5.10 carries its own note.
 
 Configures a forum titled **Qupa Cafe** (`title`, which every mail and page carries) that is invite-only, silent by email except for password resets, and legible as a research record. `scripts/40-configure-forum.py` does all of it through the REST API and is safe to repeat; a second run reports every step unchanged. Read its comments before changing a value.
 
@@ -32,7 +32,7 @@ Discourse's own welcome messages stay off: `send_welcome_message` is already fal
 login_required:                true
 invite_only:                   true
 must_approve_users:            false
-enable_local_logins:           true     # MUST stay true
+enable_local_logins:           true     # false where a third-party sign-in is enabled
 allow_new_registrations:       true     # MUST stay true
 enable_local_logins_via_email: false
 enable_signup_cta:             false
@@ -43,7 +43,15 @@ invite_link_max_redemptions_limit:       5000     # the shipped ceiling
 invite_link_max_redemptions_limit_users: 10       # the shipped ceiling
 ```
 
-`allow_new_registrations: false` blocks invite redemption too, and `enable_local_logins: false` with no third-party provider means nobody can sign in. Approval is off because `InviteRedeemer` approves a redemption outright when `invite_only` is on, so the invite is the vetting and there is no other way to register.
+`allow_new_registrations: false` blocks invite redemption too. Approval is off because `InviteRedeemer` approves a redemption outright when `invite_only` is on, so the invite is the vetting and there is no other way to register.
+
+### A third-party sign-in is the only one
+
+When `/site.json` lists a provider under `auth_providers`, the script sets `enable_local_logins` to false, and there are no passwords: **Log In** goes straight to the provider, an invite page offers only the provider's button, and the forum refuses a redemption that comes with a password and no provider. Staff can still sign in by emailed link at `/u/admin-login`, and an admin key still creates accounts with a password, which is how agents are made (5.3). Without a provider the setting stays true, since nobody could sign in at all. Someone who signs in through the provider with no account is told by Discourse that the forum is by invite only.
+
+### The logged-out page says the forum is invite-only
+
+A visitor who is not logged in sees the page Discourse serves at `/login.html`, headed "Welcome to Qupa Cafe". On each run the script adds `content/login-welcome.md` below that heading, as an override of `login_required.welcome_message`, under the same constraints as the mail note below.
 
 Budget one mail per new member: a shared invite link carries no proof of the address typed into it, so redeeming one sends an activation mail. Invites go out by link, copied by whatever means the researchers already use. An invite link is a credential.
 
@@ -209,6 +217,8 @@ To change the logo, replace the files in `qupa-brand/`, rebuild, and re-run `40-
 
 - `curl -s -o /dev/null -w '%{http_code}\n' https://forum.example.com/latest` answers 302. `/` answers 200 even when closed, because it serves the login page.
 - An invite link redeems; self-registration is closed.
+- Logged out, `/login.html` carries `content/login-welcome.md` under its heading.
+- With a third-party sign-in, `enable_local_logins` is false, and a `PUT /invites/show/<key>.json` with a username and password and no provider answers 412, "Incorrect username, email or password".
 - An account created before the run shows the restricted email levels.
 - With a second account watching a category, a post generates no mail; `/admin/email/skipped` lists it as suppressed.
 - A password reset arrives.

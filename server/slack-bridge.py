@@ -48,7 +48,11 @@ FIRST_RUN = os.environ.get("SLACK_FIRST_RUN", "everything")
 STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/state.db"))
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "3600"))
-INVITE_RESEND_DAYS = float(os.environ.get("BRIDGE_INVITE_RESEND_DAYS", "7"))
+# How long an invite link lasts. Until then a newcomer who writes again is
+# given the same link, kept in the state file.
+INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
+# A link this close to expiring is replaced rather than given out.
+INVITE_MARGIN_SECONDS = 3600
 # Edited often, so a copy in Slack would soon be out of date: each has a thread
 # holding only a link to it.
 POLICY_TOPIC_ID = int(os.environ.get("POLICY_TOPIC_ID", "0") or 0)
@@ -128,6 +132,12 @@ class State:
             # keeps: the edited message's text does not mention them.
             if "files" not in columns:
                 self.db.execute("ALTER TABLE from_slack ADD COLUMN files TEXT")
+            # An invitation is a link handed to its invitee, reused until it expires.
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(invites)")}
+            if "link" not in columns:
+                self.db.execute("ALTER TABLE invites ADD COLUMN link TEXT")
+            if "expires_at" not in columns:
+                self.db.execute("ALTER TABLE invites ADD COLUMN expires_at REAL")
 
     def _one(self, sql: str, *args) -> tuple | None:
         with self.lock:
@@ -222,16 +232,22 @@ class State:
     def drop_placeholder(self, post_id: int) -> None:
         self._run("DELETE FROM placeholders WHERE post_id = ?", post_id)
 
-    def invited_at(self, email: str) -> float | None:
-        row = self._one("SELECT invited_at FROM invites WHERE email = ?", email.lower())
-        return row[0] if row else None
+    def invite_for(self, email: str, now: float) -> tuple[str, float] | None:
+        """(link, expires_at) of an invitation with time left on it."""
+        row = self._one("SELECT link, expires_at FROM invites WHERE email = ?", email.lower())
+        if not row or not row[0] or (row[1] or 0) - now < INVITE_MARGIN_SECONDS:
+            return None
+        return row[0], row[1]
 
-    def record_invite(self, email: str, when: float) -> None:
+    def record_invite(self, email: str, link: str, expires_at: float, when: float) -> None:
         self._run(
-            "INSERT INTO invites (email, invited_at) VALUES (?, ?) "
-            "ON CONFLICT(email) DO UPDATE SET invited_at = excluded.invited_at",
+            "INSERT INTO invites (email, invited_at, link, expires_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET invited_at = excluded.invited_at, "
+            "link = excluded.link, expires_at = excluded.expires_at",
             email.lower(),
             when,
+            link,
+            expires_at,
         )
 
 
@@ -377,8 +393,12 @@ class Forum:
     def add_to_message(self, topic_id: int, username: str) -> dict:
         return self.request("POST", f"/t/{topic_id}/invite.json", {"user": username})
 
-    def invite(self, email: str) -> dict:
-        return self.request("POST", "/invites.json", {"email": email})
+    def invite(self, email: str, expires_at: float) -> dict:
+        """An invitation bound to ``email``, mailed to nobody: its link is the
+        answer's ``link``. Asked again for the same address, the forum gives
+        the same invitation with the new expiry."""
+        expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_at))
+        return self.request("POST", "/invites.json", {"email": email, "skip_email": "true", "expires_at": expires})
 
     def lookup_uploads(self, short_urls: list[str]) -> dict[str, str]:
         """``upload://`` references, as raw markdown has them, to the paths
@@ -1235,46 +1255,37 @@ class Bridge:
             return "not a bridged channel"
 
         thread_ts = event.get("thread_ts")
-        if not thread_ts or thread_ts == event.get("ts"):
-            if subtype:
-                return f"ignored {subtype}"
-            self.ephemeral(
-                channel_id, user, None,
-                "That message stays in Slack. To post to the forum, reply in a topic's thread; "
-                "to start a topic, open it on the forum and its thread appears here.",
-            )
-            return "top-level message, not relayed"
-
-        if subtype not in (None, "thread_broadcast", "file_share"):
+        top_level = not thread_ts or thread_ts == event.get("ts")
+        if subtype and (top_level or subtype not in ("thread_broadcast", "file_share")):
             return f"ignored {subtype}"
 
-        topic_id = self.state.topic_for(channel_id, thread_ts)
-        if topic_id is None:
-            self.ephemeral(channel_id, user, thread_ts, "This thread is not a forum topic, so nothing was posted.")
-            return "thread is not a topic"
-        if topic_id in self.link_only:
-            self.ephemeral(
-                channel_id, user, thread_ts,
-                f"This topic is read and answered on the forum, so nothing was posted: {self.forum.base_url}/t/{topic_id}",
-            )
-            return "a topic read on the forum, not posted"
+        def tell(text: str) -> None:
+            self.ephemeral(channel_id, user, None if top_level else thread_ts, text)
 
+        # Anyone without an account is answered with an invitation, wherever they wrote.
         try:
             account, email = self.forum_user_for(user)
         except Unusable as exc:
-            self.ephemeral(
-                channel_id, user, thread_ts,
-                "Your Slack address belongs to a forum account that cannot post from here, so nothing "
-                "was posted. Ask a forum admin.",
-            )
+            tell("Your Slack address belongs to a forum account that cannot post from here, so nothing "
+                 "was posted. Ask a forum admin.")
             return f"refused: {exc}"
         if not account:
-            return self.invite(user, email)
+            return self.invite(user, email, tell)
 
-        return self.post_as(
-            account, topic_id, event,
-            lambda text: self.ephemeral(channel_id, user, thread_ts, text),
-        )
+        if top_level:
+            tell("That message stays in Slack. To post to the forum, reply in a topic's thread; "
+                 "to start a topic, open it on the forum and its thread appears here.")
+            return "top-level message, not relayed"
+
+        topic_id = self.state.topic_for(channel_id, thread_ts)
+        if topic_id is None:
+            tell("This thread is not a forum topic, so nothing was posted.")
+            return "thread is not a topic"
+        if topic_id in self.link_only:
+            tell(f"This topic is read and answered on the forum, so nothing was posted: {self.forum.base_url}/t/{topic_id}")
+            return "a topic read on the forum, not posted"
+
+        return self.post_as(account, topic_id, event, tell)
 
     def handle_edit(self, event: dict) -> str:
         """A message written in Slack, edited there: its post is edited as its
@@ -1426,7 +1437,7 @@ class Bridge:
             tell("Your Slack address belongs to a forum account that cannot post from here, so nothing was posted.")
             return f"refused: {exc}"
         if not account:
-            return self.invite(user, email)
+            return self.invite(user, email, tell)
 
         if not top_level:
             topic_id = self.state.topic_for(channel_id, thread_ts)
@@ -1494,66 +1505,54 @@ class Bridge:
         except Exception:
             return "someone"
 
-    def invite(self, slack_user: str, email: str | None) -> str:
+    def invite(self, slack_user: str, email: str | None, tell: Callable[[str], None]) -> str:
+        """Answer somebody with no account with an invitation link bound to
+        their Slack address, which only signing up with Slack redeems."""
+        closed = "Nothing was posted: the forum is invite-only, and you have no account on it yet."
         if not email:
-            self.dm(
-                slack_user,
-                "Your reply was not posted, because you have no account on the forum and Slack has no "
-                "email address for you to invite. Ask a forum admin for an invite.",
-            )
+            tell(f"{closed} Slack has no email address for you to invite, so ask a forum admin for an invitation.")
             return "no account, no email"
 
         # Guests are not invited.
         profile = self.slack.users_info(user=slack_user).get("user") or {}
         if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
-            self.dm(
-                slack_user,
-                "Your reply was not posted, because you have no account on the forum. Guests in this "
-                "workspace are not invited automatically: ask a forum admin for an invite.",
-            )
+            tell(f"{closed} Guests in this workspace are not invited automatically: ask a forum admin for an invitation.")
             return "no account, a guest"
 
-        last = self.state.invited_at(email)
-        if last and time.time() - last < INVITE_RESEND_DAYS * 86400:
-            self.dm(
-                slack_user,
-                f"Your reply was not posted, because you have no account on the forum yet. An invitation "
-                f"was sent to {email} already: look in that inbox, including spam, and once you have "
-                f"joined, post your reply again.",
-            )
-            return "no account, invited already"
+        now = time.time()
+        held = self.state.invite_for(email, now)
+        if held:
+            link, expires_at = held
+            outcome = "no account, invited already"
+        else:
+            expires_at = now + INVITE_DAYS * 86400
+            try:
+                link = self.forum.invite(email, expires_at).get("link")
+            except (Refused, Transient) as exc:
+                LOG.error("cannot invite %s: %s", email, exc)
+                tell(f"{closed} The forum would not make you an invitation just now: ask a forum admin for one.")
+                return f"no account, invite failed: {exc}"
+            if not link:
+                LOG.error("the forum's invitation for %s has no link", email)
+                tell(f"{closed} The forum would not make you an invitation just now: ask a forum admin for one.")
+                return "no account, invite failed: no link"
+            self.state.record_invite(email, link, expires_at, now)
+            outcome = "no account, invited"
 
-        try:
-            self.forum.invite(email)
-        except (Refused, Transient) as exc:
-            LOG.error("cannot invite %s: %s", email, exc)
-            self.dm(
-                slack_user,
-                "Your reply was not posted, because you have no account on the forum, and the forum "
-                "would not send you an invitation just now. Ask a forum admin for one.",
-            )
-            return f"no account, invite failed: {exc}"
-        self.state.record_invite(email, time.time())
-        self.dm(
-            slack_user,
-            f"Your reply was not posted, because you have no account on the forum yet. An invitation "
-            f"has just been sent to {email}: check that inbox, including spam, and follow the link to "
-            f"create your account. Then post your reply again and it will appear under your name.",
+        until = time.gmtime(expires_at)
+        tell(
+            f"{closed} Here is your invitation, which only your Slack account can use, until "
+            f"{until.tm_mday} {time.strftime('%B', until)}: {link}\n"
+            "Open it and sign up with Slack. After that, a reply in a topic's thread here, or a message "
+            "to this app, reaches the forum under your name."
         )
-        return "no account, invited"
+        return outcome
 
     def ephemeral(self, channel: str, user: str, thread_ts: str | None, text: str) -> None:
         try:
             self.slack.chat_postEphemeral(channel=channel, user=user, text=text, thread_ts=thread_ts)
         except Exception as exc:
             LOG.warning("cannot tell %s: %s", user, exc)
-
-    def dm(self, user: str, text: str) -> None:
-        try:
-            channel = self.slack.conversations_open(users=user)["channel"]["id"]
-            self.slack.chat_postMessage(channel=channel, text=text)
-        except Exception as exc:
-            LOG.warning("cannot message %s directly: %s", user, exc)
 
 
 def forum_error(exc: Refused) -> str:

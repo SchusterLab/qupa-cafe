@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,6 +106,7 @@ class StubForum:
         self.topics: dict[int, dict] = {}
         self.posts: list[dict] = []
         self.invites: list[str] = []
+        self.invite_keys: dict[str, str] = {}
         self.added: list[tuple[int, str]] = []
         self.created_as: list[tuple[str, dict]] = []
         self.edited_as: list[tuple[str, int, str]] = []
@@ -271,8 +274,13 @@ def serve(stub: StubForum):
                 stub.added.append((topic["id"], form["user"]))
                 return self._json(200, {"success": "OK"})
             if self.path == "/invites.json":
+                # As Invite.generate: one invitation per address, its expiry renewed.
                 stub.invites.append(form["email"])
-                return self._json(200, {"id": len(stub.invites), "email": form["email"]})
+                key = stub.invite_keys.setdefault(form["email"], f"K{len(stub.invite_keys) + 1}")
+                return self._json(200, {
+                    "id": len(stub.invite_keys), "email": form["email"], "expires_at": form.get("expires_at"),
+                    "emailed": form.get("skip_email") != "true", "link": f"https://forum.example/invites/{key}",
+                })
             return self._json(404, {})
 
         def do_PUT(self):  # noqa: N802
@@ -1000,24 +1008,72 @@ def test_a_thread_reply_is_posted_as_the_slack_users_forum_account(world):
     assert len(slack.messages) == before
 
 
-def test_someone_with_no_account_is_invited_once_and_told_by_dm(world):
+def test_someone_with_no_account_is_answered_with_an_invitation_link(world):
     stub, slack, bridge = world
     stub.post(10, "pat", "Starting the thread.")
     bridge.poll()
+    event = reply_event(slack, bridge, "UN", "May I join?")
 
-    assert bridge.handle_message(reply_event(slack, bridge, "UN", "May I join?")) == "no account, invited"
-    assert stub.invites == ["new@uni.edu"]
-    (dm,) = slack.dms
-    assert dm["channel"] == "DUN" and "new@uni.edu" in dm["text"] and "inbox" in dm["text"]
+    assert bridge.handle_message(event) == "no account, invited"
+    assert stub.invites == ["new@uni.edu"] and stub.created_as == []
+    # Only they see the answer, under what they wrote, and nothing is mailed.
+    answer = slack.ephemerals[-1]
+    assert answer["user"] == "UN" and answer["thread_ts"] == event["thread_ts"]
+    assert "invite-only" in answer["text"] and "https://forum.example/invites/K1" in answer["text"]
+    assert "sign up with Slack" in answer["text"]
+    assert slack.dms == []
 
-    # Posting again before redeeming does not send a second invitation.
+    # Writing again before joining gives the same link, without asking the forum.
     assert bridge.handle_message(reply_event(slack, bridge, "UN", "Hello?")) == "no account, invited already"
     assert stub.invites == ["new@uni.edu"]
-    assert len(slack.dms) == 2
+    assert "https://forum.example/invites/K1" in slack.ephemerals[-1]["text"]
 
     # Once they have joined, the next reply is theirs.
     stub.users["newcomer"] = {"id": 9, "username": "newcomer", "email": "new@uni.edu", "active": True}
     assert bridge.handle_message(reply_event(slack, bridge, "UN", "Now I am here.")).startswith("posted as newcomer")
+
+
+def test_the_invitation_is_bound_to_the_address_and_mailed_to_nobody(world, monkeypatch):
+    stub, slack, bridge = world
+    sent = []
+    monkeypatch.setattr(bridge.forum, "request", lambda method, path, data=None, as_user=None: (
+        sent.append((method, path, data)) or {"link": "https://forum.example/invites/K9"}))
+    bridge.invite("UN", "new@uni.edu", lambda text: None)
+    ((method, path, data),) = sent
+    assert (method, path) == ("POST", "/invites.json")
+    assert data["email"] == "new@uni.edu" and data["skip_email"] == "true"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", data["expires_at"])
+
+
+def test_an_invitation_about_to_expire_is_replaced(world):
+    stub, slack, bridge = world
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+    bridge.state.record_invite("new@uni.edu", "https://forum.example/invites/OLD", time.time() + 60, time.time())
+    assert bridge.handle_message(reply_event(slack, bridge, "UN", "May I join?")) == "no account, invited"
+    assert stub.invites == ["new@uni.edu"]
+    assert "OLD" not in slack.ephemerals[-1]["text"]
+
+
+def test_a_top_level_message_from_someone_with_no_account_is_answered_with_an_invitation(world):
+    stub, slack, bridge = world
+    channel = slack.channels["qupa-research"]
+    event = {"type": "message", "user": "UN", "text": "Hi all, how do I join?", "channel": channel, "ts": "3000.1"}
+    assert bridge.handle_message(event) == "no account, invited"
+    answer = slack.ephemerals[-1]
+    assert answer["user"] == "UN" and answer["channel"] == channel and answer["thread_ts"] is None
+    assert "https://forum.example/invites/K1" in answer["text"]
+    # Joining the channel is not writing in it.
+    assert bridge.handle_message({**event, "subtype": "channel_join", "ts": "3000.2"}) == "ignored channel_join"
+    assert stub.invites == ["new@uni.edu"]
+
+
+def test_a_dm_from_someone_with_no_account_is_answered_with_an_invitation(world):
+    stub, slack, bridge = world
+    assert bridge.handle_message(dm("UN", "Hello?", "7100.1")) == "no account, invited"
+    (answer,) = in_thread(slack, "DUN", "7100.1")
+    assert "https://forum.example/invites/K1" in answer["text"]
+    assert stub.created_as == []
 
 
 def test_a_slack_guest_is_not_invited(world):
@@ -1027,7 +1083,7 @@ def test_a_slack_guest_is_not_invited(world):
     slack.people["UG"] = {"id": "UG", "is_restricted": True, "profile": {"email": "guest@else.org"}}
     assert bridge.handle_message(reply_event(slack, bridge, "UG", "Let me in.")) == "no account, a guest"
     assert stub.invites == []
-    assert "admin" in slack.dms[-1]["text"]
+    assert slack.ephemerals[-1]["user"] == "UG" and "admin" in slack.ephemerals[-1]["text"]
 
 
 def test_nobody_posts_as_an_agent(world):
