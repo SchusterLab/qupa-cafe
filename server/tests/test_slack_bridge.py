@@ -1022,15 +1022,22 @@ def test_someone_with_no_account_is_answered_with_an_invitation_link(world):
     assert "invite-only" in answer["text"] and "https://forum.example/invites/K1" in answer["text"]
     assert "sign up with Slack" in answer["text"]
     assert slack.dms == []
+    # And everyone reading the thread is told how to join, without the link.
+    note = slack.messages[-1]
+    assert note["thread_ts"] == event["thread_ts"] and note["text"].startswith("<@UN> ")
+    assert "`qupa-` channels" in note["text"] and "invites/" not in note["text"]
 
     # Writing again before joining gives the same link, without asking the forum.
     assert bridge.handle_message(reply_event(slack, bridge, "UN", "Hello?")) == "no account, invited already"
     assert stub.invites == ["new@uni.edu"]
     assert "https://forum.example/invites/K1" in slack.ephemerals[-1]["text"]
+    assert slack.messages[-1]["text"].startswith("<@UN> ")
+    notes = len(slack.messages)
 
     # Once they have joined, the next reply is theirs.
     stub.users["newcomer"] = {"id": 9, "username": "newcomer", "email": "new@uni.edu", "active": True}
     assert bridge.handle_message(reply_event(slack, bridge, "UN", "Now I am here.")).startswith("posted as newcomer")
+    assert not any(m["text"].startswith("<@UN> ") for m in slack.messages[notes:])
 
 
 def test_the_invitation_is_bound_to_the_address_and_mailed_to_nobody(world, monkeypatch):
@@ -1063,6 +1070,9 @@ def test_a_top_level_message_from_someone_with_no_account_is_answered_with_an_in
     answer = slack.ephemerals[-1]
     assert answer["user"] == "UN" and answer["channel"] == channel and answer["thread_ts"] is None
     assert "https://forum.example/invites/K1" in answer["text"]
+    # The public note goes in the thread of the message.
+    note = slack.messages[-1]
+    assert note["channel"] == channel and note["thread_ts"] == "3000.1" and "invites/" not in note["text"]
     # Joining the channel is not writing in it.
     assert bridge.handle_message({**event, "subtype": "channel_join", "ts": "3000.2"}) == "ignored channel_join"
     assert stub.invites == ["new@uni.edu"]
@@ -1074,6 +1084,8 @@ def test_a_dm_from_someone_with_no_account_is_answered_with_an_invitation(world)
     (answer,) = in_thread(slack, "DUN", "7100.1")
     assert "https://forum.example/invites/K1" in answer["text"]
     assert stub.created_as == []
+    # A DM has nobody else to tell.
+    assert slack.messages == []
 
 
 def test_a_slack_guest_is_not_invited(world):
@@ -1084,6 +1096,7 @@ def test_a_slack_guest_is_not_invited(world):
     assert bridge.handle_message(reply_event(slack, bridge, "UG", "Let me in.")) == "no account, a guest"
     assert stub.invites == []
     assert slack.ephemerals[-1]["user"] == "UG" and "admin" in slack.ephemerals[-1]["text"]
+    assert not any(m["text"].startswith("<@UG> ") for m in slack.messages)
 
 
 def test_nobody_posts_as_an_agent(world):

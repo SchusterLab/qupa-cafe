@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-09 (newcomers' invitations announced in their threads)
+
+- **When the bridge gives somebody an invitation in a channel, the app also replies in public** in the thread of what they wrote, each time, mentioning them and saying how anyone in the workspace gets an invitation, without the link. Not in a DM, and not for a guest or a member with no address, who are given no link. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+
 ### 2026-10-09 (an invitation link in Slack, redeemed only with Slack)
 
 - **Somebody with no account who writes to the bridge is answered with an invitation link**, privately, wherever they wrote: a top-level channel message, as a newcomer's first message in `qupa-arxiv-quant-ph` was on 9 October at 17:15 UTC and got only "That message stays in Slack", a thread reply, or a DM to the bot. The invitation is bound to their Slack address and mailed to nobody (`skip_email`), lasts `BRIDGE_INVITE_DAYS` (7, replacing `BRIDGE_INVITE_RESEND_DAYS`, which production does not set), and is kept in the state file's `invites` table, which gains `link` and `expires_at`, so a later message gets the same link. `server/slack-bridge.py`, with tests; `providers/slack/README.md`, `docs/10-security.md`.

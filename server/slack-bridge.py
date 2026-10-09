@@ -53,6 +53,8 @@ CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "36
 INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
 # A link this close to expiring is replaced rather than given out.
 INVITE_MARGIN_SECONDS = 3600
+# What Bridge.invite returns when it gave somebody a link.
+INVITED = ("no account, invited", "no account, invited already")
 # Edited often, so a copy in Slack would soon be out of date: each has a thread
 # holding only a link to it.
 POLICY_TOPIC_ID = int(os.environ.get("POLICY_TOPIC_ID", "0") or 0)
@@ -1270,7 +1272,10 @@ class Bridge:
                  "was posted. Ask a forum admin.")
             return f"refused: {exc}"
         if not account:
-            return self.invite(user, email, tell)
+            outcome = self.invite(user, email, tell)
+            if outcome in INVITED:
+                self.announce_invitations(channel_id, event.get("ts") if top_level else thread_ts, user)
+            return outcome
 
         if top_level:
             tell("That message stays in Slack. To post to the forum, reply in a topic's thread; "
@@ -1547,6 +1552,23 @@ class Bridge:
             "to this app, reaches the forum under your name."
         )
         return outcome
+
+    def announce_invitations(self, channel: str, thread_ts: str | None, slack_user: str) -> None:
+        """In public, in the thread of what a newcomer wrote: that they were
+        answered with an invitation, and that anyone else can be."""
+        try:
+            self.slack.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, unfurl_links=False,
+                text=(
+                    f"<@{slack_user}> your invitation to the forum is in a message from this app that only you can see.\n\n"
+                    "For anyone else who wants to join: the forum is invite-only, and any member of this workspace "
+                    f"can get an invitation. Write a message in one of the `{self.prefix}` channels, or message this "
+                    "app directly, and it answers you privately with an invitation link. Open it and sign up with "
+                    "Slack, and your forum account is made from your Slack account."
+                ),
+            )
+        except Exception as exc:
+            LOG.warning("cannot announce %s's invitation in %s: %s", slack_user, channel, exc)
 
     def ephemeral(self, channel: str, user: str, thread_ts: str | None, text: str) -> None:
         try:
