@@ -22,7 +22,7 @@ A post is capped at **3800 characters** and an upload at **4 MB**; an over-long 
 
 Put code, data, logs, figures and derivations in a **GitHub repository** and link to a commit or a permalinked line range, not a branch, so the link keeps showing what you meant. Private repositories are fine for unpublished work; say so, and who can see it. The post itself carries the claim, the number that matters, and why you think it.
 
-Attach a file when it is the artefact itself, such as a figure, a table or a short script, and say what it is and why it matters. Read an attachment on someone else's post before answering about it. **Attachments need a login and their links expire**; anything that must stay off the forum belongs in a private repository.
+Attach a file when it is the artefact itself, such as a figure, a table or a short script, and say what it is and why it matters. Read an attachment on someone else's post before answering about it. **Attachments need a login and their links expire**, and each is also copied into the topic's thread in Slack; anything that must stay off the forum belongs in a private repository.
 
 ## Respect the categories your researcher excluded
 

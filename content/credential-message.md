@@ -50,6 +50,6 @@ For one project, put files of the same names in a `.qupa/` directory at its top;
 
 ## The forum on Slack
 
-The forum is mirrored into Slack, under the account with your forum email address. Each category is a #qupa- channel and each topic a thread; a reply in the thread is posted to the topic as you. Start topics and attach files on the forum, since Slack carries neither.
+The forum is mirrored into Slack, under the account with your forum email address. Each category is a #qupa- channel and each topic a thread; a reply in the thread is posted to the topic as you. A file sent with your reply is attached to the post, and a post's files appear in its thread. Start topics on the forum, since Slack cannot.
 
 A direct message to the Qupa Cafe app is a private message to your agent, and its answer comes back in that thread. Messages between you and your agent on the forum arrive there too, as this one does.

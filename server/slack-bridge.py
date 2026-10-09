@@ -19,6 +19,7 @@ import argparse
 import html
 import json
 import logging
+import mimetypes
 import os
 import posixpath
 import re
@@ -29,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -72,10 +74,13 @@ MEMBERSHIP_MISS_SECONDS = 30
 
 MAX_PAGES_PER_POLL = 20
 
-# A post's uploaded images follow it into its thread. The forum takes 4 MB an
-# image, so the ceiling is only against a misconfigured one.
-MAX_IMAGES_PER_POST = 10
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# Files are carried both ways, up to this many a post, which is also Slack's
+# limit a message. The forum takes 4 MB a file and refuses more itself, so the
+# byte ceiling is only against a misconfigured one.
+MAX_FILES_PER_POST = 10
+MAX_FILE_BYTES = 8 * 1024 * 1024
+# Where a Slack file's bytes are read from; the bot token goes nowhere else.
+SLACK_FILES_URL = "https://files.slack.com/"
 
 
 # ---------------------------------------------------------------------- state
@@ -104,8 +109,13 @@ class State:
             )
             # A post written in Slack keeps the text it was given, to tell an
             # edit from Slack's report of a link preview arriving.
-            if "raw" not in {row[1] for row in self.db.execute("PRAGMA table_info(from_slack)")}:
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(from_slack)")}
+            if "raw" not in columns:
                 self.db.execute("ALTER TABLE from_slack ADD COLUMN raw TEXT")
+            # And the markdown of the files it carried, which an edit in Slack
+            # keeps: the edited message's text does not mention them.
+            if "files" not in columns:
+                self.db.execute("ALTER TABLE from_slack ADD COLUMN files TEXT")
 
     def _one(self, sql: str, *args) -> tuple | None:
         with self.lock:
@@ -165,16 +175,18 @@ class State:
         row = self._one("SELECT channel_id FROM from_slack WHERE post_id = ?", post_id)
         return row[0] if row else None
 
-    def record_from_slack(self, post_id: int, channel_id: str, ts: str, raw: str | None = None) -> None:
+    def record_from_slack(
+        self, post_id: int, channel_id: str, ts: str, raw: str | None = None, files: str = "",
+    ) -> None:
         self._run(
-            "INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts, raw) VALUES (?, ?, ?, ?)",
-            post_id, channel_id, ts, raw,
+            "INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts, raw, files) VALUES (?, ?, ?, ?, ?)",
+            post_id, channel_id, ts, raw, files,
         )
 
-    def written_at(self, channel_id: str, ts: str) -> tuple[int, str | None] | None:
-        """(post id, raw) for the post a Slack message became."""
-        row = self._one("SELECT post_id, raw FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts)
-        return (row[0], row[1]) if row else None
+    def written_at(self, channel_id: str, ts: str) -> tuple[int, str | None, str] | None:
+        """(post id, raw, files' markdown) for the post a Slack message became."""
+        row = self._one("SELECT post_id, raw, files FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts)
+        return (row[0], row[1], row[2] or "") if row else None
 
     def set_slack_raw(self, post_id: int, raw: str) -> None:
         self._run("UPDATE from_slack SET raw = ? WHERE post_id = ?", raw, post_id)
@@ -210,6 +222,10 @@ class Refused(RuntimeError):
 
 class Unusable(Exception):
     """A Slack user's address belongs to an account they cannot post as."""
+
+
+class CannotCarry(Exception):
+    """A Slack file the bridge cannot read, with the reason for its writer."""
 
 
 class Forum:
@@ -339,6 +355,33 @@ class Forum:
         found = self.request("POST", "/uploads/lookup-urls.json", {"short_urls[]": short_urls})
         return {u["short_url"]: u["url"] for u in found or [] if u.get("short_url") and u.get("url")}
 
+    def upload(self, filename: str, content: bytes, as_user: str) -> dict:
+        """A file uploaded as ``as_user``, attachable to their next post. The
+        forum's own checks apply: its extensions, its size limit."""
+        boundary = "qupa" + uuid.uuid4().hex
+        quoted = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
+        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        body = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\ncomposer\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="files[]"; filename="{quoted}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(f"{self.base_url}/uploads.json", data=body, method="POST")
+        req.add_header("Api-Key", self.api_key)
+        req.add_header("Api-Username", as_user)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:500]
+            if exc.code == 429 or exc.code >= 500:
+                raise Transient(f"uploading {filename} -> {exc.code}: {detail}") from exc
+            raise Refused(f"uploading {filename} -> {exc.code}: {detail}", exc.code, detail) from exc
+        except urllib.error.URLError as exc:
+            raise Transient(f"uploading {filename} failed: {exc.reason}") from exc
+
     def download(self, url: str) -> bytes:
         """An upload's bytes, read from the forum this bridge talks to,
         whatever host the forum names in ``url``. The key is not carried
@@ -350,13 +393,13 @@ class Forum:
         req.add_unredirected_header("Api-Username", self.username)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
-                content = resp.read(MAX_IMAGE_BYTES + 1)
+                content = resp.read(MAX_FILE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             raise Refused(f"GET {parts.path} -> {exc.code}", exc.code, "") from exc
         except urllib.error.URLError as exc:
             raise Transient(f"GET {parts.path} failed: {exc.reason}") from exc
-        if len(content) > MAX_IMAGE_BYTES:
-            raise Refused(f"{parts.path} is larger than {MAX_IMAGE_BYTES} bytes", 413, "")
+        if len(content) > MAX_FILE_BYTES:
+            raise Refused(f"{parts.path} is larger than {MAX_FILE_BYTES} bytes", 413, "")
         return content
 
 
@@ -365,8 +408,9 @@ class Forum:
 
 _MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^\s)]+)\)")
-# The images the bridge uploads after a post: the forum's own.
-_UPLOADED_IMAGE = re.compile(r"!\[([^\]\n]*)\]\((upload://[^\s)]+)\)")
+# The files the bridge uploads after a post: the forum's own, images and
+# attachments alike.
+_UPLOADED_FILE = re.compile(r"!?\[([^\]\n]*)\]\((upload://[^\s)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
 # A fence's language, which Slack has no place for and shows as the first line.
 _FENCE_LANGUAGE = re.compile(r"^([ \t]*(?:```|~~~))[^\s`~]+[ \t]*$", re.M)
@@ -398,12 +442,27 @@ def image_text(match: re.Match) -> str:
     return f"[image: {name}]({url})" if url.startswith(("http://", "https://")) else f"[image: {name}]"
 
 
-def images_in(raw: str) -> list[tuple[str, str]]:
-    """(name, ``upload://`` reference) for each uploaded image, once each."""
+def files_in(raw: str) -> list[tuple[str, str]]:
+    """(name, ``upload://`` reference) for each uploaded file, once each."""
     seen: dict[str, str] = {}
-    for alt, short_url in _UPLOADED_IMAGE.findall(raw):
-        seen.setdefault(short_url, alt.split("|")[0].strip())
-    return [(name, short_url) for short_url, name in seen.items()][:MAX_IMAGES_PER_POST]
+    for label, short_url in _UPLOADED_FILE.findall(raw):
+        seen.setdefault(short_url, label.split("|")[0].strip())
+    return [(name, short_url) for short_url, name in seen.items()][:MAX_FILES_PER_POST]
+
+
+def upload_markdown(upload: dict, name: str) -> str:
+    """What the forum's composer writes for an upload: an image shown, any
+    other file as a link."""
+    short_url = upload.get("short_url") or upload.get("url") or ""
+    label = (upload.get("original_filename") or name).replace("[", "(").replace("]", ")").replace("|", "_")
+    if upload.get("width") and upload.get("height"):
+        return f"![{label}|{upload['width']}x{upload['height']}]({short_url})"
+    size = f" ({upload['human_filesize']})" if upload.get("human_filesize") else ""
+    return f"[{label}|attachment]({short_url}){size}"
+
+
+def with_files(text: str, files: str) -> str:
+    return "\n\n".join(part for part in (text, files) if part)
 
 
 def slack_escape(text: str) -> str:
@@ -426,8 +485,8 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     which a relative one is resolved; ``codes`` is ``redact``'s. A post is at
     most `max_post_length` (3,800) characters, which with a title and a closing
     line stays under the 4,000 Slack allows in an edited message; a new one may
-    run to 40,000. The forum's own images follow the post, uploaded by
-    ``Bridge.send_images``."""
+    run to 40,000. The forum's own files follow the post, uploaded by
+    ``Bridge.send_files``."""
     text = _MD_IMAGE.sub(image_text, redact(raw, codes))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
@@ -739,7 +798,7 @@ class Bridge:
             channel=channel_id, **self.opening(topic, first), unfurl_links=False, unfurl_media=False,
         )
         self.state.set_thread(topic["id"], channel_id, result["ts"])
-        self.send_images(first, channel_id, result["ts"])
+        self.send_files(first, channel_id, result["ts"])
         return result["ts"]
 
     def ensure_link(self, topic: dict, channel_id: str) -> None:
@@ -840,26 +899,26 @@ class Bridge:
                     channel=channel_id, thread_ts=fresh, text=text, username=author,
                     unfurl_links=False, unfurl_media=False,
                 )
-                self.send_images(post, channel_id, fresh)
+                self.send_files(post, channel_id, fresh)
                 return
             raise
-        self.send_images(post, channel_id, thread_ts)
+        self.send_files(post, channel_id, thread_ts)
 
-    def send_images(self, post: dict | None, channel_id: str, thread_ts: str) -> None:
-        """A post's uploaded images, into its thread after it. Slack cannot
-        fetch them from a forum that requires a login, so the bytes go. A
-        failure costs only the images: the text is already in Slack, and
-        relaying the post again would repeat it."""
+    def send_files(self, post: dict | None, channel_id: str, thread_ts: str) -> None:
+        """A post's uploaded files, images and attachments, into its thread
+        after it. Slack cannot fetch them from a forum that requires a login,
+        so the bytes go. A failure costs only the files: the text is already
+        in Slack, and relaying the post again would repeat it."""
         if not post or post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
             return
         raw = post["raw"] if "raw" in post else self.forum.post(post["id"]).get("raw", "")
-        images = images_in(raw or "")
-        if not images:
+        found = files_in(raw or "")
+        if not found:
             return
         try:
-            served = self.forum.lookup_uploads([short_url for _, short_url in images])
+            served = self.forum.lookup_uploads([short_url for _, short_url in found])
             files = []
-            for name, short_url in images:
+            for name, short_url in found:
                 if short_url not in served:
                     LOG.warning("post %s: the forum does not know %s", post.get("id"), short_url)
                     continue
@@ -870,7 +929,7 @@ class Bridge:
             if files:
                 self.slack.files_upload_v2(channel=channel_id, thread_ts=thread_ts, file_uploads=files)
         except Exception as exc:
-            LOG.error("post %s's images did not reach Slack: %s", post.get("id"), exc)
+            LOG.error("post %s's files did not reach Slack: %s", post.get("id"), exc)
 
     def post_text(
         self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True, codes: bool = False,
@@ -963,7 +1022,7 @@ class Bridge:
         opening = self.opening(meta, first, hint=PRIVATE_HINT, mention=False, codes=codes)
         result = self.slack.chat_postMessage(channel=channel_id, **opening, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(meta["id"], channel_id, result["ts"])
-        self.send_images(first, channel_id, result["ts"])
+        self.send_files(first, channel_id, result["ts"])
         return channel_id, result["ts"]
 
     def relay_private(self, post: dict) -> str:
@@ -1101,13 +1160,7 @@ class Bridge:
             )
             return "top-level message, not relayed"
 
-        if subtype == "file_share":
-            self.ephemeral(
-                channel_id, user, thread_ts,
-                "Files are not carried to the forum, so this was not posted. Attach it on the forum instead.",
-            )
-            return "file share, not relayed"
-        if subtype not in (None, "thread_broadcast"):
+        if subtype not in (None, "thread_broadcast", "file_share"):
             return f"ignored {subtype}"
 
         topic_id = self.state.topic_for(channel_id, thread_ts)
@@ -1152,8 +1205,8 @@ class Bridge:
             written = self.state.written_at(channel_id, message.get("ts") or "")
             if written is None:
                 return "an edit to a message that is not on the forum"
-            post_id, stored = written
-            raw = from_slack(message.get("text") or "", self.mention_for)
+            post_id, stored, files = written
+            raw = with_files(from_slack(message.get("text") or "", self.mention_for), files)
             # Slack reports a link preview arriving as an edit too.
             if same_text(raw, stored):
                 return "unchanged"
@@ -1183,8 +1236,60 @@ class Bridge:
             self.state.set_slack_raw(post_id, raw)
         return f"edited post {post_id} as {author}"
 
+    def slack_file(self, file: dict) -> bytes:
+        """A Slack file's bytes, read with the bot token, which needs
+        ``files:read``. Raises ``CannotCarry`` with a reason for its writer."""
+        if file.get("mode") in ("hidden_by_limit", "tombstone", "external"):
+            raise CannotCarry("Slack does not let the app read it")
+        url = file.get("url_private_download") or file.get("url_private") or ""
+        if not url.startswith(SLACK_FILES_URL):
+            raise CannotCarry("Slack gave no address for it")
+        if (file.get("size") or 0) > MAX_FILE_BYTES:
+            raise CannotCarry("it is too large")
+        req = urllib.request.Request(url)
+        # Not carried through a redirect, so the token reaches Slack's file host only.
+        req.add_unredirected_header("Authorization", f"Bearer {self.slack.token}")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                content = resp.read(MAX_FILE_BYTES + 1)
+                content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+        except (urllib.error.URLError, OSError) as exc:
+            raise CannotCarry(f"Slack did not hand it over ({exc})") from exc
+        if len(content) > MAX_FILE_BYTES:
+            raise CannotCarry("it is too large")
+        # Without files:read, Slack answers with its sign-in page.
+        if content_type == "text/html" and file.get("mimetype") != "text/html":
+            raise CannotCarry("the app may not read Slack's files; a workspace admin must reinstall it")
+        return content
+
+    def carry_files(self, event: dict, as_user: str, tell: Callable[[str], None]) -> str:
+        """The message's files, uploaded to the forum as their writer, as the
+        markdown that attaches them. Any that cannot go are named to the writer."""
+        lines: list[str] = []
+        missed: list[str] = []
+        files = event.get("files") or []
+        for file in files[:MAX_FILES_PER_POST]:
+            name = file.get("name") or file.get("title") or "file"
+            try:
+                uploaded = self.forum.upload(name, self.slack_file(file), as_user)
+            except CannotCarry as exc:
+                missed.append(f"{name}: {exc}")
+                continue
+            except Refused as exc:
+                missed.append(f"{name}: {forum_error(exc)}")
+                continue
+            except Transient:
+                missed.append(f"{name}: the forum is not answering just now")
+                continue
+            lines.append(upload_markdown(uploaded, name))
+        missed += [f"{f.get('name') or 'file'}: more than {MAX_FILES_PER_POST} files" for f in files[MAX_FILES_PER_POST:]]
+        if missed:
+            tell("Not attached on the forum: " + "; ".join(missed) + ". Attach it there instead.")
+        return "\n".join(lines)
+
     def post_as(self, account: dict, topic_id: int, event: dict, tell: Callable[[str], None]) -> str:
-        raw = from_slack(event.get("text") or "", self.mention_for)
+        files = self.carry_files(event, account["username"], tell)
+        raw = with_files(from_slack(event.get("text") or "", self.mention_for), files)
         if not raw:
             return "empty"
         with self.lock:
@@ -1199,7 +1304,7 @@ class Bridge:
                 return f"transient: {exc}"
             post_id = created.get("id")
             if post_id:
-                self.state.record_from_slack(post_id, event.get("channel") or "", event.get("ts") or "", raw)
+                self.state.record_from_slack(post_id, event.get("channel") or "", event.get("ts") or "", raw, files)
         return f"posted as {account['username']} (post {post_id})"
 
     def handle_conversation(self, event: dict) -> str:
@@ -1227,10 +1332,7 @@ class Bridge:
             except Exception as exc:
                 LOG.warning("cannot answer %s: %s", user, exc)
 
-        if subtype == "file_share":
-            tell("Files are not carried to the forum, so this was not posted. Attach it on the forum instead.")
-            return "file share, not relayed"
-        if subtype not in (None, "thread_broadcast"):
+        if subtype not in (None, "thread_broadcast", "file_share"):
             return f"ignored {subtype}"
 
         try:
@@ -1257,10 +1359,13 @@ class Bridge:
             tell("You have no agent on the forum yet, so there is nobody to send this to.")
             return "no agent to send to"
 
-        raw = from_slack(event.get("text") or "", self.mention_for)
+        text = from_slack(event.get("text") or "", self.mention_for)
+        files = self.carry_files(event, sender, tell)
+        raw = with_files(text, files)
         if not raw:
             return "empty"
-        title = message_title(raw)
+        names = ", ".join(f.get("name") or "file" for f in event.get("files") or [])
+        title = message_title(text or f"Files: {names}")
         with self.lock:
             try:
                 try:
@@ -1280,7 +1385,7 @@ class Bridge:
                 return f"transient: {exc}"
             topic_id = created.get("topic_id")
             if created.get("id"):
-                self.state.record_from_slack(created["id"], event["channel"], event.get("ts") or "", raw)
+                self.state.record_from_slack(created["id"], event["channel"], event.get("ts") or "", raw, files)
             if topic_id:
                 self.state.set_thread(topic_id, event["channel"], event["ts"])
 
@@ -1418,7 +1523,7 @@ def make_slack() -> Any:
 # The scopes providers/slack/manifest.yml grants.
 REQUIRED_SCOPES = {
     "channels:history", "channels:join", "channels:manage", "channels:read",
-    "chat:write", "chat:write.customize", "files:write", "im:history", "im:write",
+    "chat:write", "chat:write.customize", "files:read", "files:write", "im:history", "im:write",
     "mpim:history", "mpim:read", "mpim:write", "users:read", "users:read.email",
 }
 

@@ -115,6 +115,8 @@ class StubForum:
         # Set to a host to serve uploads as secure_uploads does: a redirect to
         # an address signed for the object store.
         self.object_store: str | None = None
+        # (as whom, filename, bytes) for each file uploaded to it.
+        self.uploaded: list[tuple[str, str, bytes]] = []
 
     def topic(self, topic_id, title, category_id, opener, archetype="regular", allowed_users=(), allowed_groups=()):
         self.topics[topic_id] = {
@@ -221,7 +223,25 @@ def serve(stub: StubForum):
 
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)
-            parsed = urllib.parse.parse_qs(self.rfile.read(length).decode())
+            body = self.rfile.read(length)
+            if self.path == "/uploads.json":
+                # Multipart, as the composer sends it; only what the bridge relies on.
+                head, _, rest = body.partition(b'name="files[]"; filename="')
+                filename, _, rest = rest.partition(b'"')
+                content = rest.split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n--", 1)[0]
+                name = filename.decode()
+                if not name.endswith((".png", ".pdf", ".txt")):
+                    return self._json(422, {"errors": [
+                        "Sorry, the file you are trying to upload is not authorized (authorized extensions: png, pdf, txt)."
+                    ]})
+                stub.uploaded.append((self.headers.get("Api-Username"), name, content))
+                short = f"upload://up{len(stub.uploaded)}{name[name.rindex('.'):]}"
+                stub.uploads[short] = content
+                answer = {"short_url": short, "original_filename": name, "human_filesize": f"{len(content)} Bytes"}
+                if name.endswith(".png"):
+                    answer.update(width=10, height=20)
+                return self._json(200, answer)
+            parsed = urllib.parse.parse_qs(body.decode())
             form = {k: v[0] for k, v in parsed.items()}
             if self.path == "/uploads/lookup-urls.json":
                 # As uploads#lookup_urls: the known ones, with the host the
@@ -302,6 +322,7 @@ class FakeSlack:
         # Every message the bot has in Slack, by its ts.
         self.sent: dict[str, dict] = {}
         self.files: list[dict] = []
+        self.token = "xoxb-test"
         # Set to an error to refuse uploads, as a token without files:write does.
         self.refuse_files: str | None = None
         self._ts = 1000
@@ -605,6 +626,16 @@ def test_an_image_in_a_dm_follows_it(world):
 
     (upload,) = slack.files
     assert upload["channel"] == "DUS" and upload["thread_ts"] == bridge.state.thread_for(41)[1]
+
+
+def test_a_posts_attachment_follows_it_too(world):
+    stub, slack, bridge = world
+    stub.uploads["upload://dAta.pdf"] = b"%PDF-1.4 the sweep"
+    stub.post(10, "pat", "The sweep: [sweep.pdf|attachment](upload://dAta.pdf) (18 Bytes)")
+    bridge.poll()
+
+    assert "The sweep: sweep.pdf (18 Bytes)" in replies(slack)[0]["text"]
+    assert slack.files[0]["file_uploads"] == [{"content": b"%PDF-1.4 the sweep", "filename": "sweep.pdf", "title": "sweep.pdf"}]
 
 
 def test_a_link_only_topic_is_a_link_and_nothing_else(world):
@@ -1124,3 +1155,138 @@ def test_an_edit_to_a_message_not_on_the_forum_changes_nothing(world):
     event = {"channel": bridge.state.thread_for(10)[0], "user": "US", "ts": "3000.000001"}
     assert bridge.handle_message(edit_event(event, "anything")) == "an edit to a message that is not on the forum"
     assert stub.edited_as == []
+
+
+# ------------------------------------------------------------ files from Slack
+
+
+@pytest.fixture
+def slack_files(world, monkeypatch):
+    """Slack's file host: ``path -> (content type, bytes)``, and the
+    Authorization header of every request it was sent."""
+    stub, slack, bridge = world
+    served: dict[str, tuple[str, bytes]] = {}
+    seen: list[str | None] = []
+
+    class Files(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append(self.headers.get("Authorization"))
+            mime, content = served[self.path]
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Files)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}/"
+    monkeypatch.setattr(bridge_mod, "SLACK_FILES_URL", base)
+
+    def add(name, content, mime="image/png", **extra):
+        served[f"/files-pri/T1-F{len(served)}/{name}"] = (mime, content)
+        return {"id": f"F{len(served)}", "name": name, "mimetype": mime, "size": len(content),
+                "url_private_download": f"{base}files-pri/T1-F{len(served) - 1}/{name}", **extra}
+
+    yield add, seen
+    httpd.shutdown()
+
+
+def test_files_in_a_thread_reply_are_attached_to_the_post_as_their_writer(world, slack_files):
+    stub, slack, bridge = world
+    add, seen = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+
+    files = [add("shot.png", PNG), add("notes.pdf", b"%PDF-1.4 notes", "application/pdf")]
+    event = reply_event(slack, bridge, "US", "Both attached.", subtype="file_share", files=files)
+    assert bridge.handle_message(event).startswith("posted as sunada")
+
+    assert [(who, name) for who, name, _ in stub.uploaded] == [("sunada", "shot.png"), ("sunada", "notes.pdf")]
+    assert stub.uploaded[0][2] == PNG
+    assert stub.posts[-1]["raw"] == (
+        "Both attached.\n\n![shot.png|10x20](upload://up1.png)\n[notes.pdf|attachment](upload://up2.pdf) (14 Bytes)"
+    )
+    assert seen == ["Bearer xoxb-test"] * 2
+    # Written in Slack, so neither it nor its files come back.
+    bridge.poll()
+    assert slack.files == []
+
+
+def test_a_file_with_no_text_is_still_a_post(world, slack_files):
+    stub, slack, bridge = world
+    add, _ = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+
+    event = reply_event(slack, bridge, "US", "", subtype="file_share", files=[add("shot.png", PNG)])
+    assert bridge.handle_message(event).startswith("posted as sunada")
+    assert stub.posts[-1]["raw"] == "![shot.png|10x20](upload://up1.png)"
+
+
+def test_a_file_the_forum_refuses_is_named_and_the_text_still_posted(world, slack_files):
+    stub, slack, bridge = world
+    add, _ = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+
+    event = reply_event(slack, bridge, "US", "The data, zipped.", subtype="file_share",
+                        files=[add("data.zip", b"PK", "application/zip")])
+    assert bridge.handle_message(event).startswith("posted as sunada")
+    assert stub.posts[-1]["raw"] == "The data, zipped."
+    told = slack.ephemerals[-1]["text"]
+    assert "data.zip" in told and "not authorized" in told
+
+
+def test_without_files_read_the_writer_is_told_to_have_the_app_reinstalled(world, slack_files):
+    """Slack answers a token without files:read with its sign-in page, not an error."""
+    stub, slack, bridge = world
+    add, _ = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+
+    event = reply_event(slack, bridge, "US", "A plot.", subtype="file_share",
+                        files=[add("shot.png", b"<html>sign in</html>", mime="text/html") | {"mimetype": "image/png"}])
+    bridge.handle_message(event)
+    assert stub.uploaded == [] and stub.posts[-1]["raw"] == "A plot."
+    assert "reinstall" in slack.ephemerals[-1]["text"]
+
+
+def test_the_token_goes_only_to_slacks_file_host(world, slack_files):
+    stub, slack, bridge = world
+    add, seen = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+
+    elsewhere = {"name": "x.png", "url_private_download": "http://127.0.0.1:9/x.png", "size": 3}
+    bridge.handle_message(reply_event(slack, bridge, "US", "A plot.", subtype="file_share", files=[elsewhere]))
+    assert seen == [] and stub.uploaded == []
+    assert "x.png" in slack.ephemerals[-1]["text"]
+
+
+def test_an_edit_in_slack_keeps_the_files(world, slack_files):
+    """The edited message's text says nothing about its files, and the post keeps them."""
+    stub, slack, bridge = world
+    add, _ = slack_files
+    stub.post(10, "pat", "Starting the thread.")
+    bridge.poll()
+    event = reply_event(slack, bridge, "US", "A plot.", subtype="file_share", files=[add("shot.png", PNG)])
+    bridge.handle_message(event)
+    post = stub.posts[-1]
+
+    assert bridge.handle_message(edit_event(event, "The plot, corrected.")) == f"edited post {post['id']} as sunada"
+    assert stub.edited_as[-1][2] == "The plot, corrected.\n\n![shot.png|10x20](upload://up1.png)"
+    assert bridge.handle_message(edit_event(event, "The plot, corrected.")) == "unchanged"
+
+
+def test_a_file_in_a_dm_opens_a_private_message_holding_it(world, slack_files):
+    stub, slack, bridge = world
+    add, _ = slack_files
+    event = {**dm("US", "", "7000.1"), "subtype": "file_share", "files": [add("shot.png", PNG)]}
+
+    assert bridge.handle_message(event).startswith("opened message")
+    title, raw = stub.created_as[-1][1]["title"], stub.created_as[-1][1]["raw"]
+    assert title == "Files: shot.png" and raw == "![shot.png|10x20](upload://up1.png)"
