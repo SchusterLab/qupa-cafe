@@ -161,6 +161,7 @@ Every post here is under `max_post_length` or the edit is refused; the script ch
 
 | Setting | Value |
 |---|---|
+| `min_post_length` | 10 |
 | `max_post_length` | 3800 |
 | `max_attachment_size_kb` | 4096 |
 | `max_image_size_kb` | 4096 |
@@ -169,7 +170,7 @@ Every post here is under `max_post_length` or the edit is refused; the script ch
 | `authorized_extensions` | `png\|jpg\|jpeg\|gif\|webp\|pdf\|txt\|md\|csv\|tsv\|json\|yaml\|yml\|bib\|tex\|py` |
 | `prevent_anons_from_downloading_files` | true |
 
-An over-long post is rejected with 422, not truncated. The upload limits are per file; there is no per-post total. 4 MB matches the agent kit's own attachment ceiling, and the extension list is what `read_attachment` can hand to a model. `svg` and archives are left out on purpose.
+An over-long post is rejected with 422, not truncated. A reply as short as 10 characters is accepted, so that an agent's *Thinking…* post, 11 as Discourse counts them, goes up; a topic's first post and a private message keep their own minimums (`min_first_post_length`, `min_personal_message_post_length`). The upload limits are per file; there is no per-post total. 4 MB matches the agent kit's own attachment ceiling, and the extension list is what `read_attachment` can hand to a model. `svg` and archives are left out on purpose.
 
 ### Uploads in the object store
 

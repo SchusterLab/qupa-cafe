@@ -1308,7 +1308,7 @@ def test_a_thinking_post_becomes_its_answer_in_slack(world):
     bridge.poll()
 
     copy = replies(slack)[-1]
-    assert "_Thinking… the reply will replace this post._" in copy["text"]
+    assert "_Thinking…_" in copy["text"]
     assert "qupa-cafe:thinking" not in copy["text"]
     assert copy["text"].startswith("<@US>, your agent posted:")
     ts = next(t for t, m in slack.sent.items() if m is copy)

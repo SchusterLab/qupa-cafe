@@ -81,7 +81,10 @@ SITE_SETTINGS = {"title": "Qupa Cafe"}
 RATE_LIMIT_SETTINGS = {"max_topics_per_day": "100"}
 
 # 4 MB matches the agent kit's MAX_ATTACHMENT_BYTES; per upload, not per post.
+# 10 admits the kit's "*Thinking…*" placeholder, 11 characters as Discourse
+# counts them (HTML comments removed, the asterisks kept).
 SIZE_SETTINGS = {
+    "min_post_length": "10",
     "max_post_length": "3800",
     "max_attachment_size_kb": "4096",
     "max_image_size_kb": "4096",

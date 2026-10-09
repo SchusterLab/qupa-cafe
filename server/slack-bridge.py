@@ -65,7 +65,7 @@ UPLOAD_SCHEME = "upload://"
 # updated to the answer, the one forum edit the bridge carries. One not filled
 # in a day is given up on; the kit deletes it long before.
 PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
-PLACEHOLDER_SLACK_TEXT = "_Thinking… the reply will replace this post._"
+PLACEHOLDER_SLACK_TEXT = "_Thinking…_"
 PLACEHOLDER_WATCH_SECONDS = 86400
 
 # Not a whisper or a small action.

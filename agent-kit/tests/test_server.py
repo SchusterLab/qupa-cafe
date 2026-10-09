@@ -914,7 +914,7 @@ def test_start_reply_puts_up_a_placeholder_and_reply_fills_it(forum, tmp_path):
     created = [p for p in stub.posted if p["path"] == "/posts.json"]
     assert len(created) == 1
     body = urllib.parse.parse_qs(created[0]["body"])
-    assert body["raw"][0].startswith("*Thinking… the reply will replace this post.*")
+    assert body["raw"][0].startswith("*Thinking…*\n\n<!--")
     assert "qupa-cafe:thinking" in body["raw"][0]
     assert body["reply_to_post_number"] == ["3"]
 
