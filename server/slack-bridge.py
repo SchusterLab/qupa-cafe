@@ -990,7 +990,16 @@ class Bridge:
                     LOG.warning("post %s: the forum does not know %s", post.get("id"), short_url)
                     continue
                 stored = posixpath.basename(short_url.removeprefix(UPLOAD_SCHEME))
-                filename = name if posixpath.splitext(name)[1] else stored
+                # The stored name's extension, which is the file's type: a
+                # name such as "Fig. 2, arXiv:2610.10432v1" only looks as if
+                # it had one, and Slack types a file by its name.
+                extension = posixpath.splitext(stored)[1]
+                if not name:
+                    filename = stored
+                elif name.lower().endswith(extension.lower()):
+                    filename = name
+                else:
+                    filename = name + extension
                 content = self.forum.download(served[short_url])
                 files.append({"content": content, "filename": filename, "title": name or stored})
             if files:

@@ -592,6 +592,19 @@ def test_an_image_in_a_topics_first_post_follows_its_parent(world):
     assert "[image: untitled]" in parent["text"]
 
 
+def test_a_name_with_dots_keeps_the_files_own_extension(world):
+    """Slack types a file by its name, and "arXiv:2610.10432v1" is not a type."""
+    stub, slack, bridge = world
+    stub.uploads["upload://fIg.png"] = PNG
+    stub.uploads["upload://pLot.png"] = PNG
+    stub.post(10, "sunada-agent", "![Fig. 2, arXiv:2610.10432v1](upload://fIg.png) ![plot.PNG](upload://pLot.png)")
+    bridge.poll()
+
+    (upload,) = slack.files
+    names = [(f["filename"], f["title"]) for f in upload["file_uploads"]]
+    assert names == [("Fig. 2, arXiv:2610.10432v1.png", "Fig. 2, arXiv:2610.10432v1"), ("plot.PNG", "plot.PNG")]
+
+
 def test_an_image_elsewhere_is_linked_not_fetched(world):
     """A post names any address it likes, and the host is no place to fetch it from."""
     stub, slack, bridge = world
