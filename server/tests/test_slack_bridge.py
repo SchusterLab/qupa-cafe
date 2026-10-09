@@ -56,10 +56,10 @@ def test_to_slack_converts_html_links():
 
 
 def test_to_slack_turns_images_and_attachments_into_their_names():
-    assert bridge_mod.to_slack("see ![plot|690x388](upload://abc.png)", "u") == "see [image: plot]"
+    assert bridge_mod.to_slack("see ![plot|690x388](upload://abc.png)", "u") == "see _[image: plot]_"
     # One elsewhere is a link, since the bridge does not fetch it.
     assert bridge_mod.to_slack("![Fig. 2](https://arxiv.org/html/x/Fig2.png)", "u") == (
-        "<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>"
+        "_<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>_"
     )
     assert bridge_mod.to_slack("data: [run.csv|attachment](upload://x.csv) (2 KB)", "u") == "data: run.csv (2 KB)"
 
@@ -539,7 +539,7 @@ def test_a_posts_uploaded_image_follows_it_into_the_thread(world):
     assert bridge.poll() == 1
 
     (reply,) = replies(slack)
-    assert "[image: Fig2.png]" in reply["text"]
+    assert "_[image: Fig2.png]_" in reply["text"]
     (upload,) = slack.files
     assert upload["channel"] == reply["channel"] and upload["thread_ts"] == reply["thread_ts"]
     assert upload["file_uploads"] == [{"content": PNG, "filename": "Fig2.png", "title": "Fig2.png"}]
@@ -589,7 +589,7 @@ def test_an_image_in_a_topics_first_post_follows_its_parent(world):
     assert upload["thread_ts"] == bridge.state.thread_for(11)[1]
     # With no name of its own, it goes under the stored one.
     assert upload["file_uploads"][0]["filename"] == "xYz.png"
-    assert "[image: untitled]" in parent["text"]
+    assert "_[image: untitled]_" in parent["text"]
 
 
 def test_a_name_with_dots_keeps_the_files_own_extension(world):
@@ -612,7 +612,7 @@ def test_an_image_elsewhere_is_linked_not_fetched(world):
     bridge.poll()
 
     assert slack.files == [] and stub.downloaded_as == []
-    assert "<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>" in replies(slack)[0]["text"]
+    assert "_<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>_" in replies(slack)[0]["text"]
 
 
 @pytest.mark.parametrize("failure", ["download", "slack"])
@@ -698,7 +698,7 @@ def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
     bridge.poll()
     (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
     assert parent["username"] == "sunada-agent"
-    assert parent["text"].startswith("<@US>, your agent posted:\n*<")
+    assert parent["text"].startswith("_<@US>, your agent posted:_\n*<")
 
 
 def test_an_agents_post_mentions_its_researcher(world):
@@ -706,7 +706,7 @@ def test_an_agents_post_mentions_its_researcher(world):
     stub.post(10, "sunada-agent", "A counterexample at distance 5.")
     bridge.poll()
     (reply,) = replies(slack)
-    assert reply["text"].startswith("<@US>, your agent posted")
+    assert reply["text"].startswith("_<@US>, your agent posted:_")
     assert reply["username"] == "sunada-agent"
 
     # A person's post mentions nobody.
@@ -1082,20 +1082,20 @@ def test_threads_and_posts_carry_their_links(world):
     assert parent["text"].startswith("*<")
     assert "|Surface code thresholds>*\n" in parent["text"]
     (reply,) = replies(slack)
-    assert reply["text"].endswith("|View this post>")
+    assert reply["text"].endswith("|View this post>_")
 
     # An agent's post carries the same link, after the mention of its researcher.
     stub.post(10, "sunada-agent", "A counterexample at distance 5.")
     bridge.poll()
     agent = replies(slack)[1]["text"]
-    assert agent.startswith("<@US>, your agent posted:\n")
-    assert agent.endswith("|View this post>")
+    assert agent.startswith("_<@US>, your agent posted:_\n")
+    assert agent.endswith("|View this post>_")
 
     stub.post(10, "pat", ("word " * 799) + "last")
     bridge.poll()
     long = replies(slack)[2]["text"]
-    assert long.startswith(("word " * 799) + "last\n<")
-    assert long.endswith("|View this post>")
+    assert long.startswith(("word " * 799) + "last\n_<")
+    assert long.endswith("|View this post>_")
 
 
 # ---------------------------------------------------------------- Slack edits
@@ -1323,7 +1323,7 @@ def test_a_thinking_post_becomes_its_answer_in_slack(world):
     copy = replies(slack)[-1]
     assert "_Thinking…_" in copy["text"]
     assert "qupa-cafe:thinking" not in copy["text"]
-    assert copy["text"].startswith("<@US>, your agent posted:")
+    assert copy["text"].startswith("_<@US>, your agent posted:_")
     ts = next(t for t, m in slack.sent.items() if m is copy)
 
     bridge.poll()
@@ -1335,7 +1335,7 @@ def test_a_thinking_post_becomes_its_answer_in_slack(world):
 
     (update,) = [c[1] for c in slack.calls if c[0] == "update"]
     assert update["ts"] == ts
-    assert update["text"].startswith("<@US>, your agent posted:")
+    assert update["text"].startswith("_<@US>, your agent posted:_")
     assert "*0.57%*" in update["text"] and "View this post" in update["text"]
     assert slack.files[0]["thread_ts"] == copy["thread_ts"]
     # Updated once, and no longer watched.

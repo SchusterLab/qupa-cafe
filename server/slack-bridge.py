@@ -467,11 +467,12 @@ def redact(text: str, codes: bool = False) -> str:
 
 
 def image_text(match: re.Match) -> str:
-    """An image as its name. One elsewhere becomes a link, since the bridge
-    fetches only from the forum: a post names any address it likes."""
+    """An image as its name, in italics as the bridge's own words are. One
+    elsewhere becomes a link, since the bridge fetches only from the forum: a
+    post names any address it likes."""
     name = match.group(1).split("|")[0] or "untitled"
     url = match.group(2)
-    return f"[image: {name}]({url})" if url.startswith(("http://", "https://")) else f"[image: {name}]"
+    return f"_[image: {name}]({url})_" if url.startswith(("http://", "https://")) else f"_[image: {name}]_"
 
 
 def files_in(raw: str) -> list[tuple[str, str]]:
@@ -1023,8 +1024,9 @@ class Bridge:
             researcher = self.researcher_for(author)
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
-                lead = f"<@{slack_id}>, your agent posted:\n"
-        return f"{lead}{heading}{body}\n<{url}|View this post>" if link else f"{lead}{heading}{body}"
+                lead = f"_<@{slack_id}>, your agent posted:_\n"
+        # The bridge's own words are in italics, apart from what the author wrote.
+        return f"{lead}{heading}{body}\n_<{url}|View this post>_" if link else f"{lead}{heading}{body}"
 
     def agent_of(self, username: str) -> str | None:
         """``<username>-agent``, if it is an agent."""
