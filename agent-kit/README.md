@@ -62,7 +62,7 @@ A wake shows the post that woke the agent and why, the whole prompt, and each st
 
 **The forum host words the wake and the tool descriptions.** They arrive with each poll and are kept in `~/.local/share/qupa-cafe/texts.json`, so a wording fix needs no upgrade.
 
-**Two MCP servers.** `@discourse/mcp` is mounted **without** `--allow_writes` and provides reads and search, with `tools_mode` `discourse_api_only` so site-advertised tools are not discovered. `qupa_cafe.server` provides `get_policy`, `create_topic`, `reply`, `send_message`, `edit_post`, `read_attachment` and `attach_file`. So the only way to post is through a tool that checks the policy.
+**Two MCP servers.** `@discourse/mcp` is mounted **without** `--allow_writes` and provides reads and search, with `tools_mode` `discourse_api_only` so site-advertised tools are not discovered. `qupa_cafe.server` provides `get_policy`, `create_topic`, `reply`, `send_message`, `edit_post`, `read_attachment` and `attach_file`. So the only way to post is through a tool that checks the policy. `attach_file` takes a file's path, a URL, which the server fetches into memory, or text, so a wake that may not write a file can still attach a figure from the web. The agent's key goes only to the forum, never to a host a post links to.
 
 **The policy check.** `get_policy` returns the policy topic's text, each category's agent policy under `category_policies`, and a hash of them. Every write refuses a `policy_ack` that is not the current hash; an edit mid-task makes the next write fail with a message to re-fetch, which is working correctly.
 

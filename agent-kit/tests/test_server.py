@@ -19,11 +19,12 @@ from qupa_cafe.server import (
     SERVER_INSTRUCTIONS,
     TOOLS,
     ForumWriter,
+    KeepKeyOnForum,
     QupaServer,
     attachment_blocks,
 )
 
-from conftest import ATTACHED_PDF, ATTACHED_TEXT, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL
+from conftest import ATTACHED_PDF, ATTACHED_TEXT, FIGURE_PNG, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL
 
 KIT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -489,6 +490,74 @@ def test_attaching_a_file_returns_markdown_that_attaches_it(forum):
     assert answer["uploaded"] is True
     assert "upload://notes.txt" in answer["markdown"]
     assert "references it" in answer["next_step"]
+
+
+def test_a_file_off_the_forum_is_fetched_without_the_key(forum, elsewhere):
+    """A link in a post is somebody else's text, and following it must not
+    hand that somebody the agent's key."""
+    url, _ = forum
+    figure_host, seen = elsewhere
+    writer = ForumWriter(url, "key", "agent")
+
+    content, name, content_type = writer.download(f"{figure_host}/html/2610.10432v1/Fig2.png")
+
+    assert content == FIGURE_PNG and name == "Fig2.png" and content_type == "image/png"
+    headers = {k.lower() for k in seen.seen[0]["headers"]}
+    assert "api-key" not in headers and "api-username" not in headers
+
+
+def test_a_redirect_off_the_forum_drops_the_key():
+    """The forum may answer with a redirect, and only the forum gets the key."""
+    import urllib.request
+
+    handler = KeepKeyOnForum("https://forum.example")
+    req = urllib.request.Request("https://forum.example/uploads/a.png")
+    req.add_header("Api-Key", "secret")
+    req.add_header("Api-Username", "agent")
+
+    away = handler.redirect_request(req, None, 302, "Found", {}, "https://cdn.example/a.png")
+    home = handler.redirect_request(req, None, 302, "Found", {}, "https://forum.example/secure/a.png")
+
+    assert not away.has_header("Api-key") and not away.has_header("Api-username")
+    assert home.get_header("Api-key") == "secret"
+
+
+def test_attaching_from_a_url_uploads_what_it_fetched(forum, elsewhere):
+    """So an agent that may not write a file can still attach a paper's figure."""
+    url, stub = forum
+    figure_host, seen = elsewhere
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "attach_file",
+                     "arguments": {"url": f"{figure_host}/html/2610.10432v1/Fig2.png",
+                                   "policy_ack": policy_hash(POLICY_TEXT)}}}],
+    )
+
+    answer = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert answer["uploaded"] is True
+    upload = next(p for p in stub.posted if p["path"] == "/uploads.json")
+    assert 'filename="Fig2.png"' in upload["body"]
+    assert "Content-Type: image/png" in upload["body"]
+    assert "not really pixels" in upload["body"]
+    assert all("Api-Key" not in request["headers"] for request in seen.seen)
+
+
+def test_attaching_from_a_url_takes_only_http(forum):
+    """``file://`` is a path by another name, and path is the input for that."""
+    url, _ = forum
+
+    responses = _run_server(
+        url,
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "attach_file",
+                     "arguments": {"url": "file:///etc/passwd",
+                                   "policy_ack": policy_hash(POLICY_TEXT)}}}],
+    )
+
+    assert responses[0]["result"]["isError"] is True
+    assert "http or https" in responses[0]["result"]["content"][0]["text"]
 
 
 def test_get_policy_names_both_accounts(forum):

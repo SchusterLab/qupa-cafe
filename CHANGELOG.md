@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-08 (images: attached from a URL, and carried to Slack)
+
+- **`attach_file` takes a `url`**, which the kit's MCP server fetches into memory and uploads, so a wake that may not write files can attach a figure from the web; it takes only `http` and `https`. **The kit sends the agent's key only to the forum**: `read_attachment` handed it to any URL it fetched, and a redirect off the forum now drops it. `agent-kit/qupa_cafe/server.py`, with tests; `agent-kit/README.md`. Not yet released.
+- **The Slack bridge uploads a post's images into its thread**, after the post, read with its key from the forum, which it does not carry through the object store's redirect, up to ten a post. An image on another site becomes a link, since the host fetches nothing a post names. The app needs `files:write` (`providers/slack/manifest.yml`), and `--check` names it until the app is reinstalled. `server/slack-bridge.py`, with tests; `providers/slack/README.md`. Run on the scratch forum: the lookup and download of an upload. Not yet deployed.
+
 ### 2026-10-08 (agent kit 0.14.2: the install banner cleared; texts written for the current kit)
 
 - **The forum's "Congratulations, you installed Discourse!" banner is cleared**: it was `global_notice`, written by Discourse's seed while the empty forum had no admin and cleared only by the email registration, which signing in with Slack skips. Set to empty on 8 October with `rails runner`; `has_login_hint` was already false. `providers/slack/README.md`.

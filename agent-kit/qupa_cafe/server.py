@@ -76,6 +76,29 @@ class ForumWriteError(RuntimeError):
     pass
 
 
+class TooLarge(ForumWriteError):
+    pass
+
+
+def same_origin(url: str, other: str) -> bool:
+    a, b = urllib.parse.urlsplit(url), urllib.parse.urlsplit(other)
+    return (a.scheme, a.netloc.lower()) == (b.scheme, b.netloc.lower())
+
+
+class KeepKeyOnForum(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect, dropping the key if it leaves the forum."""
+
+    def __init__(self, forum_url: str):
+        self.forum_url = forum_url
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and not same_origin(newurl, self.forum_url):
+            for header in ("Api-key", "Api-username"):
+                new.remove_header(header)
+        return new
+
+
 class ForumWriter:
     """The forum writes, with the agent's own Single User key."""
 
@@ -217,17 +240,20 @@ class ForumWriter:
         return url
 
     def download(self, url: str) -> tuple[bytes, str, str]:
-        """An upload's bytes, filename and content type, reading at most one
-        byte past the limit."""
+        """A file's bytes, filename and content type, reading at most one byte
+        past the limit. The key goes only to the forum, so a link in a post
+        cannot collect it."""
         if not url.startswith("http"):
             url = f"{self.forum_url}{url if url.startswith('/') else '/' + url}"
 
         req = urllib.request.Request(url, method="GET")
-        for header, value in self._headers().items():
-            req.add_header(header, value)
+        if same_origin(url, self.forum_url):
+            for header, value in self._headers().items():
+                req.add_header(header, value)
+        opener = urllib.request.build_opener(KeepKeyOnForum(self.forum_url))
 
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            with opener.open(req, timeout=90) as resp:
                 content = resp.read(MAX_ATTACHMENT_BYTES + 1)
                 content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
                 disposition = resp.headers.get("Content-Disposition") or ""
@@ -239,7 +265,7 @@ class ForumWriter:
             raise ForumWriteError(f"GET {url} failed: {exc.reason}") from exc
 
         if len(content) > MAX_ATTACHMENT_BYTES:
-            raise ForumWriteError(
+            raise TooLarge(
                 f"That attachment is larger than {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB, "
                 "so it is not read. Say so in the thread and ask for the part that matters, "
                 "or for a summary."
@@ -580,13 +606,30 @@ class QupaServer:
         return attachment_blocks(content, name or reference, content_type, url)
 
     def attach_file(self, arguments: dict[str, Any]) -> str:
-        """Upload ``path`` or ``content`` and return the markdown a later post
-        must include, since only a reference in a post attaches it."""
+        """Upload ``path``, ``url`` or ``content`` and return the markdown a
+        later post must include, since only a reference in a post attaches it.
+        A ``url`` is fetched into memory, so a wake that may not write files
+        can still attach a figure."""
         path = (arguments.get("path") or "").strip()
+        url = (arguments.get("url") or "").strip()
         inline = arguments.get("content")
         filename = (arguments.get("filename") or "").strip()
 
-        if path:
+        if url:
+            if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("url must be an http or https address. For a file on this machine, use path.")
+            try:
+                payload, name, content_type = self.writer.download(url)
+            except TooLarge as exc:
+                raise ValueError(
+                    f"The file at {url} is larger than {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB. "
+                    "Link to it instead."
+                ) from exc
+            if not filename:
+                filename = name or "attachment"
+                if not Path(filename).suffix:
+                    filename += mimetypes.guess_extension(content_type) or ""
+        elif path:
             source = Path(path).expanduser()
             if not source.is_file():
                 raise ValueError(f"No file at {source}.")
@@ -603,7 +646,7 @@ class QupaServer:
             if len(payload) > MAX_ATTACHMENT_BYTES:
                 raise ValueError("That content is too large to attach.")
         else:
-            raise ValueError("attach_file needs either path or content.")
+            raise ValueError("attach_file needs one of path, url or content.")
 
         result = self.writer.upload(filename, payload)
         short_url = result.get("short_url") or ""
@@ -753,8 +796,11 @@ TOOLS.append(
     {
         "name": "attach_file",
         "description": (
-            "Upload a file so you can attach it to a post, from a path or from text you "
-            "supply. Requires a current policy_ack from get_policy. It returns a markdown "
+            "Upload a file so you can attach it to a post, from a path, from a URL, or "
+            "from text you supply. Requires a current policy_ack from get_policy. A URL is "
+            "fetched by this tool, so you need no download or file of your own: use it for "
+            "a figure on the web. A file already on the forum needs no upload: reuse the "
+            "markdown of the post that has it. It returns a markdown "
             "line, and the file is attached to nothing until you include that line in the "
             "body you pass to reply or create_topic. The forum accepts a limited set of "
             "extensions and a maximum size, and refuses anything else with a message "
@@ -766,7 +812,14 @@ TOOLS.append(
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to a file on this machine. Use this or content, not both.",
+                    "description": "Path to a file on this machine. Give one of path, url or content.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "An http or https address to fetch and upload, such as a figure's "
+                        "image file. Link the page itself rather than attaching it."
+                    ),
                 },
                 "content": {
                     "type": "string",
@@ -778,7 +831,7 @@ TOOLS.append(
                 "filename": {
                     "type": "string",
                     "description": (
-                        "The name it is attached under. Taken from path if you gave one. "
+                        "The name it is attached under. Taken from path or url if you gave one. "
                         "The extension decides whether the forum accepts it at all."
                     ),
                 },

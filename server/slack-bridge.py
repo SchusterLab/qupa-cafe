@@ -20,6 +20,7 @@ import html
 import json
 import logging
 import os
+import posixpath
 import re
 import sqlite3
 import sys
@@ -55,6 +56,8 @@ AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
 AGENT_SUFFIX = "-agent"
 
+UPLOAD_SCHEME = "upload://"
+
 # Not a whisper or a small action.
 POST_TYPE_REGULAR = 1
 
@@ -68,6 +71,11 @@ MEMBERSHIP_TTL_SECONDS = 600
 MEMBERSHIP_MISS_SECONDS = 30
 
 MAX_PAGES_PER_POLL = 20
+
+# A post's uploaded images follow it into its thread. The forum takes 4 MB an
+# image, so the ceiling is only against a misconfigured one.
+MAX_IMAGES_PER_POST = 10
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------- state
@@ -325,12 +333,40 @@ class Forum:
     def invite(self, email: str) -> dict:
         return self.request("POST", "/invites.json", {"email": email})
 
+    def lookup_uploads(self, short_urls: list[str]) -> dict[str, str]:
+        """``upload://`` references, as raw markdown has them, to the paths
+        they are served from."""
+        found = self.request("POST", "/uploads/lookup-urls.json", {"short_urls[]": short_urls})
+        return {u["short_url"]: u["url"] for u in found or [] if u.get("short_url") and u.get("url")}
+
+    def download(self, url: str) -> bytes:
+        """An upload's bytes, read from the forum this bridge talks to,
+        whatever host the forum names in ``url``. The key is not carried
+        through the forum's redirect to a signed object-store address, which
+        needs none."""
+        parts = urllib.parse.urlsplit(url)
+        req = urllib.request.Request(f"{self.base_url}{parts.path}" + (f"?{parts.query}" if parts.query else ""))
+        req.add_unredirected_header("Api-Key", self.api_key)
+        req.add_unredirected_header("Api-Username", self.username)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                content = resp.read(MAX_IMAGE_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            raise Refused(f"GET {parts.path} -> {exc.code}", exc.code, "") from exc
+        except urllib.error.URLError as exc:
+            raise Transient(f"GET {parts.path} failed: {exc.reason}") from exc
+        if len(content) > MAX_IMAGE_BYTES:
+            raise Refused(f"{parts.path} is larger than {MAX_IMAGE_BYTES} bytes", 413, "")
+        return content
+
 
 # ---------------------------------------------------------------------- text
 
 
 _MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
-_MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\((?:[^\s)]+)\)")
+_MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^\s)]+)\)")
+# The images the bridge uploads after a post: the forum's own.
+_UPLOADED_IMAGE = re.compile(r"!\[([^\]\n]*)\]\((upload://[^\s)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
 # A fence's language, which Slack has no place for and shows as the first line.
 _FENCE_LANGUAGE = re.compile(r"^([ \t]*(?:```|~~~))[^\s`~]+[ \t]*$", re.M)
@@ -354,6 +390,22 @@ def redact(text: str, codes: bool = False) -> str:
     return text if codes else _SETUP_CODE.sub("[a setup code: read it on the forum]", text)
 
 
+def image_text(match: re.Match) -> str:
+    """An image as its name. One elsewhere becomes a link, since the bridge
+    fetches only from the forum: a post names any address it likes."""
+    name = match.group(1).split("|")[0] or "untitled"
+    url = match.group(2)
+    return f"[image: {name}]({url})" if url.startswith(("http://", "https://")) else f"[image: {name}]"
+
+
+def images_in(raw: str) -> list[tuple[str, str]]:
+    """(name, ``upload://`` reference) for each uploaded image, once each."""
+    seen: dict[str, str] = {}
+    for alt, short_url in _UPLOADED_IMAGE.findall(raw):
+        seen.setdefault(short_url, alt.split("|")[0].strip())
+    return [(name, short_url) for short_url, name in seen.items()][:MAX_IMAGES_PER_POST]
+
+
 def slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -374,8 +426,9 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     which a relative one is resolved; ``codes`` is ``redact``'s. A post is at
     most `max_post_length` (3,800) characters, which with a title and a closing
     line stays under the 4,000 Slack allows in an edited message; a new one may
-    run to 40,000."""
-    text = _MD_IMAGE.sub(lambda m: f"[image: {m.group(1).split('|')[0] or 'untitled'}]", redact(raw, codes))
+    run to 40,000. The forum's own images follow the post, uploaded by
+    ``Bridge.send_images``."""
+    text = _MD_IMAGE.sub(image_text, redact(raw, codes))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
@@ -686,6 +739,7 @@ class Bridge:
             channel=channel_id, **self.opening(topic, first), unfurl_links=False, unfurl_media=False,
         )
         self.state.set_thread(topic["id"], channel_id, result["ts"])
+        self.send_images(first, channel_id, result["ts"])
         return result["ts"]
 
     def ensure_link(self, topic: dict, channel_id: str) -> None:
@@ -786,8 +840,37 @@ class Bridge:
                     channel=channel_id, thread_ts=fresh, text=text, username=author,
                     unfurl_links=False, unfurl_media=False,
                 )
+                self.send_images(post, channel_id, fresh)
                 return
             raise
+        self.send_images(post, channel_id, thread_ts)
+
+    def send_images(self, post: dict | None, channel_id: str, thread_ts: str) -> None:
+        """A post's uploaded images, into its thread after it. Slack cannot
+        fetch them from a forum that requires a login, so the bytes go. A
+        failure costs only the images: the text is already in Slack, and
+        relaying the post again would repeat it."""
+        if not post or post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+            return
+        raw = post["raw"] if "raw" in post else self.forum.post(post["id"]).get("raw", "")
+        images = images_in(raw or "")
+        if not images:
+            return
+        try:
+            served = self.forum.lookup_uploads([short_url for _, short_url in images])
+            files = []
+            for name, short_url in images:
+                if short_url not in served:
+                    LOG.warning("post %s: the forum does not know %s", post.get("id"), short_url)
+                    continue
+                stored = posixpath.basename(short_url.removeprefix(UPLOAD_SCHEME))
+                filename = name if posixpath.splitext(name)[1] else stored
+                content = self.forum.download(served[short_url])
+                files.append({"content": content, "filename": filename, "title": name or stored})
+            if files:
+                self.slack.files_upload_v2(channel=channel_id, thread_ts=thread_ts, file_uploads=files)
+        except Exception as exc:
+            LOG.error("post %s's images did not reach Slack: %s", post.get("id"), exc)
 
     def post_text(
         self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True, codes: bool = False,
@@ -880,6 +963,7 @@ class Bridge:
         opening = self.opening(meta, first, hint=PRIVATE_HINT, mention=False, codes=codes)
         result = self.slack.chat_postMessage(channel=channel_id, **opening, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(meta["id"], channel_id, result["ts"])
+        self.send_images(first, channel_id, result["ts"])
         return channel_id, result["ts"]
 
     def relay_private(self, post: dict) -> str:
@@ -1334,7 +1418,7 @@ def make_slack() -> Any:
 # The scopes providers/slack/manifest.yml grants.
 REQUIRED_SCOPES = {
     "channels:history", "channels:join", "channels:manage", "channels:read",
-    "chat:write", "chat:write.customize", "im:history", "im:write",
+    "chat:write", "chat:write.customize", "files:write", "im:history", "im:write",
     "mpim:history", "mpim:read", "mpim:write", "users:read", "users:read.email",
 }
 

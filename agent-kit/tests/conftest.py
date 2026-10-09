@@ -191,3 +191,39 @@ def forum():
 
     server.shutdown()
     server.server_close()
+
+
+# A figure somewhere other than the forum, as a paper's HTML serves one.
+FIGURE_PNG = b"\x89PNG\r\n\x1a\nnot really pixels"
+
+
+class Elsewhere(BaseHTTPRequestHandler):
+    """A host that is not the forum. ``seen`` keeps each request's headers, so
+    a test can show the agent's key never reached it."""
+
+    seen: list[dict] = []
+
+    def do_GET(self):  # noqa: N802
+        type(self).seen.append({"path": self.path, "headers": dict(self.headers)})
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(FIGURE_PNG)))
+        self.end_headers()
+        self.wfile.write(FIGURE_PNG)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def elsewhere():
+    Elsewhere.seen = []
+
+    server = HTTPServer(("127.0.0.1", 0), Elsewhere)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    yield f"http://127.0.0.1:{server.server_port}", Elsewhere
+
+    server.shutdown()
+    server.server_close()

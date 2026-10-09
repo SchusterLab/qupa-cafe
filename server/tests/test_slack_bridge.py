@@ -57,6 +57,10 @@ def test_to_slack_converts_html_links():
 
 def test_to_slack_turns_images_and_attachments_into_their_names():
     assert bridge_mod.to_slack("see ![plot|690x388](upload://abc.png)", "u") == "see [image: plot]"
+    # One elsewhere is a link, since the bridge does not fetch it.
+    assert bridge_mod.to_slack("![Fig. 2](https://arxiv.org/html/x/Fig2.png)", "u") == (
+        "<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>"
+    )
     assert bridge_mod.to_slack("data: [run.csv|attachment](upload://x.csv) (2 KB)", "u") == "data: run.csv (2 KB)"
 
 
@@ -104,6 +108,13 @@ class StubForum:
         self.created_as: list[tuple[str, dict]] = []
         self.edited_as: list[tuple[str, int, str]] = []
         self.next_post = 100
+        # upload:// reference -> bytes; an image whose bytes are None is known
+        # to the forum but fails to download.
+        self.uploads: dict[str, bytes | None] = {}
+        self.downloaded_as: list[str | None] = []
+        # Set to a host to serve uploads as secure_uploads does: a redirect to
+        # an address signed for the object store.
+        self.object_store: str | None = None
 
     def topic(self, topic_id, title, category_id, opener, archetype="regular", allowed_users=(), allowed_groups=()):
         self.topics[topic_id] = {
@@ -188,13 +199,38 @@ def serve(stub: StubForum):
             if path.startswith("/u/"):
                 user = stub.users.get(path.split("/")[2].removesuffix(".json"))
                 return self._json(200, {"user": user}) if user else self._json(404, {})
+            if path.startswith("/secure-uploads/original/"):
+                self.send_response(302)
+                self.send_header("Location", f"{stub.object_store}/bucket/{path.rsplit('/', 1)[-1]}?X-Amz-Signature=s")
+                self.end_headers()
+                return None
+            if path.startswith("/uploads/default/original/"):
+                stub.downloaded_as.append(self.headers.get("Api-Key"))
+                content = stub.uploads.get("upload://" + path.rsplit("/", 1)[-1])
+                if content is None:
+                    return self._json(404, {})
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return None
             if path == "/admin/users/list/all.json":
                 return self._json(200, [u for u in stub.users.values() if u["email"] == q.get("email", "").lower()])
             return self._json(404, {})
 
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)
-            form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(length).decode()).items()}
+            parsed = urllib.parse.parse_qs(self.rfile.read(length).decode())
+            form = {k: v[0] for k, v in parsed.items()}
+            if self.path == "/uploads/lookup-urls.json":
+                # As uploads#lookup_urls: the known ones, with the host the
+                # forum names itself by, which is not the one the bridge uses.
+                prefix = "/secure-uploads" if stub.object_store else "/uploads/default"
+                return self._json(200, [
+                    {"short_url": short, "url": f"//forum.example{prefix}/original/1X/{short[len('upload://'):]}"}
+                    for short in parsed.get("short_urls[]", []) if short in stub.uploads
+                ])
             if self.path == "/posts.json":
                 as_user = self.headers.get("Api-Username")
                 if len(form.get("raw", "")) < 5:
@@ -265,6 +301,9 @@ class FakeSlack:
         self.group_members: dict[str, list[str]] = {}
         # Every message the bot has in Slack, by its ts.
         self.sent: dict[str, dict] = {}
+        self.files: list[dict] = []
+        # Set to an error to refuse uploads, as a token without files:write does.
+        self.refuse_files: str | None = None
         self._ts = 1000
 
     def _next_ts(self):
@@ -308,6 +347,12 @@ class FakeSlack:
         else:
             self.messages.append(kwargs)
         return {"ts": ts}
+
+    def files_upload_v2(self, **kwargs):
+        if self.refuse_files:
+            raise SlackError(f"The server responded with: {{'ok': False, 'error': '{self.refuse_files}'}}")
+        self.files.append(kwargs)
+        return {"files": [{"id": f"F{len(self.files)}"}]}
 
     def chat_update(self, channel, ts, text):  # noqa: N802
         self.sent[ts]["text"] = text
@@ -459,6 +504,107 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     bridge.poll()
     (reply,) = replies(slack)
     assert reply["thread_ts"] == bridge.state.thread_for(11)[1]
+
+
+PNG = b"\x89PNG\r\n\x1a\nfigure two"
+
+
+def test_a_posts_uploaded_image_follows_it_into_the_thread(world):
+    """Slack cannot fetch an image from a forum that needs a login, so the
+    bridge carries the bytes, read with its own key from the host it uses."""
+    stub, slack, bridge = world
+    stub.uploads["upload://aBc.png"] = PNG
+    stub.post(10, "sunada-agent", "Figure 2: ![Fig2.png|690x388](upload://aBc.png) and again ![Fig2.png](upload://aBc.png)")
+    assert bridge.poll() == 1
+
+    (reply,) = replies(slack)
+    assert "[image: Fig2.png]" in reply["text"]
+    (upload,) = slack.files
+    assert upload["channel"] == reply["channel"] and upload["thread_ts"] == reply["thread_ts"]
+    assert upload["file_uploads"] == [{"content": PNG, "filename": "Fig2.png", "title": "Fig2.png"}]
+    assert stub.downloaded_as == ["key"]
+
+
+def test_the_key_stays_behind_at_the_object_stores_redirect(world):
+    """With secure_uploads the forum redirects to a signed address in the
+    object store, and the bridge's key is the most powerful on the host."""
+    stub, slack, bridge = world
+    seen = []
+
+    class Store(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append(dict(self.headers))
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(PNG)))
+            self.end_headers()
+            self.wfile.write(PNG)
+
+        def log_message(self, *args):
+            pass
+
+    store = ThreadingHTTPServer(("127.0.0.1", 0), Store)
+    threading.Thread(target=store.serve_forever, daemon=True).start()
+    try:
+        stub.object_store = f"http://127.0.0.1:{store.server_address[1]}"
+        stub.uploads["upload://sEc.png"] = PNG
+        stub.post(10, "pat", "![plot.png](upload://sEc.png)")
+        bridge.poll()
+    finally:
+        store.shutdown()
+
+    assert slack.files[0]["file_uploads"][0]["content"] == PNG
+    assert len(seen) == 1 and not {k.lower() for k in seen[0]} & {"api-key", "api-username"}
+
+
+def test_an_image_in_a_topics_first_post_follows_its_parent(world):
+    stub, slack, bridge = world
+    stub.uploads["upload://xYz.png"] = PNG
+    stub.topic(11, "A plot", 1, "pat")
+    stub.post(11, "pat", "Here: ![](upload://xYz.png)")
+    bridge.poll()
+
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    (upload,) = slack.files
+    assert upload["thread_ts"] == bridge.state.thread_for(11)[1]
+    # With no name of its own, it goes under the stored one.
+    assert upload["file_uploads"][0]["filename"] == "xYz.png"
+    assert "[image: untitled]" in parent["text"]
+
+
+def test_an_image_elsewhere_is_linked_not_fetched(world):
+    """A post names any address it likes, and the host is no place to fetch it from."""
+    stub, slack, bridge = world
+    stub.post(10, "pat", "![Fig. 2](https://arxiv.org/html/x/Fig2.png)")
+    bridge.poll()
+
+    assert slack.files == [] and stub.downloaded_as == []
+    assert "<https://arxiv.org/html/x/Fig2.png|image: Fig. 2>" in replies(slack)[0]["text"]
+
+
+@pytest.mark.parametrize("failure", ["download", "slack"])
+def test_an_image_that_cannot_be_carried_costs_only_the_image(world, failure):
+    """The text is in Slack by then, and relaying the post again would repeat it."""
+    stub, slack, bridge = world
+    stub.uploads["upload://aBc.png"] = None if failure == "download" else PNG
+    slack.refuse_files = "missing_scope" if failure == "slack" else None
+    stub.post(10, "pat", "See ![plot](upload://aBc.png)")
+
+    assert bridge.poll() == 1
+    assert len(replies(slack)) == 1 and slack.files == []
+    assert bridge.poll() == 0
+    assert len(replies(slack)) == 1
+
+
+def test_an_image_in_a_dm_follows_it(world):
+    stub, slack, bridge = world
+    stub.uploads["upload://dM.png"] = PNG
+    stub.topic(41, "The d=7 sweep finished", None, "sunada-agent", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada-agent", "Threshold plot: ![sweep.png](upload://dM.png)")
+    bridge.poll()
+
+    (upload,) = slack.files
+    assert upload["channel"] == "DUS" and upload["thread_ts"] == bridge.state.thread_for(41)[1]
 
 
 def test_a_link_only_topic_is_a_link_and_nothing_else(world):
