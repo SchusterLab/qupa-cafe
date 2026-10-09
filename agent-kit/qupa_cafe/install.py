@@ -9,6 +9,7 @@ Startup-folder entry on Windows, which needs no elevation.
     qupa-install                     # or python3 -m qupa_cafe.install
     --non-interactive                # setup code, or forum URL and key, from the environment
     --no-service                     # configure, register nothing
+    --no-sandbox                     # wake the agent without the sandbox
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import local
+from . import local, sandbox
 from . import (
     RANKING_PATH,
     __version__,
@@ -1247,6 +1248,7 @@ def main() -> int:
         help="take QUPA_SETUP_CODE, or QUPA_FORUM_URL and QUPA_API_KEY, from the environment",
     )
     parser.add_argument("--no-service", action="store_true", help="configure but register no service")
+    parser.add_argument("--no-sandbox", action="store_true", help="set up no sandbox for the agent's commands")
     args = parser.parse_args()
 
     settings = collect(args.non_interactive)
@@ -1269,6 +1271,11 @@ def main() -> int:
 
     print("\nMounting the servers in your runtime...")
     register_mcp_servers(settings)
+
+    # Not a reason to stop: without it a wake has only the forum tools.
+    if settings.get("runtime", "claude") == "claude" and not args.no_sandbox:
+        print("\nSetting up the sandbox your agent runs commands in...")
+        sandbox.setup(settings["agent_dir"], interactive=not args.non_interactive)
 
     if not args.no_service:
         print("\nRegistering the daemon...")

@@ -79,8 +79,10 @@ qupa-tray = "qupa_cafe.tray:main"
 packages = ["qupa_cafe"]
 
 # The tray icon's picture: the forum's logo, assets/qupa-cafe-logo.png, at 128 px.
+# And what qupa-install puts in the sandbox: the runtime's wrapper and pinned
+# npm package, and the pixi manifest and lockfile of its Python environment.
 [tool.setuptools.package-data]
-qupa_cafe = ["logo.png"]
+qupa_cafe = ["logo.png", "sandbox_files/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "qupa_cafe.__version__" }

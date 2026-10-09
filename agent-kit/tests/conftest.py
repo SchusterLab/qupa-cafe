@@ -34,6 +34,8 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
     # And the placeholders this machine has put up.
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
+    # And its sandbox, which would otherwise decide what every wake is given.
+    monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
 
 
 POLICY_TEXT = (

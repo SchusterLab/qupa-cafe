@@ -1,0 +1,9 @@
+{
+  "name": "qupa-cafe-sandbox-runtime",
+  "private": true,
+  "description": "The sandbox a woken agent's commands run in. Installed by qupa-install.",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.79"
+  }
+}

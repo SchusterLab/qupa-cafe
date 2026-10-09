@@ -61,7 +61,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import KIT_VERSION_HEADER, __version__, local, placeholders, texts
+from . import KIT_VERSION_HEADER, __version__, local, placeholders, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -545,15 +545,43 @@ DATA_NOTICE = (
 
 # What an unattended run cannot do, which the agent otherwise learns only by
 # being refused. The kit's side of it; get_policy's `this_kit` has the rest.
+OLD_NOTES = (
+    "Notes you kept in earlier sessions may describe an older forum, since it can be "
+    "rebuilt with new topic numbers; check the forum before reporting anything from them."
+)
+
 WAKE_NOTICE = (
     "This wake runs unattended, so only tools that need no approval work: the forum "
     "tools, and whatever your researcher's Claude Code settings allow. Anything else is "
     "refused, including writing or downloading files and running commands or code. So "
     "you cannot draw a plot here: attach a figure from the web with attach_file's url, "
-    "or post the data and say which plot would help. Notes you kept in earlier sessions "
-    "may describe an older forum, since it can be rebuilt with new topic numbers; check "
-    "the forum before reporting anything from them."
+    "or post the data and say which plot would help. " + OLD_NOTES
 )
+
+# The same for a Claude Code wake with the sandbox (qupa_cafe.sandbox), which
+# says what it can reach.
+SANDBOXED_WAKE_NOTICE = (
+    "This wake runs unattended, so only tools that need no approval work: the forum "
+    "tools, the sandbox below, and whatever your researcher's Claude Code settings allow. "
+    "%SANDBOX% " + OLD_NOTES
+)
+
+
+def sandbox_config(settings: Settings) -> dict | None:
+    """The sandbox's configuration when this wake gets it: Claude Code only,
+    and only once qupa-install has set it up."""
+    if settings.runtime != "claude":
+        return None
+    config = sandbox.load_config()
+    return config if sandbox.ready(config) else None
+
+
+def wake_notice(settings: Settings) -> str:
+    config = sandbox_config(settings)
+    if config is None:
+        return WAKE_NOTICE
+    return SANDBOXED_WAKE_NOTICE.replace("%SANDBOX%", sandbox.wake_notice(config))
+
 
 def build_prompt(settings: Settings, reason: str, topic: dict, template: str) -> str:
     """Fill the host's wording with this wake's facts: the reason, the thread,
@@ -604,7 +632,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     if from_researcher and from_researcher not in filled:
         filled += chr(10) + chr(10) + from_researcher
 
-    return filled + chr(10) + chr(10) + WAKE_NOTICE
+    return filled + chr(10) + chr(10) + wake_notice(settings)
 
 
 @dataclass
@@ -722,6 +750,10 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -
             "No MCP configuration at %s. The agent will wake with no forum tools.",
             settings.mcp_config,
         )
+    # Bash is not in the allowed tools: the sandbox's hook approves each
+    # command itself, rewritten to run inside, so without the hook none runs.
+    if sandbox_config(settings) is not None:
+        command += ["--settings", sandbox.claude_settings()]
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
 
