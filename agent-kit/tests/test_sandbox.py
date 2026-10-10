@@ -362,3 +362,35 @@ def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch
     monkeypatch.setattr(sandbox, "_run", lambda *a, **k: pytest.fail("nothing unverified may run"))
     assert sandbox.install_portable_git() is None
     assert not sandbox.portable_git_dir().exists()
+
+
+def test_a_setup_that_fails_leaves_no_sandbox_behind(installed, monkeypatch):
+    """Not the configuration of a sandbox it has half replaced."""
+    monkeypatch.setattr(sandbox, "missing_programs", lambda: ["pixi: https://pixi.sh"])
+    assert sandbox.setup(installed["agent_dirs"][0], interactive=False) is False
+    assert not sandbox.config_path().exists()
+    assert sandbox.load_config() is None
+
+
+def test_an_update_shows_the_uac_prompt_rather_than_skipping_it(monkeypatch, tmp_path, capsys):
+    ran = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: ran.append(argv) or Done())
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("an update asks nothing"))
+    sandbox.runtime_dir().mkdir(parents=True, exist_ok=True)
+    assert sandbox.windows_install("node", sandbox.runtime_dir(), interactive=False) is True
+    assert "windows-install" in ran[0] and "--proxy-port-range" in ran[0]
+    assert "UAC prompt" in capsys.readouterr().out
+
+
+def test_a_declined_uac_prompt_is_said_to_be_declined(monkeypatch, capsys):
+    class Declined:
+        returncode = 2
+        stdout = stderr = ""
+
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: Declined())
+    assert sandbox.windows_install("node", sandbox.runtime_dir(), interactive=False) is False
+    assert "declined" in capsys.readouterr().out

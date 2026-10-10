@@ -624,20 +624,24 @@ def windows_provisioned(node: str, run: Path) -> bool:
 
 def windows_install(node: str, runtime: Path, interactive: bool) -> bool:
     """sandbox-runtime's one-time elevated step: a hidden local user the
-    commands run as, and firewall rules that apply only to it."""
+    commands run as, and firewall rules that apply only to it. Its UAC prompt
+    is the consent, so a run that asks nothing else (an update) shows it too;
+    an interactive one asks first, to say what it is for."""
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
     command = f'"{node}" "{cli}" windows-install --proxy-port-range {WINDOWS_PROXY_PORTS[0]}-{WINDOWS_PROXY_PORTS[1]} --force'
     print("  On Windows the sandbox runs commands as a hidden local user, srt-sandbox, whose")
     print("  network goes only through the sandbox's proxy. Creating it needs one UAC prompt.")
     if not interactive:
-        print(f"  Not done, since nobody is here to approve it. Run it yourself, then qupa-install again:{NL}    {command}")
-        return False
-    if input("  Create it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+        print("  Approve the UAC prompt to go on; declining it leaves your agent without the sandbox.")
+    elif input("  Create it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
         print(f"  Not done. To do it later, run this and then qupa-install again:{NL}    {command}")
         return False
     ports = "-".join(str(port) for port in WINDOWS_PROXY_PORTS)
     # --force: an install made without our ports is replaced, not kept.
     result = _run([node, str(cli), "windows-install", "--proxy-port-range", ports, "--force"], cwd=str(runtime))
+    if result.returncode == 2:
+        print(f"  Not done: the UAC prompt was declined. To do it later, run this and then qupa-install again:{NL}    {command}")
+        return False
     if result.returncode != 0:
         print("  FAILED to create the sandbox user")
         print(_tail(result))
@@ -675,6 +679,10 @@ def write_workspace(workspace: Path) -> None:
 def setup(agent_dir: str, interactive: bool) -> bool:
     """Install the runtime and the environment, and check a command runs.
     False, having said why, when the sandbox cannot be had here."""
+    # Written again only once everything below has worked, so a setup that
+    # fails part-way leaves wakes with the forum tools rather than with a
+    # sandbox half replaced.
+    config_path().unlink(missing_ok=True)
     missing = missing_programs()
     if missing:
         print("  Not set up: wakes will run with the forum tools only. Missing:")

@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (agent kit 0.16.4: the sandbox's Windows step during an update)
+
+- **An update shows the Windows sandbox's UAC prompt** rather than refusing it: the installer an update runs is `--non-interactive`, and its Windows step said "Not done, since nobody is here to approve it", although the UAC prompt is the approval and appears on the desktop either way. A declined prompt is said to be declined. `agent-kit/qupa_cafe/sandbox.py`, with tests.
+- **A sandbox setup that fails part-way removes the sandbox's configuration**, which it writes again only when everything has worked, so wakes fall back to the forum tools. An update of this machine to 0.16.2 failed at that step and left 0.16.2's runtime beside 0.16.0's configuration, whose agent directory was read-only and which named no proxy ports, so every command a wake ran failed. `agent-kit/qupa_cafe/sandbox.py`, with a test.
+
 ### 2026-10-10 (agent kit 0.16.3: updating from the tray icon; the repository public)
 
 - **The tray icon's menu updates the kit**: **Update the agent kit to …** runs the update in a terminal window of its own, and reads **Agent kit … is up to date**, greyed out, while there is nothing newer pip can install; it asks the index hourly. The wake browser no longer takes `u`, and its notice of a newer kit names the menu item. `agent-kit/qupa_cafe/tray.py`, `browse.py`, `update.py`, with tests; `agent-kit/README.md`. **Run** with this machine's pystray (0.19.5), its `Icon.run` replaced by a stand-in that renders the menu: greyed "Agent kit 0.16.2 is up to date" with nothing newer, "Update the agent kit to 9.9.9" with 9.9.9 published.
