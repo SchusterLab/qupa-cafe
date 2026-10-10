@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from qupa_cafe import browse, wakes
+from qupa_cafe import browse, daemon, wakes
 from qupa_cafe.daemon import Settings, claim_lock
 
 
@@ -205,14 +205,25 @@ def test_a_wake_without_a_topic_cannot_be_tuned():
 def test_tuning_resumes_an_ended_wake_s_session_and_starts_a_new_one_otherwise(monkeypatch):
     """The wake's own session holds what the agent made of the post."""
     monkeypatch.setattr(browse, "background_sessions", lambda claude: [])
+    allowed = ["--allowedTools", ",".join(daemon.CLAUDE_ALLOWED_TOOLS)]
     row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
     ended = browse.subject_of_wake(browse.Wake(row, SAID), "/agent")
-    assert browse.tune_command(ended, "claude", "P") == ["claude", "--resume", row.session, *browse.RESUME_MODE, "P"]
+    assert browse.tune_command(ended, "claude", "P") == ["claude", "P", "--resume", row.session, *browse.RESUME_MODE, *allowed]
     # No transcript, nothing to resume.
-    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, None), "/agent"), "claude", "P") == ["claude", "P"]
+    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, None), "/agent"), "claude", "P") == ["claude", "P", *allowed]
     # Resuming a running wake would write into it.
     row.status = "running"
-    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, SAID), "/agent"), "claude", "P") == ["claude", "P"]
+    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, SAID), "/agent"), "claude", "P") == ["claude", "P", *allowed]
+
+
+def test_tuning_approves_the_forum_tools_and_nothing_else():
+    """Reading the forum and editing the agent's post ask nothing; a file edit
+    still asks, and the prompt is never read as a tool's name."""
+    command = browse.tune_command(browse.subject_of_miss(_miss(7), "/agent"), "claude", "the prompt")
+    tools = command[command.index("--allowedTools") + 1].split(",")
+    assert "mcp__discourse" in tools and "mcp__qupa-cafe__edit_post" in tools
+    assert not [tool for tool in tools if not tool.startswith("mcp__")]
+    assert command[1] == "the prompt" and command[-2] == "--allowedTools"
 
 
 def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypatch, tmp_path):

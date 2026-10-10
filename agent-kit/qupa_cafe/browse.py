@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import local, wakes
-from .daemon import Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import CLAUDE_ALLOWED_TOOLS, Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -631,10 +631,13 @@ def as_it_stands(path: Path, scope: str) -> str:
 def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     """Claude Code with ``prompt`` as its first message: in the wake's own
     session, which holds what the agent made of the post, when it has one
-    that has ended, and in a new one otherwise."""
-    if subject.session:
-        return [claude, "--resume", subject.session, *RESUME_MODE, prompt]
-    return [claude, prompt]
+    that has ended, and in a new one otherwise. The forum's tools, the agent
+    kit's and the read-only discourse server's, are approved as for a wake,
+    so reading the forum and editing the agent's post ask nothing; a file
+    edit still asks. The prompt goes first, since --allowedTools takes every
+    word after it."""
+    resume = ["--resume", subject.session, *RESUME_MODE] if subject.session else []
+    return [claude, prompt, *resume, "--allowedTools", ",".join(CLAUDE_ALLOWED_TOOLS)]
 
 
 def tune(subject: Subject, want: str) -> str:
