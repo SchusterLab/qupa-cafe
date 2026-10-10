@@ -189,6 +189,12 @@ def utc(value: str | None) -> datetime | None:
         return None
 
 
+def young(started: datetime) -> bool:
+    """Whether a wake that started then may still be running, being no older
+    than any wake may run."""
+    return (datetime.now(timezone.utc) - started).total_seconds() <= WAKE_TIMEOUT_SECONDS
+
+
 def local_time(moment: datetime | None) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M") if moment else "?"
 
@@ -209,11 +215,9 @@ def recent(state_path: str, limit: int | None) -> list[Row]:
     if db is None:
         return []
     try:
-        # A journal from a kit before scores has no score column.
-        has_score = "score" in {row[1] for row in db.execute("PRAGMA table_info(wakes)")}
         rows = db.execute(
             "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
-            f" post_number, title, reason, {'score' if has_score else 'NULL'} FROM wakes ORDER BY id DESC LIMIT ?",
+            " post_number, title, reason, score FROM wakes ORDER BY id DESC LIMIT ?",
             (-1 if limit is None else limit,),
         ).fetchall()
     except sqlite3.Error:
@@ -553,8 +557,7 @@ def outcome(row: Row, transcript: Transcript | None) -> tuple[str, str]:
     """How a wake ended, in a few words, and the style to say it in."""
     if row.status == "running":
         started = utc(row.started)
-        age = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
-        return ("did not finish", "bad") if age > WAKE_TIMEOUT_SECONDS else ("still running", "busy")
+        return ("still running", "busy") if started is None or young(started) else ("did not finish", "bad")
     if row.status == "failed":
         return "failed or timed out", "bad"
     if transcript is None:

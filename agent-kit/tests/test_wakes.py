@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import qupa_cafe.daemon as daemon
-from qupa_cafe import tray, wakes
+from qupa_cafe import browse, tray, wakes
 
 SESSION = "3f2a0000-0000-4000-8000-000000000000"
 
@@ -166,6 +166,20 @@ def test_a_daemon_is_stopped_after_three_missed_polls():
     assert not wakes.Status(now - timedelta(seconds=90), 60).stopped
     assert wakes.Status(now - timedelta(minutes=10), 60).stopped
     assert wakes.Status(None, 60).stopped
+
+
+def test_a_wake_past_its_timeout_is_not_running_anywhere():
+    """The wake list, the tray and the browser agree on one age."""
+    now = datetime.now(timezone.utc)
+    within, past = (
+        wakes.Row((now - timedelta(seconds=age)).strftime("%Y-%m-%d %H:%M:%S"), None, "running", "claude",
+                  SESSION, "/a", 7, 1, "T", "r")
+        for age in (wakes.WAKE_TIMEOUT_SECONDS - 60, wakes.WAKE_TIMEOUT_SECONDS + 60)
+    )
+
+    assert wakes.outcome(within, None)[0] == "still running" and wakes.outcome(past, None)[0] == "did not finish"
+    assert not tray.stale(within) and tray.stale(past)
+    assert browse.still_running(within) and not browse.still_running(past)
 
 
 def test_the_icon_follows_the_daemon(tmp_path):
