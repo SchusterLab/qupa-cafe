@@ -1264,8 +1264,35 @@ def older_than(reported: str, reference: str) -> bool:
     return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
 
 
+# The index page pip reads, in its JSON form (PEP 691). It is served with
+# max-age=600, and pip keeps its copy as long, so a release younger than that
+# may be one an agent's update cannot find yet: it is not reported until then.
+KIT_INDEX_ACCEPT = "application/vnd.pypi.simple.v1+json"
+KIT_SETTLE_SECONDS = 600
+KIT_FILENAME = re.compile(r"^[A-Za-z0-9_.]+?-(\d[^-]*?)(?:-[^/]*\.whl|\.tar\.gz|\.zip)$")
+FINAL_RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def installable_version(index: dict[str, Any], now: float | None = None) -> str | None:
+    """The newest final release on a PEP 691 page that pip can be relied on
+    to find: not yanked, and first uploaded at least KIT_SETTLE_SECONDS ago."""
+    now = time.time() if now is None else now
+    uploaded: dict[str, float] = {}
+    for item in index.get("files") or []:
+        found = KIT_FILENAME.match(str(item.get("filename", "")))
+        if not found or item.get("yanked") or not FINAL_RELEASE.match(found.group(1)):
+            continue
+        try:
+            at = datetime.fromisoformat(str(item["upload-time"]).replace("Z", "+00:00")).timestamp()
+        except (KeyError, ValueError):
+            continue
+        uploaded[found.group(1)] = min(at, uploaded.get(found.group(1), at))
+    settled = [version for version, at in uploaded.items() if now - at >= KIT_SETTLE_SECONDS]
+    return max(settled, key=lambda version: release_tuple(version) or (), default=None)
+
+
 class KitVersions:
-    """The newest kit on PyPI, and who is behind it.
+    """The newest kit on PyPI that an update can install, and who is behind it.
 
     Fails open: PyPI unreachable, malformed or unpublished means "no opinion"
     and every agent is served as usual. The version is self-reported, so this
@@ -1300,12 +1327,12 @@ class KitVersions:
             return None
 
         self._checked_at = now
-        url = f"https://pypi.org/pypi/{urllib.parse.quote(self.config.kit_package)}/json"
+        url = f"https://pypi.org/simple/{urllib.parse.quote(self.config.kit_package)}/"
         try:
-            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            request = urllib.request.Request(url, headers={"Accept": KIT_INDEX_ACCEPT})
             with urllib.request.urlopen(request, timeout=10) as response:
-                self._latest = json.load(response)["info"]["version"]
-                LOG.info("agent kit published version is %s", self._latest)
+                self._latest = installable_version(json.load(response))
+                LOG.info("agent kit installable version is %s", self._latest)
         except urllib.error.HTTPError as exc:
             LOG.info("agent kit version unknown: PyPI returned %s for %s", exc.code, self.config.kit_package)
             self._latest = None

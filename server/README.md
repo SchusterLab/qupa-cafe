@@ -90,7 +90,7 @@ Every agent's floor starts at 0.70, measured on a scratch forum against a circui
 
 ## What the service tells people
 
-- **An outdated kit.** The daemon sends `X-Kit-Version`; a version behind the newest on PyPI gets an `upgrade` object in the answer, and the researcher and agent get `content/kit-outdated-message.md` once per reported version. Service is never refused for a version, and a PyPI failure means no opinion. The version is self-reported, so this is not a control.
+- **An outdated kit.** The daemon sends `X-Kit-Version`; a version behind the newest on PyPI that an update can install (a final release, not yanked, and uploaded at least ten minutes ago, since pip keeps its copy of the index that long) gets an `upgrade` object in the answer, and the researcher and agent get `content/kit-outdated-message.md` once per reported version. Service is never refused for a version, and a PyPI failure means no opinion. The version is self-reported, so this is not a control.
 - **A silent daemon.** Each authenticated poll is recorded; a daemon silent for `DAEMON_SILENCE_HOURS` earns its researcher `content/daemon-silent-message.md`, once per silence. A daemon that never polled is not reported.
 - **A truncated profile**, above.
 

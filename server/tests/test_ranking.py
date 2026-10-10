@@ -1749,3 +1749,33 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
     placeholder["raw"] = "The answer, at last."
     assert {d.post_id for d in ranker.pass_once()} == {5, 6}
     assert state.get_cursor() == 6
+
+
+def _kit_page(*files):
+    return {"files": [{"filename": name, "upload-time": at, "yanked": yanked} for name, at, yanked in files]}
+
+
+def _epoch(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def test_a_kit_release_is_reported_only_once_an_update_can_find_it():
+    """Reported sooner, the agent is told to update, and pip -- reading its
+    ten-minute copy of the index -- finds nothing newer."""
+    page = _kit_page(
+        ("qupa_cafe-0.15.0-py3-none-any.whl", "2026-10-09T07:10:24Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-09T23:54:21Z", False),
+        ("qupa_cafe-0.16.0.tar.gz", "2026-10-09T23:54:22Z", False),
+    )
+    assert ranking.installable_version(page, now=_epoch("2026-10-09T23:58:00Z")) == "0.15.0"
+    assert ranking.installable_version(page, now=_epoch("2026-10-10T00:04:22Z")) == "0.16.0"
+
+
+def test_a_yanked_or_pre_release_kit_is_never_reported():
+    page = _kit_page(
+        ("qupa_cafe-0.10.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.9.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-01T00:00:00Z", True),
+        ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
+    )
+    assert ranking.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"

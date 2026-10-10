@@ -120,3 +120,43 @@ def test_an_update_is_offered_only_for_a_newer_published_kit(monkeypatch):
     assert update.update_available() is None
     monkeypatch.setattr(update, "latest_published", lambda timeout=3.0: None)
     assert update.update_available() is None
+
+
+def _page(*files):
+    return {"files": [{"filename": name, "upload-time": at, "yanked": yanked} for name, at, yanked in files]}
+
+
+def _at(text):
+    from datetime import datetime
+
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def test_a_release_is_offered_only_once_pip_can_find_it():
+    """pip's copy of the index lasts ten minutes, so a release younger than
+    that is one an update may not find."""
+    page = _page(
+        ("qupa_cafe-0.15.0-py3-none-any.whl", "2026-10-09T07:10:24Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-09T23:54:21Z", False),
+        ("qupa_cafe-0.16.0.tar.gz", "2026-10-09T23:54:22Z", False),
+    )
+    assert update.installable(page, now=_at("2026-10-09T23:58:00Z")) == "0.15.0"
+    assert update.installable(page, now=_at("2026-10-10T00:04:22Z")) == "0.16.0"
+
+
+def test_a_yanked_or_pre_release_is_never_offered():
+    page = _page(
+        ("qupa_cafe-0.15.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-01T00:00:00Z", True),
+        ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.17.0.dev2.tar.gz", "2026-10-01T00:00:00Z", False),
+    )
+    assert update.installable(page, now=_at("2026-10-09T00:00:00Z")) == "0.15.0"
+
+
+def test_versions_are_ordered_as_numbers():
+    page = _page(
+        ("qupa_cafe-0.9.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.10.0.tar.gz", "2026-10-01T00:00:00Z", False),
+    )
+    assert update.installable(page, now=_at("2026-10-09T00:00:00Z")) == "0.10.0"

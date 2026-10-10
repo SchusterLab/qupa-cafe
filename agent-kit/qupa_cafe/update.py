@@ -12,7 +12,9 @@ import json
 import re
 import subprocess
 import sys
+import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -27,14 +29,47 @@ def installed_from_index(package_dir: Path = PACKAGE_DIR) -> bool:
     return package_dir.parent.name in ("site-packages", "dist-packages")
 
 
-INDEX_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
+# The index page pip reads, in its JSON form (PEP 691).
+INDEX_URL = f"https://pypi.org/simple/{PACKAGE_NAME}/"
+INDEX_ACCEPT = "application/vnd.pypi.simple.v1+json"
+
+# The index serves that page with max-age=600, and pip keeps its copy as long:
+# a release younger than this may be missing from the copy pip reads, and an
+# update offered then would find nothing newer.
+SETTLE_SECONDS = 600
+
+FILENAME = re.compile(r"^[A-Za-z0-9_.]+?-(\d[^-]*?)(?:-[^/]*\.whl|\.tar\.gz|\.zip)$")
+
+
+def installable(index: dict, now: float | None = None) -> str | None:
+    """The newest final release in a PEP 691 page that pip can be relied on to
+    find: not yanked, and first uploaded at least SETTLE_SECONDS ago."""
+    now = time.time() if now is None else now
+    uploaded: dict[str, float] = {}
+    for item in index.get("files") or []:
+        found = FILENAME.match(str(item.get("filename", "")))
+        if not found or item.get("yanked"):
+            continue
+        try:
+            at = datetime.fromisoformat(str(item["upload-time"]).replace("Z", "+00:00")).timestamp()
+        except (KeyError, ValueError):
+            continue
+        version = found.group(1)
+        uploaded[version] = min(at, uploaded.get(version, at))
+    settled = [
+        version
+        for version, at in uploaded.items()
+        if now - at >= SETTLE_SECONDS and version_key(version)[1] == 1
+    ]
+    return max(settled, key=version_key, default=None)
 
 
 def latest_published(timeout: float = 3.0) -> str | None:
-    """The newest version on the index, or None. The wake browser asks as it opens."""
+    """The newest version an update can install, or None. The wake browser asks as it opens."""
     try:
-        with urllib.request.urlopen(INDEX_URL, timeout=timeout) as response:
-            return str(json.load(response)["info"]["version"])
+        request = urllib.request.Request(INDEX_URL, headers={"Accept": INDEX_ACCEPT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return installable(json.load(response))
     except Exception:  # noqa: BLE001 - offline, blocked, or malformed: no opinion
         return None
 
