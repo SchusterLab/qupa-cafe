@@ -1779,3 +1779,130 @@ def test_a_yanked_or_pre_release_kit_is_never_reported():
         ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
     )
     assert ranking.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"
+
+
+# ------------------------------------------- an agent that cannot answer
+
+
+def _at(text):
+    return datetime.fromisoformat(text)
+
+
+def test_a_daemon_unheard_from_for_two_minutes_is_down():
+    config = Config()
+    first = _at("2026-10-10T10:00:00+00:00")
+    daemon = ("2026-10-10T10:00:30+00:00", "0.16.7")
+    assert ranking.unanswered_verdict(_at("2026-10-10T10:02:00+00:00"), first, daemon, None, config) is None
+    assert ranking.unanswered_verdict(_at("2026-10-10T10:02:30+00:00"), first, daemon, None, config) == (
+        "down", "2026-10-10T10:00:30+00:00",
+    )
+
+
+def test_a_kit_that_does_not_report_during_a_wake_gets_longer():
+    """It is silent for as long as a wake runs, up to 15 minutes."""
+    config = Config()
+    first = _at("2026-10-10T10:00:00+00:00")
+    daemon = ("2026-10-10T10:00:30+00:00", "0.16.6")
+    assert ranking.unanswered_verdict(_at("2026-10-10T10:10:00+00:00"), first, daemon, None, config) is None
+    assert ranking.unanswered_verdict(_at("2026-10-10T10:17:00+00:00"), first, daemon, None, config)[0] == "down"
+
+
+def test_a_failed_wake_is_told_at_once_and_keyed_on_the_conversation():
+    """A failing daemon reports each minute, which must not earn a notice each minute."""
+    config = Config()
+    first = _at("2026-10-10T10:00:00+00:00")
+    alive = ("2026-10-10T10:00:40+00:00", "0.16.7")
+    for at in ("2026-10-10T10:00:10+00:00", "2026-10-10T10:01:10+00:00"):
+        verdict = ranking.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, ("no claude", at), config)
+        assert verdict == ("failed", first.isoformat())
+    # A failure from before this conversation is not this one's.
+    stale = ("no claude", "2026-10-10T09:00:00+00:00")
+    assert ranking.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, stale, config) is None
+
+
+def test_an_agent_no_daemon_has_polled_for_is_not_set_up():
+    verdict = ranking.unanswered_verdict(_at("2026-10-10T10:00:01+00:00"), _at("2026-10-10T10:00:00+00:00"), None, None, Config())
+    assert verdict == ("unset", "never")
+
+
+class NoticeForum(StubForumWriter):
+    def __init__(self):
+        super().__init__(known=("yoshi",))
+        self.replies = []
+
+    def reply_as(self, agent, topic_id, raw):
+        self.replies.append((agent, topic_id, raw))
+        return True
+
+
+def _noticing_ranker(tmp_path, rows, key="k"):
+    import dataclasses
+
+    forum = NoticeForum()
+    ranker = a_ranker(tmp_path, forum)
+    ranker.config = dataclasses.replace(ranker.config, notice_api_key=key)
+    ranker.unanswered = lambda since: rows
+    ranker.researcher_for = lambda agent: agent.removesuffix("-agent")
+    return ranker, forum
+
+
+def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path):
+    now = _at("2026-10-10T10:05:00+00:00")
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))])
+    ranker.state.db.execute(
+        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
+    )
+
+    assert ranker.check_unanswered(now) == [("yoshi-agent", 77)]
+    assert ranker.check_unanswered(now) == []
+
+    agent, topic, raw = forum.replies[0]
+    assert (agent, topic) == ("yoshi-agent", 77)
+    assert "@yoshi" in raw and "2026-10-10 09:59 UTC" in raw
+    assert "Restart the daemon" in raw
+    assert raw.rstrip().endswith(ranking.NOTICE_MARKER)
+    assert not ranking.re.search(r"%[A-Z_]+%", raw)
+
+
+def test_a_failed_wake_is_told_with_its_reason(tmp_path):
+    now = _at("2026-10-10T10:01:00+00:00")
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))])
+    ranker.state.record_poll("yoshi-agent", "0.16.7")
+    ranker.state.record_failure("yoshi-agent", 77, "Claude Code is not installed, or not on the PATH the daemon sees")
+    ranker.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
+
+    assert ranker.check_unanswered(now) == [("yoshi-agent", 77)]
+    raw = forum.replies[0][2]
+    assert "not on the PATH the daemon sees" in raw and "qupa-install" in raw
+
+
+def test_no_notice_is_posted_without_the_key_that_may_post_as_an_agent(tmp_path):
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))], key="")
+    assert ranker.check_unanswered(_at("2026-10-10T11:00:00+00:00")) == []
+    assert forum.replies == []
+
+
+def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):
+    import json
+
+    status, _ = set_floor(endpoint, json.dumps({"alive": True}).encode())
+    assert status == 200
+    assert Handler.ranker.state.last_poll("yoshi-agent")
+
+    status, _ = set_floor(endpoint, json.dumps({"failed": {"topic_id": 77, "reason": "claude is not on PATH"}}).encode())
+    assert status == 200
+    assert Handler.ranker.state.failure("yoshi-agent", 77)[0] == "claude is not on PATH"
+
+    status, _ = set_floor(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
+    assert status == 400
+
+
+def test_the_notice_is_never_scored(state, tmp_path):
+    """It is not a contribution, so it wakes no other agent."""
+    notice = a_reply(5, f"*An automatic notice from the forum.*\n\n{ranking.NOTICE_MARKER}")
+    later = a_reply(6, "Something else entirely.")
+    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [notice, later])
+    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+
+    assert {d.post_id for d in ranker.pass_once()} == {6}
+    assert state.get_cursor() == 6

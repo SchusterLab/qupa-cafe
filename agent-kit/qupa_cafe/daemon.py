@@ -541,6 +541,32 @@ class Ranking:
         except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
             raise RankingError(str(getattr(exc, "reason", exc))) from exc
 
+    def _tell(self, agent: str, body: dict) -> None:
+        """Best effort: a report the host does not get costs only the notice
+        it would have posted."""
+        if not self.settings.ranking_url:
+            return
+        request = self._wake_request(agent)
+        request.data = json.dumps(body).encode()
+        request.add_header("Content-Type", "application/json")
+        request.method = "POST"
+        try:
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                resp.read()
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            LOG.debug("could not tell the forum host %s: %s", sorted(body), exc)
+
+    def alive(self, agent: str) -> None:
+        """Say this daemon is still here while a wake keeps it from polling,
+        so the host does not tell people waiting on the agent that it is down."""
+        self._tell(agent, {"alive": True})
+
+    def failed(self, agent: str, topic_id: int, reason: str) -> None:
+        """Say a wake for somebody waiting on the agent failed, and why, so the
+        host can tell them and the agent's researcher rather than leave them
+        waiting."""
+        self._tell(agent, {"failed": {"topic_id": topic_id, "reason": reason[:300]}})
+
     def _report_upgrade(self, upgrade: dict | None) -> None:
         """Log the forum's version opinion, once per process."""
         if not upgrade or self._told_about_upgrade:
@@ -805,6 +831,9 @@ WAKE_TIMEOUT = 900
 # How often a background wake's state is asked for.
 BACKGROUND_POLL_SECONDS = 5
 
+# How often the forum host is told the daemon is still here while a wake runs.
+ALIVE_SECONDS = 60
+
 BACKGROUNDED = re.compile(r"backgrounded\s*\S\s*([0-9a-f]{8})\b")
 
 
@@ -880,6 +909,7 @@ def run_in_background(
     cwd: str | None,
     timeout: int = WAKE_TIMEOUT,
     on_session=None,
+    alive=None,
 ) -> tuple[str, str]:
     """Start ``command`` (a ``claude --bg``), wait for it to end, and remove
     it, since a finished background session keeps its processes (some 400 MB)
@@ -901,8 +931,14 @@ def run_in_background(
 
     session, state = "", "running"
     deadline = time.time() + timeout
+    told = time.time()
     try:
         while True:
+            # A wake keeps the daemon from polling; this keeps the host from
+            # taking it for one that has stopped.
+            if alive is not None and time.time() - told >= ALIVE_SECONDS:
+                alive()
+                told = time.time()
             entry = next((s for s in background_sessions(claude) if s.get("id") == short), None)
             if entry is not None and not session and entry.get("sessionId"):
                 session = str(entry["sessionId"])
@@ -928,17 +964,61 @@ def run_in_background(
     return state, session
 
 
+def last_said(session: str) -> str:
+    """The last thing a session's transcript has Claude Code say, which for a
+    failed one is usually why: a model it cannot use, a sign-in it needs."""
+    from . import wakes  # wakes imports this module
+
+    path = wakes.transcript_path(session) if session else None
+    said = ""
+    if path is not None:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            content = (record.get("message") or {}).get("content") if record.get("type") == "assistant" else None
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                    said = block["text"].strip()
+    return said
+
+
+def failure_reason(state: str, session: str) -> str:
+    """Why a background wake did not finish, in words for the agent's researcher."""
+    if state.startswith("did not start"):
+        return "Claude Code would not start it: " + state[len("did not start: "):]
+    if state == "timeout":
+        return "the wake ran for 15 minutes without finishing and was stopped"
+    said = last_said(session)
+    return f"Claude Code ended it with: {said[:200]}" if said else f"Claude Code ended it ({state})"
+
+
 def wake_agent(
-    settings: Settings, prompt: str, dry_run: bool = False, wake: Wake | None = None, on_session=None
+    settings: Settings,
+    prompt: str,
+    dry_run: bool = False,
+    wake: Wake | None = None,
+    on_session=None,
+    alive=None,
+    on_failure=None,
 ) -> bool:
-    """Invoke the agent runtime once: the only place that costs tokens."""
+    """Invoke the agent runtime once: the only place that costs tokens.
+    ``alive`` is called each minute a background wake runs, and ``on_failure``
+    with why a wake did not finish."""
     command = runtime_command(settings, prompt, wake)
+
+    def failing(reason: str) -> bool:
+        if on_failure is not None:
+            on_failure(reason)
+        return False
 
     # Resolved, since CreateProcess will not find a Windows `.cmd` shim by name.
     executable = shutil.which(command[0])
     if executable is None:
         LOG.error("%s is not on PATH. Cannot wake the agent.", command[0])
-        return False
+        name = "Claude Code" if settings.runtime == "claude" else "Codex"
+        return failing(f"{name} is not installed, or not on the PATH the daemon sees")
     command = [executable, *command[1:]]
 
     cwd = settings.agent_dir or None
@@ -961,10 +1041,10 @@ def wake_agent(
             if on_session is not None:
                 on_session(session)
 
-        state, _ = run_in_background(command[0], command, cwd, on_session=learnt)
+        state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
         if state != "done":
             LOG.error("the background wake ended %s", state)
-            return False
+            return failing(failure_reason(state, session))
         LOG.info("%s finished", command[0])
         return True
 
@@ -991,11 +1071,11 @@ def wake_agent(
         )
     except subprocess.TimeoutExpired:
         LOG.error("%s timed out after 15 minutes", command[0])
-        return False
+        return failing("the wake ran for 15 minutes without finishing and was stopped")
 
     if result.returncode != 0:
         LOG.error("%s exited %d: %s", command[0], result.returncode, (result.stderr or "")[:500])
-        return False
+        return failing(f"{command[0]} exited {result.returncode}: {(result.stderr or '').strip()[:200]}")
 
     LOG.info("%s finished", command[0])
     if result.stdout:
@@ -1220,12 +1300,34 @@ def one_pass(
             LOG.info("topic %s: post %s is still *Thinking…*; waiting for the answer", candidate.topic_id, thinking)
             continue
 
+        # The forum's notice that another agent cannot answer is nothing to
+        # reply to, so a wake for it alone, as a watched thread's new post,
+        # is acknowledged without one.
+        if candidate.reason == WAKE_TYPES[POSTED] and is_notice(topic) and not dry_run:
+            LOG.info("topic %s: the newest post is the forum's notice that an agent cannot answer; not waking", candidate.topic_id)
+            for notification_id in candidate.notification_ids:
+                handled.mark("notification", notification_id)
+                try:
+                    forum.mark_read(notification_id)
+                except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+                    LOG.warning("could not mark notification %s read: %s", notification_id, exc)
+            continue
+
         prompt = build_prompt(settings, candidate.reason, topic, wording)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
         on_session = (lambda session, row=row: journal.set_session(row, session)) if row is not None else None
-        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session)
+        agent, topic_id = settings.api_username, candidate.topic_id
+        alive = (lambda: ranking.alive(agent)) if hasattr(ranking, "alive") else None
+        # Somebody waits on a wake a notification brought, so its failure is
+        # reported, for the host to tell them.
+        on_failure = None
+        if candidate.notification_ids and hasattr(ranking, "failed"):
+            on_failure = lambda reason: ranking.failed(agent, topic_id, reason)  # noqa: E731
+        ok = wake_agent(
+            settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session, alive=alive, on_failure=on_failure
+        )
         if row is not None:
             journal.end(row, ok)
         if not ok:
@@ -1253,6 +1355,18 @@ def one_pass(
         LOG.info("%d more topic(s) pending; they will be picked up next pass", deferred)
 
     return wakes
+
+
+# What the forum host puts in the notice it posts as an agent that cannot
+# answer (server/ranking.py, NOTICE_MARKER).
+NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
+
+
+def is_notice(topic: dict) -> bool:
+    """Whether the topic's newest post is that notice."""
+    posts = topic.get("post_stream", {}).get("posts") or []
+    latest = posts[-1] if posts else {}
+    return bool(NOTICE.search(latest.get("raw") or latest.get("cooked") or ""))
 
 
 def still_thinking(topic: dict, now: float | None = None) -> int | None:

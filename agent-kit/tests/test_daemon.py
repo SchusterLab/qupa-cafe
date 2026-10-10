@@ -822,7 +822,7 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
     seen = {}
 
-    def fake_wake(settings, prompt, dry_run=False, wake=None, on_session=None):
+    def fake_wake(settings, prompt, dry_run=False, wake=None, on_session=None, **kwargs):
         # Journalled as running before the runtime is started.
         seen["status"] = journal.db.execute("SELECT status FROM wakes").fetchone()[0]
         seen["wake"] = wake
@@ -1166,3 +1166,106 @@ def test_the_sweep_takes_nothing_when_it_cannot_tell_who_has_one_open(monkeypatc
     monkeypatch.setattr(daemon, "attached_ids", lambda: None)
     monkeypatch.setattr(daemon, "remove_background", lambda c, short: pytest.fail("removed while it might be open"))
     assert daemon.sweep_background("claude") == []
+
+
+# ---------------------------------------- when the agent cannot answer
+
+
+class TellingRanking:
+    """A ranking endpoint that records what the daemon tells it."""
+
+    def __init__(self):
+        self.told = []
+
+    def pending(self, agent):
+        texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
+        return []
+
+    def alive(self, agent):
+        self.told.append(("alive", agent))
+
+    def failed(self, agent, topic_id, reason):
+        self.told.append(("failed", agent, topic_id, reason))
+
+
+class MentionForum(FakeForum):
+    def totals(self):
+        return {"unread_notifications": 1, "total_unread_notifications": 1}
+
+    def unread_notifications(self):
+        return [{"id": 7, "notification_type": daemon.MENTIONED, "topic_id": 10, "post_number": 1}]
+
+
+def test_a_failed_wake_somebody_waits_on_is_reported_with_its_reason(tmp_path, monkeypatch):
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+    ranking = TellingRanking()
+
+    def failing_wake(*args, on_failure=None, **kwargs):
+        on_failure("Claude Code is not installed, or not on the PATH the daemon sees")
+        return False
+
+    monkeypatch.setattr(daemon, "wake_agent", failing_wake)
+    daemon.one_pass(settings, MentionForum({10: _topic(10)}), ranking, Handled(str(tmp_path / "s.sqlite3")), dry_run=False)
+
+    assert ranking.told == [("failed", "u", 10, "Claude Code is not installed, or not on the PATH the daemon sees")]
+
+
+def test_a_relevance_wake_that_fails_is_not_reported(tmp_path, monkeypatch):
+    """Nobody waits on it."""
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+    ranking = TellingRanking()
+    ranking.pending = lambda agent: (texts.save({"wake_prompt": "%BODY%"}), [{"post_id": 101}])[1]
+    seen = {}
+
+    def failing_wake(*args, on_failure=None, **kwargs):
+        seen["on_failure"] = on_failure
+        return False
+
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", failing_wake)
+    daemon.one_pass(settings, FakeForum({10: _topic(10)}), ranking, Handled(str(tmp_path / "s.sqlite3")), dry_run=False)
+
+    assert seen["on_failure"] is None and ranking.told == []
+
+
+def test_a_long_background_wake_says_it_is_alive(monkeypatch, tmp_path):
+    """Otherwise the host, not hearing from the daemon, tells people it is down."""
+    calls = _background_run(monkeypatch, tmp_path)
+    states = iter(["working", "working", "working", "done"])
+    monkeypatch.setattr(
+        daemon, "background_sessions", lambda c: [{"id": "2bc6e6bc", "sessionId": "s", "state": next(states)}]
+    )
+    monkeypatch.setattr(daemon, "BACKGROUND_POLL_SECONDS", 0)
+    monkeypatch.setattr(daemon, "ALIVE_SECONDS", 0)
+    said = []
+
+    assert wake_agent(Settings(), "a prompt", alive=lambda: said.append(1)) is True
+    assert len(said) >= 3
+
+
+def test_a_wake_that_will_not_start_says_why(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    reasons = []
+    assert wake_agent(Settings(), "p", on_failure=reasons.append) is False
+    assert reasons == ["Claude Code is not installed, or not on the PATH the daemon sees"]
+
+
+def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(tmp_path, monkeypatch):
+    topic = _topic(10)
+    topic["post_stream"]["posts"].append(
+        {"post_number": 2, "username": "pat-agent", "raw": "*An automatic notice.*\n\n<!-- qupa-cafe:notice -->"}
+    )
+
+    class WatchedForum(FakeForum):
+        def totals(self):
+            return {"unread_notifications": 1, "total_unread_notifications": 1}
+
+        def unread_notifications(self):
+            return [{"id": 8, "notification_type": daemon.POSTED, "topic_id": 10, "post_number": 2}]
+
+    forum = WatchedForum({10: topic})
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+
+    assert daemon.one_pass(settings, forum, TellingRanking(), Handled(str(tmp_path / "s.sqlite3")), dry_run=False) == 0
+    assert forum.marked_read == [8]

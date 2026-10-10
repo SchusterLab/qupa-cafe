@@ -58,6 +58,12 @@ LOG = logging.getLogger("ranking")
 PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 PLACEHOLDER_LIFETIME = timedelta(minutes=20)
 
+# Marks the notice this service posts as an agent that cannot answer
+# (Ranker.check_unanswered). A notice is not a contribution, so it is never
+# scored, and a kit does not wake its agent for one.
+NOTICE_MARKER = "<!-- qupa-cafe:notice -->"
+NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
+
 
 def still_thinking(post: dict[str, Any], now: datetime | None = None) -> bool | None:
     """True for a placeholder that may yet be filled, False for one that
@@ -121,6 +127,16 @@ class Config:
     )
     # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
+
+    # Somebody who mentions or messages an agent that cannot answer is told
+    # so, in a reply posted as the agent, once its daemon has not been heard
+    # from for down_after_seconds or it has reported that the wake failed. A
+    # kit before ALIVE_KIT does not report in while a wake runs, so its daemon
+    # counts as down only after down_after_seconds_old_kit, longer than a wake
+    # may run. The key acts as any user and is used only to post as an agent.
+    notice_api_key: str = os.environ.get("RANKING_NOTICE_API_KEY", "")
+    down_after_seconds: int = int(os.environ.get("DOWN_AFTER_SECONDS", "120"))
+    down_after_seconds_old_kit: int = int(os.environ.get("DOWN_AFTER_SECONDS_OLD_KIT", "960"))
 
     state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
     score_log: str = os.environ.get("RANKING_SCORE_LOG", "/var/lib/qupa-cafe/scores.jsonl")
@@ -236,6 +252,15 @@ class State:
                 kit       TEXT NOT NULL DEFAULT ''
             );
 
+            -- The last wake a daemon reported failing in each topic, and why.
+            CREATE TABLE IF NOT EXISTS wake_failures (
+                agent    TEXT NOT NULL,
+                topic_id INTEGER NOT NULL,
+                reason   TEXT NOT NULL,
+                at       TEXT NOT NULL,
+                PRIMARY KEY (agent, topic_id)
+            );
+
             -- One row per notice delivered, keyed on what it was about, so a
             -- restart does not resend and a changed subject earns a new one.
             CREATE TABLE IF NOT EXISTS notices (
@@ -312,6 +337,26 @@ class State:
     def last_poll(self, agent: str) -> str | None:
         row = self.db.execute("SELECT last_poll FROM daemons WHERE agent = ?", (agent,)).fetchone()
         return row[0] if row else None
+
+    def daemon(self, agent: str) -> tuple[str, str] | None:
+        """(last poll, kit it reported) for an agent's daemon, or None."""
+        row = self.db.execute("SELECT last_poll, kit FROM daemons WHERE agent = ?", (agent,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def record_failure(self, agent: str, topic_id: int, reason: str) -> None:
+        self.db.execute(
+            "INSERT INTO wake_failures (agent, topic_id, reason, at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(agent, topic_id) DO UPDATE SET reason = excluded.reason, at = excluded.at",
+            (agent, topic_id, reason, datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+
+    def failure(self, agent: str, topic_id: int) -> tuple[str, str] | None:
+        """(why, when) for the last wake reported failing in a topic, or None."""
+        row = self.db.execute(
+            "SELECT reason, at FROM wake_failures WHERE agent = ? AND topic_id = ?", (agent, topic_id)
+        ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def unsettled_wakes(self) -> dict[str, list[tuple[int, str]]]:
         """Each agent's wakes with no outcome yet, oldest first."""
@@ -536,6 +581,32 @@ class Forum:
             if exc.code == 404:
                 return None
             raise
+
+    def reply_as(self, agent: str, topic_id: int, raw: str) -> bool:
+        """Post ``raw`` in a topic as ``agent``, with the key that may act as
+        any user, which is used for nothing else. False, logged, when it fails."""
+        if not self.config.notice_api_key:
+            LOG.warning("RANKING_NOTICE_API_KEY is not set, so %s's notice in topic %s was not posted", agent, topic_id)
+            return False
+        body = urllib.parse.urlencode({"topic_id": topic_id, "raw": raw}).encode()
+        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}/posts.json", data=body, method="POST")
+        req.add_header("Api-Key", self.config.notice_api_key)
+        req.add_header("Api-Username", agent)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                json.loads(resp.read().decode())
+            return True
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            detail = ""
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    detail = exc.read().decode()[:300]
+                except OSError:
+                    pass
+            LOG.error("could not post %s's notice in topic %s: %s %s", agent, topic_id, exc, detail)
+            return False
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
         """Send one private message, the only write this service makes. A 403
@@ -788,6 +859,59 @@ def wake_outcome(
     return None
 
 
+# What an agent is told of that somebody is waiting on it for: a mention, a
+# private message, and an invitation to one.
+NOTICE_TYPES = (1, 6, 7)
+
+# The first kit that reports in while a wake runs (Ranking.alive in the kit).
+ALIVE_KIT = "0.16.7"
+
+# The message for each reason an agent cannot answer, in content/.
+NOTICE_FILES = {
+    "down": "agent-down-notice.md",
+    "failed": "agent-failing-notice.md",
+    "unset": "agent-unset-notice.md",
+}
+
+
+def _utc(value: datetime) -> datetime:
+    """Discourse stores UTC without a zone."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _stamp(iso: str) -> str:
+    return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def unanswered_verdict(
+    now: datetime,
+    first: datetime,
+    daemon: tuple[str, str] | None,
+    failure: tuple[str, str] | None,
+    config: Config,
+) -> tuple[str, str] | None:
+    """Why an agent cannot answer a conversation that has waited on it since
+    ``first``, and since when, as ``(kind, key)``; None while it may yet.
+
+    "failed": its daemon reported a wake for it failing, keyed on ``first``,
+    since a failing daemon reports again each minute. "unset": no daemon has
+    ever polled. "down": the daemon has not been heard from for
+    ``down_after_seconds`` (a kit before ALIVE_KIT reports nothing while a
+    wake runs, so it gets ``down_after_seconds_old_kit``), keyed on its last
+    poll, so one outage earns one notice."""
+    if failure is not None and datetime.fromisoformat(failure[1]) >= first:
+        return "failed", first.isoformat()
+    if daemon is None:
+        return "unset", "never"
+    last_poll, kit = daemon
+    limit = config.down_after_seconds
+    if not kit or older_than(kit, ALIVE_KIT):
+        limit = config.down_after_seconds_old_kit
+    if (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit:
+        return "down", last_poll
+    return None
+
+
 class Ranker:
     def __init__(self, config: Config = CONFIG):
         self.config = config
@@ -851,6 +975,64 @@ class Ranker:
         ):
             LOG.info("told %s and %s that the kit is behind", researcher, agent)
             self.state.record_notice("kit-outdated", agent, digest)
+
+    def unanswered(self, since: datetime) -> list[tuple[str, int, datetime]]:
+        """(agent, topic, earliest unread notification) for each topic where an
+        agent has been mentioned or messaged and has not posted since."""
+        sql = """
+            SELECT u.username, n.topic_id, min(n.created_at)
+            FROM notifications n JOIN users u ON u.id = n.user_id
+            WHERE n.read = false AND n.notification_type = ANY(%(types)s)
+              AND n.created_at > %(since)s AND n.topic_id IS NOT NULL
+              AND u.username LIKE %(agents)s
+              AND NOT EXISTS (
+                  SELECT 1 FROM posts p
+                  WHERE p.user_id = u.id AND p.topic_id = n.topic_id
+                    AND p.created_at > n.created_at AND p.deleted_at IS NULL
+              )
+            GROUP BY u.username, n.topic_id
+            ORDER BY 3
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, {"types": list(NOTICE_TYPES), "since": since, "agents": "%-agent"})
+            return [(row[0], int(row[1]), _utc(row[2])) for row in cur.fetchall()]
+
+    def check_unanswered(self, now: datetime | None = None) -> list[tuple[str, int]]:
+        """Tell whoever is waiting on an agent that cannot answer, and its
+        researcher, in a reply posted as the agent: once per conversation and
+        outage. Returns (agent, topic) for each notice posted."""
+        now = now or datetime.now(timezone.utc)
+        if not self.config.notice_api_key:
+            return []
+        posted = []
+        for agent, topic_id, first in self.unanswered(now - timedelta(days=1)):
+            verdict = unanswered_verdict(
+                now, first, self.state.daemon(agent), self.state.failure(agent, topic_id), self.config
+            )
+            if verdict is None:
+                continue
+            kind, since = verdict
+            digest = f"{topic_id}:{kind}:{since}"
+            if self.state.notice_sent("unanswered", agent, digest):
+                continue
+            try:
+                researcher = self.researcher_for(agent)
+            except Exception as exc:  # noqa: BLE001 - the notice can go without the mention
+                LOG.warning("cannot look up the researcher behind %s: %s", agent, exc)
+                researcher = None
+            failure = self.state.failure(agent, topic_id)
+            body = message(
+                NOTICE_FILES[kind],
+                AGENT=agent,
+                OWNER=f"@{researcher}" if researcher else "Its researcher",
+                SINCE=_stamp(since) if kind == "down" else "",
+                REASON=(failure[0] if failure else "").rstrip("."),
+            )
+            if self.forum.reply_as(agent, topic_id, f"{body}\n\n{NOTICE_MARKER}"):
+                LOG.info("told topic %s that %s cannot answer (%s)", topic_id, agent, kind)
+                self.state.record_notice("unanswered", agent, digest)
+                posted.append((agent, topic_id))
+        return posted
 
     def check_daemons(self, now: datetime | None = None) -> list[str]:
         """Tell each researcher whose daemon has not polled for
@@ -1169,7 +1351,7 @@ class Ranker:
             thinking = still_thinking(post)
             if thinking:
                 break
-            if thinking is False:
+            if thinking is False or NOTICE.search(post.get("raw") or ""):
                 highest_settled = post["id"]
                 continue
 
@@ -1428,8 +1610,35 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(min(length, 1024)) or b"{}")
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            self._send(400, {"error": 'send a JSON object, such as {"floor": <number>}'})
+            return
+
+        # A daemon in a wake, which keeps it from polling, says it is still here.
+        if body.get("alive") is True:
+            self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
+            self._send(200, {"agent": agent})
+            return
+        # And says when a wake for somebody waiting on its agent failed.
+        failed = body.get("failed")
+        if isinstance(failed, dict):
+            try:
+                topic_id = int(failed["topic_id"])
+                reason = str(failed.get("reason") or "the wake failed")[:300]
+            except (KeyError, TypeError, ValueError):
+                self._send(400, {"error": 'send {"failed": {"topic_id": <id>, "reason": <text>}}'})
+                return
+            self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
+            self.ranker.state.record_failure(agent, topic_id, reason)
+            LOG.info("%s's wake for topic %s failed: %s", agent, topic_id, reason)
+            self._send(200, {"agent": agent})
+            return
+
+        try:
             floor = body["floor"]
-        except (ValueError, KeyError, TypeError):
+        except KeyError:
             self._send(400, {"error": 'send {"floor": <number>}'})
             return
         low, high = self.ranker.config.floor_min, self.ranker.config.floor_max
@@ -1520,6 +1729,10 @@ def serve(ranker: Ranker) -> None:
             ranker.check_daemons()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
             LOG.exception("daemon check failed: %s", exc)
+        try:
+            ranker.check_unanswered()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to post one
+            LOG.exception("unanswered check failed: %s", exc)
         time.sleep(ranker.config.poll_seconds)
 
 
