@@ -666,6 +666,11 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     return filled + chr(10) + chr(10) + wake_notice(settings)
 
 
+# How every wake's session is named, which is how the daemon finds its own
+# among Claude Code's background sessions.
+WAKE_NAME = "qupa wake:"
+
+
 @dataclass
 class Wake:
     """One invocation of the agent. ``session`` is chosen here and passed as
@@ -685,7 +690,7 @@ class Wake:
     def label(self) -> str:
         """The session's name in Claude Code's own `/resume` list, where every
         wake otherwise starts with the same template text."""
-        return f"qupa wake: topic {self.topic_id} post {self.post_number}, {self.reason}"
+        return f"{WAKE_NAME} topic {self.topic_id} post {self.post_number}, {self.reason}"
 
 
 def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None) -> Wake:
@@ -782,7 +787,11 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -
 
     command = ["claude", "-p", prompt]
     if wake is not None and wake.session:
-        command += ["--session-id", wake.session, "--name", wake.label]
+        command += ["--session-id", wake.session]
+    # Named even without an id of ours: a background wake's name is how the
+    # daemon finds it again among Claude Code's background sessions.
+    if wake is not None:
+        command += ["--name", wake.label]
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -834,6 +843,63 @@ def background_sessions(claude: str) -> list[dict]:
     return listed if isinstance(listed, list) else list(listed.get("agents") or [])
 
 
+ATTACHED = re.compile(r"\battach\s+([0-9a-f]{8})\b")
+
+# A finished background wake kept for somebody attached to it is removed
+# after this however long it has been watched, so a window left open does not
+# hold its processes for days.
+BACKGROUND_KEEP_SECONDS = 6 * 3600
+
+
+def attached_ids() -> set[str] | None:
+    """The background sessions somebody has open with ``claude attach <id>``,
+    which is how the wake browser opens one, read from the process list;
+    None when it cannot be read. Claude Code itself does not say."""
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { $_.CommandLine }"],
+                capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW,
+            )
+        else:
+            result = subprocess.run(["ps", "-ax", "-o", "args="], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return set(ATTACHED.findall(result.stdout or ""))
+
+
+def remove_background(claude: str, short: str) -> None:
+    for verb in ("stop", "rm"):
+        subprocess.run(
+            [claude, verb, short], capture_output=True, text=True, timeout=60,
+            env=outside_session_env(), creationflags=NO_WINDOW,
+        )
+
+
+def sweep_background(claude: str, now: float | None = None) -> list[str]:
+    """Remove the finished background wakes kept for somebody attached, once
+    nobody is, or once they are BACKGROUND_KEEP_SECONDS old. Returns their ids."""
+    now = time.time() if now is None else now
+    finished = [
+        s for s in background_sessions(claude)
+        if str(s.get("name") or "").startswith(WAKE_NAME) and s.get("state") in ("done", "failed")
+    ]
+    if not finished:
+        return []
+    watched = attached_ids() or set()
+    removed = []
+    for entry in finished:
+        short = str(entry.get("id") or "")
+        started = float(entry.get("startedAt") or 0) / 1000
+        if short and (short not in watched or now - started > BACKGROUND_KEEP_SECONDS):
+            remove_background(claude, short)
+            removed.append(short)
+    return removed
+
+
 def run_in_background(
     claude: str,
     command: list[str],
@@ -879,11 +945,12 @@ def run_in_background(
                 break
             time.sleep(BACKGROUND_POLL_SECONDS)
     finally:
-        for verb in ("stop", "rm"):
-            subprocess.run(
-                [claude, verb, short], capture_output=True, text=True, timeout=60,
-                env=env, creationflags=NO_WINDOW,
-            )
+        # Somebody attached to a wake that has ended is left in it, and a
+        # later poll's sweep_background removes it once they leave.
+        if state in ("done", "failed") and short in (attached_ids() or set()):
+            LOG.info("background session %s has ended but is open in a terminal; it is kept until it is not", short)
+        else:
+            remove_background(claude, short)
     return state, session
 
 
@@ -1390,6 +1457,9 @@ def run() -> int:
             if not args.dry_run:
                 journal.beat(settings.interval)
                 journal.record_kit(newer_kit())
+                if settings.background and settings.runtime == "claude" and shutil.which("claude"):
+                    for short in sweep_background(shutil.which("claude")):
+                        LOG.info("removed the ended background wake %s, which nobody has open", short)
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)

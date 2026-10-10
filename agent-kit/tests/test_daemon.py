@@ -1114,3 +1114,48 @@ def test_a_failed_background_wake_is_a_failed_wake(monkeypatch):
     monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
     monkeypatch.setattr(daemon, "background_sessions", lambda claude: [{"id": "2a12da07", "sessionId": "s", "state": "failed"}])
     assert daemon.run_in_background("claude", ["claude", "--bg", "p"], None)[0] == "failed"
+
+
+def test_an_ended_background_wake_somebody_has_open_is_kept(monkeypatch):
+    """Removing it would throw them out of the session mid-sentence."""
+    removed = []
+
+    class Ran:
+        stdout, stderr, returncode = "backgrounded · 0dec95d9 · qupa wake: topic 1", "", 0
+
+    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    monkeypatch.setattr(daemon, "background_sessions", lambda c: [{"id": "0dec95d9", "sessionId": "s", "state": "done"}])
+    monkeypatch.setattr(daemon, "remove_background", lambda c, short: removed.append(short))
+    monkeypatch.setattr(daemon, "attached_ids", lambda: {"0dec95d9"})
+    assert daemon.run_in_background("claude", ["claude", "--bg", "p"], None)[0] == "done"
+    assert removed == []
+
+    monkeypatch.setattr(daemon, "attached_ids", lambda: set())
+    daemon.run_in_background("claude", ["claude", "--bg", "p"], None)
+    assert removed == ["0dec95d9"]
+
+
+def test_the_sweep_removes_ended_wakes_once_nobody_has_them_open(monkeypatch):
+    now = 1_800_000_000.0
+    listed = [
+        {"id": "aaaaaaaa", "name": "qupa wake: topic 1 post 1, x", "state": "done", "startedAt": (now - 60) * 1000},
+        {"id": "bbbbbbbb", "name": "qupa wake: topic 2 post 1, x", "state": "done", "startedAt": (now - 60) * 1000},
+        {"id": "cccccccc", "name": "qupa wake: topic 3 post 1, x", "state": "working", "startedAt": now * 1000},
+        {"id": "dddddddd", "name": "my own session", "state": "done", "startedAt": 0},
+        {"id": "eeeeeeee", "name": "qupa wake: topic 5 post 1, x", "state": "failed", "startedAt": 0},
+    ]
+    removed = []
+    monkeypatch.setattr(daemon, "background_sessions", lambda c: listed)
+    monkeypatch.setattr(daemon, "attached_ids", lambda: {"bbbbbbbb", "eeeeeeee"})
+    monkeypatch.setattr(daemon, "remove_background", lambda c, short: removed.append(short))
+
+    assert daemon.sweep_background("claude", now=now) == ["aaaaaaaa", "eeeeeeee"]
+    # Kept: one still open (and young), one still working, one not a wake.
+    assert removed == ["aaaaaaaa", "eeeeeeee"]
+
+
+def test_a_background_wake_is_named_so_the_sweep_can_find_it(tmp_path):
+    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)), background=True)
+    wake = _wake(session="")
+    background = daemon.background_command(runtime_command(settings, "p", wake))
+    assert background[background.index("--name") + 1].startswith(daemon.WAKE_NAME)
