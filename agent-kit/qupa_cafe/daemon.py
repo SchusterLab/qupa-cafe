@@ -408,11 +408,6 @@ class Forum:
         # Without include_raw the agent would get rendered HTML.
         return self._get(f"/t/{topic_id}.json?include_raw=true")
 
-    def post_by_number(self, topic_id: int, post_number: int) -> dict:
-        """A post by its place in its topic, for one past those a topic's own
-        answer carries."""
-        return self._get(f"/posts/by_number/{topic_id}/{post_number}.json")
-
     def delete_post(self, post_id: int) -> None:
         self._request("DELETE", f"/posts/{post_id}.json")
 
@@ -538,12 +533,6 @@ class Ranking:
         """Ask the forum host to set the agent's floor. Returns the floor and
         its range as the host now states them; raises ``RankingError``."""
         return self._ask(agent, {"floor": round(floor, 2)}).get("policy") or {}
-
-    def explain(self, agent: str, post_id: int) -> dict:
-        """How one post fares against the agent, as the forum host scores it:
-        ``reason``, ``similarity``, ``floor`` and whether it ``woke`` the
-        agent or ``would_wake`` it now. Raises ``RankingError``."""
-        return self._ask(agent, {"explain": {"post_id": post_id}}).get("decision") or {}
 
     def _ask(self, agent: str, body: dict) -> dict:
         """One POST to /wake whose answer the caller needs; raises

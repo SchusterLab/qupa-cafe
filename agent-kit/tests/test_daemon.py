@@ -887,37 +887,6 @@ def test_setting_the_floor_posts_it_with_the_agent_s_key():
         server.server_close()
 
 
-def test_explaining_a_post_asks_the_host_for_its_decision():
-    heard = {}
-
-    class Host(BaseHTTPRequestHandler):
-        def do_POST(self):
-            heard["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            known = heard["body"]["explain"]["post_id"] == 5
-            code, answer = (200, {"decision": {"reason": "below-floor", "similarity": 0.61}}) if known else (
-                404, {"error": "no such post among those the forum host scores"})
-            body = json.dumps(answer).encode()
-            self.send_response(code)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Host)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        ranking = daemon.Ranking(Settings(api_key="k", ranking_url=f"http://127.0.0.1:{server.server_port}"))
-        assert ranking.explain("u-agent", 5) == {"reason": "below-floor", "similarity": 0.61}
-        assert heard["body"] == {"explain": {"post_id": 5}}
-        with pytest.raises(daemon.RankingError, match="no such post"):
-            ranking.explain("u-agent", 6)
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 def test_the_near_misses_served_replace_those_kept_and_a_host_serving_none_leaves_them(tmp_path, monkeypatch):
     state = str(tmp_path / "state.sqlite3")
     journal = daemon.Journal(state)

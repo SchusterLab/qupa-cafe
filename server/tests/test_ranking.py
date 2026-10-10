@@ -634,31 +634,6 @@ def test_explaining_a_post_records_no_near_miss_and_old_near_misses_are_forgotte
     assert [m["post_id"] for m in state.near_misses("a-agent", hours=48)] == [3]
 
 
-class ExplainingRanker(OfflineRanker):
-    """Answers the post lookup from memory."""
-
-    posts: dict[int, dict] = {}
-
-    def scorable_post(self, post_id):
-        return self.posts.get(post_id)
-
-
-def test_a_post_is_explained_from_the_ledger_or_scored_afresh_for_the_one_agent(state):
-    agents = [Agent("a-agent", "a", [], "x"), Agent("b-agent", "b", [], "x")]
-    ranker = ExplainingRanker(Config(similarity_floor=0.95), state, agents)
-    ranker.posts = {5: a_post(5, "someone"), 6: a_post(6, "someone")}
-    state.record_wake("a-agent", 5, similarity=0.97)
-
-    assert ranker.decision_for("a-agent", 5)["reason"] == "woken"
-    assert ranker.decision_for("a-agent", 5)["similarity"] == 0.97
-    fresh = ranker.decision_for("a-agent", 6)
-    assert (fresh["reason"], fresh["similarity"], fresh["floor"], fresh["would_wake"]) == ("below-floor", 0.9, 0.95, False)
-    # Scored afresh, nothing is written: no wake, no near miss.
-    assert not state.already_woken("a-agent", 6) and state.near_misses("a-agent", hours=48) == []
-    assert ranker.decision_for("c-agent", 6)["reason"] == "no-profile"
-    assert ranker.decision_for("a-agent", 7) is None
-
-
 def test_the_daemon_is_served_its_near_misses(endpoint, state):
     decision = ranking.Decision(post_id=9, topic_id=9, agent="yoshi-agent", similarity=0.6, woke=False,
                                 reason="below-floor", floor=0.7)
@@ -670,18 +645,6 @@ def test_the_daemon_is_served_its_near_misses(endpoint, state):
 
     assert status == 200
     assert [(m["post_id"], m["title"], m["reason"]) for m in payload["near_misses"]] == [(9, "T", "below-floor")]
-
-
-def test_the_wake_browser_s_question_about_a_post_is_answered_and_is_not_a_poll(endpoint, state):
-    StubRanker.decisions = {5: {"post_id": 5, "woke": False, "reason": "below-floor", "similarity": 0.6}}
-
-    status, payload = post_wake(endpoint, json.dumps({"explain": {"post_id": 5}}).encode())
-    assert status == 200 and payload["decision"]["reason"] == "below-floor"
-    assert state.daemon("yoshi-agent") is None
-
-    assert post_wake(endpoint, json.dumps({"explain": {"post_id": 6}}).encode())[0] == 404
-    assert post_wake(endpoint, json.dumps({"explain": {}}).encode())[0] == 400
-    assert post_wake(endpoint, json.dumps({"explain": {"post_id": 5}}).encode(), key="")[0] == 401
 
 
 # -------------------------------------------------------------- the defaults
@@ -911,12 +874,6 @@ class StubRanker:
 
     floor_for = Ranker.floor_for
     near_misses_for = Ranker.near_misses_for
-
-    # Post id -> what decision_for answers; the scoring itself is tested apart.
-    decisions: dict[int, dict] = {}
-
-    def decision_for(self, agent: str, post_id: int) -> dict | None:
-        return self.decisions.get(post_id)
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")

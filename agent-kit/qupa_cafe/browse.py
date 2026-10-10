@@ -9,9 +9,8 @@ asks the agent, in Claude Code, to change its interests post, ``wake.md`` or
 ``policy.md`` so that it replies to wakes like the chosen one, ignores them,
 or replies to them differently. ``n`` swaps the wakes for the near misses,
 the posts that came close to waking the agent or sat in a category it skips,
-where ``t`` then ``w`` asks it to change what wakes it; ``p`` does the same
-for any post, by its address. Standard library only, drawn on the alternate
-screen.
+where ``t`` then ``w`` asks it to change what wakes it. Standard library
+only, drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -21,13 +20,12 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from . import local, wakes
-from .daemon import Forum, Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -56,11 +54,6 @@ WAKE_QUESTION = ("Tune your agent on posts like this one, which do not wake it:"
 # In the list: the posts that came close to waking the agent, in place of its
 # wakes, and back.
 MISSED_KEY = "n"
-
-# In the list: any post, by its address or its topic's number, to tune on.
-LOOKUP_KEY = "p"
-LOOKUP_PROMPT = "Post to tune on, as its address or its topic's number, then Enter (Esc to cancel): "
-
 
 # Windows sends a prefix and a letter; other terminals an escape sequence.
 WINDOWS_KEYS = {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end", "K": "left", "M": "right"}
@@ -179,14 +172,14 @@ class Wake:
 
 @dataclass
 class Subject:
-    """What a tuning session is about: a wake, a post that did not wake the
-    agent, or any post looked up by its address."""
+    """What a tuning session is about: a wake, or a post that did not wake
+    the agent."""
 
     topic_id: int
     post_number: int
     title: str
-    # Whether posts like it wake the agent: it did, or would now. Tuning one
-    # that does is about replying to it; one that does not, about waking.
+    # Whether posts like it wake the agent. Tuning one that does is about
+    # replying to it; one that does not, about waking.
     woke: bool
     # Why it woke the agent or did not, as a sentence for the agent.
     why: str
@@ -222,10 +215,6 @@ class Browser:
     subject: Subject | None = None
     choices: dict[str, str] = field(default_factory=dict)
     question: tuple[str, str] = ("", "")
-    # LOOKUP_KEY was pressed: the address typed so far, and once Enter is,
-    # the address to look up.
-    typing: str | None = None
-    address: str = ""
     _detail: list[str] = field(default_factory=list)
     # Rows the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
@@ -263,11 +252,9 @@ class Browser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"raise"``, ``"lower"``, ``"lookup"``, or ``"tune-"`` and
-        what to tune -- or nothing."""
+        ``"ask"``, ``"raise"``, ``"lower"``, or ``"tune-"`` and what to tune
+        -- or nothing."""
         self.message = ""
-        if self.typing is not None:
-            return self._type(key)
         if self.choices:
             choices, self.choices = self.choices, {}
             return f"tune-{choices[key]}" if key in choices else None
@@ -275,10 +262,6 @@ class Browser:
             return "quit"
         if key == TUNE_KEY:
             self._tune()
-            return None
-        if key == LOOKUP_KEY and not self.viewing:
-            self.typing = ""
-            self.message = LOOKUP_PROMPT
             return None
         if key == MISSED_KEY and not self.viewing:
             self.showing_missed = not self.showing_missed
@@ -331,24 +314,6 @@ class Browser:
             self.message = "This wake has no topic to tune for."
             return
         self.offer(subject_of_wake(self.selected, self.agent_dir))
-
-    def _type(self, key: str) -> str | None:
-        """A key while an address is being typed."""
-        if key == "esc":
-            self.typing = None
-            return None
-        if key == "enter":
-            self.address, self.typing = self.typing.strip(), None
-            return "lookup" if self.address else None
-        if key in ("backspace", "\x08", "\x7f"):
-            self.typing = self.typing[:-1]
-        elif key in ("up", "down"):
-            # name_of reads k and j as arrows, and an address may hold them.
-            self.typing += "k" if key == "up" else "j"
-        elif len(key) == 1 and key.isprintable():
-            self.typing += key
-        self.message = LOOKUP_PROMPT + self.typing
-        return None
 
     # ------------------------------------------------------------ frames
 
@@ -404,7 +369,7 @@ class Browser:
         out.append(self.status_line() or where)
         other = "n for wakes" if self.showing_missed else "n for near misses"
         named = [hint for _, hint in self.actions.values() if hint]
-        out.append(hints([*keys, other, "p for any post", *named, "Esc to quit"]))
+        out.append(hints([*keys, other, *named, "Esc to quit"]))
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
@@ -569,76 +534,6 @@ def did_not_wake(reason: str, similarity: float | None, floor: float | None, cat
     if reason == "below-floor" and similarity is not None and floor is not None:
         return f"It did not wake you: it scored {similarity:.2f} against your similarity floor of {floor:.2f}"
     return "It did not wake you"
-
-
-# The forum host's reasons a post is not scored at all, which no tuning changes.
-UNSCORED = {
-    "own-post": "That is your agent's own post, which never wakes it.",
-    "no-embedding-yet": "The forum host has not embedded that post yet, so it has no score. Try again in a few minutes.",
-}
-
-
-def subject_of_decision(topic_id: int, post_number: int, title: str, decision: dict, agent_dir: str) -> Subject | str:
-    """A post looked up, as the forum host scores it against the agent, or a
-    message saying why there is nothing to tune."""
-    reason = decision.get("reason") or ""
-    if reason in UNSCORED:
-        return UNSCORED[reason]
-    similarity, floor = decision.get("similarity"), decision.get("floor")
-    if decision.get("woke"):
-        score = f", with a relevance score of {similarity:.2f}" if similarity is not None else ""
-        why, woke = f"It woke you for relevance{score}", True
-    elif decision.get("would_wake"):
-        why, woke = f"It would wake you now: it scores {similarity:.2f} against your similarity floor of {floor:.2f}", True
-    elif reason == "no-profile":
-        why, woke = (
-            "It did not wake you: the forum host has no interests profile for you, so nothing wakes you for "
-            "relevance until you post one", False,
-        )
-    else:
-        why, woke = did_not_wake(reason, similarity, floor), False
-    return Subject(topic_id=topic_id, post_number=post_number, title=title, woke=woke, why=why,
-                   agent_dir=agent_dir, floor=floor)
-
-
-# A post's address on the forum: /t/<slug>/<topic>/<post number>, the slug
-# not all digits and the post number optional.
-POST_ADDRESS = re.compile(r"/t/(?:[^/\s]*[^\d/\s][^/\s]*/)?(\d+)(?:/(\d+))?")
-
-
-def parse_post(text: str) -> tuple[int, int] | None:
-    """(topic, post number) from a forum address or a bare topic number."""
-    text = text.strip()
-    if text.isdigit():
-        return int(text), 1
-    found = POST_ADDRESS.search(text)
-    if not found:
-        return None
-    return int(found.group(1)), int(found.group(2) or 1)
-
-
-def look_up(settings: Settings, address: str, agent_dir: str) -> Subject | str:
-    """The post at ``address`` as a subject to tune on, read with the agent's
-    own key so that only a post the agent can read is asked about, or a
-    message saying why there is none."""
-    found = parse_post(address)
-    if found is None:
-        return f"{address!r} is not a forum address or a topic's number."
-    topic_id, post_number = found
-    forum = Forum(settings)
-    try:
-        topic = forum.topic(topic_id)
-        post = next((p for p in topic.get("post_stream", {}).get("posts", []) if p.get("post_number") == post_number),
-                    None) or forum.post_by_number(topic_id, post_number)
-    except urllib.error.HTTPError as exc:
-        return f"Your agent cannot read post {post_number} of topic {topic_id} (the forum said {exc.code})."
-    except urllib.error.URLError as exc:
-        return f"The forum did not answer: {exc.reason}"
-    try:
-        decision = Ranking(settings).explain(settings.api_username, int(post["id"]))
-    except RankingError as exc:
-        return f"The forum host could not say how that post scores: {exc}"
-    return subject_of_decision(topic_id, post_number, topic.get("title") or "", decision, agent_dir)
 
 
 def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
@@ -891,12 +786,6 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 return 0
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
-            if action == "lookup":
-                found = look_up(settings, browser.address, settings.agent_dir)
-                if isinstance(found, Subject):
-                    browser.offer(found)
-                else:
-                    browser.message = found
             if action == "ask" or (action or "").startswith("tune-"):
                 chosen = browser.selected.row.session if browser.selected else ""
                 terminal.suspend()

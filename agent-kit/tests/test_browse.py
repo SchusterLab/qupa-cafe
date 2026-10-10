@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import urllib.error
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +57,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · t to tune replies · n for near misses · p for any post · Esc to quit"
+        "↑↓ to select · Enter to read · t to tune replies · n for near misses · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -276,7 +275,7 @@ def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_f
     frame = b.frame(120, 20)
     assert any("under 0.70" in line and "Missed 7" in line for line in frame)
     assert any("skipped" in line and "Missed 8" in line for line in frame)
-    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · p for any post · Esc to quit"
+    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · Esc to quit"
 
     b.handle("down")
     b.handle("t")
@@ -301,84 +300,6 @@ def test_waking_for_posts_like_one_points_at_the_interests_post_and_the_floor_on
     assert "Only your researcher sets it, with + and - in the wake browser" in prompt
     assert "wake.md and policy.md cannot make a post wake you" in prompt
     assert "Change nothing until they agree." in prompt
-
-
-def test_p_takes_an_address_typed_or_pasted_and_esc_abandons_it():
-    b = _browser(browse.Wake(_row(1), SAID))
-    assert b.handle("p") is None and b.typing == ""
-    for key in "https://f/t/a-slu":
-        b.handle(key)
-    b.handle("up")  # name_of reads k as an arrow
-    for key in "x/16":
-        b.handle(key)
-    b.handle("backspace")
-    assert browse.LOOKUP_PROMPT + "https://f/t/a-slukx/1" in b.frame(160, 20)[-2]
-    assert b.handle("enter") == "lookup" and b.address == "https://f/t/a-slukx/1"
-    assert b.typing is None
-
-    b.handle("p")
-    b.handle("9")
-    assert b.handle("esc") is None and b.typing is None
-    # The Escape that abandoned the address did not also leave the browser.
-    assert b.handle("esc") == "quit"
-
-
-def test_an_address_is_read_as_a_topic_and_a_post_number():
-    assert browse.parse_post("166") == (166, 1)
-    assert browse.parse_post("https://forum.qupa-cafe.com/t/a-quasiparticle-protected-qubit/166") == (166, 1)
-    assert browse.parse_post("https://forum.qupa-cafe.com/t/a-quasiparticle-protected-qubit/166/3") == (166, 3)
-    assert browse.parse_post("https://forum.qupa-cafe.com/t/2610-12227/166/3") == (166, 3)
-    assert browse.parse_post("/t/166/3") == (166, 3)
-    assert browse.parse_post("not a post") is None
-
-
-def test_the_host_s_decision_becomes_what_to_tune():
-    def subject(decision):
-        return browse.subject_of_decision(5, 1, "T", decision, "/agent")
-
-    assert subject({"woke": True, "reason": "woken", "similarity": 0.8}).woke
-    would = subject({"woke": False, "would_wake": True, "reason": "woken", "similarity": 0.8, "floor": 0.7})
-    assert would.woke and "would wake you now" in would.why
-    below = subject({"woke": False, "reason": "below-floor", "similarity": 0.5, "floor": 0.7})
-    assert not below.woke and "0.50 against your similarity floor of 0.70" in below.why
-    assert not subject({"woke": False, "reason": "no-profile"}).woke
-    assert subject({"woke": False, "reason": "own-post"}) == browse.UNSCORED["own-post"]
-
-
-def test_a_post_is_looked_up_with_the_agent_s_own_key_then_asked_about(monkeypatch):
-    asked = []
-
-    class Forum:
-        def __init__(self, settings):
-            pass
-
-        def topic(self, topic_id):
-            if topic_id != 166:
-                raise urllib.error.HTTPError("u", 403, "forbidden", {}, None)
-            return {"title": "A qubit", "post_stream": {"posts": [{"post_number": 1, "id": 178}]}}
-
-        def post_by_number(self, topic_id, number):
-            return {"id": 180}
-
-    class Ranking:
-        def __init__(self, settings):
-            pass
-
-        def explain(self, agent, post_id):
-            asked.append(post_id)
-            return {"woke": False, "reason": "below-floor", "similarity": 0.6, "floor": 0.7}
-
-    monkeypatch.setattr(browse, "Forum", Forum)
-    monkeypatch.setattr(browse, "Ranking", Ranking)
-    settings = Settings(api_username="sunada-agent")
-
-    found = browse.look_up(settings, "https://forum.qupa-cafe.com/t/a-qubit/166", "/agent")
-    assert (found.topic_id, found.title, found.woke) == (166, "A qubit", False)
-    # A post past those the topic's own answer carries is read by its number.
-    browse.look_up(settings, "https://f/t/a-qubit/166/3", "/agent")
-    assert asked == [178, 180]
-    assert "cannot read" in browse.look_up(settings, "167", "/agent")
-    assert "not a forum address" in browse.look_up(settings, "hello", "/agent")
 
 
 def test_the_hint_follows_whether_the_session_is_attached(monkeypatch, capsys):
