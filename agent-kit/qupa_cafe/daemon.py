@@ -256,6 +256,19 @@ class Journal:
                 newer  TEXT,
                 at     TEXT NOT NULL
             );
+            -- Posts that did not wake the agent but came close, or sit in a
+            -- category it skips, as the forum host last served them.
+            CREATE TABLE IF NOT EXISTS near_misses (
+                post_id     INTEGER PRIMARY KEY,
+                topic_id    INTEGER NOT NULL,
+                post_number INTEGER NOT NULL,
+                title       TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                at          TEXT NOT NULL,
+                similarity  REAL,
+                floor       REAL,
+                reason      TEXT NOT NULL
+            );
             """
         )
         self.db.commit()
@@ -318,6 +331,25 @@ class Journal:
             (interval,),
         )
 
+    def record_near_misses(self, misses: list[dict]) -> None:
+        """Replace the near misses with the ones the forum host last served."""
+        rows = []
+        for miss in misses:
+            try:
+                rows.append((
+                    int(miss["post_id"]), int(miss["topic_id"]), int(miss.get("post_number") or 1),
+                    str(miss.get("title") or ""), str(miss.get("category") or ""), str(miss["at"]),
+                    miss.get("similarity"), miss.get("floor"), str(miss["reason"]),
+                ))
+            except (KeyError, TypeError, ValueError):
+                continue
+        try:
+            with self.db:
+                self.db.execute("DELETE FROM near_misses")
+                self.db.executemany("INSERT OR REPLACE INTO near_misses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        except sqlite3.Error as exc:
+            LOG.warning("could not record the near misses: %s", exc)
+
     def record_floor(self, policy: dict) -> None:
         """Keep the floor the forum host stated, for the wake browser."""
         try:
@@ -376,6 +408,11 @@ class Forum:
         # Without include_raw the agent would get rendered HTML.
         return self._get(f"/t/{topic_id}.json?include_raw=true")
 
+    def post_by_number(self, topic_id: int, post_number: int) -> dict:
+        """A post by its place in its topic, for one past those a topic's own
+        answer carries."""
+        return self._get(f"/posts/by_number/{topic_id}/{post_number}.json")
+
     def delete_post(self, post_id: int) -> None:
         self._request("DELETE", f"/posts/{post_id}.json")
 
@@ -397,6 +434,9 @@ class Ranking:
         self._told_about_upgrade = False
         # The agent's floor and its range, from the last poll.
         self.policy: dict = {}
+        # The posts that did not wake the agent, from the last poll; None from
+        # a host that does not serve them.
+        self.near_misses: list[dict] | None = None
 
     def _wake_request(self, agent: str) -> urllib.request.Request:
         """The /wake request every call to the host starts from."""
@@ -466,6 +506,8 @@ class Ranking:
             # The only thing that hears from the host; the MCP server reads it back.
             texts.save(payload.get("texts"))
             self.policy = payload.get("policy") or {}
+            near = payload.get("near_misses")
+            self.near_misses = near if isinstance(near, list) else None
             return payload.get("pending") or []
         except urllib.error.HTTPError as exc:
             # 426: refused as too old, which is not the endpoint being down.
@@ -495,11 +537,22 @@ class Ranking:
     def set_floor(self, agent: str, floor: float) -> dict:
         """Ask the forum host to set the agent's floor. Returns the floor and
         its range as the host now states them; raises ``RankingError``."""
+        return self._ask(agent, {"floor": round(floor, 2)}).get("policy") or {}
+
+    def explain(self, agent: str, post_id: int) -> dict:
+        """How one post fares against the agent, as the forum host scores it:
+        ``reason``, ``similarity``, ``floor`` and whether it ``woke`` the
+        agent or ``would_wake`` it now. Raises ``RankingError``."""
+        return self._ask(agent, {"explain": {"post_id": post_id}}).get("decision") or {}
+
+    def _ask(self, agent: str, body: dict) -> dict:
+        """One POST to /wake whose answer the caller needs; raises
+        ``RankingError`` with the host's own reason when it has one."""
         if not self.settings.ranking_url:
             raise RankingError("no ranking URL is configured")
         try:
-            with urllib.request.urlopen(self._post_request(agent, {"floor": round(floor, 2)}), timeout=20) as resp:
-                return json.loads(resp.read().decode()).get("policy") or {}
+            with urllib.request.urlopen(self._post_request(agent, body), timeout=20) as resp:
+                return json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
             try:
                 said = json.loads(exc.read().decode()).get("error") or ""
@@ -1221,6 +1274,8 @@ def one_pass(
     candidates = collect(settings, forum, ranking, handled)
     if journal is not None and not dry_run and ranking.policy:
         journal.record_floor(ranking.policy)
+    if journal is not None and not dry_run and ranking.near_misses is not None:
+        journal.record_near_misses(ranking.near_misses)
     if not candidates:
         return 0
 

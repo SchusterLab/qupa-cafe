@@ -120,6 +120,12 @@ class Config:
     # How long after a wake its outcome is decided, and how long the daemon must
     # have kept polling for no reply to count as the agent declining.
     wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
+
+    # A post that scores within near_miss_margin under an agent's floor, or
+    # sits in a category it skips, is kept for near_miss_hours, so the wake
+    # browser can show what did not wake the agent.
+    near_miss_margin: float = float(os.environ.get("NEAR_MISS_MARGIN", "0.15"))
+    near_miss_hours: float = float(os.environ.get("NEAR_MISS_HOURS", "48"))
     # A reply's share of its own score; the rest is the thread's.
     reply_weight: float = float(os.environ.get("REPLY_WEIGHT", "0.5"))
 
@@ -269,6 +275,24 @@ class State:
                 PRIMARY KEY (agent, topic_id)
             );
 
+            -- Posts that did not wake an agent but came close, or were in a
+            -- category it skips, for its wake browser: what its researcher
+            -- may want it woken for. Kept for near_miss_hours.
+            CREATE TABLE IF NOT EXISTS near_misses (
+                agent       TEXT NOT NULL,
+                post_id     INTEGER NOT NULL,
+                topic_id    INTEGER NOT NULL,
+                post_number INTEGER NOT NULL,
+                title       TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                at          TEXT NOT NULL,
+                similarity  REAL,
+                floor       REAL,
+                -- 'below-floor' or 'category-skipped'.
+                reason      TEXT NOT NULL,
+                PRIMARY KEY (agent, post_id)
+            );
+
             -- The status this service set on an agent that cannot answer.
             CREATE TABLE IF NOT EXISTS agent_status (
                 agent TEXT PRIMARY KEY,
@@ -323,6 +347,40 @@ class State:
                 (before.isoformat(),),
             )
         )
+
+    def record_near_miss(self, decision: "Decision", post: dict[str, Any], hours: float) -> None:
+        """Keep a post that did not wake an agent, and forget those older
+        than ``hours``."""
+        now = datetime.now(timezone.utc)
+        self.db.execute(
+            "INSERT OR REPLACE INTO near_misses (agent, post_id, topic_id, post_number, title, category,"
+            " at, similarity, floor, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                decision.agent, decision.post_id, decision.topic_id, post.get("post_number") or 1,
+                post.get("title") or "", post.get("category_name") or "", now.isoformat(),
+                decision.similarity, decision.floor, decision.reason,
+            ),
+        )
+        self.db.execute("DELETE FROM near_misses WHERE at < ?", ((now - timedelta(hours=hours)).isoformat(),))
+        self.db.commit()
+
+    def near_misses(self, agent: str, hours: float) -> list[dict[str, Any]]:
+        """One agent's near misses of the last ``hours``, newest first."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = self.db.execute(
+            "SELECT post_id, topic_id, post_number, title, category, at, similarity, floor, reason"
+            " FROM near_misses WHERE agent = ? AND at >= ? ORDER BY post_id DESC",
+            (agent, since),
+        ).fetchall()
+        keys = ("post_id", "topic_id", "post_number", "title", "category", "at", "similarity", "floor", "reason")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def wake_record(self, agent: str, post_id: int) -> tuple[str, float | None] | None:
+        """When the agent was woken for the post and how it scored, or None."""
+        row = self.db.execute(
+            "SELECT at, similarity FROM wakes WHERE agent = ? AND post_id = ?", (agent, post_id)
+        ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def already_woken(self, agent: str, post_id: int) -> bool:
         row = self.db.execute(
@@ -1424,7 +1482,10 @@ class Ranker:
 
             category = (post.get("category_name") or "").lower()
             if category in agent.skip_categories:
-                decisions.append(Decision(**base, similarity=None, woke=False, reason="category-skipped"))
+                decision = Decision(**base, similarity=None, woke=False, reason="category-skipped")
+                decisions.append(decision)
+                if record:
+                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
                 continue
 
             similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
@@ -1440,7 +1501,10 @@ class Ranker:
 
             floor = self.state.floor(agent.username, self.config.similarity_floor)
             if similarity < floor:
-                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor))
+                decision = Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor)
+                decisions.append(decision)
+                if record and similarity >= floor - self.config.near_miss_margin:
+                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
                 continue
 
             if record:
@@ -1487,6 +1551,43 @@ class Ranker:
         return all_decisions
 
     # ------------------------------------------------------------ read side
+
+    def scorable_post(self, post_id: int) -> dict[str, Any] | None:
+        """One post as new_posts reads it, or None when it is deleted, not a
+        regular post, or in a private message."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                POST_SELECT + "WHERE p.id = %s AND p.deleted_at IS NULL AND t.deleted_at IS NULL"
+                " AND p.post_type = 1 AND t.archetype = 'regular'",
+                (post_id,),
+            )
+            row = cur.fetchone()
+            return dict(zip([d[0] for d in cur.description], row)) if row else None
+
+    def near_misses_for(self, agent: str) -> list[dict[str, Any]]:
+        return self.state.near_misses(agent, self.config.near_miss_hours)
+
+    def decision_for(self, agent: str, post_id: int) -> dict[str, Any] | None:
+        """How one post fares against one agent: the wake the ledger holds
+        for it, or the post scored afresh without recording anything. None
+        for a post that is not a reply or topic in a public category, which
+        is all this service scores."""
+        record = self.state.wake_record(agent, post_id)
+        if record is not None:
+            return {"post_id": post_id, "woke": True, "reason": "woken", "similarity": record[1], "at": record[0]}
+
+        post = self.scorable_post(post_id)
+        if post is None:
+            return None
+        found = next((d for d in self.score_post(post, record=False) if d.agent == agent), None)
+        if found is None:
+            return {"post_id": post_id, "woke": False, "reason": "no-profile", "similarity": None}
+        # Unrecorded, so a "woken" here is one the agent would get now.
+        return {
+            "post_id": post_id, "woke": False, "reason": found.reason,
+            "similarity": found.similarity, "floor": found.floor,
+            "would_wake": found.reason == "woken",
+        }
 
     def pending_for(self, agent: str) -> list[dict[str, Any]]:
         """Every wake recorded for one agent in the last 24 hours, newest first.
@@ -1737,6 +1838,25 @@ class Handler(BaseHTTPRequestHandler):
             self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
             self._send(200, {"agent": agent})
             return
+        # The wake browser asks how one post fares against its agent. Not a
+        # poll: the browser is not the daemon.
+        if "explain" in body:
+            try:
+                post_id = int((body.get("explain") or {})["post_id"])
+            except (KeyError, TypeError, ValueError, AttributeError):
+                self._send(400, {"error": 'send {"explain": {"post_id": <id>}}'})
+                return
+            try:
+                decision = self.ranker.decision_for(agent, post_id)
+            except Exception as exc:  # noqa: BLE001 - the database or the embedder
+                LOG.warning("cannot explain post %s for %s: %s", post_id, agent, exc)
+                self._send(503, {"error": "the forum host cannot score that post just now"})
+                return
+            if decision is None:
+                self._send(404, {"error": "no such post among those the forum host scores"})
+                return
+            self._send(200, {"agent": agent, "decision": decision})
+            return
         # And says when a wake for somebody waiting on its agent failed.
         failed = body.get("failed")
         if isinstance(failed, dict):
@@ -1802,6 +1922,7 @@ class Handler(BaseHTTPRequestHandler):
                 "texts": self.texts.serve(),
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
+                "near_misses": self.ranker.near_misses_for(agent),
                 "policy": self.ranker.floor_for(agent),
             }
             if upgrade:

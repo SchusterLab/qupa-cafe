@@ -7,8 +7,11 @@ scroll, Enter opens its session in Claude Code (attached to, while the wake
 still runs), and Esc goes back. In either, ``t`` then ``r``, ``i`` or ``h``
 asks the agent, in Claude Code, to change its interests post, ``wake.md`` or
 ``policy.md`` so that it replies to wakes like the chosen one, ignores them,
-or replies to them differently.
-Standard library only, drawn on the alternate screen.
+or replies to them differently. ``n`` swaps the wakes for the near misses,
+the posts that came close to waking the agent or sat in a category it skips,
+where ``t`` then ``w`` asks it to change what wakes it; ``p`` does the same
+for any post, by its address. Standard library only, drawn on the alternate
+screen.
 """
 
 from __future__ import annotations
@@ -18,11 +21,13 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from . import local, wakes
-from .daemon import Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import Forum, Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -34,14 +39,25 @@ FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-
 # How far one press moves the threshold.
 FLOOR_STEP = 0.01
 
-# In the list or in a wake: tune whether and how the agent replies to wakes
-# like the chosen one, then what to tune.
+# In the list or in a wake: tune the agent on posts like the chosen one, then
+# what to tune. On a post that woke it, whether and how it replies; on one
+# that did not, whether it is woken.
 TUNE_KEY = "t"
 TUNE_CHOICES = {"r": "reply", "i": "ignore", "h": "how"}
 TUNE_QUESTION = (
     "Tune your agent on wakes like this one: r to reply to them · i to ignore them"
     " · h to change how it replies · any other key to cancel"
 )
+WAKE_CHOICES = {"w": "wake"}
+WAKE_QUESTION = "Tune your agent on posts like this one, which do not wake it: w to be woken for them · any other key to cancel"
+
+# In the list: the posts that came close to waking the agent, in place of its
+# wakes, and back.
+MISSED_KEY = "n"
+
+# In the list: any post, by its address or its topic's number, to tune on.
+LOOKUP_KEY = "p"
+LOOKUP_PROMPT = "Post to tune on, as its address or its topic's number, then Enter (Esc to cancel): "
 
 
 # Windows sends a prefix and a letter; other terminals an escape sequence.
@@ -160,6 +176,28 @@ class Wake:
 
 
 @dataclass
+class Subject:
+    """What a tuning session is about: a wake, a post that did not wake the
+    agent, or any post looked up by its address."""
+
+    topic_id: int
+    post_number: int
+    title: str
+    # Whether posts like it wake the agent: it did, or would now. Tuning one
+    # that does is about replying to it; one that does not, about waking.
+    woke: bool
+    # Why it woke the agent or did not, as a sentence for the agent.
+    why: str
+    agent_dir: str
+    # What the wake browser shows the wake as, for a wake.
+    did: str = ""
+    # The agent's similarity floor, where the post was compared with it.
+    floor: float | None = None
+    # The wake's session, to tune in, once the wake has ended.
+    session: str = ""
+
+
+@dataclass
 class Browser:
     """What is on the screen and what a key does to it. No terminal in here,
     so that it can be driven, and tested, a key at a time."""
@@ -167,19 +205,38 @@ class Browser:
     items: list[Wake]
     state: wakes.Status
     agent: str = ""
+    # Where a tuning session runs when the post was not a wake.
+    agent_dir: str = ""
+    missed: list[wakes.NearMiss] = field(default_factory=list)
+    # The list shows the posts that did not wake the agent rather than its wakes.
+    showing_missed: bool = False
     index: int = 0
+    missed_index: int = 0
     viewing: bool = False
     scroll: int = 0
     message: str = ""
-    # TUNE_KEY was pressed, and the next key answers TUNE_QUESTION.
-    tuning: bool = False
+    # What TUNE_KEY offered to tune, and the keys that answer.
+    subject: Subject | None = None
+    choices: dict[str, str] = field(default_factory=dict)
+    # LOOKUP_KEY was pressed: the address typed so far, and once Enter is,
+    # the address to look up.
+    typing: str | None = None
+    address: str = ""
     _detail: list[str] = field(default_factory=list)
-    # Rows of wakes the list last had room for, which PgUp and PgDn move by.
+    # Rows the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
 
     @property
     def selected(self) -> Wake | None:
         return self.items[self.index] if self.items else None
+
+    @property
+    def selected_miss(self) -> wakes.NearMiss | None:
+        return self.missed[self.missed_index] if self.missed else None
+
+    @property
+    def tuning(self) -> bool:
+        return bool(self.choices)
 
     @property
     def actions(self) -> dict[str, tuple[str, str]]:
@@ -194,22 +251,33 @@ class Browser:
         target = round(min(max(state.floor + step, state.floor_min), state.floor_max), 2)
         return None if target == round(state.floor, 2) else target
 
+    def offer(self, subject: Subject) -> None:
+        """Ask what to tune on ``subject``; the next key answers."""
+        self.subject = subject
+        self.choices = TUNE_CHOICES if subject.woke else WAKE_CHOICES
+        self.message = TUNE_QUESTION if subject.woke else WAKE_QUESTION
+
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"raise"``, ``"lower"``, ``"tune-reply"``,
-        ``"tune-ignore"`` or ``"tune-how"`` -- or nothing."""
+        ``"ask"``, ``"raise"``, ``"lower"``, ``"lookup"``, or ``"tune-"`` and
+        what to tune -- or nothing."""
         self.message = ""
-        if self.tuning:
-            self.tuning = False
-            return f"tune-{TUNE_CHOICES[key]}" if key in TUNE_CHOICES else None
+        if self.typing is not None:
+            return self._type(key)
+        if self.choices:
+            choices, self.choices = self.choices, {}
+            return f"tune-{choices[key]}" if key in choices else None
         if key == "esc" and not self.viewing:
             return "quit"
-        if key == TUNE_KEY and self.selected:
-            if self.selected.row.topic_id is None:
-                self.message = "This wake has no topic to tune for."
-            else:
-                self.tuning = True
-                self.message = TUNE_QUESTION
+        if key == TUNE_KEY:
+            self._tune()
+            return None
+        if key == LOOKUP_KEY and not self.viewing:
+            self.typing = ""
+            self.message = LOOKUP_PROMPT
+            return None
+        if key == MISSED_KEY and not self.viewing:
+            self.showing_missed = not self.showing_missed
             return None
         if key in self.actions and not self.viewing:
             return self.actions[key][0]
@@ -230,21 +298,60 @@ class Browser:
                 self.viewing = False
             return None
 
-        if not self.items:
+        shown = self.missed if self.showing_missed else self.items
+        if not shown:
             return None
-        moves = {"up": -1, "down": 1, "pgup": -self._room, "pgdn": self._room, "home": -len(self.items), "end": len(self.items)}
+        moves = {"up": -1, "down": 1, "pgup": -self._room, "pgdn": self._room, "home": -len(shown), "end": len(shown)}
         if key in moves:
-            self.index = min(max(self.index + moves[key], 0), len(self.items) - 1)
+            if self.showing_missed:
+                self.missed_index = min(max(self.missed_index + moves[key], 0), len(shown) - 1)
+            else:
+                self.index = min(max(self.index + moves[key], 0), len(shown) - 1)
         elif key in ("enter", "right"):
-            self.viewing = True
-            self.scroll = 0
-            self._detail = wakes.render(self.selected.row, transcript=self.selected.transcript)
+            if self.showing_missed:
+                self.message = "A post that did not wake your agent has no wake to read: t tunes your agent on it."
+            else:
+                self.viewing = True
+                self.scroll = 0
+                self._detail = wakes.render(self.selected.row, transcript=self.selected.transcript)
+        return None
+
+    def _tune(self) -> None:
+        if self.showing_missed and not self.viewing:
+            if self.selected_miss:
+                self.offer(subject_of_miss(self.selected_miss, self.agent_dir))
+            return
+        if not self.selected:
+            return
+        if self.selected.row.topic_id is None:
+            self.message = "This wake has no topic to tune for."
+            return
+        self.offer(subject_of_wake(self.selected, self.agent_dir))
+
+    def _type(self, key: str) -> str | None:
+        """A key while an address is being typed."""
+        if key == "esc":
+            self.typing = None
+            return None
+        if key == "enter":
+            self.address, self.typing = self.typing.strip(), None
+            return "lookup" if self.address else None
+        if key in ("backspace", "\x08", "\x7f"):
+            self.typing = self.typing[:-1]
+        elif key in ("up", "down"):
+            # name_of reads k and j as arrows, and an address may hold them.
+            self.typing += "k" if key == "up" else "j"
+        elif len(key) == 1 and key.isprintable():
+            self.typing += key
+        self.message = LOOKUP_PROMPT + self.typing
         return None
 
     # ------------------------------------------------------------ frames
 
     def frame(self, cols: int, rows: int) -> list[str]:
-        return self._detail_frame(cols, rows) if self.viewing else self._list_frame(cols, rows)
+        if self.viewing:
+            return self._detail_frame(cols, rows)
+        return self._missed_frame(cols, rows) if self.showing_missed else self._list_frame(cols, rows)
 
     def _box(self, cols: int, title: str, lines: list[str]) -> list[str]:
         """Claude Code's rounded box: a grey border round an orange title."""
@@ -257,32 +364,52 @@ class Browser:
         out.append(wakes.paint("╰" + "─" * (cols - 2) + "╯", "rule"))
         return out
 
-    def _list_frame(self, cols: int, rows: int) -> list[str]:
+    def _listing(
+        self, cols: int, rows: int, what: str, count: int, line, index: int, empty: str, keys: list[str]
+    ) -> list[str]:
+        """The list, of wakes or of near misses, with what is around it.
+        ``line(i)`` draws the ``i``th, and only those on screen are drawn, so
+        a long journal reads only the transcripts it shows."""
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
-            f"  wakes of {self.agent}" if self.agent else "  wakes", "meta"
+            f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
         out = self._box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
         out.append("")
 
-        if not self.items:
-            out.append(wakes.paint("  No wakes recorded yet. The daemon records each one from kit 0.9.0 on.", "meta"))
+        if not count:
+            out.append(wakes.paint("  " + empty, "meta"))
         room = max(rows - len(out) - 3, 1)
         self._room = room
-        top = min(max(self.index - room + 1, 0), max(len(self.items) - room, 0))
-        for i, item in enumerate(self.items[top : top + room], start=top):
-            out.append(self._row(item, i == self.index, cols))
+        top = min(max(index - room + 1, 0), max(count - room, 0))
+        out += [line(i) for i in range(top, min(top + room, count))]
 
         while len(out) < rows - 2:
             out.append("")
         where = ""
-        if len(self.items) > room:
-            end = min(top + room, len(self.items))
-            where = wakes.paint(f"  wakes {top + 1}-{end} of {len(self.items)}", "meta")
+        if count > room:
+            end = min(top + room, count)
+            where = wakes.paint(f"  {what} {top + 1}-{end} of {count}", "meta")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or where)
+        other = "n for wakes" if self.showing_missed else "n for near misses"
         named = [hint for _, hint in self.actions.values() if hint]
-        tune = ["t to tune replies"] if self.items else []
-        out.append(hints(["↑↓ to select", "Enter to read", *tune, *named, "Esc to quit"]))
+        out.append(hints([*keys, other, "p for any post", *named, "Esc to quit"]))
         return out
+
+    def _list_frame(self, cols: int, rows: int) -> list[str]:
+        def line(i: int) -> str:
+            return self._row(self.items[i], i == self.index, cols)
+
+        keys = ["↑↓ to select", "Enter to read", *(["t to tune replies"] if self.items else [])]
+        empty = "No wakes recorded yet. The daemon records each one from kit 0.9.0 on."
+        return self._listing(cols, rows, "wakes", len(self.items), line, self.index, empty, keys)
+
+    def _missed_frame(self, cols: int, rows: int) -> list[str]:
+        def line(i: int) -> str:
+            return self._miss_row(self.missed[i], i == self.missed_index, cols)
+
+        keys = ["↑↓ to select", *(["t to tune waking"] if self.missed else [])]
+        empty = "No near misses: nothing has lately scored close under the threshold or sat in a skipped category."
+        return self._listing(cols, rows, "near misses", len(self.missed), line, self.missed_index, empty, keys)
 
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
         row = item.row
@@ -291,10 +418,23 @@ class Browser:
         when = wakes.local_time(wakes.utc(row.started))[5:]  # MM-DD HH:MM
         # The relevance score, blank for a mention.
         score = f"{row.score:.2f}" if row.score is not None else "    "
-        left = f"{when}  {score}  "
-        middle = f"{said:<16} "
+        title = f"{row.title}  (topic {row.topic_id})"
+        return self._line(chosen, cols, f"{when}  {score}  ", mark, f"{said:<16} ", style, title)
+
+    def _miss_row(self, miss: wakes.NearMiss, chosen: bool, cols: int) -> str:
+        try:
+            when = wakes.local_time(datetime.fromisoformat(miss.at))[5:]
+        except ValueError:
+            when = "?"
+        score = f"{miss.similarity:.2f}" if miss.similarity is not None else "    "
+        said = f"under {miss.floor:.2f}" if miss.reason == "below-floor" and miss.floor is not None else "skipped"
+        title = f"{miss.title}  (topic {miss.topic_id})"
+        return self._line(chosen, cols, f"{when}  {score}  ", "·", f"{said:<16} ", "quiet", title)
+
+    @staticmethod
+    def _line(chosen: bool, cols: int, left: str, mark: str, middle: str, style: str, title: str) -> str:
         room = max(cols - 4 - len(left) - 2 - len(middle), 10)
-        title = wakes.clip(f"{row.title}  (topic {row.topic_id})", room)
+        title = wakes.clip(title, room)
         pointer = wakes.paint("❯ ", "accent") if chosen else "  "
         text_style = "selected" if chosen else "prompt"
         return (
@@ -383,6 +523,106 @@ def ask(row: wakes.Row) -> str:
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 
 
+def subject_of_wake(item: Wake, agent_dir: str) -> Subject:
+    row = item.row
+    score = f", with a relevance score of {row.score:.2f}" if row.score is not None else ""
+    did, _ = wakes.outcome(row, item.transcript)
+    resumable = item.askable and not still_running(row)
+    return Subject(
+        topic_id=row.topic_id, post_number=row.post_number or 1, title=row.title, woke=True,
+        why=f"You were woken for it because {row.reason}{score}", agent_dir=row.agent_dir or agent_dir,
+        did=did, session=row.session if resumable else "",
+    )
+
+
+def subject_of_miss(miss: wakes.NearMiss, agent_dir: str) -> Subject:
+    return Subject(
+        topic_id=miss.topic_id, post_number=miss.post_number, title=miss.title, woke=False,
+        why=did_not_wake(miss.reason, miss.similarity, miss.floor, miss.category), agent_dir=agent_dir,
+        floor=miss.floor,
+    )
+
+
+def did_not_wake(reason: str, similarity: float | None, floor: float | None, category: str = "") -> str:
+    """Why a post did not wake the agent, as the forum host's reason says."""
+    if reason == "category-skipped":
+        where = f"it is in {category}, a category" if category else "it is in a category"
+        return f"It did not wake you: {where} the \"Categories to skip:\" line of your interests post names"
+    if reason == "below-floor" and similarity is not None and floor is not None:
+        return f"It did not wake you: it scored {similarity:.2f} against your similarity floor of {floor:.2f}"
+    return "It did not wake you"
+
+
+# The forum host's reasons a post is not scored at all, which no tuning changes.
+UNSCORED = {
+    "own-post": "That is your agent's own post, which never wakes it.",
+    "no-embedding-yet": "The forum host has not embedded that post yet, so it has no score. Try again in a few minutes.",
+}
+
+
+def subject_of_decision(topic_id: int, post_number: int, title: str, decision: dict, agent_dir: str) -> Subject | str:
+    """A post looked up, as the forum host scores it against the agent, or a
+    message saying why there is nothing to tune."""
+    reason = decision.get("reason") or ""
+    if reason in UNSCORED:
+        return UNSCORED[reason]
+    similarity, floor = decision.get("similarity"), decision.get("floor")
+    if decision.get("woke"):
+        score = f", with a relevance score of {similarity:.2f}" if similarity is not None else ""
+        why, woke = f"It woke you for relevance{score}", True
+    elif decision.get("would_wake"):
+        why, woke = f"It would wake you now: it scores {similarity:.2f} against your similarity floor of {floor:.2f}", True
+    elif reason == "no-profile":
+        why, woke = (
+            "It did not wake you: the forum host has no interests profile for you, so nothing wakes you for "
+            "relevance until you post one", False,
+        )
+    else:
+        why, woke = did_not_wake(reason, similarity, floor), False
+    return Subject(topic_id=topic_id, post_number=post_number, title=title, woke=woke, why=why,
+                   agent_dir=agent_dir, floor=floor)
+
+
+# A post's address on the forum: /t/<slug>/<topic>/<post number>, the slug
+# not all digits and the post number optional.
+POST_ADDRESS = re.compile(r"/t/(?:[^/\s]*[^\d/\s][^/\s]*/)?(\d+)(?:/(\d+))?")
+
+
+def parse_post(text: str) -> tuple[int, int] | None:
+    """(topic, post number) from a forum address or a bare topic number."""
+    text = text.strip()
+    if text.isdigit():
+        return int(text), 1
+    found = POST_ADDRESS.search(text)
+    if not found:
+        return None
+    return int(found.group(1)), int(found.group(2) or 1)
+
+
+def look_up(settings: Settings, address: str, agent_dir: str) -> Subject | str:
+    """The post at ``address`` as a subject to tune on, read with the agent's
+    own key so that only a post the agent can read is asked about, or a
+    message saying why there is none."""
+    found = parse_post(address)
+    if found is None:
+        return f"{address!r} is not a forum address or a topic's number."
+    topic_id, post_number = found
+    forum = Forum(settings)
+    try:
+        topic = forum.topic(topic_id)
+        post = next((p for p in topic.get("post_stream", {}).get("posts", []) if p.get("post_number") == post_number),
+                    None) or forum.post_by_number(topic_id, post_number)
+    except urllib.error.HTTPError as exc:
+        return f"Your agent cannot read post {post_number} of topic {topic_id} (the forum said {exc.code})."
+    except urllib.error.URLError as exc:
+        return f"The forum did not answer: {exc.reason}"
+    try:
+        decision = Ranking(settings).explain(settings.api_username, int(post["id"]))
+    except RankingError as exc:
+        return f"The forum host could not say how that post scores: {exc}"
+    return subject_of_decision(topic_id, post_number, topic.get("title") or "", decision, agent_dir)
+
+
 def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
     """Where the researcher's ``wake.md`` and ``policy.md`` are read from for
     a wake run in ``agent_dir``, as (scope, path): every project's, then this
@@ -394,30 +634,56 @@ def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
     return places
 
 
-# What the researcher wants of wakes like the chosen one, as the tuning
+# What the researcher wants of posts like the chosen one, as the tuning
 # prompt opens with it and as the browser says it before Claude Code opens.
 TUNE_WISHES = {
     "reply": ("wants you to reply to posts like", "so that it replies to"),
     "ignore": ("wants you to leave alone posts like", "so that it ignores"),
     "how": ("wants to change how you reply to posts like", "to how it replies to"),
+    "wake": ("wants you woken for posts like", "so that it is woken for"),
 }
 
+INTERESTS_POST = (
+    f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the profile it "
+    "scores every post against, which decides which posts wake you for relevance at all, and it has no say in "
+    "what you write. Read the topic's first post before you edit yours: its rules are binding, and it explains "
+    "why an exclusion pulls the profile towards what it names and how the \"Categories to skip:\" line works. "
+    "Edit your post with edit_post."
+)
 
-def tune_prompt(row: wakes.Row, want: str, did: str) -> str:
-    """The first message of the session that tunes the agent: the wake, what
-    its researcher wants of wakes like it -- a reply, none, or a different
-    reply -- and the three places that decide that, for the agent to propose
-    a change to and make once they agree."""
-    score = f", with a relevance score of {row.score:.2f}" if row.score is not None else ""
-    places = instruction_files(row.agent_dir)
+
+def tune_prompt(subject: Subject, want: str) -> str:
+    """The first message of the session that tunes the agent: the post, what
+    its researcher wants of posts like it -- to be woken for them, a reply,
+    none, or a different reply -- and the places that decide that, for the
+    agent to propose a change to and make once they agree."""
+    opening = (
+        f"Your researcher {TUNE_WISHES[want][0]} the one on topic {subject.topic_id}, post {subject.post_number}, "
+        f"\"{subject.title}\". {subject.why}."
+    )
+    if subject.did:
+        opening += f" The wake browser shows that wake as \"{subject.did}\"."
+    parts = [opening]
+
+    if want == "wake":
+        floor = f", {subject.floor:.2f}," if subject.floor is not None else ""
+        parts += [
+            "Two things decide whether a post wakes you for relevance:",
+            f"1. {INTERESTS_POST}\n"
+            f"2. Your similarity floor{floor} the score a post must reach to wake you. Only your researcher sets "
+            "it, with + and - in the wake browser, and lowering it wakes you for everything that scores as close, "
+            "not only for posts like this one. It also moves by itself: up after a hundred relevance wakes in a "
+            "row that you leave unanswered, down after two in a row that you answer.",
+            "wake.md and policy.md cannot make a post wake you: they decide only what you do once woken.",
+            f"Read topic {subject.topic_id} and your interests post. Then propose the smallest change that would "
+            "wake you for posts like it, say whether it is an edit to your post or a lower floor and why, and show "
+            "your researcher the exact new text. Change nothing until they agree.",
+        ]
+        return "\n\n".join(parts)
+
+    places = instruction_files(subject.agent_dir)
     wake_md = "; ".join(f"{place / local.WAKE_FILE} for {scope}" for scope, place in places)
     policy_md = "; ".join(f"{place / local.POLICY_FILE} for {scope}" for scope, place in places)
-
-    parts = [
-        f"Your researcher {TUNE_WISHES[want][0]} the one that woke you on topic {row.topic_id}, "
-        f"post {row.post_number}, \"{row.title}\". You were woken because {row.reason}{score}, "
-        f"and the wake browser shows that wake as \"{did}\".",
-    ]
     if want == "how":
         parts.append(
             "Ask them first what to change: for example how long a reply is, its tone, what it says or "
@@ -425,44 +691,39 @@ def tune_prompt(row: wakes.Row, want: str, did: str) -> str:
         )
     parts += [
         "Three things decide whether you reply to a post like it and what you write:",
-        f"1. Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the "
-        "profile that decides which posts wake you for relevance at all, so it is where to change what "
-        "you are woken for, and it has no say in what you write. Read the topic's first post before you "
-        "edit yours: its rules are binding, and it explains why an exclusion pulls the profile towards "
-        "what it names. Edit your post with edit_post.\n"
+        f"1. {INTERESTS_POST}\n"
         f"2. wake.md, added to every wake prompt: {wake_md}.\n"
         f"3. policy.md, returned by get_policy beside the forum's policy: {policy_md}.",
         "How you reply is set by wake.md and policy.md alone. A mention, a reply or a private message wakes "
         "you whatever your profile says, so for those, too, only the two files can change what you do. A "
         "file that does not exist yet may be created.",
-        f"Read topic {row.topic_id} and the current text of all three. Then propose the smallest change that "
+        f"Read topic {subject.topic_id} and the current text of all three. Then propose the smallest change that "
         "would make you act as your researcher wants, say which of the three it belongs in and why, and "
         "show them the exact new text. Change nothing until they agree.",
     ]
     return "\n\n".join(parts)
 
 
-def tune_command(row: wakes.Row, claude: str, prompt: str, resumable: bool) -> list[str]:
+def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     """Claude Code with ``prompt`` as its first message: in the wake's own
-    session, which holds what the agent made of the post, once that has
-    ended, and in a new one otherwise."""
-    if resumable and not still_running(row):
-        return [claude, "--resume", row.session, prompt]
+    session, which holds what the agent made of the post, when it has one
+    that has ended, and in a new one otherwise."""
+    if subject.session:
+        return [claude, "--resume", subject.session, prompt]
     return [claude, prompt]
 
 
-def tune(item: Wake, want: str) -> str:
+def tune(subject: Subject, want: str) -> str:
     """Run Claude Code on ``tune_prompt`` until its user leaves it. Returns a
     message for the list, or ``""``."""
-    row = item.row
     claude = shutil.which("claude")
     if claude is None:
         return "Claude Code is not on PATH, so your agent cannot be tuned from here."
-    did, _ = wakes.outcome(row, item.transcript)
-    command = tune_command(row, claude, tune_prompt(row, want, did), item.askable)
-    cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
+    command = tune_command(subject, claude, tune_prompt(subject, want))
+    cwd = subject.agent_dir if subject.agent_dir and os.path.isdir(subject.agent_dir) else None
     print(wakes.paint(
-        f"Asking your agent for a change {TUNE_WISHES[want][1]} wakes like the one on topic {row.topic_id}.", "accent"
+        f"Asking your agent for a change {TUNE_WISHES[want][1]} posts like the one on topic {subject.topic_id}.",
+        "accent",
     ))
     if want == "how":
         print(wakes.paint("It asks you what to change about its replies.", "meta"))
@@ -585,6 +846,8 @@ def run(settings: Settings, limit: int | None = None) -> int:
         load(settings, limit),
         wakes.status(settings.state_path),
         settings.api_username,
+        agent_dir=settings.agent_dir,
+        missed=wakes.near_misses(settings.state_path),
     )
     with Terminal() as terminal:
         while True:
@@ -599,18 +862,25 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 return 0
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
+            if action == "lookup":
+                found = look_up(settings, browser.address, settings.agent_dir)
+                if isinstance(found, Subject):
+                    browser.offer(found)
+                else:
+                    browser.message = found
             if action == "ask" or (action or "").startswith("tune-"):
-                row = browser.selected.row
+                chosen = browser.selected.row.session if browser.selected else ""
                 terminal.suspend()
                 if action == "ask":
-                    message = ask(row)
+                    message = ask(browser.selected.row)
                 else:
-                    message = tune(browser.selected, action.removeprefix("tune-"))
+                    message = tune(browser.subject, action.removeprefix("tune-"))
                 terminal.resume()
                 # Reread: the agent may have been woken again meanwhile.
-                chosen = row.session
                 browser.items = load(settings, limit)
+                browser.missed = wakes.near_misses(settings.state_path)
                 browser.state = wakes.status(settings.state_path)
                 browser.index = next((i for i, w in enumerate(browser.items) if w.row.session == chosen), 0)
+                browser.missed_index = min(browser.missed_index, max(len(browser.missed) - 1, 0))
                 browser.viewing = False
                 browser.message = message
