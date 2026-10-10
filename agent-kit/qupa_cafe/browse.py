@@ -321,15 +321,15 @@ def still_running(row: wakes.Row) -> bool:
     return (datetime.now(timezone.utc) - started).total_seconds() <= wakes.WAKE_TIMEOUT_SECONDS
 
 
-def ask_command(row: wakes.Row, claude: str) -> list[str]:
+def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
     """Claude Code on the wake's own session, for the researcher to do with as
     they like: attached to while the wake still runs, so they are in the wake
-    itself, and resumed once it has ended."""
+    itself, and resumed once it has ended. The flag says whether it attaches."""
     if still_running(row):
         live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
         if live is not None and live.get("state") not in ("done", "failed"):
-            return [claude, "attach", str(live.get("id") or row.session[:8])]
-    return [claude, "--resume", row.session]
+            return [claude, "attach", str(live.get("id") or row.session[:8])], True
+    return [claude, "--resume", row.session], False
 
 
 def ask(row: wakes.Row) -> str:
@@ -340,8 +340,8 @@ def ask(row: wakes.Row) -> str:
         return "Claude Code is not on PATH, so the session cannot be opened."
     cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
     print(wakes.paint(f"Opening the session of the wake on topic {row.topic_id} in Claude Code.", "accent"))
-    command = ask_command(row, claude)
-    if "attach" in command:
+    command, attached = ask_command(row, claude)
+    if attached:
         print(wakes.paint("The wake is still running: this is the wake itself, and what you type goes into it.", "meta"))
         print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
     else:
