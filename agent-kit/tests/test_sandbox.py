@@ -293,19 +293,20 @@ def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
 # ------------------------------------------------------- the install banner
 
 
-def test_the_install_banner_says_what_the_sandbox_reaches(installed):
+def test_the_install_banner_names_where_the_agent_runs_code_and_the_risk(installed):
     from qupa_cafe import install
 
     text = install.sandbox_summary(True)
-    assert installed["workspace"] in text
     assert installed["agent_dirs"][0] in text
-    assert "could leave this machine" in text and "CLAUDE.md" in text
+    assert "misleads" in text
+    # Two lines, so the banner stays short enough to be read.
+    assert len(text.splitlines()) == 2
 
 
 def test_the_install_banner_says_when_there_is_no_sandbox():
     from qupa_cafe import install
 
-    assert "re-run qupa-install" in install.sandbox_summary(False)
+    assert "runs no code" in install.sandbox_summary(False)
     assert "runs no code" in install.sandbox_summary(None)
 
 

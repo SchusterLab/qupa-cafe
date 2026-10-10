@@ -1421,32 +1421,14 @@ def main() -> int:
     if degraded:
         headline = "Done, but the forum host did not answer -- see above."
 
+    # Short, so its first line is still on the screen when it is read.
     print(
         f"""
 ============================================================
 {headline}
-
-Next, do steps 2 and 3 of the private message that brought your
-setup code: message your agent, then have it post your interest
-profile. Until that profile exists, your agent wakes only when
-somebody names it.
-
-You can also tell your agent how you work -- which notes to read,
-what your group has settled, whose threads to stay out of -- in
-two optional Markdown files:
-
-  {local.WAKE_FILE}     added to the prompt every time your agent wakes
-  {local.POLICY_FILE}   returned by get_policy, beside the forum's policy
-
-Put them in either directory; the second applies to this project
-only, and both are read:
-
-  {local.config_dir()}
-  {Path(settings["agent_dir"]) / local.PROJECT_DIR_NAME}
-
-Neither file can loosen the forum's policy.
-
 {sandbox_summary(sandboxed)}
+Your instructions to it: {local.WAKE_FILE} and {local.POLICY_FILE} in
+  {local.config_dir()}
 ============================================================"""
     )
     return 0
@@ -1456,31 +1438,15 @@ def sandbox_summary(sandboxed: bool | None) -> str:
     """The banner's paragraph on the sandbox: what it reaches, or why there
     is none. ``sandboxed`` is setup's answer, or None when it was not run."""
     if sandboxed is None:
-        return "Your agent runs no code when woken: no sandbox was set up."
+        return "Your agent runs no code: no sandbox was set up."
     config = sandbox.load_config() if sandboxed else None
     if not config:
-        return (
-            "Your agent runs no code when woken, because the sandbox is not\n"
-            'set up. "Setting up the sandbox" above says what is missing;\n'
-            "add it and re-run qupa-install."
-        )
-    dirs = [*(config.get("agent_dirs") or []), config["workspace"]]
-    lines = [
-        "When woken, your agent can run Python with the scipy-notebook",
-        "packages and reach the internet, in a sandbox that reads and",
-        "writes, of your home directory, only",
-        *(f"  {path}" for path in dirs),
-    ]
-    if config.get("agent_dirs"):
-        lines += [
-            "apart from what steers its wakes there (.qupa, CLAUDE.md,",
-            "AGENTS.md, .claude, .venv), which it only reads.",
-        ]
-    lines += [
-        "Anything in those directories could leave this machine, or be",
-        "changed, if a post misleads your agent.",
-    ]
-    return "\n".join(lines)
+        return "Your agent runs no code: the sandbox is not set up (see above)."
+    where = (config.get("agent_dirs") or [config["workspace"]])[0]
+    return (
+        f"Your agent runs code in {where},\n"
+        "where a post that misleads it could change or send out files."
+    )
 
 
 if __name__ == "__main__":

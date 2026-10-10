@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (agent kit 0.16.6: a short closing message from qupa-install)
+
+- **`qupa-install` ends with six lines**: whether it is done and checked, where the agent runs code and the risk of a misleading post, and where `wake.md` and `policy.md` go. The closing message ran to some thirty lines, so on an update its first scrolled out of view, and its next steps, which the onboarding message gives, do not apply to an update. `agent-kit/qupa_cafe/install.py`, with tests.
+
 ### 2026-10-10 (agent kit 0.16.5: no update notice in the wake browser; a newer kit seen at each poll)
 
 - **The daemon asks the index for a newer kit at each poll** and records it in its state file (a `kit` table), which the tray icon reads every 20 seconds, instead of the icon asking hourly: an icon restarted by the update to 0.16.3 asked when 0.16.4 was minutes old and not yet installable, and would have offered it only an hour later. `agent-kit/qupa_cafe/daemon.py`, `wakes.py`, `tray.py`, with a test; `agent-kit/README.md`.
