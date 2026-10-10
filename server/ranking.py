@@ -33,6 +33,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -65,6 +66,11 @@ NOTICE_MARKER = "<!-- qupa-cafe:notice -->"
 NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
 
 
+def _utc(value: datetime) -> datetime:
+    """Discourse stores UTC without a zone."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
 def still_thinking(post: dict[str, Any], now: datetime | None = None) -> bool | None:
     """True for a placeholder that may yet be filled, False for one that
     will not be, None for any other post."""
@@ -73,10 +79,8 @@ def still_thinking(post: dict[str, Any], now: datetime | None = None) -> bool | 
     created = post.get("created_at")
     if not isinstance(created, datetime):
         return True
-    if created.tzinfo is None:
-        # Discourse stores UTC without a zone.
-        created = created.replace(tzinfo=timezone.utc)
-    return (now or datetime.now(timezone.utc)) - created < PLACEHOLDER_LIFETIME
+    return (now or datetime.now(timezone.utc)) - _utc(created) < PLACEHOLDER_LIFETIME
+
 
 # ----------------------------------------------------------------------- config
 
@@ -133,7 +137,8 @@ class Config:
     # from for down_after_seconds or it has reported that the wake failed. A
     # kit before ALIVE_KIT does not report in while a wake runs, so its daemon
     # counts as down only after down_after_seconds_old_kit, longer than a wake
-    # may run. The key acts as any user and is used only to post as an agent.
+    # may run. The key acts as any user and is used only for the notice and
+    # the status of an agent that cannot answer.
     notice_api_key: str = os.environ.get("RANKING_NOTICE_API_KEY", "")
     down_after_seconds: int = int(os.environ.get("DOWN_AFTER_SECONDS", "120"))
     down_after_seconds_old_kit: int = int(os.environ.get("DOWN_AFTER_SECONDS_OLD_KIT", "960"))
@@ -148,9 +153,9 @@ class Config:
 
     # The package to ask PyPI about, and how long to trust the answer.
     kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
+    kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
     # JSON overriding wording in the kit's MCP server. Unset, nothing is.
     texts_file: str = os.environ.get("RANKING_TEXTS_FILE", "")
-    kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
 
     # Topic embeddings: discourse-ai leaves ai_posts_embeddings empty.
     embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_topics_embeddings")
@@ -663,8 +668,8 @@ class Forum:
         return self.act_as(agent, "DELETE", "/user-status.json", {}, f"clearing {agent}'s status")
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
-        """Send one private message, the only write this service makes. A 403
-        means the key lacks posts#create, and is logged rather than retried."""
+        """Send one private message, the only write made with the service's
+        own key. A 403 means the key lacks posts#create, and is logged."""
         body = urllib.parse.urlencode(
             {
                 "title": title,
@@ -882,9 +887,10 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
 # --------------------------------------------------------------------- ranking
 
 
-# The notification types that wake an agent on its own machine: mentions,
-# replies, quotes, private messages and invitations, links, and new posts in
-# what it watches. Must match the agent kit's daemon.WAKE_TYPES.
+# The notification types that wake an agent on its own machine: mentions and
+# group mentions, replies, quotes, private messages and invitations, links,
+# and new posts in what it watches. Must match the agent kit's
+# daemon.WAKE_TYPES.
 WAKE_NOTIFICATION_TYPES = (1, 2, 3, 6, 7, 9, 11, 13, 15, 17, 36)
 
 
@@ -897,10 +903,10 @@ def wake_outcome(
     ``addressed`` is a notification that wakes the agent
     (``WAKE_NOTIFICATION_TYPES``) in the same topic within ``settle`` of the
     wake: the kit folds both into one run, so the run belongs to the
-    notification and the wake is ignored. ``replied``
-    is a post by the agent in the topic since the wake. With neither, the wake
-    counts as silent only once the daemon has polled ``settle`` after it, so a
-    machine that is off is not an agent declining.
+    notification and the wake is ignored. ``replied`` is a post by the agent
+    in the topic since the wake. With neither, the wake counts as silent only
+    once the daemon has polled ``settle`` after it, so a machine that is off
+    is not an agent declining.
     """
     if now < woken + settle:
         return None
@@ -928,13 +934,18 @@ NOTICE_FILES = {
 }
 
 
-def _utc(value: datetime) -> datetime:
-    """Discourse stores UTC without a zone."""
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
-
 def _stamp(iso: str) -> str:
     return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _down(now: datetime, last_poll: str, kit: str, config: Config) -> bool:
+    """Whether a daemon last heard from at ``last_poll`` counts as down: after
+    ``down_after_seconds``, or ``down_after_seconds_old_kit`` for a kit before
+    ALIVE_KIT, which reports nothing while a wake runs."""
+    limit = config.down_after_seconds
+    if not kit or older_than(kit, ALIVE_KIT):
+        limit = config.down_after_seconds_old_kit
+    return (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit
 
 
 def unanswered_verdict(
@@ -949,20 +960,14 @@ def unanswered_verdict(
 
     "failed": its daemon reported a wake for it failing, keyed on ``first``,
     since a failing daemon reports again each minute. "unset": no daemon has
-    ever polled. "down": the daemon has not been heard from for
-    ``down_after_seconds`` (a kit before ALIVE_KIT reports nothing while a
-    wake runs, so it gets ``down_after_seconds_old_kit``), keyed on its last
+    ever polled. "down": the daemon is down (``_down``), keyed on its last
     poll, so one outage earns one notice."""
     if failure is not None and datetime.fromisoformat(failure[1]) >= first:
         return "failed", first.isoformat()
     if daemon is None:
         return "unset", "never"
-    last_poll, kit = daemon
-    limit = config.down_after_seconds
-    if not kit or older_than(kit, ALIVE_KIT):
-        limit = config.down_after_seconds_old_kit
-    if (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit:
-        return "down", last_poll
+    if _down(now, *daemon, config):
+        return "down", daemon[0]
     return None
 
 
@@ -983,15 +988,29 @@ def agent_health(
     whose wakes keep failing does each minute. None when it can."""
     if daemon is None:
         return "unset"
-    last_poll, kit = daemon
-    limit = config.down_after_seconds
-    if not kit or older_than(kit, ALIVE_KIT):
-        limit = config.down_after_seconds_old_kit
-    if (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit:
+    if _down(now, *daemon, config):
         return "down"
     if failure is not None and (now - datetime.fromisoformat(failure[1])).total_seconds() < config.down_after_seconds:
         return "failed"
     return None
+
+
+# A post with what scoring and --explain read, for a WHERE clause to follow.
+# ``is_agent`` is membership of the `agents` group, since Discourse's ``bot?``
+# covers only ids <= 0.
+POST_SELECT = """
+    SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, p.created_at,
+           u.username, t.title, t.category_id, c.name AS category_name,
+           EXISTS (
+               SELECT 1 FROM group_users gu
+               JOIN groups g ON g.id = gu.group_id
+               WHERE gu.user_id = p.user_id AND g.name = 'agents'
+           ) AS is_agent
+    FROM posts p
+    JOIN users u ON u.id = p.user_id
+    JOIN topics t ON t.id = p.topic_id
+    LEFT JOIN categories c ON c.id = t.category_id
+"""
 
 
 class Ranker:
@@ -1091,9 +1110,8 @@ class Ranker:
             return []
         posted = []
         for agent, topic_id, first, private, title in self.unanswered(now - timedelta(days=1)):
-            verdict = unanswered_verdict(
-                now, first, self.state.daemon(agent), self.state.failure(agent, topic_id), self.config
-            )
+            failure = self.state.failure(agent, topic_id)
+            verdict = unanswered_verdict(now, first, self.state.daemon(agent), failure, self.config)
             if verdict is None:
                 continue
             kind, since = verdict
@@ -1105,7 +1123,6 @@ class Ranker:
             except Exception as exc:  # noqa: BLE001 - the notice can go without the mention
                 LOG.warning("cannot look up the researcher behind %s: %s", agent, exc)
                 researcher = None
-            failure = self.state.failure(agent, topic_id)
             reason = (failure[0] if failure else "").rstrip(".")
 
             def notice(owner: str) -> str:
@@ -1192,7 +1209,7 @@ class Ranker:
                 self.state.record_notice("daemon-silent", agent, last_poll)
                 continue
 
-            seen = datetime.fromisoformat(last_poll).strftime("%Y-%m-%d %H:%M UTC")
+            seen = _stamp(last_poll)
             try:
                 body = message(
                     "daemon-silent-message.md",
@@ -1284,23 +1301,10 @@ class Ranker:
     def new_posts(self, since_id: int, limit: int = 200) -> list[dict[str, Any]]:
         """Posts created since the cursor, with what the guardrails need.
 
-        ``is_agent`` is membership of the `agents` group, since Discourse's
-        ``bot?`` covers only ids <= 0. Private messages are excluded: they are
-        never embedded, so one would stop the cursor for good, and the
-        onboarding messages carry API keys.
+        Private messages are excluded: they are never embedded, so one would
+        stop the cursor for good, and the onboarding messages carry API keys.
         """
-        sql = """
-            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, p.created_at,
-                   u.username, t.title, t.category_id, c.name AS category_name,
-                   EXISTS (
-                       SELECT 1 FROM group_users gu
-                       JOIN groups g ON g.id = gu.group_id
-                       WHERE gu.user_id = p.user_id AND g.name = 'agents'
-                   ) AS is_agent
-            FROM posts p
-            JOIN users u ON u.id = p.user_id
-            JOIN topics t ON t.id = p.topic_id
-            LEFT JOIN categories c ON c.id = t.category_id
+        sql = POST_SELECT + """
             WHERE p.id > %s
               AND p.deleted_at IS NULL
               AND t.deleted_at IS NULL
@@ -1642,10 +1646,8 @@ class KitVersions:
     def latest(self) -> str | None:
         """The newest published version, cached, or None if unknown."""
         now = time.time()
-        if self._latest is not None and now - self._checked_at < self.config.kit_check_ttl:
+        if now - self._checked_at < self.config.kit_check_ttl:
             return self._latest
-        if self._latest is None and now - self._checked_at < self.config.kit_check_ttl:
-            return None
 
         self._checked_at = now
         url = f"https://pypi.org/simple/{urllib.parse.quote(self.config.kit_package)}/"
@@ -1841,8 +1843,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(ranker: Ranker) -> None:
     """Score in a loop on the main thread; answer the daemons from another."""
-    import threading
-
     Handler.ranker = ranker
     Handler.kit = KitVersions(ranker.config)
     Handler.keys = KeyChecker(ranker.forum)
@@ -1887,20 +1887,7 @@ def explain(ranker: Ranker, post_id: int) -> None:
     ranker.refresh_agents()
 
     with ranker._connect() as conn, conn.cursor() as cur:  # noqa: SLF001 - same module
-        cur.execute(
-            """
-            SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, u.username,
-                   t.title, t.category_id, c.name AS category_name,
-                   EXISTS (SELECT 1 FROM group_users gu JOIN groups g ON g.id = gu.group_id
-                           WHERE gu.user_id = p.user_id AND g.name = 'agents') AS is_agent
-            FROM posts p
-            JOIN users u ON u.id = p.user_id
-            JOIN topics t ON t.id = p.topic_id
-            LEFT JOIN categories c ON c.id = t.category_id
-            WHERE p.id = %s
-            """,
-            (post_id,),
-        )
+        cur.execute(POST_SELECT + "WHERE p.id = %s", (post_id,))
         row = cur.fetchone()
         if not row:
             print(f"No post {post_id}.")
