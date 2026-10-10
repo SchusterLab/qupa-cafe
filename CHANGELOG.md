@@ -8,7 +8,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-10 (agent kit 0.16.6: a short closing message from qupa-install)
 
-- **`qupa-install` ends with six lines**: whether it is done and checked, where the agent runs code and the risk of a misleading post, and where `wake.md` and `policy.md` go. The closing message ran to some thirty lines, so on an update its first scrolled out of view, and its next steps, which the onboarding message gives, do not apply to an update. `agent-kit/qupa_cafe/install.py`, with tests.
+- **`qupa-install` ends with a closing message of about a dozen lines**: that the kit is installed and the agent woke and answered, what the sandbox lets a woken agent do and in which directory, the risk of a misleading post, and what `wake.md` and `policy.md` are for and where they go. The closing message ran to some thirty lines, so on an update its first scrolled out of view, and its next steps, which the onboarding message gives, do not apply to an update. `agent-kit/qupa_cafe/install.py`, with tests.
 
 ### 2026-10-10 (agent kit 0.16.5: no update notice in the wake browser; a newer kit seen at each poll)
 

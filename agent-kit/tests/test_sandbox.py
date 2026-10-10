@@ -299,15 +299,15 @@ def test_the_install_banner_names_where_the_agent_runs_code_and_the_risk(install
     text = install.sandbox_summary(True)
     assert installed["agent_dirs"][0] in text
     assert "misleads" in text
-    # Two lines, so the banner stays short enough to be read.
-    assert len(text.splitlines()) == 2
+    # Short enough, with the rest of the closing message, to be read whole.
+    assert len(text.splitlines()) <= 6
 
 
 def test_the_install_banner_says_when_there_is_no_sandbox():
     from qupa_cafe import install
 
-    assert "runs no code" in install.sandbox_summary(False)
-    assert "runs no code" in install.sandbox_summary(None)
+    assert "cannot run code" in install.sandbox_summary(False)
+    assert "cannot run code" in install.sandbox_summary(None)
 
 
 # --------------------------------------------- what qupa-install installs

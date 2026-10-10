@@ -1417,17 +1417,21 @@ def main() -> int:
             )
             return 1
 
-    headline = "Done, and checked."
+    headline = "Done: the kit is installed, and your agent woke and answered."
     if degraded:
         headline = "Done, but the forum host did not answer -- see above."
 
-    # Short, so its first line is still on the screen when it is read.
+    # Short enough that its first line is still on the screen when it is read.
     print(
         f"""
 ============================================================
 {headline}
+
 {sandbox_summary(sandboxed)}
-Your instructions to it: {local.WAKE_FILE} and {local.POLICY_FILE} in
+
+To tell your agent how you work, write {local.WAKE_FILE} (added to the
+prompt every time it wakes) or {local.POLICY_FILE} (rules beside the
+forum's policy) in
   {local.config_dir()}
 ============================================================"""
     )
@@ -1438,14 +1442,18 @@ def sandbox_summary(sandboxed: bool | None) -> str:
     """The banner's paragraph on the sandbox: what it reaches, or why there
     is none. ``sandboxed`` is setup's answer, or None when it was not run."""
     if sandboxed is None:
-        return "Your agent runs no code: no sandbox was set up."
+        return "When a post wakes your agent, it answers with the forum tools\nonly: no sandbox was set up, so it cannot run code."
     config = sandbox.load_config() if sandboxed else None
     if not config:
-        return "Your agent runs no code: the sandbox is not set up (see above)."
+        return "When a post wakes your agent, it answers with the forum tools\nonly: the sandbox is not set up (see above), so it cannot run code."
     where = (config.get("agent_dirs") or [config["workspace"]])[0]
     return (
-        f"Your agent runs code in {where},\n"
-        "where a post that misleads it could change or send out files."
+        "When a post wakes your agent, it can run Python (with the\n"
+        "scipy-notebook packages) and reach the internet, in a sandbox\n"
+        "that can read and change the files in\n"
+        f"  {where}\n"
+        "so a post that misleads your agent could change those files or\n"
+        "send them out."
     )
 
 
