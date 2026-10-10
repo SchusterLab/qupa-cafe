@@ -1,11 +1,11 @@
 """The wake browser: every wake, newest first, and one wake's view.
 
-In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-`` raise and lower the
-agent's relevance threshold, ``u`` updates when a newer kit is published, and
-Esc leaves; the tray icon's menu opens the daemon's log. In a wake ``↑``/``↓``
-scroll, Enter reopens its session in Claude Code with ``--fork-session`` and the
-forum's write tools withheld, and Esc goes back. Standard library only, drawn on
-the alternate screen.
+In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
+raise and lower the agent's relevance threshold, and Esc leaves; a notice says
+when a newer kit is published, and the tray icon's menu updates it and opens
+the daemon's log. In a wake ``↑``/``↓`` scroll, Enter reopens its session in
+Claude Code with ``--fork-session`` and the forum's write tools withheld, and
+Esc goes back. Standard library only, drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from pathlib import Path
 
 from . import __version__, update, wakes
 from .daemon import Ranking, RankingError, Settings, claim_lock
-from .install import interpreter_argv
 
 # Withheld from a reopened session; reading stays.
 WRITE_TOOLS = tuple(f"mcp__qupa-cafe__{name}" for name in sorted(wakes.WRITE_TOOLS))
@@ -35,10 +34,8 @@ ASKING = (
 # -------------------------------------------------------------------- keys
 
 
-# Key -> (action, hint on the bottom line). `u` exists only while an update is
-# available, and is named in the notice instead; see Browser.actions.
+# Key -> (action, hint on the bottom line); see Browser.actions.
 LIST_ACTIONS: dict[str, tuple[str, str]] = {}
-UPDATE_ACTION = {"u": ("update", "")}
 # Shown only once the threshold is known; "=" and "_" are the unshifted keys.
 FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-": ("lower", ""), "_": ("lower", "")}
 
@@ -191,8 +188,6 @@ class Browser:
         actions = dict(LIST_ACTIONS)
         if self.state.floor is not None:
             actions.update(FLOOR_ACTIONS)
-        if self.latest and self.updatable:
-            actions.update(UPDATE_ACTION)
         return actions
 
     def nudged(self, action: str) -> float | None:
@@ -288,7 +283,7 @@ class Browser:
         if not self.latest:
             return []
         how = (
-            "Press u to update: pip installs it and the installer restarts the daemon and the icon."
+            "Update it from the Qupa Cafe icon's menu: Update the agent kit."
             if self.updatable
             else "This kit runs from a checkout: update the checkout, then run qupa-install."
         )
@@ -472,16 +467,6 @@ def set_floor(settings: Settings, browser: Browser, action: str) -> str:
     return f"Relevance threshold set to {floor:.2f}. It still moves with what your agent does."
 
 
-def update_kit() -> tuple[bool, str]:
-    """Run the update in this terminal, which pip and the installer print to.
-    Whether it finished, and a message for the list."""
-    print(wakes.paint("Updating the agent kit.\n", "accent"))
-    code = subprocess.call(interpreter_argv("qupa_cafe.update"))
-    if code != 0:
-        return False, "The update did not finish; what it printed says why."
-    return True, "Done. This window still runs the kit it was opened with: Esc, and open it again for the new one."
-
-
 # ------------------------------------------------------------------ run
 
 
@@ -516,12 +501,6 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 return 0
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
-            if action == "update":
-                terminal.suspend()
-                done, browser.message = update_kit()
-                terminal.resume()
-                if done:
-                    browser.latest = None
             if action == "ask":
                 row = browser.selected.row
                 terminal.suspend()

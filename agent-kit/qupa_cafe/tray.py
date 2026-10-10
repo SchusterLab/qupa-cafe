@@ -2,7 +2,7 @@
 
 Clicking it opens its menu: the forum in the default browser, the wake
 browser (``qupa_cafe.browse``) in a terminal, the daemon's log, a restart of
-the daemon, and Quit. It reads the daemon's state file and holds its own lock
+the daemon, an update of the kit (greyed while it is the newest), and Quit. It reads the daemon's state file and holds its own lock
 so a second copy exits; restarting is the one thing it does to the daemon. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
 or already running and 2 without the extra, as the Windows Startup entry
 expects.
@@ -17,14 +17,18 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import wakes
+from . import __version__, update, wakes
 from .daemon import Settings, claim_lock, load_env_file, log_path, outside_session_env
 
 REFRESH_SECONDS = 20
+
+# How often to ask the index for a newer kit.
+UPDATE_CHECK_SECONDS = 3600
 
 COLOURS = {
     "polling": (46, 160, 67),
@@ -253,6 +257,27 @@ def main() -> int:
 
         threading.Thread(target=work, daemon=True).start()
 
+    # The newest kit an update can install, when newer than this one; asked
+    # in the refresh thread, never in a menu callback.
+    newer: dict[str, str | None] = {"version": None}
+    updatable = update.installed_from_index()
+
+    def update_text(item) -> str:
+        if not updatable:
+            return "Update the agent kit (it runs from a checkout)"
+        if newer["version"]:
+            return f"Update the agent kit to {newer['version']}"
+        return f"Agent kit {__version__} is up to date"
+
+    def update_enabled(item) -> bool:
+        return updatable and bool(newer["version"])
+
+    def run_update(icon, item) -> None:
+        # In a window of its own: pip and the installer print there, and the
+        # installer restarts this icon.
+        if not open_terminal([console_python(), "-m", "qupa_cafe.update"], settings):
+            icon.notify("No terminal to open. Run: python -m qupa_cafe.update", "Qupa Cafe")
+
     def quit_tray(icon, item) -> None:
         stop.set()
         icon.stop()
@@ -262,6 +287,7 @@ def main() -> int:
         pystray.MenuItem("Show wakes", show_wakes),
         pystray.MenuItem("Open the daemon's log", open_log),
         pystray.MenuItem("Restart the daemon", restart),
+        pystray.MenuItem(update_text, run_update, enabled=update_enabled),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
@@ -270,6 +296,7 @@ def main() -> int:
     def refresh(icon) -> None:
         # In pystray's thread, the only one it lets change the icon everywhere.
         icon.visible = True
+        asked = 0.0
         while not stop.is_set():
             try:
                 key, text = describe(settings)
@@ -277,6 +304,15 @@ def main() -> int:
                 icon.title = text
             except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
                 pass
+            if updatable and time.time() - asked >= UPDATE_CHECK_SECONDS:
+                asked = time.time()
+                found = update.update_available(timeout=10)
+                if found != newer["version"]:
+                    newer["version"] = found
+                    try:
+                        icon.update_menu()
+                    except Exception:  # noqa: BLE001 - shown at the next change instead
+                        pass
             stop.wait(REFRESH_SECONDS)
 
     icon.run(setup=refresh)

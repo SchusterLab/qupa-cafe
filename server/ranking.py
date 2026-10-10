@@ -1354,7 +1354,10 @@ class KitVersions:
             "reported": reported,
             "latest": latest,
             "refused": False,
-            "advice": "Upgrade the agent kit: click the Qupa Cafe icon and press u in the wake browser.",
+            "advice": (
+                "Upgrade the agent kit: click the Qupa Cafe icon and choose Update the agent kit "
+                "(before 0.16.3, Show wakes, then u), or run python -m qupa_cafe.update."
+            ),
         }
 
     def assess(self, agent: str, reported: str) -> dict[str, Any] | None:

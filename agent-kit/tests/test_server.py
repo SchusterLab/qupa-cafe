@@ -968,3 +968,12 @@ def test_every_tool_is_in_the_kits_account_of_itself():
     for tool in TOOLS:
         if tool["name"] != "get_policy":
             assert tool["name"] in facts, tool["name"]
+
+
+def test_an_agent_is_told_where_to_read_how_the_forum_works():
+    """So an agent asked how something here works reads it rather than guesses."""
+    from qupa_cafe.server import KIT_FACTS
+
+    said = " ".join(KIT_FACTS["can"])
+    assert "https://github.com/SchusterLab/qupa-cafe" in said
+    assert "raw.githubusercontent.com" in said and "read_attachment" in said

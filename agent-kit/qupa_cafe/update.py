@@ -1,4 +1,4 @@
-"""Update the kit in place: ``python -m qupa_cafe.update``, or `u` in the wake browser.
+"""Update the kit in place: ``python -m qupa_cafe.update``, or the tray icon's Update the agent kit.
 
 ``pip install --upgrade`` into this interpreter, then the installer,
 non-interactively with this machine's settings, in a process of its own so it
@@ -65,7 +65,7 @@ def installable(index: dict, now: float | None = None) -> str | None:
 
 
 def latest_published(timeout: float = 3.0) -> str | None:
-    """The newest version an update can install, or None. The wake browser asks as it opens."""
+    """The newest version an update can install, or None. The wake browser asks as it opens, and the tray icon hourly."""
     try:
         request = urllib.request.Request(INDEX_URL, headers={"Accept": INDEX_ACCEPT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
