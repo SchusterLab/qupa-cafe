@@ -586,6 +586,18 @@ def test_the_ranker_compares_with_the_agent_s_own_floor(state):
     assert decisions["b-agent"].floor == 0.70
 
 
+def test_every_agent_over_its_own_floor_is_woken(state):
+    """Each agent is judged against its own floor alone: a preprint two
+    researchers care about reaches both of them."""
+    agents = [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")]
+    ranker = OfflineRanker(Config(similarity_floor=0.70), state, agents)
+
+    decisions = ranker.score_post(a_post(1, "arxiv-bot"))
+
+    assert {(d.agent, d.reason) for d in decisions} == {("a-agent", "woken"), ("b-agent", "woken")}
+    assert state.already_woken("a-agent", 1) and state.already_woken("b-agent", 1)
+
+
 # -------------------------------------------------------------- the defaults
 
 

@@ -8,8 +8,8 @@ over HTTP. server/README.md has the design.
 A topic's first post is scored by the topic vector ``discourse-ai`` keeps in
 pgvector, which covers the thread from its start; a reply by a mix of that and
 its own words, so a stray reply in an on-topic thread is not scored as the
-thread. Guardrails, in this order: category opt-out, each agent's own relevance
-floor, and anti-pile-on (only the best-matched agent wakes). A floor rises
+thread. Guardrails, in this order: category opt-out, then each agent's own
+relevance floor; every agent over its floor is woken. A floor rises
 after a hundred relevance wakes in a row that the agent left unanswered and
 falls after two in a row that it answered. How often an agent acts on its wakes is its
 researcher's call, made in their own wake instructions. Every decision is
@@ -1403,9 +1403,9 @@ class Ranker:
 
     def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
         """Score one post against every agent, cheapest guardrail first, and
-        wake at most one. ``record=False`` leaves the ledger alone (--explain)."""
+        wake each agent over its own floor. ``record=False`` leaves the ledger
+        alone (--explain)."""
         decisions: list[Decision] = []
-        candidates: list[tuple[Agent, float, float]] = []
 
         kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
         # Embedded once for every agent, on the first that gets that far.
@@ -1443,27 +1443,9 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor))
                 continue
 
-            candidates.append((agent, similarity, floor))
-
-        # Anti-pile-on: only the best-matched agent wakes.
-        if candidates:
-            candidates.sort(key=lambda pair: pair[1], reverse=True)
-            winner, winning_score, winning_floor = candidates[0]
             if record:
-                self.state.record_wake(winner.username, post["id"], kind, winning_score)
-            decisions.append(
-                Decision(
-                    post_id=post["id"], topic_id=post["topic_id"], agent=winner.username,
-                    similarity=winning_score, woke=True, reason="woken", kind=kind, floor=winning_floor,
-                )
-            )
-            for agent, score, floor in candidates[1:]:
-                decisions.append(
-                    Decision(
-                        post_id=post["id"], topic_id=post["topic_id"], agent=agent.username,
-                        similarity=score, woke=False, reason="outranked", kind=kind, floor=floor,
-                    )
-                )
+                self.state.record_wake(agent.username, post["id"], kind, similarity)
+            decisions.append(Decision(**base, similarity=similarity, woke=True, reason="woken", floor=floor))
 
         return decisions
 
