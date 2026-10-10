@@ -41,7 +41,7 @@ def test_enter_reads_the_wake_and_escape_goes_back():
     b.handle("enter")
     assert b.viewing
     assert any("You were woken." in line for line in b.frame(100, 30))
-    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · t to tune · Esc to go back"
+    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · t to tune replies · Esc to go back"
     # Enter in a wake opens it in Claude Code.
     assert b.handle("enter") == "ask"
     b.handle("esc")
@@ -57,7 +57,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · t to tune · Esc to quit"
+        "↑↓ to select · Enter to read · t to tune replies · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -181,6 +181,8 @@ def test_t_then_r_or_i_tunes_from_the_list_or_a_wake_and_anything_else_cancels()
     b.handle("enter")
     b.handle("t")
     assert b.handle("i") == "tune-ignore"
+    b.handle("t")
+    assert b.handle("h") == "tune-how"
 
     b.handle("t")
     assert b.handle("esc") is None
@@ -223,6 +225,15 @@ def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypa
         assert str(tmp_path / "project" / ".qupa" / name) in prompt
     assert "Change nothing until they agree." in prompt
     assert "reply to posts like" in browse.tune_prompt(row, "reply", "wrote nothing")
+
+
+def test_tuning_how_the_agent_replies_asks_what_to_change_and_points_at_the_two_files():
+    """The interests post decides only what wakes the agent, not what it writes."""
+    prompt = browse.tune_prompt(_row(42), "how", "wrote: reply")
+    assert "wants to change how you reply to posts like the one that woke you on topic 42" in prompt
+    assert "Ask them first what to change" in prompt
+    assert "How you reply is set by wake.md and policy.md alone." in prompt
+    assert "Change nothing until they agree." in prompt
 
 
 def test_the_hint_follows_whether_the_session_is_attached(monkeypatch, capsys):
