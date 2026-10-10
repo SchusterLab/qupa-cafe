@@ -11,12 +11,14 @@
 // loopback and link-local addresses, and the private ranges are added to it, so
 // "every host" means the internet and not this machine or its network.
 //
-// The command runs in bash with the workspace's pixi environment activated and
-// the workspace as its directory and HOME. Writes go to the workspace only.
-// Reads: on Linux and macOS the home directory is denied apart from the
-// workspace and the directories config.readable lists; on Windows the command
-// runs as the runtime's `srt-sandbox` user, which reads only what qupa-install
-// granted it. Variables that look like credentials are not passed in.
+// The command runs in bash with the workspace's pixi environment activated,
+// the workspace as HOME, and the agent's directory (config.agent_dirs) as its
+// directory. It writes to those two, except the paths config.protected names,
+// which steer later wakes. Reads: on Linux and macOS the home directory is
+// denied apart from those and the program directories; on Windows the command
+// runs as the runtime's `srt-sandbox` user, which reads and writes only what
+// qupa-install granted it. Variables that look like credentials are not
+// passed in.
 //
 // qupa-install writes config.json; qupa_cafe.sandbox calls this script.
 
@@ -64,17 +66,32 @@ function sandboxConfig(config) {
     return {
       network,
       filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] },
-      windows: { srtWin: { path: VENDORED_SRT_WIN_EXE } },
+      windows: {
+        srtWin: { path: VENDORED_SRT_WIN_EXE },
+        // The range windows-install gave the firewall rule, out of Windows'
+        // dynamic ports; the runtime's default is in them.
+        ...(config.windows_ports ? { proxyPortRange: config.windows_ports } : {}),
+      },
     };
   }
   return {
     network,
     filesystem: {
       denyRead: [homedir()],
-      // This directory too: the runtime's seccomp helper runs inside.
-      allowRead: [config.workspace, path.dirname(config.run), path.dirname(config.pixi), ...(config.readable ?? [])],
-      allowWrite: [config.workspace],
-      denyWrite: [],
+      // This directory too: the runtime's seccomp helper runs inside. And
+      // the directories its programs come from (config.programs), which
+      // include pixi's whole install, since a command pixi exposes is a
+      // trampoline into an environment beside its bin directory.
+      allowRead: [
+        config.workspace,
+        path.dirname(config.run),
+        path.dirname(config.pixi),
+        ...(config.programs ?? []),
+        ...(config.agent_dirs ?? []),
+        ...(config.readable ?? []),
+      ],
+      allowWrite: [config.workspace, ...(config.agent_dirs ?? [])],
+      denyWrite: config.protected ?? [],
     },
   };
 }
@@ -93,7 +110,7 @@ function prelude(config) {
     // certificates in it on Windows, which every pixi command warns about.
     '[ -n "$(ls "${SSL_CERT_DIR:-/nonexistent}" 2>/dev/null)" ] || unset SSL_CERT_DIR',
     `export PATH=${quote(bashPath(path.join(ws, '.qupa-bin')))}:"$PATH"`,
-    `cd ${quote(bashPath(ws))} || exit 1`,
+    `cd ${quote(bashPath((config.agent_dirs ?? [])[0] ?? ws))} || exit 1`,
   ];
   return lines.join('\n');
 }
@@ -107,6 +124,8 @@ function cleanEnv() {
 }
 
 async function run(config, command) {
+  // The directories setup found the runtime's own programs in, first.
+  process.env.PATH = [...(config.path ?? []), process.env.PATH].join(path.delimiter);
   // The ask callback is the open internet: every host the allow list does not
   // name, which is every host, is approved.
   await SandboxManager.initialize(sandboxConfig(config), async () => true);

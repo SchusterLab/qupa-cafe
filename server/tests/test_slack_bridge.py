@@ -453,7 +453,7 @@ def replies(slack):
 
 def test_a_new_forums_first_posts_reach_slack(tmp_path):
     """By default the first run starts from the forum's first post, so the
-    topics the configuration made before the bridge and the credential messages
+    topics the configuration made before the bridge and the onboarding messages
     are mirrored like any later post."""
     stub = StubForum()
     httpd = serve(stub)
@@ -472,7 +472,7 @@ def test_a_new_forums_first_posts_reach_slack(tmp_path):
 
         parents = [m for m in slack.messages if not m.get("thread_ts")]
         assert any("Welcome to Qupa Cafe" in m["text"] for m in parents)
-        # The credential message is considered too, rather than skipped: it
+        # The onboarding message is considered too, rather than skipped: it
         # reaches Slack for whoever in it has an account there.
         assert bridge.state.cursor("pm_cursor") == stub.topics[40]["posts"][-1]["id"]
         # And once only: the cursor now stands after them.
@@ -914,7 +914,7 @@ SETUP_CODE = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGV
 
 
 def test_a_setup_code_reaches_its_researchers_dm_and_nowhere_else(world):
-    """The forum's own message to one person, the credential message, carries
+    """The forum's own message to one person, the onboarding message, carries
     their setup code to their DM. Anywhere else a setup code is replaced."""
     stub, slack, bridge = world
     stub.post(40, "system", f"Your setup code: `{SETUP_CODE}`")

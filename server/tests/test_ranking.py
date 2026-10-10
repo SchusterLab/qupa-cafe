@@ -1092,7 +1092,7 @@ def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
 
 
 def test_the_messages_this_service_sends_are_files_in_config():
-    """They are posts, like the policy topic and the credential message.
+    """They are posts, like the policy topic and the onboarding message.
 
     A private message written to a researcher is edited by whoever writes to
     researchers, and a string in a Python file is edited by whoever is
@@ -1136,7 +1136,7 @@ def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path
 
 
 def test_the_wake_is_worded_by_a_file_in_config(tmp_path, monkeypatch):
-    """Edited like the policy topic and the credential message, because it is
+    """Edited like the policy topic and the onboarding message, because it is
     the same kind of thing: prose somebody reads, in the directory those live in."""
     written = tmp_path / "wake-prompt.md"
     written.write_text("First wording. %BODY%", encoding="utf-8")

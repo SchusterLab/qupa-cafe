@@ -32,11 +32,12 @@ def installed(tmp_path):
     pixi = tmp_path / "pixi"
     for program in (node, pixi):
         program.write_text("", encoding="utf-8")
-    readable = tmp_path / "research"
-    readable.mkdir()
+    research = tmp_path / "research"
+    research.mkdir()
     config = {
         "workspace": str(workspace),
-        "readable": [str(readable)],
+        "agent_dirs": [str(research)],
+        "protected": sandbox.protected_paths([str(research)]),
         "node": str(node),
         "run": str(run),
         "pixi": str(pixi),
@@ -176,38 +177,63 @@ def test_without_the_sandbox_no_command_runs():
     assert "qupa-install" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def test_writes_are_approved_only_in_the_workspace(installed, tmp_path):
-    inside = {"tool_name": "Write", "tool_input": {"file_path": str(Path(installed["workspace"]) / "plot.py")}}
-    research = {"tool_name": "Write", "tool_input": {"file_path": str(Path(installed["readable"][0]) / "x")}}
-    escape = {"tool_name": "Edit", "tool_input": {"file_path": str(Path(installed["workspace"]) / ".." / ".." / "x")}}
+def test_writes_are_approved_in_the_workspace_and_the_agents_directory(installed, tmp_path):
+    write = lambda path: {"tool_name": "Write", "tool_input": {"file_path": str(path)}}  # noqa: E731
+    workspace, research = Path(installed["workspace"]), Path(installed["agent_dirs"][0])
 
-    assert _decision(sandbox.decide(inside, installed)) == "allow"
+    assert _decision(sandbox.decide(write(workspace / "plot.py"), installed)) == "allow"
+    assert _decision(sandbox.decide(write(research / "notes" / "run.md"), installed)) == "allow"
     # Not refused: left to the researcher's own settings, which refuse it
     # unless they say otherwise, with a note of where to write instead.
-    for elsewhere in (research, escape):
-        out = sandbox.decide(elsewhere, installed)["hookSpecificOutput"]
+    for elsewhere in (tmp_path / "x", workspace / ".." / ".." / "x"):
+        out = sandbox.decide(write(elsewhere), installed)["hookSpecificOutput"]
         assert "permissionDecision" not in out
         assert installed["workspace"] in out["additionalContext"]
+
+
+@pytest.mark.parametrize("name", [".qupa/wake.md", "CLAUDE.md", "AGENTS.md", ".claude/settings.json", ".mcp.json", ".venv/x.py"])
+def test_what_steers_later_wakes_is_never_approved_for_writing(installed, name):
+    """A misled agent would otherwise rewrite its own instructions, or the
+    settings and hooks Claude Code runs outside the sandbox."""
+    path = Path(installed["agent_dirs"][0]) / name
+    out = sandbox.decide({"tool_name": "Edit", "tool_input": {"file_path": str(path)}}, installed)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
+    assert "read-only" in out["additionalContext"]
+
+
+def test_the_kits_own_environment_is_protected_where_the_agents_directory_holds_it(monkeypatch, tmp_path):
+    """The MCP server that enforces the policy runs from it."""
+    agent = tmp_path / "agent"
+    (agent / ".env-kit").mkdir(parents=True)
+    monkeypatch.setattr(sandbox.sys, "prefix", str(agent / ".env-kit"))
+    assert str((agent / ".env-kit").resolve()) in sandbox.protected_paths([str(agent)])
+    assert str((tmp_path / "elsewhere").resolve()) not in sandbox.protected_paths([str(tmp_path / "elsewhere")])
+
+
+def test_a_configuration_naming_only_readable_directories_grants_no_writes(installed):
+    config = dict(installed, readable=installed["agent_dirs"], agent_dirs=[])
+    path = Path(installed["readable"][0] if "readable" in installed else config["readable"][0]) / "x"
+    out = sandbox.decide({"tool_name": "Write", "tool_input": {"file_path": str(path)}}, config)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
 
 
 def test_reads_are_approved_in_the_workspace_and_the_readable_directories(installed, tmp_path):
     read = lambda path: {"tool_name": "Read", "tool_input": {"file_path": str(path)}}  # noqa: E731
 
-    assert _decision(sandbox.decide(read(Path(installed["readable"][0]) / "notes.md"), installed)) == "allow"
+    assert _decision(sandbox.decide(read(Path(installed["agent_dirs"][0]) / "notes.md"), installed)) == "allow"
     assert _decision(sandbox.decide(read(Path(installed["workspace"]) / "out.png"), installed)) == "allow"
     out = sandbox.decide(read(Path.home() / ".ssh" / "id_ed25519"), installed)["hookSpecificOutput"]
     assert "permissionDecision" not in out
-    assert installed["readable"][0] in out["additionalContext"]
+    assert installed["agent_dirs"][0] in out["additionalContext"]
 
 
-def test_a_directory_holding_the_kits_key_is_not_made_readable(monkeypatch, tmp_path):
+def test_a_directory_holding_the_kits_key_is_not_opened_to_the_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".config" / "qupa-cafe").mkdir(parents=True)
     (tmp_path / "research").mkdir()
 
-    assert sandbox.readable_dirs(str(tmp_path))[0] == []
-    assert sandbox.readable_dirs(str(tmp_path / "research"))[0] == [str((tmp_path / "research").resolve())]
-
+    assert sandbox.writable_agent_dirs(str(tmp_path))[0] == []
+    assert sandbox.writable_agent_dirs(str(tmp_path / "research"))[0] == [str((tmp_path / "research").resolve())]
 
 def test_the_hook_runs_as_a_script(installed):
     """Which is how Claude Code runs it, with no package on the path."""
@@ -248,14 +274,36 @@ def test_a_codex_wake_is_not_sandboxed(installed):
 
 
 def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", runtime="claude")
+    settings = Settings(
+        forum_url="http://x", api_key="k", api_username="u", runtime="claude", agent_dir=installed["agent_dirs"][0]
+    )
     topic = {"id": 10, "title": "t", "post_stream": {"posts": [{"post_number": 1, "raw": "b"}]}}
 
     prompt = build_prompt(settings, "you were mentioned", topic, "%BODY%")
 
     assert installed["workspace"] in prompt
-    assert installed["readable"][0] in prompt
+    assert installed["agent_dirs"][0] in prompt
     assert "absolute paths" in prompt
+    assert "CLAUDE.md" in prompt and "read-only" in prompt
     assert "pixi add" in prompt
     assert "cannot draw a plot" not in prompt
     assert prompt.endswith(daemon.OLD_NOTES)
+
+
+# ------------------------------------------------------- the install banner
+
+
+def test_the_install_banner_says_what_the_sandbox_reaches(installed):
+    from qupa_cafe import install
+
+    text = install.sandbox_summary(True)
+    assert installed["workspace"] in text
+    assert installed["agent_dirs"][0] in text
+    assert "could leave this machine" in text and "CLAUDE.md" in text
+
+
+def test_the_install_banner_says_when_there_is_no_sandbox():
+    from qupa_cafe import install
+
+    assert "re-run qupa-install" in install.sandbox_summary(False)
+    assert "runs no code" in install.sandbox_summary(None)

@@ -323,7 +323,7 @@ def deliver(api: Discourse, researcher: str, agent: str, key: str, interests_top
             if (topic.get("title") or "") == title:
                 try:
                     api.delete(f"/t/{topic['id']}.json")
-                    print(f"   deleted    the earlier credential message (topic {topic['id']})")
+                    print(f"   deleted    the earlier onboarding message (topic {topic['id']})")
                 except RuntimeError as exc:
                     print(f"   NOTE: cannot delete topic {topic.get('id')} ({exc})")
     except RuntimeError as exc:
@@ -331,7 +331,7 @@ def deliver(api: Discourse, researcher: str, agent: str, key: str, interests_top
 
     api.post("/posts.json", json_body={
         "title": title,
-        "raw": onboarding.credential_message(api.base_url, key, agent, interests_topic_id),
+        "raw": onboarding.onboarding_message(api.base_url, key, agent, interests_topic_id),
         "archetype": "private_message",
         "target_recipients": researcher,
     })
@@ -368,7 +368,7 @@ def provision(api: Discourse, researcher: str, forum_host: str, agent_override: 
         deliver(api, researcher, agent, key, found["interests"])
         share_agent_messages(api, agent, researcher)
         return True
-    print("\n== Delivery\n   " + ("a real run would issue a key and send the credential message."
+    print("\n== Delivery\n   " + ("a real run would issue a key and send the onboarding message."
                                   if api.dry_run else "skipped: there is no new key to deliver."))
     return False
 

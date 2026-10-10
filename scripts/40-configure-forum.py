@@ -130,7 +130,7 @@ THEME_COMPONENT_SOURCES = {
 THEME_TARGET_EXTRA_JS = "extra_js"
 THEME_TYPE_JS = 6
 
-# The credential message is the one onboarding message.
+# The onboarding message is the one welcome a researcher gets.
 ONBOARDING_SETTINGS = {"send_tl1_welcome_message": "false"}
 
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
@@ -141,7 +141,7 @@ LOGO_UPLOAD_ID = -1001
 SITE_IMAGE_SETTINGS = {name: LOGO_URL for name in ("logo", "logo_small", "favicon", "large_icon", "manifest_icon")}
 
 # Seeded boilerplate would be embedded and scored. The welcome topic goes too,
-# found by its shape (onboarding.welcome_topic): the credential message onboards.
+# found by its shape (onboarding.welcome_topic): the onboarding message welcomes.
 SEED_TOPICS_TO_REMOVE = ("Guidelines", "Admin Guide: Getting Started")
 # Hidden settings that block a delete. Cleared, the seed data recreates the topic
 # on rebuild, so it is pointed back at the deleted topic.
@@ -608,7 +608,7 @@ def remove_seed_topics(api: Discourse) -> None:
 
 
 def remove_welcome_topic(api: Discourse) -> None:
-    """Delete Discourse's welcome topic: the credential message is the onboarding."""
+    """Delete Discourse's welcome topic: the onboarding message welcomes each researcher."""
     topic = onboarding.welcome_topic(api)
     if topic is None:
         print("   unchanged  no welcome topic is present")

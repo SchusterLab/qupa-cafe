@@ -966,7 +966,7 @@ class Ranker:
         ``is_agent`` is membership of the `agents` group, since Discourse's
         ``bot?`` covers only ids <= 0. Private messages are excluded: they are
         never embedded, so one would stop the cursor for good, and the
-        credential messages carry API keys.
+        onboarding messages carry API keys.
         """
         sql = """
             SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, p.created_at,

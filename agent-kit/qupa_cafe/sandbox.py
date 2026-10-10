@@ -24,11 +24,17 @@ missing and wakes run as before, with no Bash.
 from __future__ import annotations
 
 import base64
+import hashlib
+import io
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -163,23 +169,31 @@ def decide(event: dict, config: dict | None) -> dict | None:
 
     if not config:
         return None
-    workspace = [config["workspace"]]
-    readable = workspace + list(config.get("readable") or [])
+    writable = [config["workspace"], *agent_dirs(config)]
+    readable = writable + list(config.get("readable") or [])
+    protected = list(config.get("protected") or [])
     # Elsewhere the researcher's own settings decide, and an unattended run
     # usually refuses; the context says where to go instead, since Claude
     # Code's refusal names no alternative.
     if tool in WRITE_TOOLS:
         path = arguments.get(WRITE_TOOLS[tool])
-        if path and within(str(path), workspace, cwd):
-            return answer("allow", "Inside the sandbox's workspace.")
-        return context(f"{path} is outside the sandbox's workspace. Write under {config['workspace']} instead, "
-                       "with an absolute path.")
+        if path and within(str(path), protected, cwd):
+            return context(f"{path} steers your wakes, so it is read-only here; your researcher edits it.")
+        if path and within(str(path), writable, cwd):
+            return answer("allow", "Writable from the sandbox.")
+        return context(f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
     if tool in READ_TOOLS:
         path = arguments.get(READ_TOOLS[tool]) or cwd
         if within(str(path), readable, cwd):
             return answer("allow", "Readable from the sandbox.")
         return context(f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
     return None
+
+
+def agent_dirs(config: dict) -> list[str]:
+    """The researcher's directories the sandbox reads and writes. A
+    configuration that names only ``readable`` ones grants no writes."""
+    return list(config.get("agent_dirs") or [])
 
 
 def context(text: str) -> dict:
@@ -214,24 +228,42 @@ def claude_settings() -> str:
 def wake_notice(config: dict, agent_dir: str = "") -> str:
     """What a sandboxed wake can do and how, for the end of its prompt."""
     workspace = config["workspace"]
-    readable = list(config.get("readable") or [])
+    dirs = agent_dirs(config)
     if agent_dir and Path(agent_dir).is_dir():
         agent_dir = str(Path(agent_dir).resolve())
-    if agent_dir and agent_dir in readable:
-        here = f"Your working directory, {agent_dir}, you can read but not write. "
-    elif agent_dir:
-        here = f"Your working directory, {agent_dir}, is outside the sandbox. "
+    if agent_dir and agent_dir in dirs:
+        where = (
+            f"Every command starts in your working directory, {agent_dir}, and you can write there "
+            f"and in {workspace}, which is HOME there and keeps scratch files; put them in $TMPDIR, "
+            "which is in it, since /tmp may not be writable."
+        )
+        names = sorted({Path(path).name for path in config.get("protected") or []})
+        if names:
+            where += (
+                " What steers your wakes is read-only in your working directory: "
+                + ", ".join(names)
+                + "; your researcher edits those."
+            )
+        if WINDOWS:
+            where += (
+                f" A command cannot create a file or folder directly in {agent_dir}, only in a "
+                "folder already there; Write can."
+            )
     else:
-        here = ""
-    others = [path for path in readable if path != agent_dir]
-    also = f" It can also read {', '.join(others)}." if others else ""
+        where = (
+            f"Every command starts in {workspace}, which is also HOME there; it is the only place you "
+            "can write, and what you leave there is kept for later wakes; put scratch files in "
+            "$TMPDIR, which is there too, since /tmp may not be writable."
+        )
+        if agent_dir:
+            where += f" Your working directory, {agent_dir}, is outside the sandbox."
+    others = list(config.get("readable") or [])
+    if others:
+        where += f" It can also read {', '.join(others)}."
     return (
         "Bash runs each command in a sandbox with open internet access, though not to this "
-        f"machine's or its network's own addresses. Every command starts in {workspace}, which is "
-        "also HOME there; it is the only place you can write, and what you leave there is kept for "
-        f"later wakes; put scratch files in $TMPDIR, which is there too, since /tmp may not be "
-        f"writable.{also} {here}Give Write and Edit absolute paths under {workspace}. Python "
-        "there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
+        f"machine's or its network's own addresses. {where} Give Write and Edit absolute paths. "
+        "Python there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
         "matplotlib, sympy, scikit-learn, statsmodels and others), already active, so run python "
         "directly. To add a package run `pixi add <name>` from conda-forge or `pixi add --pypi "
         "<name>` from PyPI, never pip or conda; it stays for later wakes. matplotlib draws without "
@@ -275,48 +307,218 @@ def git_bash() -> str | None:
     return None
 
 
-def missing_programs() -> list[str]:
-    """What the sandbox needs that this machine lacks, each with how to get it."""
-    missing = []
-    for name, how in (
-        ("node", "Node.js 18 or newer, https://nodejs.org"),
-        ("npm", "npm, which comes with Node.js"),
-        ("pixi", "pixi, https://pixi.sh"),
-    ):
-        if not shutil.which(name):
-            missing.append(f"{name}: {how}")
+def pixi_bin() -> Path:
+    """Where pixi puts itself and what `pixi global install` exposes."""
+    return Path(os.environ.get("PIXI_HOME") or Path.home() / ".pixi") / "bin"
+
+
+def find(name: str) -> str | None:
+    """A program on PATH, or one this kit installed into pixi's bin directory,
+    which need not be on PATH."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in (pixi_bin() / name, pixi_bin() / f"{name}.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+# The commands the sandbox needs on this system beside pixi, and the
+# conda-forge package that provides each.
+def wanted_programs() -> dict[str, str]:
+    wanted = {"node": "nodejs", "npm": "nodejs"}
     if sys.platform.startswith("linux"):
-        for name, package in (("bwrap", "bubblewrap"), ("socat", "socat"), ("rg", "ripgrep")):
-            if not shutil.which(name):
-                missing.append(f"{name}: the {package} package (apt-get install {package})")
-    elif sys.platform == "darwin" and not shutil.which("rg"):
-        missing.append("rg: ripgrep (brew install ripgrep)")
-    elif WINDOWS and not git_bash():
+        wanted.update({"bwrap": "bubblewrap", "socat": "socat", "rg": "ripgrep"})
+    elif sys.platform == "darwin":
+        wanted["rg"] = "ripgrep"
+    return wanted
+
+
+PIXI_RELEASES = "https://github.com/prefix-dev/pixi/releases/latest/download/"
+
+
+def pixi_archive() -> str | None:
+    """The name of pixi's release archive for this machine, or None."""
+    machine = platform.machine().lower()
+    arch = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}.get(machine)
+    if arch is None:
+        return None
+    if WINDOWS:
+        return f"pixi-{arch}-pc-windows-msvc.zip"
+    if sys.platform == "darwin":
+        return f"pixi-{arch}-apple-darwin.tar.gz"
+    if sys.platform.startswith("linux"):
+        return f"pixi-{arch}-unknown-linux-musl.tar.gz"
+    return None
+
+
+def install_pixi() -> str | None:
+    """pixi's own release, checked against its published SHA-256, unpacked
+    into pixi's bin directory. Nothing else is changed: no shell profile and
+    no PATH, since this kit finds it there itself."""
+    name = pixi_archive()
+    if name is None:
+        print(f"  pixi publishes no build for this machine ({platform.system()} {platform.machine()}).")
+        return None
+    try:
+        with urllib.request.urlopen(PIXI_RELEASES + name, timeout=120) as response:
+            data = response.read()
+        with urllib.request.urlopen(PIXI_RELEASES + name + ".sha256", timeout=30) as response:
+            expected = response.read().decode("ascii", "replace").split()[0].lower()
+    except (OSError, IndexError) as exc:
+        print(f"  FAILED to download pixi: {exc}")
+        return None
+    if hashlib.sha256(data).hexdigest() != expected:
+        print("  FAILED: the pixi download does not match its published checksum, so it was not used.")
+        return None
+
+    target = pixi_bin()
+    target.mkdir(parents=True, exist_ok=True)
+    binary = "pixi.exe" if WINDOWS else "pixi"
+    try:
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                content = archive.read(binary)
+        else:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+                member = next(m for m in archive.getmembers() if Path(m.name).name == binary and m.isfile())
+                content = archive.extractfile(member).read()
+    except (KeyError, StopIteration, OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        print(f"  FAILED to unpack pixi: {exc}")
+        return None
+    path = target / binary
+    path.write_bytes(content)
+    path.chmod(0o755)
+    print(f"  installed pixi in {target}")
+    return str(path)
+
+
+def ensure_programs(sandbox: bool = True) -> None:
+    """Install what is missing and can be had without elevation: pixi, and
+    through `pixi global install` Node.js (which the Discourse server needs
+    whether or not there is a sandbox) and, for the sandbox, ripgrep, socat
+    and bubblewrap. All of it goes into pixi's bin directory, for this user."""
+    wanted = wanted_programs() if sandbox else {"node": "nodejs", "npm": "nodejs"}
+    packages = sorted({package for name, package in wanted.items() if not find(name)})
+    if not packages and (find("pixi") or not sandbox):
+        return
+    pixi = find("pixi") or install_pixi()
+    if pixi is None:
+        return
+    if not packages:
+        return
+    print(f"  installing {', '.join(packages)} with pixi, into {pixi_bin()}...")
+    result = _run([pixi, "global", "install", *packages])
+    if result.returncode != 0:
+        print(f"  FAILED to install {', '.join(packages)}")
+        print(_tail(result))
+
+
+def missing_programs() -> list[str]:
+    """What the sandbox needs that this machine still lacks, each with how to get it."""
+    missing = []
+    if not find("pixi"):
+        missing.append("pixi: https://pixi.sh")
+    for name, package in wanted_programs().items():
+        if not find(name):
+            missing.append(f"{name}: the {package} package, from conda-forge or your system's package manager")
+    if WINDOWS and not git_bash():
         missing.append("bash: Git for Windows, https://git-scm.com")
     return missing
 
 
-def readable_dirs(agent_dir: str) -> tuple[list[str], str]:
-    """The researcher's directories the sandbox may read, and why one is not.
-    A directory that holds the home directory's secrets is refused whole,
+def secret_within(directory: Path) -> Path | None:
+    """The first of the home directory's secrets that ``directory`` holds, or
+    None. A directory holding one is never made readable to the sandbox,
     since a narrower deny inside it does not hold on every system."""
-    if not agent_dir or not Path(agent_dir).is_dir():
-        return [], ""
-    agent = Path(agent_dir).resolve()
+    directory = directory.resolve()
     home = Path.home().resolve()
     secrets = [home / ".config" / "qupa-cafe", home / ".claude", home / ".ssh", home / ".codex", sandbox_dir().resolve()]
     for secret in secrets:
-        if agent == secret or agent in secret.parents:
-            return [], (
-                f"{agent} holds {secret}, so the sandbox is not given it to read. "
-                "Point QUPA_AGENT_DIR at a directory of its own to let it read your files."
-            )
+        if directory == secret or directory in secret.parents:
+            return secret
+    return None
+
+
+def program_dirs() -> list[str]:
+    """Where the sandbox's programs come from, for it to read: each one's own
+    directory, and pixi's install, whose exposed commands lead into the
+    environments beside its bin directory. None that holds a secret."""
+    dirs = {Path(found).parent for name in wanted_programs() if (found := find(name))}
+    if pixi_bin().is_dir():
+        dirs.add(pixi_bin().parent)
+    return sorted(str(d) for d in dirs if secret_within(d) is None)
+
+
+def writable_agent_dirs(agent_dir: str) -> tuple[list[str], str]:
+    """The researcher's directories the sandbox may read and write, and why
+    one is not."""
+    if not agent_dir or not Path(agent_dir).is_dir():
+        return [], ""
+    agent = Path(agent_dir).resolve()
+    secret = secret_within(agent)
+    if secret is not None:
+        return [], (
+            f"{agent} holds {secret}, so the sandbox is not given it. "
+            "Point QUPA_AGENT_DIR at a directory of its own to let your agent work in your files."
+        )
     return [str(agent)], ""
 
 
-def _has_grant(path: Path, rights: str) -> bool:
+# In the agent's directory, what steers later wakes or runs outside the
+# sandbox, kept read-only to it: the researcher's instructions, Claude Code's
+# and Codex's own settings and hooks, and the git hooks the next commit runs.
+PROTECTED_NAMES = (
+    ".qupa", ".claude", ".codex", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+    ".venv", "venv", ".git/hooks", ".git/config",
+)
+
+
+def protected_paths(directories: list[str]) -> list[str]:
+    """PROTECTED_NAMES in each directory, and this kit's own interpreter and
+    code wherever one of them holds it, since the MCP server that enforces the
+    policy runs from there."""
+    paths = set()
+    own = [Path(sys.prefix).resolve(), PACKAGE_DIR.parent]
+    for directory in directories:
+        top = Path(directory).resolve()
+        paths.update(str(top / name) for name in PROTECTED_NAMES)
+        paths.update(str(path) for path in own if path == top or top in path.parents)
+    return sorted(paths)
+
+
+def _has_grant(path: Path, rights: str, kind: str = "(OI)(CI)", deny: bool = False) -> bool:
     result = _run(["icacls", str(path)])
-    return result.returncode == 0 and f"{WINDOWS_USER}:(OI)(CI)({rights})".lower() in result.stdout.lower()
+    ace = f"{WINDOWS_USER}:{kind}{'(DENY)' if deny else ''}({rights})".lower()
+    return result.returncode == 0 and ace in result.stdout.lower()
+
+
+def windows_deny(path: Path, rights: str, kind: str) -> bool:
+    """A lasting DENY ACE for the sandbox user, which outranks its grants."""
+    if _has_grant(path, rights, kind, deny=True):
+        return True
+    result = _run(["icacls", str(path), "/deny", f"{WINDOWS_USER}:{kind}({rights})", "/Q"])
+    if result.returncode != 0:
+        print(f"  FAILED to keep the sandbox from changing {path}")
+        print(_tail(result))
+        return False
+    return True
+
+
+def windows_protect(directory: Path, protected: list[str]) -> bool:
+    """Keep the sandbox from changing what steers wakes. What exists gets a
+    DENY of writing and deleting; what does not yet exist cannot carry an ACE,
+    so the directory itself refuses new entries at its top level (a folder
+    already there takes them), which is where those names are read."""
+    ok = windows_deny(directory, "WD,AD", "")
+    for name in protected:
+        path = Path(name)
+        if path.is_dir():
+            ok = windows_deny(path, "W,D", "(OI)(CI)") and ok
+        elif path.is_file():
+            ok = windows_deny(path, "W,D", "") and ok
+    return ok
 
 
 def windows_grant(path: Path, rights: str, inherit: bool = True) -> bool:
@@ -333,20 +535,36 @@ def windows_grant(path: Path, rights: str, inherit: bool = True) -> bool:
     return True
 
 
+# The loopback ports the runtime's proxies listen on, which its firewall rule
+# lets the sandbox user reach. Below Windows' dynamic range (49152-65535),
+# since a port in it can be held by any program's outgoing connection, and
+# the runtime's own default range is in it.
+WINDOWS_PROXY_PORTS = (47080, 47089)
+
+
+def windows_marker() -> Path:
+    """What this kit last installed the Windows sandbox with."""
+    return runtime_dir() / "windows-install.json"
+
+
 def windows_provisioned(node: str, run: Path) -> bool:
+    """Whether the sandbox user exists and its firewall rule admits our ports,
+    which only an install made by this kit records."""
     result = _run([node, str(run), "-", "--windows-status"], cwd=str(run.parent))
     try:
         user = json.loads(result.stdout)["user"]
-    except (ValueError, KeyError):
+        marker = json.loads(windows_marker().read_text(encoding="utf-8"))
+    except (ValueError, KeyError, OSError):
         return False
-    return bool(user.get("provisioned") and user.get("credPresent"))
+    ports = list(WINDOWS_PROXY_PORTS)
+    return bool(user.get("provisioned") and user.get("credPresent")) and marker.get("ports") == ports
 
 
 def windows_install(node: str, runtime: Path, interactive: bool) -> bool:
     """sandbox-runtime's one-time elevated step: a hidden local user the
     commands run as, and firewall rules that apply only to it."""
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
-    command = f'"{node}" "{cli}" windows-install'
+    command = f'"{node}" "{cli}" windows-install --proxy-port-range {WINDOWS_PROXY_PORTS[0]}-{WINDOWS_PROXY_PORTS[1]} --force'
     print("  On Windows the sandbox runs commands as a hidden local user, srt-sandbox, whose")
     print("  network goes only through the sandbox's proxy. Creating it needs one UAC prompt.")
     if not interactive:
@@ -355,12 +573,15 @@ def windows_install(node: str, runtime: Path, interactive: bool) -> bool:
     if input("  Create it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
         print(f"  Not done. To do it later, run this and then qupa-install again:{NL}    {command}")
         return False
-    result = _run([node, str(cli), "windows-install"], cwd=str(runtime))
+    ports = "-".join(str(port) for port in WINDOWS_PROXY_PORTS)
+    # --force: an install made without our ports is replaced, not kept.
+    result = _run([node, str(cli), "windows-install", "--proxy-port-range", ports, "--force"], cwd=str(runtime))
     if result.returncode != 0:
         print("  FAILED to create the sandbox user")
         print(_tail(result))
         return False
-    print(f"  Created. `{command.replace('windows-install', 'windows-uninstall')}` removes it.")
+    windows_marker().write_text(json.dumps({"ports": list(WINDOWS_PROXY_PORTS)}) + NL, encoding="utf-8")
+    print(f'  Created. `"{node}" "{cli}" windows-uninstall` removes it.')
     return True
 
 
@@ -399,7 +620,7 @@ def setup(agent_dir: str, interactive: bool) -> bool:
             print(f"    {line}")
         return False
 
-    node, npm, pixi = (shutil.which(name) for name in ("node", "npm", "pixi"))
+    node, npm, pixi = (find(name) for name in ("node", "npm", "pixi"))
     runtime, workspace = runtime_dir(), workspace_dir()
 
     runtime.mkdir(parents=True, exist_ok=True)
@@ -412,9 +633,10 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         print(_tail(result))
         return False
 
-    readable, refused = readable_dirs(agent_dir)
+    writable, refused = writable_agent_dirs(agent_dir)
     if refused:
         print(f"  {refused}")
+    protected = protected_paths(writable)
 
     workspace.mkdir(parents=True, exist_ok=True)
     if WINDOWS:
@@ -423,9 +645,9 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         # Before the environment exists, so that its files inherit the grant.
         granted = windows_grant(runtime, "RX") and windows_grant(workspace, "M")
         granted = granted and windows_grant(Path(pixi), "RX", inherit=False)
-        for directory in readable:
-            print(f"  Letting the sandbox read {directory}...")
-            granted = granted and windows_grant(Path(directory), "RX")
+        for directory in writable:
+            print(f"  Letting the sandbox work in {directory}...")
+            granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)
         if not granted:
             return False
 
@@ -441,11 +663,17 @@ def setup(agent_dir: str, interactive: bool) -> bool:
 
     config = {
         "workspace": str(workspace),
-        "readable": readable,
+        "agent_dirs": writable,
+        "protected": protected,
         "node": node,
         "run": str(runtime / "run.mjs"),
         "pixi": pixi,
         "bash": git_bash() if WINDOWS else "/bin/bash",
+        # Where the runtime finds bwrap, socat and rg, which may be only in
+        # pixi's bin directory and not on the PATH a wake inherits.
+        "path": sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
+        "programs": program_dirs(),
+        "windows_ports": list(WINDOWS_PROXY_PORTS),
     }
     config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
     return check(config)

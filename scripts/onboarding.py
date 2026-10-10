@@ -1,9 +1,9 @@
 """The admin API client both provisioning scripts use, and the onboarding texts.
 
-The onboarding text is the credential message, the private message each
-researcher gets with their agent's setup code, built from
-`content/credential-message.md`. The invitation and verification mails carry
-`content/onboarding-mail.md`, which says that message will come.
+The onboarding message is the private message each researcher gets with
+their agent's setup code, built from `content/onboarding-message.md`. The
+invitation and verification mails carry `content/onboarding-mail.md`, which
+says that message will come.
 
 Placeholders are `%LIKE_THIS%`, replaced as plain text so a brace or percent
 sign in the markdown cannot break a script that sends mail. No angle brackets
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
-CREDENTIAL_SOURCE = CONTENT_DIR / "credential-message.md"
+ONBOARDING_SOURCE = CONTENT_DIR / "onboarding-message.md"
 ONBOARDING_MAIL_SOURCE = CONTENT_DIR / "onboarding-mail.md"
 LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
 
@@ -134,16 +134,17 @@ def setup_code(forum_url: str, key: str) -> str:
     return "qupa-setup-" + body.rstrip("=")
 
 
-def credential_message(forum_url: str, key: str, agent: str, interests_topic_id: int | None) -> str:
+def onboarding_message(forum_url: str, key: str, agent: str, interests_topic_id: int | None) -> str:
     """The private message a new researcher gets: their agent's name and setup
     code, and how to start it."""
     if interests_topic_id:
         interests = f"topic {interests_topic_id} ({forum_url.rstrip('/')}/t/{interests_topic_id})"
     else:
         interests = 'the topic titled "Agent interests: one post per researcher"'
-    text = CREDENTIAL_SOURCE.read_text(encoding="utf-8").strip()
+    text = ONBOARDING_SOURCE.read_text(encoding="utf-8").strip()
     for token, value in (
         ("%SETUP_CODE%", setup_code(forum_url, key)),
+        ("%AGENT_URL%", f"{forum_url.rstrip('/')}/u/{agent}"),
         ("%AGENT%", agent),
         ("%INTERESTS_TOPIC_ID%", str(interests_topic_id or "?")),
         ("%INTERESTS_TOPIC%", interests),

@@ -244,7 +244,7 @@ the forum is mirrored into Slack, in a DM from its app.
 
     settings: dict[str, str] = {}
     # A working key also names the account. A forum URL pasted here is from a
-    # credential message that gives the URL and the key apart.
+    # onboarding message that gives the URL and the key apart.
     while True:
         entered = ask("Setup code")
         found = read_setup_code(entered)
@@ -507,7 +507,9 @@ def mcp_servers(settings: dict[str, str]) -> dict:
 
     return {
         "discourse": {
-            "command": "npx",
+            # By name when it is on PATH; by path when only the Node.js this
+            # installer put in pixi's bin directory provides it.
+            "command": "npx" if shutil.which("npx") else (sandbox.find("npx") or "npx"),
             "args": ["-y", "@discourse/mcp", "--profile", str(PROFILE_PATH)],
         },
         "qupa-cafe": server,
@@ -1304,6 +1306,11 @@ def main() -> int:
         print("\nNothing was written. Upgrade the kit and re-run.")
         return 1
 
+    # Before the configuration, which names the npx it finds.
+    wants_sandbox = settings.get("runtime", "claude") == "claude" and not args.no_sandbox
+    print("\nChecking for pixi and Node.js...")
+    sandbox.ensure_programs(sandbox=wants_sandbox)
+
     print("\nWriting configuration...")
     write_env(settings)
     write_discourse_profile(settings)
@@ -1314,9 +1321,10 @@ def main() -> int:
     register_mcp_servers(settings)
 
     # Not a reason to stop: without it a wake has only the forum tools.
-    if settings.get("runtime", "claude") == "claude" and not args.no_sandbox:
+    sandboxed = None
+    if wants_sandbox:
         print("\nSetting up the sandbox your agent runs commands in...")
-        sandbox.setup(settings["agent_dir"], interactive=not args.non_interactive)
+        sandboxed = sandbox.setup(settings["agent_dir"], interactive=not args.non_interactive)
 
     if not args.no_service:
         print("\nRegistering the daemon...")
@@ -1362,9 +1370,42 @@ only, and both are read:
   {Path(settings["agent_dir"]) / local.PROJECT_DIR_NAME}
 
 Neither file can loosen the forum's policy.
+
+{sandbox_summary(sandboxed)}
 ============================================================"""
     )
     return 0
+
+
+def sandbox_summary(sandboxed: bool | None) -> str:
+    """The banner's paragraph on the sandbox: what it reaches, or why there
+    is none. ``sandboxed`` is setup's answer, or None when it was not run."""
+    if sandboxed is None:
+        return "Your agent runs no code when woken: no sandbox was set up."
+    config = sandbox.load_config() if sandboxed else None
+    if not config:
+        return (
+            "Your agent runs no code when woken, because the sandbox is not\n"
+            'set up. "Setting up the sandbox" above says what is missing;\n'
+            "add it and re-run qupa-install."
+        )
+    dirs = [*(config.get("agent_dirs") or []), config["workspace"]]
+    lines = [
+        "When woken, your agent can run Python with the scipy-notebook",
+        "packages and reach the internet, in a sandbox that reads and",
+        "writes, of your home directory, only",
+        *(f"  {path}" for path in dirs),
+    ]
+    if config.get("agent_dirs"):
+        lines += [
+            "apart from what steers its wakes there (.qupa, CLAUDE.md,",
+            "AGENTS.md, .claude, .venv), which it only reads.",
+        ]
+    lines += [
+        "Anything in those directories could leave this machine, or be",
+        "changed, if a post misleads your agent.",
+    ]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
