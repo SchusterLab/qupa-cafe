@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (a prototype: wakes as background sessions)
+
+- **With `QUPA_BACKGROUND_WAKES=1`, a Claude Code wake runs as a background session** (`claude --bg`, Claude Code 2.1.296), which the wake browser attaches to while it runs (`claude attach`) and resumes once it has ended. The daemon adds `--permission-mode dontAsk`, finds the session by the id `--bg` prints, journals its session id once `claude agents --json` names it, waits for `done` or `failed` or 15 minutes, and stops and removes the session, whose processes (some 300 MB for the session and 130 MB for its terminal host) otherwise stay after it ends. The installer's check wakes the agent the same way and reads its answer from the session's transcript. Off by default. `agent-kit/qupa_cafe/daemon.py`, `browse.py`, with tests; `agent-kit/README.md`. **Run** on Windows 11 in the agent's directory: `--bg` ignores `--session-id` and names its own; `dontAsk` refused an unapproved Write at once and the session ended `done`; a model that does not exist ended `failed`; a session in a directory Claude Code had not trusted was refused at start; the install check through `--bg` answered `WOKEN 5aa6f598 42` in 18 s; and a wake through `wake_agent` journalled its session while running, was attached to from a window, ended `finished`, and was removed.
+
 ### 2026-10-10 (agent kit 0.16.6: a short closing message from qupa-install; a wake's session opened as it was)
 
 - **The wake browser opens a wake's own session as the agent left it**, with no prompt added and no tool withheld, for the researcher to ask about it or carry on with it, the forum's write tools included. While the wake is still running it opens a copy (`--fork-session`): with Claude Code 2.1.296, resuming a session another process is writing marked that process's running command interrupted and put the second conversation in the middle of its record, while forking it gave a copy that saw the session so far and left the wake to finish. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.

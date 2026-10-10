@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import wakes
-from .daemon import Ranking, RankingError, Settings, claim_lock
+from .daemon import Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -333,6 +333,10 @@ def ask_command(row: wakes.Row, claude: str) -> list[str]:
     record, so it gets a copy instead."""
     command = [claude, "--resume", row.session]
     if still_running(row):
+        # A background wake is opened as itself, the one process writing it.
+        live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
+        if live is not None and live.get("state") not in ("done", "failed"):
+            return [claude, "attach", str(live.get("id") or row.session[:8])]
         command.append("--fork-session")
     return command
 
@@ -345,11 +349,16 @@ def ask(row: wakes.Row) -> str:
         return "Claude Code is not on PATH, so the session cannot be opened."
     cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
     print(wakes.paint(f"Opening the session of the wake on topic {row.topic_id} in Claude Code.", "accent"))
-    if still_running(row):
-        print(wakes.paint("The wake is still running, so this is a copy of its session as it stands.", "meta"))
-    print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
+    command = ask_command(row, claude)
+    if "attach" in command:
+        print(wakes.paint("The wake is still running: this is the wake itself, and what you type goes into it.", "meta"))
+        print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
+    else:
+        if "--fork-session" in command:
+            print(wakes.paint("The wake is still running, so this is a copy of its session as it stands.", "meta"))
+        print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
-        subprocess.call(ask_command(row, claude), cwd=cwd)
+        subprocess.call(command, cwd=cwd)
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return ""

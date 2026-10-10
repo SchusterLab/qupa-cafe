@@ -155,10 +155,25 @@ def test_a_wake_still_running_opens_as_a_copy(monkeypatch):
     row = _row(5, session="abc")
     row.status = "running"
     row.started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    monkeypatch.setattr(browse, "background_sessions", lambda claude: [])
     assert browse.ask_command(row, "claude") == ["claude", "--resume", "abc", "--fork-session"]
     # One the journal left running past the timeout ended with the daemon.
     row.started = "2026-01-01 00:00:00"
     assert browse.ask_command(row, "claude") == ["claude", "--resume", "abc"]
+
+
+def test_a_background_wake_still_running_is_attached_to(monkeypatch):
+    """The wake itself, its one writer, rather than a copy."""
+    from datetime import datetime, timezone
+
+    row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
+    row.status = "running"
+    row.started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    live = [{"id": "2bc6e6bc", "sessionId": row.session, "state": "working"}]
+    monkeypatch.setattr(browse, "background_sessions", lambda claude: live)
+    assert browse.ask_command(row, "claude") == ["claude", "attach", "2bc6e6bc"]
+    live[0]["state"] = "done"
+    assert browse.ask_command(row, "claude")[:2] == ["claude", "--resume"]
 
 
 def test_escape_sequences_are_named():

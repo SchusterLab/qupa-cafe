@@ -48,6 +48,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -146,6 +147,10 @@ class Settings:
 
     # "claude" or "codex".
     runtime: str = field(default_factory=lambda: _env("QUPA_RUNTIME", "claude"))
+
+    # A Claude Code wake as a background session (`claude --bg`), which the
+    # researcher can attach to while it runs, rather than `claude -p`.
+    background: bool = field(default_factory=lambda: _env("QUPA_BACKGROUND_WAKES") == "1")
 
     # Also a batching window: a burst in one thread becomes one wake.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
@@ -291,6 +296,14 @@ class Journal:
         )
         self.db.commit()
         return cursor
+
+    def set_session(self, row: int, session: str) -> None:
+        """A background session's id, which it learns only once it has started."""
+        try:
+            self.db.execute("UPDATE wakes SET session = ? WHERE id = ?", (session, row))
+            self.db.commit()
+        except sqlite3.Error as exc:
+            LOG.warning("could not journal the wake's session: %s", exc)
 
     def end(self, row: int, ok: bool) -> None:
         try:
@@ -685,7 +698,8 @@ def wake_for(settings: Settings, reason: str, topic: dict, score: float | None =
         post_number=latest.get("post_number"),
         title=str(topic.get("title") or "(untitled)"),
         reason=reason,
-        session=str(uuid.uuid4()) if settings.runtime == "claude" else "",
+        # A background session names its own id, learnt once it has started.
+        session=str(uuid.uuid4()) if settings.runtime == "claude" and not settings.background else "",
         score=score,
     )
 
@@ -783,7 +797,99 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
 
-def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wake | None = None) -> bool:
+WAKE_TIMEOUT = 900
+
+# How often a background wake's state is asked for.
+BACKGROUND_POLL_SECONDS = 5
+
+BACKGROUNDED = re.compile(r"backgrounded\s*\S\s*([0-9a-f]{8})\b")
+
+
+def background_command(command: list[str]) -> list[str]:
+    """``claude -p`` made ``claude --bg``. The session id goes, since a
+    background session picks its own, and don't-ask comes in, so a tool
+    nothing approved is refused, as in print mode, rather than left waiting
+    for somebody to approve it."""
+    out = list(command)
+    out[out.index("-p")] = "--bg"
+    if "--session-id" in out:
+        i = out.index("--session-id")
+        del out[i : i + 2]
+    # Before --allowedTools, whose list runs to the end.
+    cut = out.index("--allowedTools") if "--allowedTools" in out else len(out)
+    return out[:cut] + ["--permission-mode", "dontAsk"] + out[cut:]
+
+
+def background_sessions(claude: str) -> list[dict]:
+    """Claude Code's background sessions, finished ones included."""
+    try:
+        result = subprocess.run(
+            [claude, "agents", "--json", "--all"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60, env=outside_session_env(), creationflags=NO_WINDOW,
+        )
+        listed = json.loads(result.stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    return listed if isinstance(listed, list) else list(listed.get("agents") or [])
+
+
+def run_in_background(
+    claude: str,
+    command: list[str],
+    cwd: str | None,
+    timeout: int = WAKE_TIMEOUT,
+    on_session=None,
+) -> tuple[str, str]:
+    """Start ``command`` (a ``claude --bg``), wait for it to end, and remove
+    it, since a finished background session keeps its processes (some 400 MB)
+    until it is. Returns its last state ("done", "failed", "timeout", or why
+    it never started) and its session id."""
+    env = outside_session_env()
+    try:
+        started = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, cwd=cwd, env=env, creationflags=NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"did not start: {exc}", ""
+    said = (started.stdout or "") + (started.stderr or "")
+    found = BACKGROUNDED.search(said)
+    if found is None:
+        return f"did not start: {said.strip()[-400:]}", ""
+    short = found.group(1)
+
+    session, state = "", "running"
+    deadline = time.time() + timeout
+    try:
+        while True:
+            entry = next((s for s in background_sessions(claude) if s.get("id") == short), None)
+            if entry is not None and not session and entry.get("sessionId"):
+                session = str(entry["sessionId"])
+                if on_session is not None:
+                    on_session(session)
+            if entry is not None and entry.get("state") in ("done", "failed"):
+                state = str(entry["state"])
+                break
+            if entry is None and session:
+                state = "gone"
+                break
+            if time.time() > deadline:
+                state = "timeout"
+                break
+            time.sleep(BACKGROUND_POLL_SECONDS)
+    finally:
+        for verb in ("stop", "rm"):
+            subprocess.run(
+                [claude, verb, short], capture_output=True, text=True, timeout=60,
+                env=env, creationflags=NO_WINDOW,
+            )
+    return state, session
+
+
+def wake_agent(
+    settings: Settings, prompt: str, dry_run: bool = False, wake: Wake | None = None, on_session=None
+) -> bool:
     """Invoke the agent runtime once: the only place that costs tokens."""
     command = runtime_command(settings, prompt, wake)
 
@@ -801,6 +907,24 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wak
 
     if dry_run:
         LOG.info("DRY RUN: would run %s with a %d-character prompt", command[0], len(prompt))
+        return True
+
+    if settings.background and settings.runtime == "claude":
+        where = f" for topic {wake.topic_id} post {wake.post_number}" if wake is not None else ""
+        LOG.info("waking %s%s in the background (%d characters of context)", command[0], where, len(prompt))
+
+        def learnt(session: str) -> None:
+            LOG.info("the wake runs as session %s; claude attach %s opens it", session, session[:8])
+            if wake is not None:
+                wake.session = session
+            if on_session is not None:
+                on_session(session)
+
+        state, _ = run_in_background(command[0], background_command(command), cwd, on_session=learnt)
+        if state != "done":
+            LOG.error("the background wake ended %s", state)
+            return False
+        LOG.info("%s finished", command[0])
         return True
 
     if wake is not None and wake.session:
@@ -882,6 +1006,8 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     if executable is None:
         return WakeCheck(False, False, False, f"{command[0]} is not on PATH.")
     cwd = settings.agent_dir if settings.agent_dir and Path(settings.agent_dir).is_dir() else None
+    if settings.background and settings.runtime == "claude":
+        return read_check(*check_in_background(executable, [executable, *command[1:]], cwd, timeout))
     try:
         result = subprocess.run(
             [executable, *command[1:]],
@@ -897,18 +1023,47 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     except subprocess.TimeoutExpired:
         return WakeCheck(False, False, False, f"{command[0]} did not answer within {timeout // 60} minutes.")
 
-    output = (result.stdout or "").strip()
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        return WakeCheck(False, False, False, f"{command[0]} exited {result.returncode}: {detail[-400:]}")
+    return read_check(command[0], result.returncode, result.stdout or "", result.stderr or "")
+
+
+def read_check(name: str, returncode: int, output: str, detail: str) -> WakeCheck:
+    """A check's answer, from what the runtime printed or said last."""
+    output = output.strip()
+    if returncode != 0:
+        detail = (detail or output).strip()
+        return WakeCheck(False, False, False, f"{name} exited {returncode}: {detail[-400:]}")
     line = next((row for row in reversed(output.splitlines()) if "WOKEN" in row), "")
     if not line:
-        return WakeCheck(False, False, False, f"{command[0]} answered, but not as asked: {output[-400:]}")
+        return WakeCheck(False, False, False, f"{name} answered, but not as asked: {output[-400:]}")
     words = line.split()
     after = words[words.index("WOKEN") + 1 :] if "WOKEN" in words else []
     policy = bool(after) and after[0] != "NOPOLICY"
     bash = len(after) > 1 and after[1] == "42"
     return WakeCheck(True, policy, bash, line.strip())
+
+
+def check_in_background(claude: str, command: list[str], cwd: str | None, timeout: int) -> tuple:
+    """The check as a background wake runs, so that what stops one -- a
+    directory Claude Code does not trust -- stops the install too. Its
+    answer is the session's last reply, read from its transcript."""
+    from . import wakes  # wakes imports this module
+
+    state, session = run_in_background(claude, background_command(command), cwd, timeout)
+    if state != "done":
+        return "claude --bg", 1, "", state
+    transcript = wakes.transcript_path(session)
+    said = ""
+    if transcript is not None:
+        for line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            content = (record.get("message") or {}).get("content") if record.get("type") == "assistant" else None
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                    said = block["text"]
+    return "claude --bg", 0, said, ""
 
 
 # ------------------------------------------------------------------ the loop
@@ -1028,7 +1183,8 @@ def one_pass(
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
-        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake)
+        on_session = (lambda session, row=row: journal.set_session(row, session)) if row is not None else None
+        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session)
         if row is not None:
             journal.end(row, ok)
         if not ok:

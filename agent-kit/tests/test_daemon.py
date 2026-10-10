@@ -805,7 +805,7 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
     seen = {}
 
-    def fake_wake(settings, prompt, dry_run=False, wake=None):
+    def fake_wake(settings, prompt, dry_run=False, wake=None, on_session=None):
         # Journalled as running before the runtime is started.
         seen["status"] = journal.db.execute("SELECT status FROM wakes").fetchone()[0]
         seen["wake"] = wake
@@ -1053,3 +1053,64 @@ def test_the_install_check_reports_a_missing_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
     check = daemon.check_wake(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")))
     assert not check.woken and "not on PATH" in check.said
+
+
+def test_a_background_wake_is_the_print_wake_with_bg_and_dont_ask(tmp_path):
+    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)))
+    command = runtime_command(settings, "a prompt", _wake())
+    background = daemon.background_command(command)
+
+    assert background[:3] == ["claude", "--bg", "a prompt"]
+    assert "--session-id" not in background and "-p" not in background
+    # Before the tool list, which runs to the end of the command.
+    assert background.index("--permission-mode") < background.index("--allowedTools")
+    assert background[background.index("--permission-mode") + 1] == "dontAsk"
+    assert background[background.index("--allowedTools") + 1 :] == command[command.index("--allowedTools") + 1 :]
+
+
+def test_a_background_wake_is_waited_for_and_then_removed(monkeypatch):
+    """A finished background session keeps its processes until removed."""
+    ran = []
+    states = iter(["working", "working", "done"])
+
+    class Ran:
+        def __init__(self, stdout=""):
+            self.stdout, self.stderr, self.returncode = stdout, "", 0
+
+    def fake_run(argv, **kwargs):
+        ran.append(argv[1:3])
+        if "--bg" in argv:
+            return Ran("backgrounded · 2bc6e6bc · qupa wake: topic 10\n")
+        return Ran()
+
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        daemon, "background_sessions",
+        lambda claude: [{"id": "2bc6e6bc", "sessionId": "2bc6e6bc-full", "state": next(states)}],
+    )
+    monkeypatch.setattr(daemon, "BACKGROUND_POLL_SECONDS", 0)
+    learnt = []
+
+    state, session = daemon.run_in_background("claude", ["claude", "--bg", "p"], None, on_session=learnt.append)
+
+    assert (state, session) == ("done", "2bc6e6bc-full")
+    assert learnt == ["2bc6e6bc-full"]
+    assert ["stop", "2bc6e6bc"] in ran and ["rm", "2bc6e6bc"] in ran
+
+
+def test_a_background_wake_that_never_starts_says_why(monkeypatch):
+    class Ran:
+        stdout, stderr, returncode = "Workspace not trusted. Run `claude` in C:\a once.", "", 1
+
+    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    state, session = daemon.run_in_background("claude", ["claude", "--bg", "p"], None)
+    assert state.startswith("did not start") and "not trusted" in state and session == ""
+
+
+def test_a_failed_background_wake_is_a_failed_wake(monkeypatch):
+    class Ran:
+        stdout, stderr, returncode = "backgrounded · 2a12da07 · x", "", 0
+
+    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    monkeypatch.setattr(daemon, "background_sessions", lambda claude: [{"id": "2a12da07", "sessionId": "s", "state": "failed"}])
+    assert daemon.run_in_background("claude", ["claude", "--bg", "p"], None)[0] == "failed"
