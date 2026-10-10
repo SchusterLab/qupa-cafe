@@ -126,6 +126,8 @@ class StubForum:
         self.object_store: str | None = None
         # (as whom, filename, bytes) for each file uploaded to it.
         self.uploaded: list[tuple[str, str, bytes]] = []
+        # How many uploads to answer with a 429 before taking one.
+        self.throttle_uploads = 0
 
     def topic(self, topic_id, title, category_id, opener, archetype="regular", allowed_users=(), allowed_groups=()):
         self.topics[topic_id] = {
@@ -233,6 +235,13 @@ def serve(stub: StubForum):
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length)
+            if self.path == "/uploads.json" and stub.throttle_uploads:
+                stub.throttle_uploads -= 1
+                self.send_response(429)
+                self.send_header("Retry-After", "7")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
             if self.path == "/uploads.json":
                 # Multipart, as the composer sends it; only what the bridge relies on.
                 head, _, rest = body.partition(b'name="files[]"; filename="')
@@ -1075,10 +1084,18 @@ def test_a_slack_guest_is_not_invited(world):
 
 
 def test_nobody_posts_as_an_agent(world):
+    """In a channel thread and in a DM with the bot alike, the writer is told
+    to ask a forum admin."""
     stub, slack, bridge = world
     start_thread(stub, bridge)
     outcome = bridge.handle_message(reply_event(slack, bridge, "UA", "Impersonation attempt."))
     assert outcome.startswith("refused")
+    assert slack.ephemerals[-1]["user"] == "UA"
+    assert slack.ephemerals[-1]["text"] == bridge_mod.UNUSABLE_ACCOUNT
+    assert bridge.handle_message(dm("UA", "Hello?", "7200.1")).startswith("refused")
+    (in_dm,) = in_thread(slack, "DUA", "7200.1")
+    assert in_dm["text"] == bridge_mod.UNUSABLE_ACCOUNT
+    assert "Ask a forum admin." in bridge_mod.UNUSABLE_ACCOUNT
     assert stub.created_as == [] and stub.invites == []
 
 
@@ -1290,6 +1307,20 @@ def test_a_file_the_forum_refuses_is_named_and_the_text_still_posted(world, slac
     assert stub.posts[-1]["raw"] == "The data, zipped."
     told = slack.ephemerals[-1]["text"]
     assert "data.zip" in told and "not authorized" in told
+
+
+def test_an_upload_the_forum_rate_limits_waits_and_is_attached(world, slack_files, monkeypatch):
+    stub, slack, bridge = world
+    add, _ = slack_files
+    start_thread(stub, bridge)
+    waits = []
+    monkeypatch.setattr(bridge_mod.time, "sleep", waits.append)
+    stub.throttle_uploads = 1
+
+    event = reply_event(slack, bridge, "US", "A plot.", subtype="file_share", files=[add("shot.png", PNG)])
+    assert bridge.handle_message(event).startswith("posted as sunada")
+    assert waits == [7]
+    assert stub.posts[-1]["raw"] == "A plot.\n\n![shot.png|10x20](upload://up1.png)"
 
 
 def test_without_files_read_the_writer_is_told_to_have_the_app_reinstalled(world, slack_files):

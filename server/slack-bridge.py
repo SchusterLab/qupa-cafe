@@ -80,6 +80,11 @@ POST_TYPE_REGULAR = 1
 TOPIC_HINT = "Reply in this thread to post to the topic."
 PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
 LINK_ONLY_HINT = "This topic is edited often, so it is not copied here. Read it, and reply, on the forum."
+# To a Slack user whose address is an agent's, a feed's, or a suspended or inactive account's.
+UNUSABLE_ACCOUNT = (
+    "Your Slack address belongs to a forum account that cannot post from here, so nothing was posted. "
+    "Ask a forum admin."
+)
 
 MEMBERSHIP_TTL_SECONDS = 600
 # A name a group's cached members lack reads the group again, at most this
@@ -116,30 +121,22 @@ class State:
                 CREATE TABLE IF NOT EXISTS threads (
                     topic_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL,
                     UNIQUE (channel_id, thread_ts));
+                -- A post written in Slack keeps the text it was given, to tell an
+                -- edit from Slack's report of a link preview arriving, and the
+                -- markdown of the files it carried, which an edit in Slack keeps:
+                -- the edited message's text does not mention them.
                 CREATE TABLE IF NOT EXISTS from_slack (
-                    post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS invites (email TEXT PRIMARY KEY, invited_at REAL NOT NULL);
+                    post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
+                    raw TEXT, files TEXT);
+                -- An invitation is a link handed to its invitee, reused until it expires.
+                CREATE TABLE IF NOT EXISTS invites (
+                    email TEXT PRIMARY KEY, invited_at REAL NOT NULL, link TEXT, expires_at REAL);
                 CREATE TABLE IF NOT EXISTS placeholders (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
                     thread_ts TEXT NOT NULL, topic_id INTEGER NOT NULL, title TEXT NOT NULL,
                     slug TEXT NOT NULL, mention INTEGER NOT NULL, codes INTEGER NOT NULL, at REAL NOT NULL);
                 """
             )
-            # A post written in Slack keeps the text it was given, to tell an
-            # edit from Slack's report of a link preview arriving.
-            columns = {row[1] for row in self.db.execute("PRAGMA table_info(from_slack)")}
-            if "raw" not in columns:
-                self.db.execute("ALTER TABLE from_slack ADD COLUMN raw TEXT")
-            # And the markdown of the files it carried, which an edit in Slack
-            # keeps: the edited message's text does not mention them.
-            if "files" not in columns:
-                self.db.execute("ALTER TABLE from_slack ADD COLUMN files TEXT")
-            # An invitation is a link handed to its invitee, reused until it expires.
-            columns = {row[1] for row in self.db.execute("PRAGMA table_info(invites)")}
-            if "link" not in columns:
-                self.db.execute("ALTER TABLE invites ADD COLUMN link TEXT")
-            if "expires_at" not in columns:
-                self.db.execute("ALTER TABLE invites ADD COLUMN expires_at REAL")
 
     def _one(self, sql: str, *args) -> tuple | None:
         with self.lock:
@@ -282,17 +279,23 @@ class Forum:
 
     def request(self, method: str, path: str, data: dict | None = None, as_user: str | None = None) -> Any:
         body = urllib.parse.urlencode(data, doseq=True).encode() if data is not None else None
+        content_type = "application/x-www-form-urlencoded" if body is not None else None
+        return self._send(method, path, body, content_type, as_user, timeout=30)
+
+    def _send(
+        self, method: str, path: str, body: bytes | None, content_type: str | None, as_user: str | None, timeout: int
+    ) -> Any:
         req = urllib.request.Request(f"{self.base_url}{path}", data=body, method=method)
         req.add_header("Api-Key", self.api_key)
         req.add_header("Api-Username", as_user or self.username)
         req.add_header("Accept", "application/json")
-        if body is not None:
-            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        if content_type is not None:
+            req.add_header("Content-Type", content_type)
 
         # 429 is a queue: the API limiter is shared with every agent.
         for attempt in range(4):
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read().decode()
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
@@ -416,21 +419,7 @@ class Forum:
             f'--{boundary}\r\nContent-Disposition: form-data; name="files[]"; filename="{quoted}"\r\n'
             f"Content-Type: {mime}\r\n\r\n"
         ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
-        req = urllib.request.Request(f"{self.base_url}/uploads.json", data=body, method="POST")
-        req.add_header("Api-Key", self.api_key)
-        req.add_header("Api-Username", as_user)
-        req.add_header("Accept", "application/json")
-        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode() or "{}")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:500]
-            if exc.code == 429 or exc.code >= 500:
-                raise Transient(f"uploading {filename} -> {exc.code}: {detail}") from exc
-            raise Refused(f"uploading {filename} -> {exc.code}: {detail}", exc.code, detail) from exc
-        except urllib.error.URLError as exc:
-            raise Transient(f"uploading {filename} failed: {exc.reason}") from exc
+        return self._send("POST", "/uploads.json", body, f"multipart/form-data; boundary={boundary}", as_user, timeout=120)
 
     def download(self, url: str) -> bytes:
         """An upload's bytes, read from the forum this bridge talks to,
@@ -1266,8 +1255,7 @@ class Bridge:
         try:
             account, email = self.forum_user_for(user)
         except Unusable as exc:
-            tell("Your Slack address belongs to a forum account that cannot post from here, so nothing "
-                 "was posted. Ask a forum admin.")
+            tell(UNUSABLE_ACCOUNT)
             return f"refused: {exc}"
         if not account:
             outcome = self.invite(user, email, tell)
@@ -1437,7 +1425,7 @@ class Bridge:
         try:
             account, email = self.forum_user_for(user)
         except Unusable as exc:
-            tell("Your Slack address belongs to a forum account that cannot post from here, so nothing was posted.")
+            tell(UNUSABLE_ACCOUNT)
             return f"refused: {exc}"
         if not account:
             return self.invite(user, email, tell)
