@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **An update shows the Windows sandbox's UAC prompt** rather than refusing it: the installer an update runs is `--non-interactive`, and its Windows step said "Not done, since nobody is here to approve it", although the UAC prompt is the approval and appears on the desktop either way. A declined prompt is said to be declined. `agent-kit/qupa_cafe/sandbox.py`, with tests.
 - **A sandbox setup that fails part-way removes the sandbox's configuration**, which it writes again only when everything has worked, so wakes fall back to the forum tools. An update of this machine to 0.16.2 failed at that step and left 0.16.2's runtime beside 0.16.0's configuration, whose agent directory was read-only and which named no proxy ports, so every command a wake ran failed. `agent-kit/qupa_cafe/sandbox.py`, with a test.
+- **Agent kit 0.16.4**, published to PyPI from the `v0.16.4` release at 06:41 UTC, whose checks on Python 3.10 and 3.13, build and upload all passed. It is offered to installed kits from 06:51.
 
 ### 2026-10-10 (agent kit 0.16.3: updating from the tray icon; the repository public)
 
