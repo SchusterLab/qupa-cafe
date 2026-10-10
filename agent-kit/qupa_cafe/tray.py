@@ -27,8 +27,9 @@ from .daemon import Settings, claim_lock, load_env_file, log_path, outside_sessi
 
 REFRESH_SECONDS = 20
 
-# How often to ask the index for a newer kit.
-UPDATE_CHECK_SECONDS = 3600
+# How often to ask the index for a newer kit: as often as a release takes to
+# become installable (update.SETTLE_SECONDS), since it is one small request.
+UPDATE_CHECK_SECONDS = 600
 
 COLOURS = {
     "polling": (46, 160, 67),

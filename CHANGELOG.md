@@ -6,8 +6,9 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
-### 2026-10-10 (agent kit 0.16.5: no update notice in the wake browser)
+### 2026-10-10 (agent kit 0.16.5: no update notice in the wake browser; the tray asks every ten minutes)
 
+- **The tray icon asks the index for a newer kit every ten minutes**, not hourly: an icon restarted by the update to 0.16.3 asked when 0.16.4 was minutes old and not yet installable, and would have shown it only an hour later. `agent-kit/qupa_cafe/tray.py`; `agent-kit/README.md`.
 - **The wake browser shows no notice of a newer kit** and no longer asks the index as it opens: the forum host's outdated-kit message, which reaches the researcher's Slack DM, says so, and the tray icon's menu offers the update. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.
 
 ### 2026-10-10 (agent kit 0.16.4: the sandbox's Windows step during an update)
