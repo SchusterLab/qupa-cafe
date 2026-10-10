@@ -150,10 +150,12 @@ def test_only_the_keys_shown_do_anything():
     assert not any("is available" in line for line in b.frame(100, 20))
 
 
-def test_a_finished_wake_opens_its_own_session_as_it_was():
-    """Nothing added and nothing withheld: the researcher decides what to do."""
+def test_a_finished_wake_opens_its_own_session_asking_before_each_tool():
+    """Nothing added and nothing withheld: the researcher decides what to do.
+    The wake ran in dontAsk, which a resumed session keeps and which would
+    refuse every tool not approved beforehand, so Claude Code is told to ask."""
     command = browse.ask_command(_row(5, session="abc"), "claude")
-    assert command == (["claude", "--resume", "abc"], False)
+    assert command == (["claude", "--resume", "abc", "--permission-mode", "manual"], False)
 
 
 def test_a_background_wake_still_running_is_attached_to(monkeypatch):
@@ -165,17 +167,21 @@ def test_a_background_wake_still_running_is_attached_to(monkeypatch):
     monkeypatch.setattr(browse, "background_sessions", lambda claude: live)
     assert browse.ask_command(row, "claude") == (["claude", "attach", "2bc6e6bc"], True)
     live[0]["state"] = "done"
-    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session], False)
+    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session, *browse.RESUME_MODE], False)
     # One the journal left running past the timeout ended with the daemon.
     row.started = "2026-01-01 00:00:00"
     live[0]["state"] = "working"
-    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session], False)
+    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session, *browse.RESUME_MODE], False)
 
 
 def test_t_then_r_or_i_tunes_from_the_list_or_a_wake_and_anything_else_cancels():
     b = _browser(browse.Wake(_row(7), SAID))
     assert b.handle("t") is None
-    assert b.tuning and browse.TUNE_QUESTION in b.frame(160, 20)[-2]
+    asked = b.frame(160, 20)[-2]
+    about, keys = browse.TUNE_QUESTION
+    assert b.tuning and browse.visible(asked).strip() == f"{about} {keys}"
+    # What it is about stands out from the keys that answer it.
+    assert wakes.paint(about, "accent_bold") in asked and "cancel" not in asked
     assert b.handle("r") == "tune-reply"
     assert not b.tuning
 
@@ -202,7 +208,7 @@ def test_tuning_resumes_an_ended_wake_s_session_and_starts_a_new_one_otherwise(m
     monkeypatch.setattr(browse, "background_sessions", lambda claude: [])
     row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
     ended = browse.subject_of_wake(browse.Wake(row, SAID), "/agent")
-    assert browse.tune_command(ended, "claude", "P") == ["claude", "--resume", row.session, "P"]
+    assert browse.tune_command(ended, "claude", "P") == ["claude", "--resume", row.session, *browse.RESUME_MODE, "P"]
     # No transcript, nothing to resume.
     assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, None), "/agent"), "claude", "P") == ["claude", "P"]
     # Resuming a running wake would write into it.
@@ -232,6 +238,21 @@ def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypa
     assert "reply to posts like" in browse.tune_prompt(subject, "reply")
 
 
+def test_the_tuning_prompt_carries_the_two_files_as_they_stand(monkeypatch, tmp_path):
+    """Read by the browser, so the agent need not read the directory that
+    also holds the kit's key."""
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "wake.md").write_text("Leave arXiv preprints on finance alone.\n", encoding="utf-8")
+    monkeypatch.setenv("QUPA_CONFIG_DIR", str(config))
+
+    prompt = browse.tune_prompt(browse.subject_of_wake(browse.Wake(_row(42), SAID), str(tmp_path)), "how")
+
+    assert "Leave arXiv preprints on finance alone." in prompt
+    assert f"{config / 'policy.md'}, for every project: does not exist yet" in prompt
+    assert "no need to read them" in prompt
+
+
 def test_tuning_how_the_agent_replies_asks_what_to_change_and_points_at_the_two_files():
     """The interests post decides only what wakes the agent, not what it writes."""
     prompt = browse.tune_prompt(browse.subject_of_wake(browse.Wake(_row(42), SAID), "/agent"), "how")
@@ -259,7 +280,7 @@ def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_f
 
     b.handle("down")
     b.handle("t")
-    assert b.message == browse.WAKE_QUESTION
+    assert b.question == browse.WAKE_QUESTION and browse.WAKE_QUESTION[0] in browse.visible(b.frame(160, 20)[-2])
     # Reply, ignore and how are about wakes, which this was not.
     assert b.handle("r") is None
     b.handle("t")

@@ -7,7 +7,7 @@ each wake did.
 Standard library only, apart from the optional tray icon.
 """
 
-__version__ = "0.16.9"
+__version__ = "0.16.10"
 
 # Both must match the forum host: the path its nginx proxies to the ranking
 # service (config/app.yml.example), and the header server/ranking.py reads.

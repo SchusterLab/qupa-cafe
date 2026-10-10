@@ -44,12 +44,14 @@ FLOOR_STEP = 0.01
 # that did not, whether it is woken.
 TUNE_KEY = "t"
 TUNE_CHOICES = {"r": "reply", "i": "ignore", "h": "how"}
+# The question, as (what it is about, the keys that answer it); the first is
+# drawn to stand out. Any other key cancels, without saying so.
 TUNE_QUESTION = (
-    "Tune your agent on wakes like this one: r to reply to them · i to ignore them"
-    " · h to change how it replies · any other key to cancel"
+    "Tune your agent on wakes like this one:",
+    "r to reply to them · i to ignore them · h to change how it replies",
 )
 WAKE_CHOICES = {"w": "wake"}
-WAKE_QUESTION = "Tune your agent on posts like this one, which do not wake it: w to be woken for them · any other key to cancel"
+WAKE_QUESTION = ("Tune your agent on posts like this one, which do not wake it:", "w to be woken for them")
 
 # In the list: the posts that came close to waking the agent, in place of its
 # wakes, and back.
@@ -215,9 +217,11 @@ class Browser:
     viewing: bool = False
     scroll: int = 0
     message: str = ""
-    # What TUNE_KEY offered to tune, and the keys that answer.
+    # What TUNE_KEY offered to tune, the keys that answer, and the question
+    # they answer, drawn in place of the message while it is open.
     subject: Subject | None = None
     choices: dict[str, str] = field(default_factory=dict)
+    question: tuple[str, str] = ("", "")
     # LOOKUP_KEY was pressed: the address typed so far, and once Enter is,
     # the address to look up.
     typing: str | None = None
@@ -255,7 +259,7 @@ class Browser:
         """Ask what to tune on ``subject``; the next key answers."""
         self.subject = subject
         self.choices = TUNE_CHOICES if subject.woke else WAKE_CHOICES
-        self.message = TUNE_QUESTION if subject.woke else WAKE_QUESTION
+        self.question = TUNE_QUESTION if subject.woke else WAKE_QUESTION
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
@@ -348,6 +352,14 @@ class Browser:
 
     # ------------------------------------------------------------ frames
 
+    def status_line(self) -> str:
+        """The line above the keys: an open question, else the message, else
+        nothing, for the caller to fill."""
+        if self.choices:
+            about, keys = self.question
+            return "  " + wakes.paint(about, "accent_bold") + " " + wakes.paint(keys, "yours")
+        return self.message and wakes.paint("  " + self.message, "yours")
+
     def frame(self, cols: int, rows: int) -> list[str]:
         if self.viewing:
             return self._detail_frame(cols, rows)
@@ -389,7 +401,7 @@ class Browser:
         if count > room:
             end = min(top + room, count)
             where = wakes.paint(f"  {what} {top + 1}-{end} of {count}", "meta")
-        out.append(self.message and wakes.paint("  " + self.message, "yours") or where)
+        out.append(self.status_line() or where)
         other = "n for wakes" if self.showing_missed else "n for near misses"
         named = [hint for _, hint in self.actions.values() if hint]
         out.append(hints([*keys, other, "p for any post", *named, "Esc to quit"]))
@@ -450,7 +462,7 @@ class Browser:
             out.append("")
         end = min(self.scroll + page, len(self._detail))
         where = wakes.paint(f"  lines {self.scroll + 1}-{end} of {len(self._detail)}", "meta")
-        out.append(self.message and wakes.paint("  " + self.message, "yours") or where)
+        out.append(self.status_line() or where)
         keys = ["↑↓ to scroll"]
         if self.selected and self.selected.askable:
             keys.append("Enter to open in Claude Code")
@@ -484,6 +496,12 @@ def still_running(row: wakes.Row) -> bool:
     return started is not None and wakes.young(started)
 
 
+# A wake runs in dontAsk, which refuses every tool not approved beforehand,
+# and a resumed session keeps its mode. With the researcher there, Claude
+# Code asks them instead.
+RESUME_MODE = ["--permission-mode", "manual"]
+
+
 def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
     """Claude Code on the wake's own session, for the researcher to do with as
     they like: attached to while the wake still runs, so they are in the wake
@@ -492,7 +510,7 @@ def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
         live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
         if live is not None and live.get("state") not in ("done", "failed"):
             return [claude, "attach", str(live.get("id") or row.session[:8])], True
-    return [claude, "--resume", row.session], False
+    return [claude, "--resume", row.session, *RESUME_MODE], False
 
 
 def ask(row: wakes.Row) -> str:
@@ -682,8 +700,8 @@ def tune_prompt(subject: Subject, want: str) -> str:
         return "\n\n".join(parts)
 
     places = instruction_files(subject.agent_dir)
-    wake_md = "; ".join(f"{place / local.WAKE_FILE} for {scope}" for scope, place in places)
-    policy_md = "; ".join(f"{place / local.POLICY_FILE} for {scope}" for scope, place in places)
+    wake_md = "".join(as_it_stands(place / local.WAKE_FILE, scope) for scope, place in places)
+    policy_md = "".join(as_it_stands(place / local.POLICY_FILE, scope) for scope, place in places)
     if want == "how":
         parts.append(
             "Ask them first what to change: for example how long a reply is, its tone, what it says or "
@@ -692,16 +710,27 @@ def tune_prompt(subject: Subject, want: str) -> str:
     parts += [
         "Three things decide whether you reply to a post like it and what you write:",
         f"1. {INTERESTS_POST}\n"
-        f"2. wake.md, added to every wake prompt: {wake_md}.\n"
-        f"3. policy.md, returned by get_policy beside the forum's policy: {policy_md}.",
+        f"2. wake.md, added to every wake prompt.{wake_md}\n"
+        f"3. policy.md, returned by get_policy beside the forum's policy.{policy_md}",
         "How you reply is set by wake.md and policy.md alone. A mention, a reply or a private message wakes "
         "you whatever your profile says, so for those, too, only the two files can change what you do. A "
         "file that does not exist yet may be created.",
-        f"Read topic {subject.topic_id} and the current text of all three. Then propose the smallest change that "
-        "would make you act as your researcher wants, say which of the three it belongs in and why, and "
-        "show them the exact new text. Change nothing until they agree.",
+        f"Read topic {subject.topic_id} and your interests post; the two files stand as above, so there is no "
+        "need to read them. Then propose the smallest change that would make you act as your researcher wants, "
+        "say which of the three it belongs in and why, and show them the exact new text. Change nothing until "
+        "they agree.",
     ]
     return "\n\n".join(parts)
+
+
+def as_it_stands(path: Path, scope: str) -> str:
+    """One instruction file for the tuning prompt: where it is and what it
+    says, read here so that the agent need not read where the kit keeps its
+    key."""
+    text = local.read(path)
+    if not text:
+        return f"\n   {path}, for {scope}: does not exist yet, or is empty."
+    return f"\n   {path}, for {scope}, which reads:\n\n```markdown\n{text}\n```\n"
 
 
 def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
@@ -709,7 +738,7 @@ def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     session, which holds what the agent made of the post, when it has one
     that has ended, and in a new one otherwise."""
     if subject.session:
-        return [claude, "--resume", subject.session, prompt]
+        return [claude, "--resume", subject.session, *RESUME_MODE, prompt]
     return [claude, prompt]
 
 

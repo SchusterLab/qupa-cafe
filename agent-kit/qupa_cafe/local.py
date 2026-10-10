@@ -46,7 +46,8 @@ def project_dir(start: Path | str | None = None) -> Path | None:
     return None
 
 
-def _read(path: Path) -> str:
+def read(path: Path) -> str:
+    """One instruction file's text, empty when it is missing or too long."""
     try:
         text = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -68,7 +69,7 @@ def instructions(name: str, project: Path | str | None = None) -> str:
         ("all your projects", config_dir() / name),
         ("this project", (found / PROJECT_DIR_NAME / name) if found else None),
     ):
-        text = _read(path) if path else ""
+        text = read(path) if path else ""
         if text:
             parts.append(f"From your researcher, for {label} ({path}):{NL}{text}")
 
