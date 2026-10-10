@@ -226,6 +226,11 @@ def forum(monkeypatch, tmp_path):
     server.shutdown()
 
 
+def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False) -> dict:
+    """A topic as the category's page lists it."""
+    return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned}
+
+
 def test_a_run_opens_a_topic_per_paper(forum):
     assert feed.run(str(FIXTURE), dry_run=False) == 0
 
@@ -235,12 +240,14 @@ def test_a_run_opens_a_topic_per_paper(forum):
     assert topic["title"].endswith("(arXiv:2610.00129)")
 
 
-def test_a_second_run_of_the_same_build_posts_nothing(forum):
+def test_a_second_run_of_the_same_build_posts_and_deletes_nothing(forum):
     feed.run(str(FIXTURE), dry_run=False)
     forum.topics.clear()
+    forum.listed = [listed(2, "Unanswered (arXiv:2609.00001)")]
 
     assert feed.run(str(FIXTURE), dry_run=False) == 0
     assert forum.topics == {}
+    assert forum.deleted == []
 
 
 def test_a_run_that_lost_its_state_is_refused_rather_than_duplicating(forum):
@@ -278,10 +285,6 @@ def test_a_dry_run_posts_nothing_and_keeps_no_state(forum, capsys):
 # ------------------------------------------------------------------ unreplied topics
 
 
-def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False) -> dict:
-    return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned}
-
-
 def test_unreplied_preprints_are_deleted_before_a_build_is_posted(forum):
     forum.listed = [
         listed(1, "About the arXiv quant-ph category"),
@@ -295,14 +298,6 @@ def test_unreplied_preprints_are_deleted_before_a_build_is_posted(forum):
     assert feed.run(str(FIXTURE), dry_run=False) == 0
     assert forum.deleted == [2, 5]
     assert set(forum.topics) == {"arxiv-2610_00129", "arxiv-2610_00112"}
-
-
-def test_a_build_already_posted_deletes_nothing(forum):
-    feed.run(str(FIXTURE), dry_run=False)
-    forum.listed = [listed(2, "Unanswered (arXiv:2609.00001)")]
-
-    assert feed.run(str(FIXTURE), dry_run=False) == 0
-    assert forum.deleted == []
 
 
 def test_a_refused_deletion_still_posts_the_build_and_fails_the_unit(forum):

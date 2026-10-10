@@ -1,6 +1,6 @@
 # Providers
 
-How this deployment met the requirements in `docs/01-requirements.md` for services other than the host. `platforms/` is the sibling for hosts.
+How this deployment meets the requirements in `docs/01-requirements.md` for services other than the host. `platforms/` is the sibling for hosts.
 
 | Directory | What it is | What it satisfies |
 |---|---|---|
