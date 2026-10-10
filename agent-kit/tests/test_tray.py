@@ -1,4 +1,6 @@
-from qupa_cafe import tray
+"""The tray icon: its clicks, its log item, and the restart it asks for."""
+
+from qupa_cafe import install, tray
 
 
 class FakeWindowsIcon:
@@ -37,8 +39,6 @@ def test_the_log_is_opened_when_there_is_one(monkeypatch, tmp_path):
 
 
 def test_a_restart_on_windows_stops_the_daemon_and_runs_its_startup_entry(monkeypatch, tmp_path):
-    from qupa_cafe import install
-
     entry = tmp_path / install.DAEMON_VBS
     entry.write_text("", encoding="utf-8")
     done = []
@@ -52,8 +52,6 @@ def test_a_restart_on_windows_stops_the_daemon_and_runs_its_startup_entry(monkey
 
 
 def test_a_restart_that_cannot_start_it_says_so(monkeypatch, tmp_path):
-    from qupa_cafe import install
-
     monkeypatch.setattr(install.platform, "system", lambda: "Windows")
     monkeypatch.setattr(install, "startup_dir", lambda: tmp_path)
     monkeypatch.setattr(install, "stop_running_daemon", lambda: True)

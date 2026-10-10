@@ -16,15 +16,17 @@ import shutil
 import sqlite3
 import sys
 import textwrap
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import daemon
 from .daemon import Settings, load_env_file
 
-# A wake is killed at 15 minutes (daemon.wake_agent), so one still marked
-# running after that was ended with the daemon rather than still going.
-WAKE_TIMEOUT_SECONDS = 900
+# A wake is stopped at this age, so one still marked running after it was
+# ended with the daemon rather than still going.
+WAKE_TIMEOUT_SECONDS = daemon.WAKE_TIMEOUT
 
 # How much of a tool's answer to show.
 ITEMS_SHOWN = 6
@@ -33,7 +35,7 @@ SNIPPET_CHARS = 90
 VALUE_CHARS = 60
 
 # What the agent writes is shown in full: it is what the forum now holds.
-WRITE_TOOLS = {"create_topic", "reply", "start_reply", "send_message", "edit_post", "attach_file"}
+WRITE_TOOLS = set(daemon.WRITE_TOOLS)
 
 # Loading a deferred tool's schema, which says nothing about the wake.
 NOISE_TOOLS = {"ToolSearch"}
@@ -266,9 +268,7 @@ def transcript_path(session: str) -> Path | None:
     """Where Claude Code keeps a session, searched for by its unique id."""
     if not session:
         return None
-    for path in (claude_home() / "projects").glob(f"*/{session}.jsonl"):
-        return path
-    return None
+    return next((claude_home() / "projects").glob(f"*/{session}.jsonl"), None)
 
 
 def short_name(tool: str) -> str:
@@ -308,8 +308,6 @@ def wrap(text: str, first: str, rest: str, style: str, keep_lines: bool = False)
 
 def columns(text: str) -> int:
     """Terminal columns ``text`` takes, wide characters counting two."""
-    import unicodedata
-
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
@@ -596,7 +594,8 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
         out.append(paint(f"relevance {row.score:.2f}", "meta"))
 
     if row.session:
-        out.append(paint(f"session {row.session}, in {row.agent_dir or 'the daemon' + chr(39) + 's directory'}", "meta"))
+        where_run = row.agent_dir or "the daemon's directory"
+        out.append(paint(f"session {row.session}, in {where_run}", "meta"))
     else:
         out.append(paint(f"{row.runtime} names no session, so there is no transcript to show", "meta"))
     out.append(rule)
