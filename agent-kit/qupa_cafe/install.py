@@ -361,19 +361,32 @@ def verify(settings: dict[str, str]) -> bool:
     return True
 
 
+_handshakes: dict[tuple[str, str, str, str], dict] = {}
+
+
 def handshake(settings: dict[str, str]) -> dict:
-    """The forum host's answer to this agent's handshake, asked as the daemon asks it."""
+    """The forum host's answer to this agent's handshake, asked as the daemon
+    asks it and only once per account and endpoint, since one answer names
+    the researcher and the policy topic and says whether this kit is served."""
     from .daemon import Ranking, Settings
 
-    probe = Ranking(
-        Settings(
-            forum_url=settings["forum_url"],
-            api_key=settings["api_key"],
-            api_username=settings["api_username"],
-            ranking_url=settings.get("ranking_url", ""),
-        )
+    key = (
+        settings["forum_url"],
+        settings["api_key"],
+        settings["api_username"],
+        settings.get("ranking_url", ""),
     )
-    return probe.handshake(settings["api_username"])
+    if key not in _handshakes:
+        probe = Ranking(
+            Settings(
+                forum_url=key[0],
+                api_key=key[1],
+                api_username=key[2],
+                ranking_url=key[3],
+            )
+        )
+        _handshakes[key] = probe.handshake(settings["api_username"])
+    return _handshakes[key]
 
 
 def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
@@ -831,17 +844,13 @@ WantedBy=default.target
 
         program_arguments = "\n".join(f"    <string>{a}</string>" for a in argv)
 
-        env_entries = "\n".join(
-            f"    <key>{k}</key><string>{v}</string>"
-            for k, v in [
-                *([("PYTHONPATH", str(root))] if root is not None else []),
-                ("QUPA_FORUM_URL", settings["forum_url"]),
-                ("QUPA_API_USERNAME", settings["api_username"]),
-                ("QUPA_API_KEY", settings["api_key"]),
-                ("QUPA_POLICY_TOPIC_ID", str(settings["policy_topic_id"])),
-                ("QUPA_RANKING_URL", settings.get("ranking_url", "")),
-                ("QUPA_RUNTIME", settings.get("runtime", "claude")),
-            ]
+        # The settings stay in ENV_PATH alone, which the daemon reads at
+        # start. One set here would win over an edit there.
+        environment = (
+            "  <key>EnvironmentVariables</key>\n  <dict>\n"
+            f"    <key>PYTHONPATH</key><string>{root}</string>\n  </dict>\n"
+            if root is not None
+            else ""
         )
 
         plist.write_text(
@@ -854,11 +863,7 @@ WantedBy=default.target
   <array>
 {program_arguments}
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-{env_entries}
-  </dict>
-  <key>RunAtLoad</key><true/>
+{environment}  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict>
 </plist>
@@ -867,6 +872,9 @@ WantedBy=default.target
         )
         plist.chmod(0o600)
         print(f"  wrote {plist}")
+        # A loaded job keeps the plist it was loaded from, and loading it
+        # again fails, so a re-install unloads it first.
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, text=True)
         run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
     elif system == "Windows":

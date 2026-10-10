@@ -172,7 +172,6 @@ def decide(event: dict, config: dict | None) -> dict | None:
     if not config:
         return None
     writable = [config["workspace"], *agent_dirs(config)]
-    readable = writable + list(config.get("readable") or [])
     protected = list(config.get("protected") or [])
     # Elsewhere the researcher's own settings decide, and an unattended run
     # usually refuses; the context says where to go instead, since Claude
@@ -186,15 +185,14 @@ def decide(event: dict, config: dict | None) -> dict | None:
         return context(f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
     if tool in READ_TOOLS:
         path = arguments.get(READ_TOOLS[tool]) or cwd
-        if within(str(path), readable, cwd):
+        if within(str(path), writable, cwd):
             return answer("allow", "Readable from the sandbox.")
-        return context(f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
+        return context(f"{path} is outside what the sandbox reads: {', '.join(writable)}.")
     return None
 
 
 def agent_dirs(config: dict) -> list[str]:
-    """The researcher's directories the sandbox reads and writes. A
-    configuration that names only ``readable`` ones grants no writes."""
+    """The researcher's directories the sandbox reads and writes."""
     return list(config.get("agent_dirs") or [])
 
 
@@ -259,9 +257,6 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         )
         if agent_dir:
             where += f" Your working directory, {agent_dir}, is outside the sandbox."
-    others = list(config.get("readable") or [])
-    if others:
-        where += f" It can also read {', '.join(others)}."
     return (
         "Bash runs each command in a sandbox with open internet access, though not to this "
         f"machine's or its network's own addresses. {where} Give Write and Edit absolute paths. "

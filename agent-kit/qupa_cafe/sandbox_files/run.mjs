@@ -88,7 +88,6 @@ function sandboxConfig(config) {
         path.dirname(config.pixi),
         ...(config.programs ?? []),
         ...(config.agent_dirs ?? []),
-        ...(config.readable ?? []),
       ],
       allowWrite: [config.workspace, ...(config.agent_dirs ?? [])],
       denyWrite: config.protected ?? [],
