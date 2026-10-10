@@ -648,7 +648,7 @@ def print_wakes(settings: Settings, limit: int, full_prompt: bool) -> None:
         if rows[-1].session:
             lines.append(
                 paint(
-                    "To ask the agent about one, run `claude --resume <session> --fork-session`"
+                    "To open one in Claude Code, run `claude --resume <session>`"
                     f" in {rows[-1].agent_dir or 'its directory'}.",
                     "meta",
                 )

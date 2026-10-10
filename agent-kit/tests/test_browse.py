@@ -142,23 +142,23 @@ def test_only_the_keys_shown_do_anything():
         assert not b.viewing
 
 
-def test_a_reopened_wake_is_a_copy_without_the_forums_write_tools():
+def test_a_finished_wake_opens_its_own_session_as_it_was():
+    """Nothing added and nothing withheld: the researcher decides what to do."""
     command = browse.ask_command(_row(5, session="abc"), "claude")
-    assert command[:4] == ["claude", "--resume", "abc", "--fork-session"]
-    withheld = command[command.index("--disallowedTools") + 1 : command.index("--append-system-prompt")]
-    assert set(withheld) == {f"mcp__qupa-cafe__{t}" for t in wakes.WRITE_TOOLS}
-    # Reading stays.
-    assert not any("read_attachment" in t or "get_policy" in t for t in withheld)
+    assert command == ["claude", "--resume", "abc"]
 
 
-def test_a_reopened_wake_is_told_why_it_was_reopened():
-    """Without --system-prompt-snapshot off, a resumed session sends the prompt
-    recorded at the wake, and the appended one never reaches the model."""
-    command = browse.ask_command(_row(5, session="abc"), "claude")
-    assert command[command.index("--append-system-prompt") + 1] == browse.ASKING
-    assert command[command.index("--system-prompt-snapshot") + 1] == "off"
-    # A Claude Code without the flag refuses it, so it is left out there.
-    assert "--system-prompt-snapshot" not in browse.ask_command(_row(5, session="abc"), "claude", False)
+def test_a_wake_still_running_opens_as_a_copy(monkeypatch):
+    """A second writer would interleave two conversations in its record."""
+    from datetime import datetime, timezone
+
+    row = _row(5, session="abc")
+    row.status = "running"
+    row.started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    assert browse.ask_command(row, "claude") == ["claude", "--resume", "abc", "--fork-session"]
+    # One the journal left running past the timeout ended with the daemon.
+    row.started = "2026-01-01 00:00:00"
+    assert browse.ask_command(row, "claude") == ["claude", "--resume", "abc"]
 
 
 def test_escape_sequences_are_named():

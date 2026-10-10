@@ -3,8 +3,8 @@
 In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
 raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
-scroll, Enter reopens its session in Claude Code with ``--fork-session`` and
-the forum's write tools withheld, and Esc goes back. Standard library only,
+scroll, Enter opens its session in Claude Code (a copy, while the wake is still
+running), and Esc goes back. Standard library only,
 drawn on the alternate screen.
 """
 
@@ -15,21 +15,11 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import wakes
 from .daemon import Ranking, RankingError, Settings, claim_lock
-
-# Withheld from a reopened session; reading stays.
-WRITE_TOOLS = tuple(f"mcp__qupa-cafe__{name}" for name in sorted(wakes.WRITE_TOOLS))
-
-ASKING = (
-    "Your researcher has reopened this session to ask you about the wake above: "
-    "why you did what you did, and what would have changed it. Answer them here. "
-    "The forum's write tools are not available in this session, so nothing you "
-    "say here is posted."
-)
-
 
 # -------------------------------------------------------------------- keys
 
@@ -326,31 +316,25 @@ def hints(keys: list[str]) -> str:
 # --------------------------------------------------------------- asking
 
 
-def ask_command(row: wakes.Row, claude: str, snapshot_flag: bool = True) -> list[str]:
-    """Claude Code, reopening a wake's session as a copy, without the forum's
-    write tools, and told why it has been reopened."""
-    command = [
-        claude,
-        "--resume", row.session,
-        "--fork-session",
-        "--disallowedTools", *WRITE_TOOLS,
-        "--append-system-prompt", ASKING,
-    ]
-    # A resumed session sends the system prompt recorded when it began, and
-    # so would never send ASKING, unless told not to.
-    if snapshot_flag:
-        command += ["--system-prompt-snapshot", "off"]
-    return command
-
-
-def takes_snapshot_flag(claude: str) -> bool:
-    """Whether this Claude Code has --system-prompt-snapshot, which an older
-    one refuses as an unknown option."""
-    try:
-        result = subprocess.run([claude, "--help"], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
+def still_running(row: wakes.Row) -> bool:
+    """Whether the wake is still going, as the journal and its timeout say."""
+    if row.status != "running":
         return False
-    return "--system-prompt-snapshot" in (result.stdout or "")
+    started = wakes.utc(row.started)
+    if started is None:
+        return False
+    return (datetime.now(timezone.utc) - started).total_seconds() <= wakes.WAKE_TIMEOUT_SECONDS
+
+
+def ask_command(row: wakes.Row, claude: str) -> list[str]:
+    """Claude Code on the wake's own session, as the agent left it, for the
+    researcher to do with as they like. A wake still running writes that
+    session, and a second writer would interleave two conversations in its
+    record, so it gets a copy instead."""
+    command = [claude, "--resume", row.session]
+    if still_running(row):
+        command.append("--fork-session")
+    return command
 
 
 def ask(row: wakes.Row) -> str:
@@ -361,10 +345,11 @@ def ask(row: wakes.Row) -> str:
         return "Claude Code is not on PATH, so the session cannot be opened."
     cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
     print(wakes.paint(f"Opening the session of the wake on topic {row.topic_id} in Claude Code.", "accent"))
-    print(wakes.paint("Your questions go into a copy of it, and the forum's write tools are withheld.", "meta"))
+    if still_running(row):
+        print(wakes.paint("The wake is still running, so this is a copy of its session as it stands.", "meta"))
     print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
-        subprocess.call(ask_command(row, claude, takes_snapshot_flag(claude)), cwd=cwd)
+        subprocess.call(ask_command(row, claude), cwd=cwd)
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return ""
