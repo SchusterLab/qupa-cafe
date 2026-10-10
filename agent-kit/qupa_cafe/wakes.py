@@ -209,11 +209,9 @@ def recent(state_path: str, limit: int | None) -> list[Row]:
     if db is None:
         return []
     try:
-        # A journal from a kit before scores has no score column.
-        has_score = "score" in {row[1] for row in db.execute("PRAGMA table_info(wakes)")}
         rows = db.execute(
             "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
-            f" post_number, title, reason, {'score' if has_score else 'NULL'} FROM wakes ORDER BY id DESC LIMIT ?",
+            " post_number, title, reason, score FROM wakes ORDER BY id DESC LIMIT ?",
             (-1 if limit is None else limit,),
         ).fetchall()
     except sqlite3.Error:

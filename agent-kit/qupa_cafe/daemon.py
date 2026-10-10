@@ -258,8 +258,6 @@ class Journal:
             );
             """
         )
-        if "score" not in {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}:
-            self.db.execute("ALTER TABLE wakes ADD COLUMN score REAL")
         self.db.commit()
 
     # A failed journal write costs the record, never the wake.

@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import subprocess
 import threading
 import time
@@ -819,24 +818,6 @@ def test_a_relevance_wake_journals_its_best_score_and_the_floor(tmp_path, in_top
 
     assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.81,)]
     assert journal.db.execute("SELECT floor, floor_min, floor_max FROM floor").fetchall() == [(0.72, 0.6, 0.9)]
-
-
-def test_a_journal_without_the_score_column_gains_it(tmp_path):
-    """A state file a kit without scores wrote."""
-    state = str(tmp_path / "state.sqlite3")
-    old = sqlite3.connect(state)
-    old.execute(
-        "CREATE TABLE wakes (id INTEGER PRIMARY KEY, started TEXT NOT NULL, finished TEXT, status TEXT NOT NULL,"
-        " runtime TEXT NOT NULL, session TEXT NOT NULL, agent_dir TEXT NOT NULL, topic_id INTEGER,"
-        " post_number INTEGER, title TEXT NOT NULL, reason TEXT NOT NULL)"
-    )
-    old.commit()
-    old.close()
-
-    journal = daemon.Journal(state)
-    journal.begin(daemon.Wake("claude", "/a", 1, 1, "T", "r", "s", score=0.8))
-
-    assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.8,)]
 
 
 def test_the_heartbeat_is_one_row(tmp_path):
