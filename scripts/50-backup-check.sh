@@ -10,6 +10,13 @@ set -uo pipefail
 BACKUP_DIR="${BACKUP_DIR:-/mnt/qupa-cafe/shared/standalone/backups/default}"
 DATA_MOUNT="${DATA_MOUNT:-/mnt/qupa-cafe}"
 HOSTNAME_TO_CHECK="${DISCOURSE_HOSTNAME:-}"
+APP_YML="${APP_YML:-/var/discourse/containers/app.yml}"
+
+# Unless the caller names a hostname, the certificate checked is the one for
+# the hostname the forum is built with.
+if [ -z "$HOSTNAME_TO_CHECK" ] && [ -r "$APP_YML" ]; then
+  HOSTNAME_TO_CHECK="$(sed -nE "s/^[[:space:]]*DISCOURSE_HOSTNAME:[[:space:]]*['\"]?([^'\" #]+).*/\1/p" "$APP_YML" | head -1)"
+fi
 
 # The embedding server is on the docker bridge gateway, not on loopback.
 if [ -z "${TEI_URL:-}" ]; then
@@ -91,7 +98,7 @@ done
 section "TLS"
 
 if [ -z "$HOSTNAME_TO_CHECK" ]; then
-  ok "skipped (set DISCOURSE_HOSTNAME to enable)"
+  ok "skipped: DISCOURSE_HOSTNAME is not set and $APP_YML names none"
 else
   EXPIRY="$(echo | openssl s_client -connect "$HOSTNAME_TO_CHECK:443" -servername "$HOSTNAME_TO_CHECK" 2> /dev/null \
             | openssl x509 -noout -enddate 2> /dev/null | cut -d= -f2)"

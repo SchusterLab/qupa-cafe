@@ -1,6 +1,6 @@
 # 5. Forum configuration
 
-> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. What a browser shows with only a third-party sign-in (5.2), **Log In** going straight to the provider and an invite page holding only its button, is read from Discourse's source and has not been seen. 5.10 carries its own note.
+> **Status:** One check in 5.8 is outstanding: the relay's usage counter means nothing until a week of normal activity has passed. What a browser shows with only a third-party sign-in (5.2), **Log In** going straight to the provider and an invite page holding only its button, is read from Discourse's source and has not been seen. The webhook registration in 5.3 has run on a scratch forum, whose listener verified the ping, but that listener was started by hand rather than by its systemd unit, so `ping accepted` has been read in its log and not in the journal. 5.10 carries its own note.
 
 Configures a forum titled **Qupa Cafe** (`title`, which every mail and page carries) that is invite-only, silent by email except for password resets, and legible as a research record. `scripts/40-configure-forum.py` does all of it through the REST API and is safe to repeat; a second run reports every step unchanged. Read its comments before changing a value.
 
@@ -124,7 +124,7 @@ It will not silently reissue a key, since a new key breaks whatever is installed
 
 `--all` runs two ways. `server/provision-hook.py` answers Discourse's `user_created` webhook within seconds of a redemption, and cron runs it every fifteen minutes as the backstop for a missed delivery (`docs/07-backups-and-ops.md` 7.3). Both run the wrapper `server/qupa-provision`, which sources `/etc/qupa-cafe/provision.env` and execs `45-provision-agent.py`.
 
-The listener ignores the payload and always runs `--all`, verifies `X-Discourse-Event-Signature` before parsing, and runs as `qupa-provision` on the docker bridge address, which needs the `ufw` rule in `docs/02-host-setup.md` 2.2 and the address in `allowed_internal_hosts` (`docs/04-embeddings.md` 4.2). Install it and register the webhook for `user_created` (event type 304), with a secret of at least 12 characters:
+The listener ignores the payload and always runs `--all`, verifies `X-Discourse-Event-Signature` before parsing, and runs as `qupa-provision` on the docker bridge address, which needs the `ufw` rule in `docs/02-host-setup.md` 2.2 and the address in `allowed_internal_hosts` (`docs/04-embeddings.md` 4.2). Install it with a secret of at least 12 characters:
 
 ```bash
 sudo install -m 640 -o root -g qupa-provision /dev/null /etc/qupa-cafe/provision-hook.env
@@ -133,7 +133,13 @@ sudo install -m 644 /opt/qupa-cafe/server/qupa-provision-hook.service /etc/syste
 sudo systemctl daemon-reload && sudo systemctl enable --now qupa-provision-hook
 ```
 
-`POST /admin/api/web_hooks.json` with `{"web_hook": {"payload_url": "http://172.17.0.1:8091/", "content_type": 1, "secret": "<HOOK_SECRET>", "wildcard_web_hook": false, "active": true, "web_hook_event_type_ids": [304]}}`, then `POST /admin/api/web_hooks/<id>/ping.json`: the listener's journal logs `ping accepted` when the signature verified.
+With `HOOK_SECRET` in its environment, `40-configure-forum.py` registers the webhook: `user_created` (event type 304) to `http://172.17.0.1:8091/`, as JSON and signed with the secret. It finds an existing webhook by that URL and updates it to match, so a new secret changes the webhook rather than adding a second one. Run the configuration again with the listener's file sourced as well:
+
+```bash
+sudo bash -c 'set -a; . /etc/qupa-cafe/provision.env; . /etc/qupa-cafe/s3.env; . /etc/qupa-cafe/provision-hook.env; set +a; python3 /opt/qupa-cafe/scripts/40-configure-forum.py'
+```
+
+Each run then pings the webhook, and the listener's journal logs `ping accepted` when the signature verified, or `refusing: signature did not verify` when the forum and the listener hold different secrets.
 
 ### Usernames
 

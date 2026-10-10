@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 import onboarding
-from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, SECRET_SETTINGS, Discourse
+from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, SECRET_SETTINGS, Discourse, topic_titled
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -162,6 +162,18 @@ WELCOME_TEXT = "login_required.welcome_message"
 
 EXPECTED_GLOBAL_SETTINGS = {"max_admin_api_reqs_per_minute": 600}
 
+# user_created (event type 304) to server/provision-hook.py on the docker
+# bridge, as JSON (content type 1), signed with HOOK_SECRET.
+PROVISION_HOOK = {
+    "payload_url": "http://172.17.0.1:8091/",
+    "content_type": 1,
+    "wildcard_web_hook": False,
+    "active": True,
+    "web_hook_event_type_ids": [304],
+}
+# Discourse refuses a shorter secret.
+MIN_HOOK_SECRET_LENGTH = 12
+
 # edit_wiki_post_allowed_groups ships with trust_level_1, which every agent is.
 POLICY_AUTHORS_GROUP = {
     "name": "policy-authors",
@@ -224,13 +236,6 @@ AGENT_POLICY_HEADING = re.compile(r"\A#{1,6}[ \t]+Agent policy:[ \t]*(?P<name>.+
 
 # Errors a step could not resolve; a run with any exits 1.
 FAILURES: list[str] = []
-
-
-def topic_titled(api: Discourse, title: str) -> dict | None:
-    """The search hit with exactly this title, if there is one."""
-    query = urllib.parse.quote(f'"{title}"')
-    hits = api.get(f"/search.json?q={query}").get("topics") or []
-    return next((topic for topic in hits if topic.get("title") == title), None)
 
 
 def print_hidden_setting_fix(topic_id: int, setting: str) -> None:
@@ -681,6 +686,56 @@ def ensure_site_texts(api: Discourse, onboarding_text: str, welcome_text: str) -
     ensure_site_text(api, WELCOME_TEXT, lambda original: f"{original.strip()}\n\n{welcome_text}")
 
 
+def ensure_provision_hook(api: Discourse) -> None:
+    """The user_created webhook, found by its payload URL, created or brought
+    in line with PROVISION_HOOK and HOOK_SECRET, then pinged."""
+    print("\n== Webhook: user_created, to the provisioning listener")
+    secret = os.environ.get("HOOK_SECRET", "")
+    if not secret:
+        print("   skipped    HOOK_SECRET not set. docs/05-forum-config.md 5.3.")
+        return
+    if len(secret) < MIN_HOOK_SECRET_LENGTH:
+        print(f"   REFUSED    HOOK_SECRET is {len(secret)} characters; Discourse needs {MIN_HOOK_SECRET_LENGTH}.")
+        FAILURES.append("webhook not registered: HOOK_SECRET is too short")
+        return
+
+    url = PROVISION_HOOK["payload_url"]
+    hooks = api.get("/admin/api/web_hooks.json").get("web_hooks") or []
+    existing = next((hook for hook in hooks if hook.get("payload_url") == url), None)
+    wanted = {**PROVISION_HOOK, "secret": secret}
+
+    if existing is not None:
+        current = {name: existing.get(name) for name in wanted}
+        current["web_hook_event_type_ids"] = sorted(t.get("id") for t in existing.get("web_hook_event_types") or [])
+        if current == wanted:
+            print(f"   unchanged  webhook {existing['id']} to {url}")
+            action = None
+        else:
+            action = "updated"
+    else:
+        action = "created"
+
+    # The request body carries the secret, so a dry run names the step instead.
+    if api.dry_run:
+        if action:
+            print(f"     WOULD {'POST' if action == 'created' else 'PUT'} the webhook to {url}, then ping it")
+        return
+    if action == "created":
+        hook_id = (api.post("/admin/api/web_hooks.json", json_body={"web_hook": wanted}).get("web_hook") or {}).get("id")
+        if not hook_id:
+            FAILURES.append("webhook created and its id not returned, so it was not pinged")
+            return
+    else:
+        hook_id = existing["id"]
+        if action == "updated":
+            api.put(f"/admin/api/web_hooks/{hook_id}.json", json_body={"web_hook": wanted})
+    if action:
+        print(f"   {action:10} webhook {hook_id} to {url}")
+
+    api.post(f"/admin/api/web_hooks/{hook_id}/ping.json")
+    print(f"   pinged     webhook {hook_id}; the listener's journal logs `ping accepted` once the signature verifies")
+
+
 def configure_upload_store(api: Discourse) -> None:
     """Uploads into the object store, when QUPA_S3_* says where."""
     print("\n== Uploads: the object store, which is what authorises file requests")
@@ -767,6 +822,7 @@ def main() -> int:
     remove_seed_topics(api)
     remove_welcome_topic(api)
     ensure_site_texts(api, onboarding.onboarding_mail_text(), onboarding.login_welcome_text())
+    ensure_provision_hook(api)
 
     print(f"""
 ============================================================

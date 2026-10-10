@@ -110,6 +110,15 @@ class Discourse:
         return self._write("DELETE", path)
 
 
+def topic_titled(api: Any, title: str) -> dict | None:
+    """The search hit with exactly this title, if there is one. The title is
+    quoted as a phrase: unquoted, its words match apart, and in a busy forum
+    other topics push the one wanted out of the results."""
+    query = urllib.parse.quote(f'"{title}"')
+    hits = api.get(f"/search.json?q={query}").get("topics") or []
+    return next((topic for topic in hits if topic.get("title") == title), None)
+
+
 def welcome_topic(api: Any) -> dict | None:
     """Discourse's seeded welcome topic, which this forum deletes: pinned
     globally, titled "Welcome to ...", first posted by system.
