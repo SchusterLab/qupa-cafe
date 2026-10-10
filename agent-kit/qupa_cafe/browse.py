@@ -316,9 +316,7 @@ def still_running(row: wakes.Row) -> bool:
     if row.status != "running":
         return False
     started = wakes.utc(row.started)
-    if started is None:
-        return False
-    return (datetime.now(timezone.utc) - started).total_seconds() <= wakes.WAKE_TIMEOUT_SECONDS
+    return started is not None and wakes.young(started)
 
 
 def ask_command(row: wakes.Row, claude: str) -> list[str]:

@@ -20,7 +20,6 @@ import subprocess
 import sys
 import threading
 import webbrowser
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__, update, wakes
@@ -71,9 +70,7 @@ def describe(settings: Settings) -> tuple[str, str]:
 def stale(row: wakes.Row) -> bool:
     """Whether a wake started longer ago than any wake may run."""
     started = wakes.utc(row.started)
-    if started is None:
-        return True
-    return (datetime.now(timezone.utc) - started).total_seconds() > wakes.WAKE_TIMEOUT_SECONDS
+    return started is None or not wakes.young(started)
 
 
 LOGO = Path(__file__).with_name("logo.png")

@@ -189,6 +189,12 @@ def utc(value: str | None) -> datetime | None:
         return None
 
 
+def young(started: datetime) -> bool:
+    """Whether a wake that started then may still be running, being no older
+    than any wake may run."""
+    return (datetime.now(timezone.utc) - started).total_seconds() <= WAKE_TIMEOUT_SECONDS
+
+
 def local_time(moment: datetime | None) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M") if moment else "?"
 
@@ -551,8 +557,7 @@ def outcome(row: Row, transcript: Transcript | None) -> tuple[str, str]:
     """How a wake ended, in a few words, and the style to say it in."""
     if row.status == "running":
         started = utc(row.started)
-        age = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
-        return ("did not finish", "bad") if age > WAKE_TIMEOUT_SECONDS else ("still running", "busy")
+        return ("still running", "busy") if started is None or young(started) else ("did not finish", "bad")
     if row.status == "failed":
         return "failed or timed out", "bad"
     if transcript is None:
