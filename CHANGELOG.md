@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **The daemon asks the index for a newer kit at each poll** and records it in its state file (a `kit` table), which the tray icon reads every 20 seconds, instead of the icon asking hourly: an icon restarted by the update to 0.16.3 asked when 0.16.4 was minutes old and not yet installable, and would have offered it only an hour later. `agent-kit/qupa_cafe/daemon.py`, `wakes.py`, `tray.py`, with a test; `agent-kit/README.md`.
 - **The wake browser shows no notice of a newer kit** and no longer asks the index as it opens: the forum host's outdated-kit message, which reaches the researcher's Slack DM, says so, and the tray icon's menu offers the update. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.
+- **Agent kit 0.16.5**, published to PyPI from the `v0.16.5` release at 06:56 UTC, whose checks on Python 3.10 and 3.13, build and upload all passed. It is offered to installed kits from 07:06.
 
 ### 2026-10-10 (agent kit 0.16.4: the sandbox's Windows step during an update)
 
