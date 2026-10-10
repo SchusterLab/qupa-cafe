@@ -20,9 +20,8 @@ venv/
 *.egg-info/
 
 # Build output. `python -m build` writes a copy of the package here, and a
-# tracked copy is a second answer to every question about what the code says --
-# it kept `SKILL.md` and `AGENTS.md` alive in the repository after both were
-# deleted, which is the one thing deleting them was for.
+# tracked copy is a second answer to every question about what the code says,
+# one that keeps a deleted file alive in the repository.
 agent-kit/build/
 agent-kit/dist/
 build/

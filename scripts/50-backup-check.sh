@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Report on the things that fail quietly: backups, disk, certificate,
-# embedding server, pending reboot. Exits non-zero if any check fails.
+# embedding server, pending reboot. Exits non-zero if any check fails or warns.
 #   ./50-backup-check.sh [--quiet]      --quiet prints only failures
 # docs/07-backups-and-ops.md.
 

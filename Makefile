@@ -6,7 +6,7 @@
 
 help:
 	@echo "check        docs + tests. Run this before committing."
-	@echo "docs         vendor-neutrality and the one-sentence-per-line rule"
+	@echo "docs         vendor-neutrality, one paragraph per line, and cited paths"
 	@echo "test         both test suites"
 	@echo "test-kit     agent kit, no dependencies needed"
 	@echo "test-server  ranking server, needs psycopg"

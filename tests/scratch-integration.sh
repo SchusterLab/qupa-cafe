@@ -2,9 +2,12 @@
 #
 # End-to-end test against a scratch forum.
 #
-# Creates an admin and an agent account, applies the forum configuration, then
-# drives the agent kit against the result: the policy fetch, an enforced write,
-# a refused write with a stale hash, and one poll of the daemon.
+# Creates an admin and an agent account, applies the forum configuration and
+# checks a second run changes nothing, then drives the agent kit against the
+# result: the policy fetch, a refused write with a stale hash, an enforced write
+# and its attribution, a repeat with the same external_id, a policy edit that
+# invalidates the hash, and one poll of the daemon without a ranking endpoint
+# and with an unreachable one.
 #
 # Run this on a DISPOSABLE forum. It creates accounts, categories, and topics,
 # and it is meant to be run repeatedly. Pointing it at the real forum would put
@@ -20,7 +23,6 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DISCOURSE_DIR="${DISCOURSE_DIR:-/var/discourse}"
 FORUM_URL="${FORUM_URL:-http://localhost}"
 
 ADMIN_USERNAME="${ADMIN_USERNAME:-scratchadmin}"
@@ -40,12 +42,22 @@ die()     { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # `launcher enter` is interactive, so everything server-side goes through
 # `docker exec` on the container instead.
-in_app() {
-  docker exec -i app "$@"
+rails_runner() {
+  docker exec -i app rails runner "$1" 2>/dev/null | tr -d '\r'
 }
 
-rails_runner() {
-  in_app rails runner "$1" 2>/dev/null | tr -d '\r'
+# 40-configure-forum.py as the scratch admin, its output into the file named.
+# Grep that file, not a pipe: under pipefail, a `grep -q` that stops reading
+# early fails the pipeline while the script is still writing to it.
+configure() {
+  DISCOURSE_URL="$FORUM_URL" \
+  DISCOURSE_API_KEY="$ADMIN_KEY" \
+  DISCOURSE_API_USERNAME="$ADMIN_USERNAME" \
+    python3 "$REPO_ROOT/scripts/40-configure-forum.py" > "$1" 2>&1
+}
+
+admin_get() {
+  curl -fsS "$FORUM_URL$1" -H "Api-Key: $ADMIN_KEY" -H "Api-Username: $ADMIN_USERNAME"
 }
 
 # ------------------------------------------------------------------ the forum
@@ -95,10 +107,7 @@ fi
 
 section "Forum configuration"
 
-if DISCOURSE_URL="$FORUM_URL" \
-   DISCOURSE_API_KEY="$ADMIN_KEY" \
-   DISCOURSE_API_USERNAME="$ADMIN_USERNAME" \
-   python3 "$REPO_ROOT/scripts/40-configure-forum.py" > /tmp/configure.log 2>&1; then
+if configure /tmp/configure.log; then
   ok "40-configure-forum.py applied"
 else
   bad "40-configure-forum.py failed"
@@ -117,10 +126,8 @@ fi
 
 section "Idempotency of the configuration"
 
-if DISCOURSE_URL="$FORUM_URL" \
-   DISCOURSE_API_KEY="$ADMIN_KEY" \
-   DISCOURSE_API_USERNAME="$ADMIN_USERNAME" \
-   python3 "$REPO_ROOT/scripts/40-configure-forum.py" 2>&1 | grep -q "unchanged"; then
+configure /tmp/configure-again.log
+if grep -q "unchanged" /tmp/configure-again.log; then
   ok "a second run reports unchanged"
 else
   bad "a second run did not report anything unchanged"
@@ -179,10 +186,8 @@ section "Group flair"
 # Membership grants the group's title but not its flair: the serializer reads
 # flair from user.flair_group, which stays nil until set. So re-running the
 # configure script after the agent exists is what turns the icon on.
-if DISCOURSE_URL="$FORUM_URL" \
-   DISCOURSE_API_KEY="$ADMIN_KEY" \
-   DISCOURSE_API_USERNAME="$ADMIN_USERNAME" \
-   python3 "$REPO_ROOT/scripts/40-configure-forum.py" 2>&1 | grep -qE "flair_group_id|unchanged  $AGENT_USERNAME"; then
+configure /tmp/configure-flair.log
+if grep -qE "flair_group_id|unchanged  $AGENT_USERNAME" /tmp/configure-flair.log; then
   ok "the configure script set or confirmed the agent's flair group"
 else
   bad "the configure script did not touch the agent's flair group"
@@ -205,6 +210,11 @@ export QUPA_POLICY_TOPIC_ID="$POLICY_TOPIC_ID"
 
 mcp() {
   printf '%s\n' "$1" | python3 -m qupa_cafe.server 2>/dev/null
+}
+
+call_tool() {
+  # $1 = tool name, $2 = its arguments as a JSON object
+  mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"
 }
 
 # The tool result is a JSON string nested inside a JSON-RPC envelope, so its
@@ -234,13 +244,13 @@ print("" if node is None else node)
 section "MCP server against the real forum"
 
 LIST="$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
-if printf '%s' "$LIST" | grep -q '"get_policy"' && printf '%s' "$LIST" | grep -q '"reply"'; then
+if grep -q '"get_policy"' <<< "$LIST" && grep -q '"reply"' <<< "$LIST"; then
   ok "tools/list advertises the tools"
 else
   bad "tools/list did not return the expected tools: $LIST"
 fi
 
-POLICY_RESPONSE="$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}')"
+POLICY_RESPONSE="$(call_tool get_policy '{}')"
 POLICY_HASH="$(mcp_field "$POLICY_RESPONSE" policy_hash)"
 
 if [ -n "$POLICY_HASH" ]; then
@@ -260,19 +270,17 @@ else
   bad "no Research category; 40-configure-forum.py should have made one"
 fi
 
-STALE="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy hash and must be refused.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"deadbeefdeadbeef\"}}}")"
+STALE="$(call_tool create_topic "{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy hash and must be refused.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"deadbeefdeadbeef\"}")"
 
-if printf '%s' "$STALE" | grep -q "REFUSED"; then
+if grep -q "REFUSED" <<< "$STALE"; then
   ok "a stale policy_ack is refused"
 else
   bad "a stale policy_ack was NOT refused: $STALE"
 fi
 
 # Match the title field, not the raw body: a search response echoes the query
-# term back under "term", so grepping the body matched unconditionally.
-if curl -fsS "$FORUM_URL/search.json?q=Should+never+be+created" \
-     -H "Api-Key: $ADMIN_KEY" -H "Api-Username: $ADMIN_USERNAME" \
-     | grep -q '"title":"Should never be created"'; then
+# back under "term", so the body always contains it.
+if grep -q '"title":"Should never be created"' <<< "$(admin_get "/search.json?q=Should+never+be+created")"; then
   bad "the refused topic exists on the forum"
 else
   ok "the refused topic does not exist"
@@ -286,7 +294,8 @@ TITLE="Scratch integration $STAMP"
 # against /\A[\w-]+\z/. The normaliser in the MCP server covers agents that
 # do not know that; this test should not depend on it.
 EXTERNAL_ID="scratch-$STAMP"
-CREATED="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
+CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}"
+CREATED="$(call_tool create_topic "$CREATE_ARGUMENTS")"
 
 if [ "$(mcp_field "$CREATED" posted)" = "True" ]; then
   ok "a write with a current policy_ack succeeds"
@@ -299,9 +308,7 @@ NEW_TOPIC_ID="$(mcp_field "$CREATED" result.topic_id)"
 section "Attribution"
 
 if [ -n "$NEW_TOPIC_ID" ]; then
-  AUTHOR="$(curl -fsS "$FORUM_URL/t/$NEW_TOPIC_ID.json" \
-              -H "Api-Key: $ADMIN_KEY" -H "Api-Username: $ADMIN_USERNAME" \
-              | grep -oE '"username":"[^"]+"' | head -1 | cut -d'"' -f4)"
+  AUTHOR="$(admin_get "/t/$NEW_TOPIC_ID.json" | grep -oE '"username":"[^"]+"' | head -1 | cut -d'"' -f4)"
   if [ "$AUTHOR" = "$AGENT_USERNAME" ]; then
     ok "the post is attributed to $AGENT_USERNAME, not to admin"
   else
@@ -313,7 +320,7 @@ fi
 
 section "Idempotency of a write"
 
-REPEAT="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"create_topic\",\"arguments\":{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}}}")"
+REPEAT="$(call_tool create_topic "$CREATE_ARGUMENTS")"
 
 if [ "$(mcp_field "$REPEAT" result.idempotent)" = "True" ]; then
   ok "the same external_id resolves to the existing topic"
@@ -331,15 +338,15 @@ rails_runner "
   puts 'edited'
 " > /dev/null
 
-AFTER_EDIT="$(mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"reply\",\"arguments\":{\"topic_id\":$POLICY_TOPIC_ID,\"raw\":\"This should be refused, because the hash above is now stale.\",\"policy_ack\":\"$POLICY_HASH\"}}}")"
+AFTER_EDIT="$(call_tool reply "{\"topic_id\":$POLICY_TOPIC_ID,\"raw\":\"This should be refused, because the hash above is now stale.\",\"policy_ack\":\"$POLICY_HASH\"}")"
 
-if printf '%s' "$AFTER_EDIT" | grep -q "REFUSED"; then
+if grep -q "REFUSED" <<< "$AFTER_EDIT"; then
   ok "an edit invalidates a hash held from before it"
 else
   bad "a hash from before the edit was still accepted: $AFTER_EDIT"
 fi
 
-NEW_HASH="$(mcp_field "$(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_policy","arguments":{}}}')" policy_hash)"
+NEW_HASH="$(mcp_field "$(call_tool get_policy '{}')" policy_hash)"
 if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$POLICY_HASH" ]; then
   ok "get_policy now returns the new hash, with no redeploy"
 else

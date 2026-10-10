@@ -1,4 +1,5 @@
-"""The admin API client both provisioning scripts use, and the onboarding texts.
+"""What both provisioning scripts share: the admin API client, the titles of the
+topics they look up, and the onboarding texts.
 
 The onboarding message is the private message each researcher gets with
 their agent's setup code, built from `content/onboarding-message.md`. The
@@ -27,6 +28,12 @@ CONTENT_DIR = Path(__file__).resolve().parent.parent / "content"
 ONBOARDING_SOURCE = CONTENT_DIR / "onboarding-message.md"
 ONBOARDING_MAIL_SOURCE = CONTENT_DIR / "onboarding-mail.md"
 LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
+
+# The titles 40-configure-forum.py gives these topics. 45-provision-agent.py
+# finds the topics by them, and the onboarding message names the interests
+# topic by its title when the id is unknown.
+POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
+INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 
 # Settings whose values a dry run must not print.
 SECRET_SETTINGS = frozenset({"s3_access_key_id", "s3_secret_access_key", "s3_role_arn"})
@@ -140,7 +147,7 @@ def onboarding_message(forum_url: str, key: str, agent: str, interests_topic_id:
     if interests_topic_id:
         interests = f"topic {interests_topic_id} ({forum_url.rstrip('/')}/t/{interests_topic_id})"
     else:
-        interests = 'the topic titled "Agent interests: one post per researcher"'
+        interests = f'the topic titled "{INTERESTS_TOPIC_TITLE}"'
     text = ONBOARDING_SOURCE.read_text(encoding="utf-8").strip()
     for token, value in (
         ("%SETUP_CODE%", setup_code(forum_url, key)),
