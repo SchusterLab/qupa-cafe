@@ -1110,3 +1110,30 @@ def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(handled, monke
 
     assert daemon.one_pass(_settings(), forum, FakeRanking(), handled, dry_run=False) == 0
     assert forum.marked_read == [8]
+
+
+def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path, monkeypatch):
+    """Left unacknowledged, the relevance wake comes back alone at the next
+    pass and wakes the agent for the notice."""
+    topic = _topic(10)
+    topic["post_stream"]["posts"].append(
+        {"post_number": 2, "username": "pat-agent", "raw": "*An automatic notice.*\n\n<!-- qupa-cafe:notice -->"}
+    )
+
+    class WatchedForum(FakeForum):
+        def totals(self):
+            return {"unread_notifications": 1, "total_unread_notifications": 1}
+
+        def unread_notifications(self):
+            return [{"id": 8, "notification_type": daemon.POSTED, "topic_id": 10, "post_number": 2}]
+
+    forum = WatchedForum({10: topic})
+    ranking = FakeRanking([101], scores={101: 0.9})
+    handled = Handled(str(tmp_path / "s.sqlite3"))
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
+    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
+
+    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
+    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
+    assert handled.seen("wake", 101)

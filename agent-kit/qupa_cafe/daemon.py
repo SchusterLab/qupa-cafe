@@ -1260,7 +1260,7 @@ def one_pass(
         # is acknowledged without one.
         if candidate.reason == WAKE_TYPES[POSTED] and is_notice(topic) and not dry_run:
             LOG.info("topic %s: the newest post is the forum's notice that an agent cannot answer; not waking", candidate.topic_id)
-            acknowledge(forum, handled, candidate.notification_ids)
+            acknowledge(forum, handled, candidate)
             continue
 
         prompt = build_prompt(settings, candidate.reason, topic, wording)
@@ -1291,9 +1291,7 @@ def one_pass(
             continue
 
         # Acknowledge only now, and only what this wake covered.
-        acknowledge(forum, handled, candidate.notification_ids)
-        for post_id in candidate.post_ids:
-            handled.mark("wake", post_id)
+        acknowledge(forum, handled, candidate)
 
     deferred = len(candidates) - settings.max_wakes_per_pass
     if deferred > 0:
@@ -1302,14 +1300,17 @@ def one_pass(
     return wakes
 
 
-def acknowledge(forum: Forum, handled: Handled, notification_ids: list[int]) -> None:
-    """Mark notifications handled here and read on the forum."""
-    for notification_id in notification_ids:
+def acknowledge(forum: Forum, handled: Handled, candidate: Candidate) -> None:
+    """Mark everything the candidate gathered handled here, so no later pass
+    wakes for any of it, and its notifications read on the forum."""
+    for notification_id in candidate.notification_ids:
         handled.mark("notification", notification_id)
         try:
             forum.mark_read(notification_id)
         except urllib.error.URLError as exc:
             LOG.warning("could not mark notification %s read: %s", notification_id, exc)
+    for post_id in candidate.post_ids:
+        handled.mark("wake", post_id)
 
 
 # What the forum host puts in the notice it posts as an agent that cannot
