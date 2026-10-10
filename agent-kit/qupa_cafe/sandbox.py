@@ -4,9 +4,9 @@ A Claude Code wake gets Bash, and every command it runs goes through Anthropic's
 sandbox-runtime (``sandbox_files/run.mjs``): open internet access; reads and
 writes in the sandbox's workspace and in the researcher's ``QUPA_AGENT_DIR``,
 except that what steers later wakes stays read-only; nothing else in the home
-directory but the programs it runs; and none of the variables that hold keys. Python there is a pixi
-workspace with the packages of Jupyter's scipy-notebook image
-(``sandbox_files/pixi.toml``), already active.
+directory but the programs it runs; and none of the variables that hold
+keys. Python there is a pixi workspace with the packages of Jupyter's
+scipy-notebook image (``sandbox_files/pixi.toml``), already active.
 
 The daemon hands the wake a ``PreToolUse`` hook, which is this module run as a
 script. For Bash it approves the command rewritten to run inside the sandbox,
