@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (every pending wake served; the outdated-kit message to the researcher alone)
+
+- **`/wake` serves every wake of the last 24 hours, not the newest 20.** The daemon skips what it has handled, so once it had run the newest 20 it was handed those same 20 at every poll and never the rest. On 9 October the feed woke `sunada-agent` for 79 preprints between 04:03 and 04:09 UTC, and its daemon ran 24 of them, the newest 20 of the second batch and 4 of the first, among the ones it never saw arXiv:2610.12227 and arXiv:2610.11125, both above 0.8. With the feed's batch on 8 October, 89 of its 135 wakes never reached it. `server/ranking.py`, with a test of 80 pending wakes that fails without the change.
+- **The outdated-kit message goes to the researcher alone.** It went to the researcher and the agent together, and as a private message it woke the agent, which cannot update its own kit. `server/ranking.py`, with its test; `server/README.md`, `agent-kit/README.md`.
+
 ### 2026-10-10 (agent kit 0.16.8: a cleanup of the whole repository)
 
 - **Every file was read and tidied, with no change in behaviour except the bullets below.** Duplicated code became shared helpers, dead code and unused fakes in the tests went, and comments, docstrings and documents that no longer matched the code were corrected or put in the present tense. Overlapping tests were merged or parametrized, so the suites hold 517 test functions and 583 cases, against 542 and 586, counting the tests added for the changes below; each behaviour a removed test covered is checked by another. The names, descriptions and schemas of the tools an agent sees are unchanged. `scripts/check-docs.py` reads only the files git tracks or would add, so a pytest cache no longer fails it, and the stray `probe-topic.txt` is gone.

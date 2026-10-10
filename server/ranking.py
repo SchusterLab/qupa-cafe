@@ -1029,8 +1029,10 @@ class Ranker:
         return candidate if self.forum.user(candidate) else None
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
-        """Tell the researcher and their agent that the kit is behind, once
-        per reported version. Service is never refused for a version."""
+        """Tell the researcher that their agent's kit is behind, once per
+        reported version. Not the agent, which cannot update its own kit, and
+        which a private message would wake. Service is never refused for a
+        version."""
         reported = str(upgrade.get("reported") or "")
         if not reported:
             return
@@ -1062,12 +1064,8 @@ class Ranker:
             LOG.error("cannot read the kit-outdated message: %s", exc)
             return
 
-        if self.forum.private_message(
-            f"{researcher},{agent}",
-            f"Agent kit {reported} is behind {latest}",
-            body,
-        ):
-            LOG.info("told %s and %s that the kit is behind", researcher, agent)
+        if self.forum.private_message(researcher, f"Agent kit {reported} is behind {latest}", body):
+            LOG.info("told %s that %s's kit is behind", researcher, agent)
             self.state.record_notice("kit-outdated", agent, digest)
 
     def unanswered(self, since: datetime) -> list[tuple[str, int, datetime, bool, str]]:
@@ -1508,14 +1506,16 @@ class Ranker:
 
     # ------------------------------------------------------------ read side
 
-    def pending_for(self, agent: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Wakes recorded for one agent in the last 24 hours, newest first. A
-        window rather than the calendar day, so a wake just before midnight is
-        still there at the daemon's next poll; the daemon skips what it has."""
+    def pending_for(self, agent: str) -> list[dict[str, Any]]:
+        """Every wake recorded for one agent in the last 24 hours, newest first.
+        A window rather than the calendar day, so a wake just before midnight
+        is still there at the daemon's next poll. All of them, because the
+        daemon skips what it has handled: the newest few alone would be the
+        same handled wakes at every poll, and the rest would never be served."""
         since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         rows = self.state.db.execute(
-            "SELECT post_id, at, similarity FROM wakes WHERE agent = ? AND at >= ? ORDER BY post_id DESC LIMIT ?",
-            (agent, since, limit),
+            "SELECT post_id, at, similarity FROM wakes WHERE agent = ? AND at >= ? ORDER BY post_id DESC",
+            (agent, since),
         ).fetchall()
         return [{"post_id": row[0], "at": row[1], "similarity": row[2]} for row in rows]
 

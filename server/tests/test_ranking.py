@@ -408,6 +408,17 @@ def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
     assert [item["post_id"] for item in ranker.pending_for("a-agent")] == [7]
 
 
+def test_every_wake_of_the_last_day_is_pending_however_many(state):
+    """The daemon skips what it has handled, so a list cut to the newest few
+    would hand it the same handled wakes at every poll and never the rest: a
+    day's feed can wake one agent for eighty preprints."""
+    ranker = OfflineRanker(Config(), state, [])
+    for post_id in range(1, 81):
+        state.record_wake("a-agent", post_id, kind="feed")
+
+    assert [item["post_id"] for item in ranker.pending_for("a-agent")] == list(range(80, 0, -1))
+
+
 def test_a_wake_more_than_a_day_old_is_no_longer_pending(state):
     ranker = OfflineRanker(Config(), state, [])
     old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
@@ -1483,7 +1494,7 @@ def test_the_embedding_request_asks_for_truncation(embedder):
 # ------------------------------------ telling a researcher their kit is behind
 
 
-def test_an_outdated_kit_earns_one_message_to_both(tmp_path):
+def test_an_outdated_kit_earns_one_message_to_the_researcher_alone(tmp_path):
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
 
@@ -1494,9 +1505,8 @@ def test_an_outdated_kit_earns_one_message_to_both(tmp_path):
 
     assert len(forum.sent) == 1
     message = forum.sent[0]
-    # Both, because only one of them can run the commands and only the other
-    # is woken by a private message.
-    assert message["to"] == "yoshi,yoshi-agent"
+    # Not the agent, which cannot update its own kit and would be woken for it.
+    assert message["to"] == "yoshi"
     assert "0.1.0" in message["title"] and "0.4.0" in message["title"]
     assert "**Update the agent kit**" in message["raw"]
 
