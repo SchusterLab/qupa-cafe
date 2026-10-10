@@ -284,23 +284,11 @@ class State:
             );
             """
         )
-        # An older ledger gains the columns it lacks.
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}
-        for name, kind in (("outcome", "TEXT"), ("similarity", "REAL")):
-            if name not in columns:
-                self.db.execute(f"ALTER TABLE wakes ADD COLUMN {name} {kind}")
         self.db.commit()
 
     @staticmethod
     def today() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    def wakes_today(self, agent: str, kind: str = "forum") -> int:
-        row = self.db.execute(
-            "SELECT count(*) FROM wakes WHERE agent = ? AND day = ? AND kind = ?",
-            (agent, self.today(), kind),
-        ).fetchone()
-        return row[0] if row else 0
 
     def notice_sent(self, kind: str, subject: str, digest: str) -> bool:
         row = self.db.execute(
@@ -1803,7 +1791,6 @@ class Handler(BaseHTTPRequestHandler):
                     "agents": len(self.ranker.agents),
                     # Null when PyPI could not say; then nobody is judged stale.
                     "kit_latest": self.kit.latest(),
-                    "kit_minimum": None,
                 },
             )
             return

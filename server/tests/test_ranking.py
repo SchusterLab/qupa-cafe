@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import threading
 import urllib.error
@@ -205,22 +204,30 @@ def state(tmp_path):
     return State(str(tmp_path / "ranking.sqlite3"))
 
 
+def wakes_today(state, agent, kind="forum"):
+    """How many wakes of one kind the ledger holds for an agent today."""
+    return state.db.execute(
+        "SELECT count(*) FROM wakes WHERE agent = ? AND day = ? AND kind = ?",
+        (agent, state.today(), kind),
+    ).fetchone()[0]
+
+
 def test_recording_a_wake_counts_it(state):
-    assert state.wakes_today("agent") == 0
+    assert wakes_today(state, "agent") == 0
     state.record_wake("agent", 1)
-    assert state.wakes_today("agent") == 1
+    assert wakes_today(state, "agent") == 1
 
 
 def test_the_same_post_counts_once(state):
     """Otherwise a retry wakes an agent twice for one post."""
     state.record_wake("agent", 1)
     state.record_wake("agent", 1)
-    assert state.wakes_today("agent") == 1
+    assert wakes_today(state, "agent") == 1
 
 
 def test_agents_have_separate_ledgers(state):
     state.record_wake("one", 1)
-    assert state.wakes_today("two") == 0
+    assert wakes_today(state, "two") == 0
 
 
 def test_already_woken_is_per_post(state):
@@ -236,15 +243,15 @@ def test_the_ledger_survives_a_restart(tmp_path):
 
     State(path).record_wake("agent", 1)
 
-    assert State(path).wakes_today("agent") == 1
+    assert wakes_today(State(path), "agent") == 1
 
 
 def test_feed_wakes_and_forum_wakes_are_counted_apart(state):
     state.record_wake("agent", 1, "feed")
     state.record_wake("agent", 2)
 
-    assert state.wakes_today("agent", "feed") == 1
-    assert state.wakes_today("agent") == 1
+    assert wakes_today(state, "agent", "feed") == 1
+    assert wakes_today(state, "agent") == 1
 
 
 def test_the_cursor_starts_at_zero_and_moves(state):
@@ -306,8 +313,8 @@ def test_no_number_of_wakes_stops_an_agent_being_woken(state):
                  for d in ranker.score_post(a_post(n, "arxiv-bot" if n % 2 else "someone"))]
 
     assert {d.reason for d in decisions} == {"woken"}
-    assert state.wakes_today("a-agent", "feed") == 50
-    assert state.wakes_today("a-agent") == 50
+    assert wakes_today(state, "a-agent", "feed") == 50
+    assert wakes_today(state, "a-agent") == 50
 
 
 class ReplyRanker(OfflineRanker):
@@ -515,20 +522,6 @@ def test_the_floor_and_the_outcomes_survive_a_restart(tmp_path):
 
     assert reopened.floor("a-agent", config.similarity_floor) == 0.68
     assert reopened.unsettled_wakes() == {}
-
-
-def test_a_ledger_without_outcomes_gains_the_column(tmp_path):
-    path = str(tmp_path / "ranking.sqlite3")
-    old = sqlite3.connect(path)
-    old.execute(
-        "CREATE TABLE wakes (agent TEXT NOT NULL, post_id INTEGER NOT NULL, day TEXT NOT NULL, "
-        "at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'forum', PRIMARY KEY (agent, post_id))"
-    )
-    old.execute("INSERT INTO wakes VALUES ('a-agent', 1, '2026-10-05', '2026-10-05T12:00:00+00:00', 'forum')")
-    old.commit()
-    old.close()
-
-    assert State(path).unsettled_wakes() == {"a-agent": [(1, "2026-10-05T12:00:00+00:00")]}
 
 
 class SettlingRanker(OfflineRanker):
@@ -1188,13 +1181,13 @@ def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
     assert status == 401
 
 
-def test_health_reports_no_kit_minimum(endpoint):
-    """No kit version is refused, and /health says so with a null
-    ``kit_minimum`` rather than by leaving it out."""
+def test_health_reports_the_latest_kit_and_nothing_else_about_kits(endpoint):
+    """No kit is refused, so /health carries no minimum version beside the
+    latest one."""
     with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
         payload = json.load(response)
 
-    assert payload["kit_minimum"] is None
+    assert set(payload) == {"ok", "agents", "kit_latest"}
     assert payload["kit_latest"] == "0.9.0"
 
 
