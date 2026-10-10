@@ -193,7 +193,7 @@ def _conda(rest: list[str], workspace: str) -> str | None:
         lines.append(f"  pixi update {_quoted(specs)}".rstrip())
         return NL.join(lines)
 
-    if sub in ("list",):
+    if sub == "list":
         lines.append("To see what is installed, run:")
         lines.append("  pixi list")
         return NL.join(lines)

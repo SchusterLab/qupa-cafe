@@ -2,46 +2,36 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import qupa_cafe.install as install
 
-from conftest import POLICY_TOPIC_ID
 
+@pytest.mark.parametrize(
+    "interpreter, script",
+    [
+        # A conda environment: python.exe at its root, the scripts in Scripts/.
+        ("envs/default/python.exe", "envs/default/Scripts/qupa-daemon.exe"),
+        # A virtualenv, on either platform: the scripts beside the interpreter.
+        ("venv/bin/python", "venv/bin/qupa-mcp"),
+    ],
+)
+def test_a_console_script_is_found_where_its_environment_puts_it(monkeypatch, tmp_path, interpreter, script):
+    """Missing it means falling back to ``python -m``, which puts the working
+    directory on ``sys.path``: an agent started inside a checkout of this
+    repository would load that copy of the package rather than the installed
+    one. A console script has no such ambiguity."""
+    for path in (tmp_path / interpreter, tmp_path / script):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
 
-def test_a_console_script_is_found_in_a_conda_layout(monkeypatch, tmp_path):
-    """``python.exe`` sits at the environment root there, not beside the scripts.
+    monkeypatch.setattr(install.sys, "executable", str(tmp_path / interpreter))
 
-    Missing it means falling back to ``python -m``, which is not the same
-    thing: ``-m`` puts the working directory on ``sys.path``, so an agent
-    started inside a checkout of this repository would load that copy of the
-    package rather than the installed one. A console script has no such
-    ambiguity, which is the reason to prefer it.
-    """
-    env = tmp_path / "envs" / "default"
-    (env / "Scripts").mkdir(parents=True)
-    (env / "python.exe").write_text("")
-    script = env / "Scripts" / "qupa-daemon.exe"
-    script.write_text("")
-
-    monkeypatch.setattr(install.sys, "executable", str(env / "python.exe"))
-
-    assert install.console_script("qupa-daemon") == script
-
-
-def test_a_console_script_is_found_beside_the_interpreter(monkeypatch, tmp_path):
-    """Which is where a virtualenv puts it, on either platform."""
-    bindir = tmp_path / "venv" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "python").write_text("")
-    script = bindir / "qupa-mcp"
-    script.write_text("")
-
-    monkeypatch.setattr(install.sys, "executable", str(bindir / "python"))
-
-    assert install.console_script("qupa-mcp") == script
+    assert install.console_script(Path(script).stem) == tmp_path / script
 
 
 def test_a_missing_console_script_is_reported_as_absent(monkeypatch, tmp_path):
@@ -54,7 +44,7 @@ def test_a_missing_console_script_is_reported_as_absent(monkeypatch, tmp_path):
 
 
 def test_windows_names_the_interpreter_rather_than_a_launcher(monkeypatch):
-    """The bug this guards is a terminal window on the researcher's desktop.
+    """Otherwise a terminal window sits on the researcher's desktop.
 
     A console script on Windows is a launcher `.exe` that starts `python.exe`
     as a child. Creation flags do not reach a grandchild, so CREATE_NO_WINDOW
@@ -72,7 +62,7 @@ def test_windows_names_the_interpreter_rather_than_a_launcher(monkeypatch):
 
 
 def test_the_working_directory_is_kept_off_the_import_path(monkeypatch):
-    """Which is what the console script gave and `-m` does not.
+    """``-P`` undoes what ``-m`` adds to the import path.
 
     Without it a daemon whose working directory is a checkout of this
     repository imports the checkout's copy of the package, not the installed
@@ -133,17 +123,21 @@ def test_an_unreachable_forum_says_so_instead(forum):
 
 
 def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
-    """Nothing here searches for it.
-
-    A search needs the topic's title, and a title compiled into a release
-    strands every installed agent the day somebody renames the topic. The
-    forum host answers instead, and an unanswered install asks.
-    """
+    """Nothing here searches for it by title, since a title compiled into a
+    release strands every installed agent the day somebody renames the topic.
+    The forum host answers instead, and an unanswered install asks."""
+    monkeypatch.setenv("QUPA_FORUM_URL", "https://forum.example.org")
+    monkeypatch.setenv("QUPA_API_KEY", "k")
+    monkeypatch.setenv("QUPA_API_USERNAME", "rsmith-agent")
+    for name in ("QUPA_SETUP_CODE", "QUPA_POLICY_TOPIC_ID", "QUPA_RESEARCHER"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         install, "ask_the_forum_host", lambda s: {"researcher": "rsmith", "policy_topic_id": "42"}
     )
 
-    assert "find_policy_topic" not in dir(install)
+    settings = install.collect(non_interactive=True)
+
+    assert settings["policy_topic_id"] == "42" and settings["researcher"] == "rsmith"
 
 
 def test_the_windows_startup_entry_restarts_the_daemon():
@@ -163,8 +157,8 @@ def test_the_windows_daemon_search_ignores_quotes():
     `"-m" "qupa_cafe.daemon"` on its command line. A search for the unquoted
     form misses it, and an upgrade leaves the old daemon running.
 
-    Asserted against the PowerShell text because these tests do not run
-    PowerShell; the search itself was run against a real Startup-entry daemon.
+    Asserted against the PowerShell text, since these tests do not run
+    PowerShell.
     """
     import inspect
 
@@ -224,15 +218,11 @@ def test_the_tray_keeps_pythonw_outside_a_venv(monkeypatch):
     assert install.named_tray_interpreter() is None
 
 
+@pytest.mark.skipif(install.os.name != "nt", reason="version resources are Windows-only")
 def test_the_named_copy_carries_the_forum_name(tmp_path):
-    import pytest
-
-    if install.os.name != "nt":
-        pytest.skip("version resources are Windows-only")
     exe = tmp_path / "copy.exe"
     install.shutil.copy2(install.sys.executable, exe)
     install.file_description(exe, "Qupa Cafe")
-    import subprocess
 
     out = subprocess.run(
         ["powershell", "-NoProfile", "-Command", f"(Get-Item '{exe}').VersionInfo.FileDescription"],
@@ -268,11 +258,15 @@ def test_the_install_fails_when_the_agent_cannot_be_woken(monkeypatch, capsys):
 
 
 def _claude_state(tmp_path, monkeypatch, projects):
-    import json
-
+    """Claude Code's own state, trusting the directories ``projects`` names."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
-    (tmp_path / "claude-config").mkdir()
+    (tmp_path / "claude-config").mkdir(exist_ok=True)
     (tmp_path / "claude-config" / ".claude.json").write_text(json.dumps({"projects": projects}), encoding="utf-8")
+
+
+def _key(path):
+    """A directory as Claude Code names it in its state."""
+    return str(path.resolve()).replace("\\", "/")
 
 
 def test_a_directory_claude_code_trusts_is_seen_as_trusted(tmp_path, monkeypatch):
@@ -280,8 +274,7 @@ def test_a_directory_claude_code_trusts_is_seen_as_trusted(tmp_path, monkeypatch
     monkeypatch.setattr(install.Path, "home", lambda: tmp_path / "home")
     agent = tmp_path / "research" / "agent"
     agent.mkdir(parents=True)
-    key = str((tmp_path / "research").resolve()).replace("\\", "/")
-    _claude_state(tmp_path, monkeypatch, {key: {"hasTrustDialogAccepted": True}})
+    _claude_state(tmp_path, monkeypatch, {_key(tmp_path / "research"): {"hasTrustDialogAccepted": True}})
     # Trust carries down to the folders inside a trusted one.
     assert install.claude_trusts(str(agent))
     assert not install.claude_trusts(str(tmp_path / "elsewhere"))
@@ -290,8 +283,7 @@ def test_a_directory_claude_code_trusts_is_seen_as_trusted(tmp_path, monkeypatch
 def test_trust_declined_or_never_asked_is_not_trust(tmp_path, monkeypatch):
     agent = tmp_path / "agent"
     agent.mkdir()
-    key = str(agent.resolve()).replace("\\", "/")
-    _claude_state(tmp_path, monkeypatch, {key: {"hasTrustDialogAccepted": False}})
+    _claude_state(tmp_path, monkeypatch, {_key(agent): {"hasTrustDialogAccepted": False}})
     assert not install.claude_trusts(str(agent))
 
 
@@ -321,9 +313,8 @@ def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path,
     monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
     agent = tmp_path / "agent"
     agent.mkdir()
-    _claude_state(tmp_path, monkeypatch, {str(tmp_path.resolve()).replace("\\", "/"): {"hasTrustDialogAccepted": True}})
+    _claude_state(tmp_path, monkeypatch, {_key(tmp_path): {"hasTrustDialogAccepted": True}})
     assert not install.claude_trusts(str(agent))
     # Nor does a folder above the home directory.
-    _claude_state_again = {str(tmp_path.parent.resolve()).replace("\\", "/"): {"hasTrustDialogAccepted": True}}
-    (tmp_path / "claude-config" / ".claude.json").write_text(__import__("json").dumps({"projects": _claude_state_again}), encoding="utf-8")
+    _claude_state(tmp_path, monkeypatch, {_key(tmp_path.parent): {"hasTrustDialogAccepted": True}})
     assert not install.claude_trusts(str(agent))

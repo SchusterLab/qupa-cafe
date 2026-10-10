@@ -10,6 +10,7 @@ Startup-folder entry on Windows, which needs no elevation.
     --non-interactive                # setup code, or forum URL and key, from the environment
     --no-service                     # configure, register nothing
     --no-sandbox                     # wake the agent without the sandbox
+    --skip-wake-check                # do not wake the agent once at the end
 """
 
 from __future__ import annotations
@@ -23,17 +24,13 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.request
-import sys
 from pathlib import Path
 from typing import Any
 
-from . import local, sandbox
-from . import (
-    RANKING_PATH,
-    __version__,
-)
+from . import RANKING_PATH, __version__, local, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -42,6 +39,14 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PACKAGE_NAME = "qupa-cafe"
 
 CLAUDE_MCP_PATH = Path.home() / ".claude" / "qupa-cafe.mcp.json"
+
+DAEMON_UNIT = "qupa-cafe-daemon"
+DAEMON_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
+DAEMON_VBS = "qupa-cafe-daemon.vbs"
+
+# DETACHED_PROCESS | CREATE_NO_WINDOW, for a process started on Windows that
+# outlives the installer and shows no console.
+WINDOWS_DETACHED = 0x00000008 | 0x08000000
 
 # A setup code is this, then the forum URL and the key, a newline between
 # them, in URL-safe base64 without padding: scripts/onboarding.py writes it.
@@ -356,9 +361,8 @@ def verify(settings: dict[str, str]) -> bool:
     return True
 
 
-def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
-    """The researcher's account and the policy topic, as the forum host
-    answers them; either may be empty."""
+def handshake(settings: dict[str, str]) -> dict:
+    """The forum host's answer to this agent's handshake, asked as the daemon asks it."""
     from .daemon import Ranking, Settings
 
     probe = Ranking(
@@ -369,7 +373,13 @@ def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
             ranking_url=settings.get("ranking_url", ""),
         )
     )
-    answer = probe.handshake(settings["api_username"])
+    return probe.handshake(settings["api_username"])
+
+
+def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
+    """The researcher's account and the policy topic, as the forum host
+    answers them; either may be empty."""
+    answer = handshake(settings)
     return {
         "researcher": str(answer.get("researcher") or ""),
         "policy_topic_id": str(answer.get("policy_topic_id") or ""),
@@ -379,17 +389,7 @@ def ask_the_forum_host(settings: dict[str, str]) -> dict[str, str]:
 def check_kit_version(settings: dict[str, str]) -> bool:
     """Report what the forum says about this kit's version. False only for an
     outright refusal, which stops the install."""
-    from .daemon import Ranking, Settings
-
-    probe = Ranking(
-        Settings(
-            forum_url=settings["forum_url"],
-            api_key=settings["api_key"],
-            api_username=settings["api_username"],
-            ranking_url=settings.get("ranking_url", ""),
-        )
-    )
-    result = probe.handshake(settings["api_username"])
+    result = handshake(settings)
     upgrade = result.get("upgrade") or {}
 
     if result.get("refused"):
@@ -436,10 +436,6 @@ def write_env(settings: dict[str, str]) -> None:
         f"QUPA_API_KEY={settings['api_key']}",
         f"QUPA_POLICY_TOPIC_ID={settings['policy_topic_id']}",
         "",
-        "# The policy this machine agreed to. A forum-side edit alone will not",
-        "# change what your agent does: writes stop until this matches again,",
-        "# which is deliberate. Re-run the installer to accept a new policy.",
-        "",
         "# Which account your own is, as the forum host reported it. The MCP",
         "# server reads this to know who a message its agent starts should",
         "# reach, and does not guess when it is empty.",
@@ -449,7 +445,7 @@ def write_env(settings: dict[str, str]) -> None:
         "",
         "# The daemon hands this to the runtime, so a woken agent has the forum",
         "# tools. Without it the agent wakes, reads the thread and cannot answer.",
-        f"QUPA_MCP_CONFIG={Path.home() / '.claude' / 'qupa-cafe.mcp.json'}",
+        f"QUPA_MCP_CONFIG={CLAUDE_MCP_PATH}",
         "",
         "# Where to run the agent. Both runtimes read their project instructions",
         "# from the working directory, and a daemon started by the system has no",
@@ -606,9 +602,6 @@ def windows_startup_script(command: str) -> str:
     )
 
 
-DAEMON_VBS = "qupa-cafe-daemon.vbs"
-
-
 def startup_dir() -> Path:
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
@@ -637,7 +630,7 @@ def start_startup_entry(entry: Path) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=0x00000008 | 0x08000000,  # DETACHED_PROCESS, CREATE_NO_WINDOW
+            creationflags=WINDOWS_DETACHED,
         )
     except OSError as exc:
         print(f"  could not run {entry}: {exc}")
@@ -661,7 +654,7 @@ def start_daemon_now() -> bool:
         "stderr": subprocess.DEVNULL,
     }
     if os.name == "nt":
-        kwargs["creationflags"] = 0x00000008 | 0x08000000  # DETACHED_PROCESS, CREATE_NO_WINDOW
+        kwargs["creationflags"] = WINDOWS_DETACHED
     else:
         kwargs["start_new_session"] = True
 
@@ -697,7 +690,7 @@ def stop_running_daemon() -> bool:
 
     if system == "Linux" and shutil.which("systemctl"):
         result = subprocess.run(
-            ["systemctl", "--user", "stop", "qupa-cafe-daemon"],
+            ["systemctl", "--user", "stop", DAEMON_UNIT],
             capture_output=True,
             text=True,
         )
@@ -707,7 +700,7 @@ def stop_running_daemon() -> bool:
 
     if system == "Darwin" and shutil.which("launchctl"):
         subprocess.run(
-            ["launchctl", "unload", str(Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist")],
+            ["launchctl", "unload", str(DAEMON_PLIST)],
             capture_output=True,
             text=True,
         )
@@ -724,7 +717,7 @@ def stop_running_daemon() -> bool:
         # The Startup loop first, or it restarts the old daemon.
         script = (
             "Get-CimInstance Win32_Process |"
-            " Where-Object { $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*qupa-cafe-daemon.vbs*' } |"
+            f" Where-Object {{ $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{DAEMON_VBS}*' }} |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
@@ -765,14 +758,14 @@ def restart_daemon() -> tuple[bool, str]:
 
     if system == "Linux" and shutil.which("systemctl"):
         result = subprocess.run(
-            ["systemctl", "--user", "restart", "qupa-cafe-daemon"], capture_output=True, text=True
+            ["systemctl", "--user", "restart", DAEMON_UNIT], capture_output=True, text=True
         )
         if result.returncode == 0:
             return True, "Restarted the daemon."
         return False, f"systemctl could not restart it: {(result.stderr or '').strip()[:200]}"
 
     if system == "Darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
+        plist = DAEMON_PLIST
         if not plist.is_file():
             return False, f"No daemon is registered ({plist} is missing). Run qupa-install."
         subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, text=True)
@@ -801,7 +794,7 @@ def register_service(settings: dict[str, str]) -> None:
     if system == "Linux":
         unit_dir = Path.home() / ".config" / "systemd" / "user"
         unit_dir.mkdir(parents=True, exist_ok=True)
-        unit = unit_dir / "qupa-cafe-daemon.service"
+        unit = unit_dir / f"{DAEMON_UNIT}.service"
         pythonpath = f"Environment=PYTHONPATH={root}\n" if root is not None else ""
         unit.write_text(
             f"""[Unit]
@@ -824,18 +817,17 @@ WantedBy=default.target
         if shutil.which("systemctl"):
             run_step(["systemctl", "--user", "daemon-reload"], "reloaded the user units", "reload the user units")
             if run_step(
-                ["systemctl", "--user", "enable", "--now", "qupa-cafe-daemon"],
-                "enabled qupa-cafe-daemon",
-                "enable qupa-cafe-daemon",
+                ["systemctl", "--user", "enable", "--now", DAEMON_UNIT],
+                f"enabled {DAEMON_UNIT}",
+                f"enable {DAEMON_UNIT}",
             ):
-                print("        check it with: systemctl --user status qupa-cafe-daemon")
+                print(f"        check it with: systemctl --user status {DAEMON_UNIT}")
         else:
             print("  no systemctl here; start the daemon yourself.")
 
     elif system == "Darwin":
-        plist_dir = Path.home() / "Library" / "LaunchAgents"
-        plist_dir.mkdir(parents=True, exist_ok=True)
-        plist = plist_dir / "cafe.qupa.daemon.plist"
+        plist = DAEMON_PLIST
+        plist.parent.mkdir(parents=True, exist_ok=True)
 
         program_arguments = "\n".join(f"    <string>{a}</string>" for a in argv)
 
@@ -916,14 +908,12 @@ TRAY_EXTRA = f'"{PACKAGE_NAME}[tray]"'
 TRAY_VBS = "qupa-cafe-tray.vbs"
 TRAY_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.tray.plist"
 TRAY_DESKTOP = Path.home() / ".config" / "autostart" / "qupa-cafe-tray.desktop"
+TRAY_EXE = "Qupa Cafe.exe"
 
 
 def tray_available() -> bool:
     """Whether the tray extra's pystray is installed."""
     return importlib.util.find_spec("pystray") is not None
-
-
-TRAY_EXE = "Qupa Cafe.exe"
 
 
 def file_description(path: Path, name: str) -> None:
@@ -1252,10 +1242,10 @@ def ensure_claude_trust(agent_dir: str) -> bool:
         return False
     if not (sys.stdin and sys.stdin.isatty()):
         print(f"  Claude Code does not trust {agent_dir}, and nobody is here to say it may.")
-        print(f"  Run `claude` there once, accept its question, and re-run qupa-install.")
+        print("  Run `claude` there once, accept its question, and re-run qupa-install.")
         return False
     Path(agent_dir).mkdir(parents=True, exist_ok=True)
-    print(f"  Claude Code runs your agent's wakes only in a directory you trust. It will now ask")
+    print("  Claude Code runs your agent's wakes only in a directory you trust. It will now ask")
     print(f"  whether to trust {agent_dir}: choose to trust it, and it closes by itself.")
     subprocess.call([claude, "/exit"], cwd=agent_dir, env=outside_session_env())
     if claude_trusts(agent_dir):
@@ -1290,7 +1280,7 @@ def check_agent_wakes(settings: dict[str, str], sandboxed: bool | None) -> bool:
     if not check.woken:
         print(f"  FAILED: {check.said}")
         if runtime == "claude" and "trusted" in check.said:
-            print(f"  Claude Code runs a wake only in a directory you have trusted. Run `claude` once in")
+            print("  Claude Code runs a wake only in a directory you have trusted. Run `claude` once in")
             print(f"  {settings.get('agent_dir') or 'your agent directory'}, accept its prompt, then re-run qupa-install.")
         elif runtime == "claude":
             print("  Install Claude Code (https://claude.com/claude-code), then run `claude` once")

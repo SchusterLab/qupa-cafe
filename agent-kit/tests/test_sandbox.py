@@ -212,7 +212,7 @@ def test_the_kits_own_environment_is_protected_where_the_agents_directory_holds_
 
 def test_a_configuration_naming_only_readable_directories_grants_no_writes(installed):
     config = dict(installed, readable=installed["agent_dirs"], agent_dirs=[])
-    path = Path(installed["readable"][0] if "readable" in installed else config["readable"][0]) / "x"
+    path = Path(config["readable"][0]) / "x"
     out = sandbox.decide({"tool_name": "Write", "tool_input": {"file_path": str(path)}}, config)["hookSpecificOutput"]
     assert "permissionDecision" not in out
 
@@ -234,6 +234,7 @@ def test_a_directory_holding_the_kits_key_is_not_opened_to_the_sandbox(monkeypat
 
     assert sandbox.writable_agent_dirs(str(tmp_path))[0] == []
     assert sandbox.writable_agent_dirs(str(tmp_path / "research"))[0] == [str((tmp_path / "research").resolve())]
+
 
 def test_the_hook_runs_as_a_script(installed):
     """Which is how Claude Code runs it, with no package on the path."""
@@ -345,11 +346,10 @@ def test_only_what_is_missing_is_installed(monkeypatch):
 
 def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch, tmp_path):
     import io
-    import json as _json
 
     release = {"assets": [{"name": "PortableGit-9.9-64-bit.7z.exe", "size": 3, "digest": "sha256:" + "0" * 64,
                            "browser_download_url": "https://example.invalid/pg.exe"}]}
-    bodies = {sandbox.GIT_RELEASE_API: _json.dumps(release).encode(), "https://example.invalid/pg.exe": b"exe"}
+    bodies = {sandbox.GIT_RELEASE_API: json.dumps(release).encode(), "https://example.invalid/pg.exe": b"exe"}
 
     class Response(io.BytesIO):
         def __enter__(self):

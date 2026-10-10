@@ -1,22 +1,24 @@
 """The sandbox a woken agent runs commands in.
 
 A Claude Code wake gets Bash, and every command it runs goes through Anthropic's
-sandbox-runtime (``sandbox_files/run.mjs``): open internet access, writes to the
-sandbox's workspace only, reads of the workspace and of the researcher's
-``QUPA_AGENT_DIR`` and of nothing else in the home directory, and none of the
-variables that hold keys. Python there is a pixi workspace with the packages of
-Jupyter's scipy-notebook image (``sandbox_files/pixi.toml``), already active.
+sandbox-runtime (``sandbox_files/run.mjs``): open internet access; reads and
+writes in the sandbox's workspace and in the researcher's ``QUPA_AGENT_DIR``,
+except that what steers later wakes stays read-only; nothing else in the home
+directory but the programs it runs; and none of the variables that hold keys. Python there is a pixi
+workspace with the packages of Jupyter's scipy-notebook image
+(``sandbox_files/pixi.toml``), already active.
 
 The daemon hands the wake a ``PreToolUse`` hook, which is this module run as a
 script. For Bash it approves the command rewritten to run inside the sandbox,
 or refuses a pip or conda install with the pixi command to run instead
-(``qupa_cafe.pixi_advice``). For Read, Write, Edit, Glob and Grep it approves a
-path the sandbox could reach the same way, and leaves any other path to the
-researcher's own Claude Code settings. Codex wakes are not sandboxed.
+(``qupa_cafe.pixi_advice``). For the file tools (``READ_TOOLS`` and
+``WRITE_TOOLS``) it approves a path the sandbox could reach the same way, and
+leaves any other path to the researcher's own Claude Code settings. Codex
+wakes are not sandboxed.
 
 ``qupa-install`` sets it up with ``setup``; without node, npm and pixi, or on
 Windows without the runtime's one-time elevated install, it reports what is
-missing and wakes run as before, with no Bash.
+missing, and wakes run with the forum tools and no Bash.
 
     python -m qupa_cafe.sandbox check     # run a test command in the sandbox
 """
@@ -382,10 +384,15 @@ def find(name: str) -> str | None:
     return None
 
 
-# The commands the sandbox needs on this system beside pixi, and the
-# conda-forge package that provides each.
+# Node.js, which the Discourse MCP server needs whether or not there is a
+# sandbox, by command and the conda-forge package that provides it.
+NODE = {"node": "nodejs", "npm": "nodejs"}
+
+
 def wanted_programs() -> dict[str, str]:
-    wanted = {"node": "nodejs", "npm": "nodejs"}
+    """The commands the sandbox needs on this system beside pixi, and the
+    conda-forge package that provides each."""
+    wanted = dict(NODE)
     if sys.platform.startswith("linux"):
         wanted.update({"bwrap": "bubblewrap", "socat": "socat", "rg": "ripgrep"})
     elif sys.platform == "darwin":
@@ -462,7 +469,7 @@ def ensure_programs(sandbox: bool = True, claude: bool = True) -> str | None:
     unpacked = None
     if WINDOWS and claude and not git_bash():
         unpacked = install_portable_git()
-    wanted = wanted_programs() if sandbox else {"node": "nodejs", "npm": "nodejs"}
+    wanted = wanted_programs() if sandbox else NODE
     packages = sorted({package for name, package in wanted.items() if not find(name)})
     if not packages and (find("pixi") or not sandbox):
         return unpacked
