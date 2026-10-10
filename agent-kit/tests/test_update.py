@@ -13,7 +13,7 @@ from qupa_cafe import __version__, update
 def ran(monkeypatch):
     """Every command update() would run, with pip answering as a test says."""
     calls: list[list[str]] = []
-    outcome = {"pip": 0, "after": __version__}
+    outcome = {"pip": 0, "after": __version__, "latest": None}
 
     def fake_run(argv):
         calls.append(argv)
@@ -23,6 +23,7 @@ def ran(monkeypatch):
     monkeypatch.setattr(update, "installed_version", lambda: outcome["after"])
     monkeypatch.setattr(update, "installed_from_index", lambda: True)
     monkeypatch.setattr(update, "tray_available", lambda: True)
+    monkeypatch.setattr(update, "update_available", lambda timeout=3.0: outcome["latest"])
     return calls, outcome
 
 
@@ -45,7 +46,24 @@ def test_pip_upgrades_the_kit_with_the_tray_extra(ran):
     calls, outcome = ran
     outcome["after"] = "99.0.0"
     update.update()
-    assert calls[0][1:] == ["-m", "pip", "install", "--upgrade", "qupa-cafe[tray]"]
+    assert calls[0][1:] == ["-m", "pip", "install", "--upgrade", "--no-cache-dir", "qupa-cafe[tray]"]
+
+
+def test_the_published_version_is_asked_for_by_number(ran):
+    """pip's own copy of the index can lag the JSON the wake browser read,
+    and then an unpinned upgrade finds nothing newer."""
+    calls, outcome = ran
+    outcome["latest"] = outcome["after"] = "99.0.0"
+    update.update()
+    assert calls[0][-1] == "qupa-cafe[tray]==99.0.0"
+
+
+def test_a_version_pip_cannot_find_yet_is_said_to_be_on_its_way(ran, capsys):
+    calls, outcome = ran
+    outcome["latest"], outcome["pip"] = "99.0.0", 1
+    assert update.update() == 1
+    assert len(calls) == 1
+    assert "try again shortly" in capsys.readouterr().out
 
 
 def test_a_failed_pip_runs_nothing_else(ran, capsys):

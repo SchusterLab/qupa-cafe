@@ -54,7 +54,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · l for the log · Esc to quit"
+        "↑↓ to select · Enter to read · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -189,10 +189,9 @@ def test_run_as_a_module_the_browser_shares_the_colour_switch():
     assert result.stdout.strip() == "colour", result.stderr
 
 
-def test_the_list_opens_the_log():
+def test_the_log_is_the_tray_icons_rather_than_the_lists():
     b = _browser(browse.Wake(_row(1), SAID))
-    assert b.handle("l") == "log"
-    assert b.handle("t") is None
+    assert b.handle("l") is None
     assert not b.viewing
 
 

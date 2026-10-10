@@ -1,8 +1,8 @@
 """The wake browser: every wake, newest first, and one wake's view.
 
 In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-`` raise and lower the
-agent's relevance threshold, ``l`` opens the daemon's log, ``u`` updates when a
-newer kit is published, and Esc leaves. In a wake ``↑``/``↓``
+agent's relevance threshold, ``u`` updates when a newer kit is published, and
+Esc leaves; the tray icon's menu opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter reopens its session in Claude Code with ``--fork-session`` and the
 forum's write tools withheld, and Esc goes back. Standard library only, drawn on
 the alternate screen.
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, update, wakes
-from .daemon import Ranking, RankingError, Settings, claim_lock, log_path
+from .daemon import Ranking, RankingError, Settings, claim_lock
 from .install import interpreter_argv
 
 # Withheld from a reopened session; reading stays.
@@ -37,9 +37,7 @@ ASKING = (
 
 # Key -> (action, hint on the bottom line). `u` exists only while an update is
 # available, and is named in the notice instead; see Browser.actions.
-LIST_ACTIONS = {
-    "l": ("log", "l for the log"),
-}
+LIST_ACTIONS: dict[str, tuple[str, str]] = {}
 UPDATE_ACTION = {"u": ("update", "")}
 # Shown only once the threshold is known; "=" and "_" are the unshifted keys.
 FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-": ("lower", ""), "_": ("lower", "")}
@@ -455,27 +453,6 @@ def _raise_on_windows() -> bool:
 # ----------------------------------------------------- the list's actions
 
 
-def open_file(path) -> None:
-    """Open a file with whatever this desktop opens it with."""
-    if os.name == "nt":
-        os.startfile(path)  # noqa: S606 - the researcher's own log
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
-
-
-def show_log(settings: Settings) -> str:
-    path = log_path(settings)
-    if not path.is_file():
-        return f"No daemon log yet at {path}."
-    try:
-        open_file(path)
-    except OSError as exc:
-        return f"Could not open {path}: {exc}"
-    return f"Opened {path}."
-
-
 def set_floor(settings: Settings, browser: Browser, action: str) -> str:
     """Ask the forum host for the threshold one press asks for, and show what
     it now says. Returns a message for the list."""
@@ -537,8 +514,6 @@ def run(settings: Settings, limit: int | None = None) -> int:
             action = browser.handle(key, size.lines)
             if action == "quit":
                 return 0
-            if action == "log":
-                browser.message = show_log(settings)
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
             if action == "update":

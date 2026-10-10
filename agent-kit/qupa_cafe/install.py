@@ -597,11 +597,18 @@ def windows_startup_script(command: str) -> str:
     )
 
 
-def windows_startup_entry(command: str, name: str = "qupa-cafe-daemon.vbs") -> Path | None:
+DAEMON_VBS = "qupa-cafe-daemon.vbs"
+
+
+def startup_dir() -> Path:
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def windows_startup_entry(command: str, name: str = DAEMON_VBS) -> Path | None:
     """Register at logon through the Startup folder, which needs no elevation
     (``schtasks /SC ONLOGON`` does). A ``.vbs`` wrapper, so no console window."""
-    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-    startup = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup = startup_dir()
     target = startup / name
     try:
         startup.mkdir(parents=True, exist_ok=True)
@@ -740,6 +747,40 @@ def stop_running_daemon() -> bool:
     if not stopped:
         print("  nothing was running to replace")
     return stopped
+
+
+def restart_daemon() -> tuple[bool, str]:
+    """Stop the daemon and start it again the way it is registered. Whether
+    it worked, and a sentence saying so. The tray icon's menu offers it."""
+    system = platform.system()
+
+    if system == "Linux" and shutil.which("systemctl"):
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", "qupa-cafe-daemon"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return True, "Restarted the daemon."
+        return False, f"systemctl could not restart it: {(result.stderr or '').strip()[:200]}"
+
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
+        if not plist.is_file():
+            return False, f"No daemon is registered ({plist} is missing). Run qupa-install."
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, text=True)
+        result = subprocess.run(["launchctl", "load", "-w", str(plist)], capture_output=True, text=True)
+        if result.returncode == 0:
+            return True, "Restarted the daemon."
+        return False, f"launchctl could not load it: {(result.stderr or '').strip()[:200]}"
+
+    stop_running_daemon()
+    entry = startup_dir() / DAEMON_VBS
+    if system == "Windows" and entry.is_file():
+        started = start_startup_entry(entry)
+    else:
+        started = start_daemon_now()
+    if started:
+        return True, "Restarted the daemon."
+    return False, "The daemon was stopped but did not start again. Run qupa-install."
 
 
 def register_service(settings: dict[str, str]) -> None:

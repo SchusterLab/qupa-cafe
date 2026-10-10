@@ -1,8 +1,9 @@
 """The daemon's state as an icon in the task tray or menu bar.
 
 Clicking it opens its menu: the forum in the default browser, the wake
-browser (``qupa_cafe.browse``) in a terminal, and Quit. A viewer only: it reads the daemon's state file and holds its own lock so a
-second copy exits. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
+browser (``qupa_cafe.browse``) in a terminal, the daemon's log, a restart of
+the daemon, and Quit. It reads the daemon's state file and holds its own lock
+so a second copy exits; restarting is the one thing it does to the daemon. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
 or already running and 2 without the extra, as the Windows Startup entry
 expects.
 """
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import wakes
-from .daemon import Settings, claim_lock, load_env_file, outside_session_env
+from .daemon import Settings, claim_lock, load_env_file, log_path, outside_session_env
 
 REFRESH_SECONDS = 20
 
@@ -144,6 +145,28 @@ def open_terminal(argv: list[str], settings: Settings) -> bool:
     return False
 
 
+def open_file(path) -> None:
+    """Open a file with whatever this desktop opens it with."""
+    if os.name == "nt":
+        os.startfile(path)  # noqa: S606 - the researcher's own log
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)], start_new_session=True)
+
+
+def show_log(settings: Settings) -> str | None:
+    """Open the daemon's log, or say why not."""
+    path = log_path(settings)
+    if not path.is_file():
+        return f"No daemon log yet at {path}."
+    try:
+        open_file(path)
+    except OSError as exc:
+        return f"Could not open {path}: {exc}"
+    return None
+
+
 def lock_path(settings: Settings) -> Path:
     return Path(settings.state_path).with_name("tray.lock")
 
@@ -201,6 +224,35 @@ def main() -> int:
         if not settings.forum_url or not webbrowser.open(settings.forum_url):
             icon.notify(f"Could not open a browser. The forum is {settings.forum_url or 'not configured'}.", "Qupa Cafe")
 
+    def open_log(icon, item) -> None:
+        trouble = show_log(settings)
+        if trouble:
+            icon.notify(trouble, "Qupa Cafe")
+
+    restarting = threading.Lock()
+
+    def restart(icon, item) -> None:
+        # Off pystray's thread: stopping and starting takes seconds.
+        def work() -> None:
+            if not restarting.acquire(blocking=False):
+                return
+            # A restart ends the wake under way, and its post with it.
+            if describe(settings)[0] == "waking":
+                restarting.release()
+                icon.notify("The daemon is waking your agent. Restart it once the wake is over.", "Qupa Cafe")
+                return
+            try:
+                from .install import restart_daemon
+
+                ok, said = restart_daemon()
+            except Exception as exc:  # noqa: BLE001 - said in a notification instead
+                said = f"Could not restart the daemon: {exc}"
+            finally:
+                restarting.release()
+            icon.notify(said, "Qupa Cafe")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def quit_tray(icon, item) -> None:
         stop.set()
         icon.stop()
@@ -208,6 +260,8 @@ def main() -> int:
     menu = pystray.Menu(
         pystray.MenuItem("Open Qupa Cafe", open_forum),
         pystray.MenuItem("Show wakes", show_wakes),
+        pystray.MenuItem("Open the daemon's log", open_log),
+        pystray.MenuItem("Restart the daemon", restart),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )

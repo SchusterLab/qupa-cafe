@@ -61,9 +61,11 @@ def update_available(timeout: float = 3.0) -> str | None:
     return None
 
 
-def requirement() -> str:
-    """The kit, with the tray extra when this machine has it."""
-    return f"{PACKAGE_NAME}[tray]" if tray_available() else PACKAGE_NAME
+def requirement(version: str | None = None) -> str:
+    """The kit, with the tray extra when this machine has it, at ``version``
+    when the index named one."""
+    name = f"{PACKAGE_NAME}[tray]" if tray_available() else PACKAGE_NAME
+    return f"{name}=={version}" if version else name
 
 
 def run(argv: list[str]) -> int:
@@ -103,7 +105,19 @@ def update() -> int:
     python = sys.executable
     print(f"Agent kit {__version__}, in {python}")
 
-    if run([python, "-m", "pip", "install", "--upgrade", requirement()]) != 0:
+    # The version the index's JSON names, asked for by number and past pip's
+    # cache: pip reads another page of the index, which it keeps for minutes
+    # and the index's CDN can serve stale for a while after a release, so an
+    # unpinned upgrade can find nothing newer than what is installed.
+    latest = update_available(timeout=10)
+    argv = [python, "-m", "pip", "install", "--upgrade", "--no-cache-dir", requirement(latest)]
+    if run(argv) != 0:
+        if latest:
+            print(
+                f"\npip could not find {latest} yet, and nothing else was changed. A release takes a few\n"
+                "minutes to reach every copy of the index: try again shortly."
+            )
+            return 1
         print(
             "\npip did not finish, and nothing else was changed. If this interpreter has no pip,\n"
             f"{python} -m ensurepip --upgrade supplies one."
