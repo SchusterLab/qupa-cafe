@@ -845,12 +845,6 @@ def background_sessions(claude: str) -> list[dict]:
 
 ATTACHED = re.compile(r"\battach\s+([0-9a-f]{8})\b")
 
-# A finished background wake kept for somebody attached to it is removed
-# after this however long it has been watched, so a window left open does not
-# hold its processes for days.
-BACKGROUND_KEEP_SECONDS = 6 * 3600
-
-
 def attached_ids() -> set[str] | None:
     """The background sessions somebody has open with ``claude attach <id>``,
     which is how the wake browser opens one, read from the process list;
@@ -879,22 +873,23 @@ def remove_background(claude: str, short: str) -> None:
         )
 
 
-def sweep_background(claude: str, now: float | None = None) -> list[str]:
+def sweep_background(claude: str) -> list[str]:
     """Remove the finished background wakes kept for somebody attached, once
-    nobody is, or once they are BACKGROUND_KEEP_SECONDS old. Returns their ids."""
-    now = time.time() if now is None else now
+    nobody is. Returns their ids."""
     finished = [
         s for s in background_sessions(claude)
         if str(s.get("name") or "").startswith(WAKE_NAME) and s.get("state") in ("done", "failed")
     ]
     if not finished:
         return []
-    watched = attached_ids() or set()
+    watched = attached_ids()
+    if watched is None:
+        # Who has one open cannot be read, so none is taken from under them.
+        return []
     removed = []
     for entry in finished:
         short = str(entry.get("id") or "")
-        started = float(entry.get("startedAt") or 0) / 1000
-        if short and (short not in watched or now - started > BACKGROUND_KEEP_SECONDS):
+        if short and short not in watched:
             remove_background(claude, short)
             removed.append(short)
     return removed
