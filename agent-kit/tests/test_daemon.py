@@ -160,6 +160,23 @@ def test_an_outage_warns_once_not_once_per_poll():
 # --------------------------------------------------------------------- waking
 
 
+def _background_run(monkeypatch, tmp_path):
+    """Every subprocess a background wake starts, with Claude Code faked: it
+    starts, is done at the first look, and nobody has it open."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        out = "backgrounded · 2bc6e6bc · qupa wake: topic 10" if "--bg" in command else ""
+        return subprocess.CompletedProcess(command, 0, out, "")
+
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(tmp_path / "claude"))
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    monkeypatch.setattr(daemon, "background_sessions", lambda c: [{"id": "2bc6e6bc", "sessionId": "2bc6e6bc-s", "state": "done"}])
+    monkeypatch.setattr(daemon, "attached_ids", lambda: set())
+    return calls
+
+
 def test_the_wake_asks_for_no_console_window(monkeypatch, tmp_path):
     """A wake must not put a window on the researcher's screen.
 
@@ -167,38 +184,33 @@ def test_the_wake_asks_for_no_console_window(monkeypatch, tmp_path):
     a window of its own. On a workstation that is a black box appearing over
     whatever somebody is doing, for as long as the agent runs.
     """
-    captured = {}
-
-    def fake_run(command, **kwargs):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(tmp_path / "claude"))
-    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    calls = _background_run(monkeypatch, tmp_path)
 
     assert wake_agent(Settings(), "a prompt") is True
-    assert captured["kwargs"]["creationflags"] == daemon.NO_WINDOW
+    assert calls and all(kwargs.get("creationflags") == daemon.NO_WINDOW for _, kwargs in calls)
 
 
 def test_a_wake_is_not_nested_in_the_session_that_started_the_daemon(monkeypatch, tmp_path):
     """An installer run from Claude Code leaves that session's variables in the
-    daemon, and `claude -p` would take itself for a part of that session."""
-    captured = {}
-
-    def fake_run(command, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
+    daemon, and a wake would take itself for a part of that session."""
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-installers-session")
-    monkeypatch.setattr(daemon.shutil, "which", lambda name: str(tmp_path / "claude"))
-    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    calls = _background_run(monkeypatch, tmp_path)
 
     assert wake_agent(Settings(), "a prompt") is True
-    assert "CLAUDECODE" not in captured["env"]
-    assert "CLAUDE_CODE_SESSION_ID" not in captured["env"]
-    assert captured["env"]["PATH"] == os.environ["PATH"]
+    started = next(kwargs["env"] for command, kwargs in calls if "--bg" in command)
+    assert "CLAUDECODE" not in started
+    assert "CLAUDE_CODE_SESSION_ID" not in started
+    assert started["PATH"] == os.environ["PATH"]
+
+
+def test_a_wake_learns_its_session_from_the_background_session(monkeypatch, tmp_path):
+    """Which picks its own id, so the journal and the browser get it from there."""
+    _background_run(monkeypatch, tmp_path)
+    wake, learnt = _wake(session=""), []
+
+    assert wake_agent(Settings(), "a prompt", wake=wake, on_session=learnt.append) is True
+    assert wake.session == "2bc6e6bc-s" and learnt == ["2bc6e6bc-s"]
 
 
 def test_a_sessions_variables_go_and_the_researchers_own_stay():
@@ -618,7 +630,7 @@ def test_claude_is_given_the_mcp_config_and_the_tools(tmp_path):
 
     command = runtime_command(settings, "a prompt")
 
-    assert command[:3] == ["claude", "-p", "a prompt"]
+    assert command[:3] == ["claude", "--bg", "a prompt"]
     assert "--mcp-config" in command
     assert command[command.index("--mcp-config") + 1] == str(config)
     assert "mcp__qupa-cafe__reply" in command
@@ -773,16 +785,20 @@ def _wake(**overrides):
     return daemon.Wake(**fields)
 
 
-def test_claude_is_told_which_session_to_keep_the_wake_in(tmp_path):
-    """The session id is the daemon's, so it knows where the transcript will be
-    before the wake starts -- and the name is what tells one wake from another
-    in Claude Code's own list of sessions."""
+def test_a_wake_runs_as_a_named_background_session_that_asks_nobody(tmp_path):
+    """The name is how the daemon finds it again among Claude Code's sessions
+    and what tells one wake from another in `/resume`; don't-ask refuses a tool
+    nothing approved rather than leaving the wake waiting for somebody."""
     wake = _wake()
     command = runtime_command(Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path))), "p", wake)
 
-    assert command[command.index("--session-id") + 1] == wake.session
+    assert command[:3] == ["claude", "--bg", "p"]
+    assert "-p" not in command and "--session-id" not in command
     assert command[command.index("--name") + 1] == wake.label
-    assert "topic 10 post 1" in wake.label
+    assert wake.label.startswith(daemon.WAKE_NAME) and "topic 10 post 1" in wake.label
+    # Before the tool list, which runs to the end of the command.
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert command.index("--permission-mode") < command.index("--allowedTools")
 
 
 def test_codex_is_given_no_session_it_cannot_take():
@@ -790,9 +806,10 @@ def test_codex_is_given_no_session_it_cannot_take():
     assert command == ["codex", "exec", "--skip-git-repo-check", "a prompt"]
 
 
-def test_only_claude_wakes_get_a_session():
+def test_no_wake_has_a_session_before_it_starts():
+    """Claude Code's background session picks one; Codex has none."""
     topic = _topic(10)
-    assert daemon.wake_for(Settings(runtime="claude"), "r", topic).session
+    assert daemon.wake_for(Settings(runtime="claude"), "r", topic).session == ""
     assert daemon.wake_for(Settings(runtime="codex"), "r", topic).session == ""
 
 
@@ -1018,14 +1035,18 @@ class _Ran:
 
 
 def _check(monkeypatch, tmp_path, result):
+    """The check with its background wake faked: ``result`` is what the
+    session said last, or how it failed."""
     seen = {}
 
-    def fake_run(argv, **kwargs):
-        seen["argv"] = argv
-        return result
+    def fake_check(claude, command, cwd, timeout):
+        seen["argv"] = command
+        if result.returncode != 0:
+            return "claude --bg", result.returncode, "", result.stderr
+        return "claude --bg", 0, result.stdout, ""
 
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    monkeypatch.setattr(daemon, "check_in_background", fake_check)
     settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)))
     return daemon.check_wake(settings), seen["argv"]
 
@@ -1053,19 +1074,6 @@ def test_the_install_check_reports_a_missing_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
     check = daemon.check_wake(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")))
     assert not check.woken and "not on PATH" in check.said
-
-
-def test_a_background_wake_is_the_print_wake_with_bg_and_dont_ask(tmp_path):
-    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)))
-    command = runtime_command(settings, "a prompt", _wake())
-    background = daemon.background_command(command)
-
-    assert background[:3] == ["claude", "--bg", "a prompt"]
-    assert "--session-id" not in background and "-p" not in background
-    # Before the tool list, which runs to the end of the command.
-    assert background.index("--permission-mode") < background.index("--allowedTools")
-    assert background[background.index("--permission-mode") + 1] == "dontAsk"
-    assert background[background.index("--allowedTools") + 1 :] == command[command.index("--allowedTools") + 1 :]
 
 
 def test_a_background_wake_is_waited_for_and_then_removed(monkeypatch):
@@ -1158,10 +1166,3 @@ def test_the_sweep_takes_nothing_when_it_cannot_tell_who_has_one_open(monkeypatc
     monkeypatch.setattr(daemon, "attached_ids", lambda: None)
     monkeypatch.setattr(daemon, "remove_background", lambda c, short: pytest.fail("removed while it might be open"))
     assert daemon.sweep_background("claude") == []
-
-
-def test_a_background_wake_is_named_so_the_sweep_can_find_it(tmp_path):
-    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)), background=True)
-    wake = _wake(session="")
-    background = daemon.background_command(runtime_command(settings, "p", wake))
-    assert background[background.index("--name") + 1].startswith(daemon.WAKE_NAME)

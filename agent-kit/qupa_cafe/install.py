@@ -296,7 +296,7 @@ the forum is mirrored into Slack, in a DM from its app.
     print(
         """
 Which agent runtime should the daemon wake?
-  claude   ->  claude -p
+  claude   ->  claude --bg
   codex    ->  codex exec
 """
     )
@@ -1231,9 +1231,12 @@ def check_agent_wakes(settings: dict[str, str], sandboxed: bool | None) -> bool:
     name = "Claude Code" if runtime == "claude" else "Codex"
     if not check.woken:
         print(f"  FAILED: {check.said}")
-        if runtime == "claude":
+        if runtime == "claude" and "trusted" in check.said:
+            print(f"  Claude Code runs a wake only in a directory you have trusted. Run `claude` once in")
+            print(f"  {settings.get('agent_dir') or 'your agent directory'}, accept its prompt, then re-run qupa-install.")
+        elif runtime == "claude":
             print("  Install Claude Code (https://claude.com/claude-code), then run `claude` once")
-            print("  in a terminal and sign in. The daemon runs it as `claude -p`, unattended.")
+            print("  in a terminal and sign in. The daemon runs it as `claude --bg`, unattended.")
         else:
             print("  Install Codex and run `codex` once to sign in.")
         return False

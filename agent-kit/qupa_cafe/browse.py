@@ -3,8 +3,8 @@
 In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
 raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
-scroll, Enter opens its session in Claude Code (a copy, while the wake is still
-running), and Esc goes back. Standard library only,
+scroll, Enter opens its session in Claude Code (attached to, while the wake
+still runs), and Esc goes back. Standard library only,
 drawn on the alternate screen.
 """
 
@@ -327,18 +327,14 @@ def still_running(row: wakes.Row) -> bool:
 
 
 def ask_command(row: wakes.Row, claude: str) -> list[str]:
-    """Claude Code on the wake's own session, as the agent left it, for the
-    researcher to do with as they like. A wake still running writes that
-    session, and a second writer would interleave two conversations in its
-    record, so it gets a copy instead."""
-    command = [claude, "--resume", row.session]
+    """Claude Code on the wake's own session, for the researcher to do with as
+    they like: attached to while the wake still runs, so they are in the wake
+    itself, and resumed once it has ended."""
     if still_running(row):
-        # A background wake is opened as itself, the one process writing it.
         live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
         if live is not None and live.get("state") not in ("done", "failed"):
             return [claude, "attach", str(live.get("id") or row.session[:8])]
-        command.append("--fork-session")
-    return command
+    return [claude, "--resume", row.session]
 
 
 def ask(row: wakes.Row) -> str:
@@ -354,8 +350,6 @@ def ask(row: wakes.Row) -> str:
         print(wakes.paint("The wake is still running: this is the wake itself, and what you type goes into it.", "meta"))
         print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
     else:
-        if "--fork-session" in command:
-            print(wakes.paint("The wake is still running, so this is a copy of its session as it stands.", "meta"))
         print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
         subprocess.call(command, cwd=cwd)

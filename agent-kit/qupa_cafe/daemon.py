@@ -1,7 +1,7 @@
 """The resident poller.
 
 A plain process with **no model in it**. It polls, tracks what it has already
-handled, and wakes a real agent -- ``claude -p`` or ``codex exec`` -- only on a
+handled, and wakes a real agent -- ``claude --bg`` or ``codex exec`` -- only on a
 hit. The always-on part therefore costs zero tokens, and model calls happen only
 on genuine hits.
 
@@ -57,7 +57,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -147,10 +146,6 @@ class Settings:
 
     # "claude" or "codex".
     runtime: str = field(default_factory=lambda: _env("QUPA_RUNTIME", "claude"))
-
-    # A Claude Code wake as a background session (`claude --bg`), which the
-    # researcher can attach to while it runs, rather than `claude -p`.
-    background: bool = field(default_factory=lambda: _env("QUPA_BACKGROUND_WAKES") == "1")
 
     # Also a batching window: a burst in one thread becomes one wake.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
@@ -673,8 +668,9 @@ WAKE_NAME = "qupa wake:"
 
 @dataclass
 class Wake:
-    """One invocation of the agent. ``session`` is chosen here and passed as
-    Claude Code's ``--session-id``; Codex takes none."""
+    """One invocation of the agent. ``session`` is the Claude Code session it
+    runs as, which a background session picks and the daemon learns once it
+    has started; Codex has none."""
 
     runtime: str
     agent_dir: str
@@ -703,9 +699,7 @@ def wake_for(settings: Settings, reason: str, topic: dict, score: float | None =
         post_number=latest.get("post_number"),
         title=str(topic.get("title") or "(untitled)"),
         reason=reason,
-        # A background session names its own id, learnt once it has started.
-        session=str(uuid.uuid4()) if settings.runtime == "claude" and not settings.background else "",
-        score=score,
+            score=score,
     )
 
 
@@ -785,11 +779,11 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -
     if settings.runtime == "codex":
         return ["codex", "exec", "--skip-git-repo-check", prompt]
 
-    command = ["claude", "-p", prompt]
-    if wake is not None and wake.session:
-        command += ["--session-id", wake.session]
-    # Named even without an id of ours: a background wake's name is how the
-    # daemon finds it again among Claude Code's background sessions.
+    # A background session, which the researcher can attach to while it runs.
+    # Don't-ask refuses a tool nothing approved, rather than leaving it to wait
+    # for somebody to approve it. The name is how the daemon finds the session
+    # again among Claude Code's, and in `/resume` it tells one wake from another.
+    command = ["claude", "--bg", prompt, "--permission-mode", "dontAsk"]
     if wake is not None:
         command += ["--name", wake.label]
     if settings.mcp_config and Path(settings.mcp_config).is_file():
@@ -812,21 +806,6 @@ WAKE_TIMEOUT = 900
 BACKGROUND_POLL_SECONDS = 5
 
 BACKGROUNDED = re.compile(r"backgrounded\s*\S\s*([0-9a-f]{8})\b")
-
-
-def background_command(command: list[str]) -> list[str]:
-    """``claude -p`` made ``claude --bg``. The session id goes, since a
-    background session picks its own, and don't-ask comes in, so a tool
-    nothing approved is refused, as in print mode, rather than left waiting
-    for somebody to approve it."""
-    out = list(command)
-    out[out.index("-p")] = "--bg"
-    if "--session-id" in out:
-        i = out.index("--session-id")
-        del out[i : i + 2]
-    # Before --allowedTools, whose list runs to the end.
-    cut = out.index("--allowedTools") if "--allowedTools" in out else len(out)
-    return out[:cut] + ["--permission-mode", "dontAsk"] + out[cut:]
 
 
 def background_sessions(claude: str) -> list[dict]:
@@ -971,7 +950,7 @@ def wake_agent(
         LOG.info("DRY RUN: would run %s with a %d-character prompt", command[0], len(prompt))
         return True
 
-    if settings.background and settings.runtime == "claude":
+    if settings.runtime == "claude":
         where = f" for topic {wake.topic_id} post {wake.post_number}" if wake is not None else ""
         LOG.info("waking %s%s in the background (%d characters of context)", command[0], where, len(prompt))
 
@@ -982,7 +961,7 @@ def wake_agent(
             if on_session is not None:
                 on_session(session)
 
-        state, _ = run_in_background(command[0], background_command(command), cwd, on_session=learnt)
+        state, _ = run_in_background(command[0], command, cwd, on_session=learnt)
         if state != "done":
             LOG.error("the background wake ended %s", state)
             return False
@@ -1068,7 +1047,7 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     if executable is None:
         return WakeCheck(False, False, False, f"{command[0]} is not on PATH.")
     cwd = settings.agent_dir if settings.agent_dir and Path(settings.agent_dir).is_dir() else None
-    if settings.background and settings.runtime == "claude":
+    if settings.runtime == "claude":
         return read_check(*check_in_background(executable, [executable, *command[1:]], cwd, timeout))
     try:
         result = subprocess.run(
@@ -1110,7 +1089,7 @@ def check_in_background(claude: str, command: list[str], cwd: str | None, timeou
     answer is the session's last reply, read from its transcript."""
     from . import wakes  # wakes imports this module
 
-    state, session = run_in_background(claude, background_command(command), cwd, timeout)
+    state, session = run_in_background(claude, command, cwd, timeout)
     if state != "done":
         return "claude --bg", 1, "", state
     transcript = wakes.transcript_path(session)
@@ -1452,7 +1431,7 @@ def run() -> int:
             if not args.dry_run:
                 journal.beat(settings.interval)
                 journal.record_kit(newer_kit())
-                if settings.background and settings.runtime == "claude" and shutil.which("claude"):
+                if settings.runtime == "claude" and shutil.which("claude"):
                     for short in sweep_background(shutil.which("claude")):
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
