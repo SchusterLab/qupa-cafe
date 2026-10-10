@@ -6,7 +6,7 @@ wakes the agent only on a hit; ``wakes`` and ``tray`` show what each wake did.
 Standard library only, apart from the optional tray icon.
 """
 
-__version__ = "0.16.4"
+__version__ = "0.16.5"
 
 # Must match the forum host (server/ranking.py, config/app.yml.example). One
 # copy, because install.py needs them too.

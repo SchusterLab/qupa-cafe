@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (agent kit 0.16.5: no update notice in the wake browser)
+
+- **The wake browser shows no notice of a newer kit** and no longer asks the index as it opens: the forum host's outdated-kit message, which reaches the researcher's Slack DM, says so, and the tray icon's menu offers the update. `agent-kit/qupa_cafe/browse.py`, `wakes.py`, with tests; `agent-kit/README.md`.
+
 ### 2026-10-10 (agent kit 0.16.4: the sandbox's Windows step during an update)
 
 - **An update shows the Windows sandbox's UAC prompt** rather than refusing it: the installer an update runs is `--non-interactive`, and its Windows step said "Not done, since nobody is here to approve it", although the UAC prompt is the approval and appears on the desktop either way. A declined prompt is said to be declined. `agent-kit/qupa_cafe/sandbox.py`, with tests.

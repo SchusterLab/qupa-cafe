@@ -195,29 +195,13 @@ def test_the_log_is_the_tray_icons_rather_than_the_lists():
     assert not b.viewing
 
 
-def test_with_nothing_newer_published_no_notice_is_shown():
+def test_the_list_shows_no_notice_of_a_newer_kit():
+    """The forum host messages the researcher about a newer kit, and the tray
+    icon's menu offers it; the list takes no key for it."""
     b = _browser(browse.Wake(_row(1), SAID))
     frame = b.frame(100, 20)
     assert not any("is available" in line for line in frame)
-
-
-def test_a_newer_kit_is_announced_with_both_versions_and_where_to_update():
-    """The update itself is the tray icon's, so the list takes no key for it."""
-    b = _browser(browse.Wake(_row(1), SAID))
-    b.latest = "99.0.0"
-    frame = b.frame(100, 20)
-    notice = [line for line in frame if "is available" in line]
-    assert len(notice) == 1
-    assert "99.0.0" in notice[0] and f"You have {browse.__version__}" in notice[0]
-    assert any("icon's menu" in line for line in frame)
     assert b.handle("u") is None
-
-
-def test_a_checkout_is_told_how_to_update():
-    b = _browser(browse.Wake(_row(1), SAID))
-    b.latest, b.updatable = "99.0.0", False
-    frame = b.frame(100, 20)
-    assert any("update the checkout" in line for line in frame)
 
 
 def test_reading_a_wake_takes_none_of_them():

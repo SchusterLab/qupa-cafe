@@ -96,8 +96,6 @@ STYLES = {
     "bad": "1;38;5;203",
     "busy": "1;38;2;215;119;87",
     "selected": "1",
-    # The browser's notice of a newer kit.
-    "notice": "1;38;5;16;48;2;215;119;87",
 }
 
 _colour = False

@@ -1,11 +1,11 @@
 """The wake browser: every wake, newest first, and one wake's view.
 
 In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
-raise and lower the agent's relevance threshold, and Esc leaves; a notice says
-when a newer kit is published, and the tray icon's menu updates it and opens
-the daemon's log. In a wake ``↑``/``↓`` scroll, Enter reopens its session in
-Claude Code with ``--fork-session`` and the forum's write tools withheld, and
-Esc goes back. Standard library only, drawn on the alternate screen.
+raise and lower the agent's relevance threshold, and Esc leaves; the tray
+icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
+scroll, Enter reopens its session in Claude Code with ``--fork-session`` and
+the forum's write tools withheld, and Esc goes back. Standard library only,
+drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, update, wakes
+from . import wakes
 from .daemon import Ranking, RankingError, Settings, claim_lock
 
 # Withheld from a reopened session; reading stays.
@@ -170,10 +170,6 @@ class Browser:
     viewing: bool = False
     scroll: int = 0
     message: str = ""
-    # The newer kit on the index, as it was when the browser opened, or None.
-    latest: str | None = None
-    # Whether pip can install it: false for a kit run from a checkout.
-    updatable: bool = True
     _detail: list[str] = field(default_factory=list)
     # Rows of wakes the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
@@ -255,7 +251,6 @@ class Browser:
             f"  wakes of {self.agent}" if self.agent else "  wakes", "meta"
         )
         out = self._box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
-        out.extend(self._notice(cols))
         out.append("")
 
         if not self.items:
@@ -276,21 +271,6 @@ class Browser:
         named = [hint for _, hint in self.actions.values() if hint]
         out.append(hints(["↑↓ to select", "Enter to read", *named, "Esc to quit"]))
         return out
-
-    def _notice(self, cols: int) -> list[str]:
-        """A newer kit, on a block of colour under the title: both versions,
-        and how to get the new one."""
-        if not self.latest:
-            return []
-        how = (
-            "Update it from the Qupa Cafe icon's menu: Update the agent kit."
-            if self.updatable
-            else "This kit runs from a checkout: update the checkout, then run qupa-install."
-        )
-        lines = [f" ⬆  Agent kit {self.latest} is available. You have {__version__}.", f"    {how}"]
-        width = max(cols - 2, 4)
-        clipped = (line if len(line) <= width else line[: width - 3] + "..." for line in lines)
-        return ["", *(" " + wakes.paint(line.ljust(width), "notice") for line in clipped)]
 
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
         row = item.row
@@ -485,8 +465,6 @@ def run(settings: Settings, limit: int | None = None) -> int:
         load(settings, limit),
         wakes.status(settings.state_path),
         settings.api_username,
-        latest=update.update_available(),
-        updatable=update.installed_from_index(),
     )
     with Terminal() as terminal:
         while True:
