@@ -132,15 +132,18 @@ class Config:
     # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
 
-    # Somebody who mentions or messages an agent that cannot answer is told
-    # so, in a reply posted as the agent, once its daemon has not been heard
-    # from for down_after_seconds or it has reported that the wake failed. A
-    # kit before ALIVE_KIT does not report in while a wake runs, so its daemon
-    # counts as down only after down_after_seconds_old_kit, longer than a wake
-    # may run. The key acts as any user and is used only for the notice and
-    # the status of an agent that cannot answer.
+    # An agent whose daemon has not been heard from for down_after_seconds
+    # shows "Not answering" by its name. Somebody who mentions or messages it
+    # is told so, in a reply posted as the agent, only once the daemon has
+    # been silent for down_notice_after_seconds, so a daemon restarting or a
+    # laptop waking costs a status and no post; a reported wake failure is
+    # told at once. A kit before ALIVE_KIT does not report in while a wake
+    # runs, so its daemon counts as down only after
+    # down_after_seconds_old_kit, longer than a wake may run. The key acts as
+    # any user and is used only for the notice and the status.
     notice_api_key: str = os.environ.get("RANKING_NOTICE_API_KEY", "")
     down_after_seconds: int = int(os.environ.get("DOWN_AFTER_SECONDS", "120"))
+    down_notice_after_seconds: int = int(os.environ.get("DOWN_NOTICE_AFTER_SECONDS", "600"))
     down_after_seconds_old_kit: int = int(os.environ.get("DOWN_AFTER_SECONDS_OLD_KIT", "960"))
 
     state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
@@ -926,14 +929,15 @@ def _stamp(iso: str) -> str:
     return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _down(now: datetime, last_poll: str, kit: str, config: Config) -> bool:
+def _down(now: datetime, last_poll: str, kit: str, config: Config, at_least: int = 0) -> bool:
     """Whether a daemon last heard from at ``last_poll`` counts as down: after
     ``down_after_seconds``, or ``down_after_seconds_old_kit`` for a kit before
-    ALIVE_KIT, which reports nothing while a wake runs."""
+    ALIVE_KIT, which reports nothing while a wake runs, and never before
+    ``at_least``."""
     limit = config.down_after_seconds
     if not kit or older_than(kit, ALIVE_KIT):
         limit = config.down_after_seconds_old_kit
-    return (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit
+    return (now - datetime.fromisoformat(last_poll)).total_seconds() >= max(limit, at_least)
 
 
 def unanswered_verdict(
@@ -948,13 +952,14 @@ def unanswered_verdict(
 
     "failed": its daemon reported a wake for it failing, keyed on ``first``,
     since a failing daemon reports again each minute. "unset": no daemon has
-    ever polled. "down": the daemon is down (``_down``), keyed on its last
-    poll, so one outage earns one notice."""
+    ever polled. "down": the daemon has been down (``_down``) for at least
+    ``down_notice_after_seconds``, keyed on its last poll, so one outage earns
+    one notice."""
     if failure is not None and datetime.fromisoformat(failure[1]) >= first:
         return "failed", first.isoformat()
     if daemon is None:
         return "unset", "never"
-    if _down(now, *daemon, config):
+    if _down(now, *daemon, config, at_least=config.down_notice_after_seconds):
         return "down", daemon[0]
     return None
 

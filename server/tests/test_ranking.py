@@ -1670,14 +1670,22 @@ def _at(text):
     return datetime.fromisoformat(text)
 
 
-def test_a_daemon_unheard_from_for_two_minutes_is_down():
+def test_a_down_daemon_shows_a_status_after_two_minutes_and_earns_a_notice_after_ten():
     config = Config()
     first = _at("2026-10-10T10:00:00+00:00")
     daemon = ("2026-10-10T10:00:30+00:00", "0.16.7")
-    assert ranking.unanswered_verdict(_at("2026-10-10T10:02:00+00:00"), first, daemon, None, config) is None
-    assert ranking.unanswered_verdict(_at("2026-10-10T10:02:30+00:00"), first, daemon, None, config) == (
-        "down", "2026-10-10T10:00:30+00:00",
-    )
+
+    def status(at):
+        return ranking.agent_health(_at(at), daemon, None, config)
+
+    def notice(at):
+        return ranking.unanswered_verdict(_at(at), first, daemon, None, config)
+
+    assert status("2026-10-10T10:02:00+00:00") is None
+    assert status("2026-10-10T10:02:30+00:00") == "down"
+    assert notice("2026-10-10T10:02:30+00:00") is None
+    assert notice("2026-10-10T10:10:00+00:00") is None
+    assert notice("2026-10-10T10:10:30+00:00") == ("down", "2026-10-10T10:00:30+00:00")
 
 
 def test_a_kit_that_does_not_report_during_a_wake_gets_longer():
@@ -1736,7 +1744,7 @@ def _noticing_ranker(tmp_path, rows, key="k"):
 
 
 def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path):
-    now = _at("2026-10-10T10:05:00+00:00")
+    now = _at("2026-10-10T10:10:00+00:00")
     ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
     ranker.state.db.execute(
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
@@ -1779,7 +1787,7 @@ def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_mes
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
     )
 
-    assert len(ranker.check_unanswered(_at("2026-10-10T10:05:00+00:00"))) == 2
+    assert len(ranker.check_unanswered(_at("2026-10-10T10:10:00+00:00"))) == 2
     assert [m["to"] for m in forum.sent] == ["yoshi"]
     raw = forum.sent[0]["raw"]
     assert "[Squeezed (states)](https://forum.example.com/t/77)" in raw
