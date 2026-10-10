@@ -161,20 +161,58 @@ class ForumWriter:
         if data:
             req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
+        with self._open(req, 45) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
+
+    def _open(
+        self,
+        req: urllib.request.Request,
+        timeout: float,
+        what: str | None = None,
+        opener: urllib.request.OpenerDirector | None = None,
+        on_422: str | None = None,
+    ):
+        """Open ``req``, turning every failure into a ForumWriteError that says
+        what failed and what to do next, since the agent reads it.
+
+        ``what`` names the operation, and defaults to the method and path.
+        ``on_422`` replaces the general advice when the forum answers 422."""
+        if what is None:
+            target = req.full_url
+            if same_origin(target, self.forum_url):
+                target = target[len(self.forum_url):] or "/"
+            what = f"{req.get_method()} {target}"
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                raw = resp.read().decode()
-                return json.loads(raw) if raw else {}
+            if opener is not None:
+                return opener.open(req, timeout=timeout)
+            return urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:400]
             if exc.code == 429:
-                raise ForumWriteError(
-                    "Rate limited by the forum. The API limiter is a single "
-                    f"sitewide bucket, so this may be another agent's traffic. Retry later. {detail}"
-                ) from exc
-            raise ForumWriteError(f"{method} {path} -> {exc.code}: {detail}") from exc
+                advice = (
+                    "The forum is rate limiting. Its limiter is one bucket for the whole "
+                    "site, so the traffic may be another agent's. Retry in a few minutes."
+                )
+            elif exc.code == 422 and on_422:
+                advice = on_422
+            elif exc.code >= 500:
+                advice = (
+                    "The forum failed on its side. Retry in a few minutes, and tell your "
+                    "researcher if it keeps failing."
+                )
+            else:
+                advice = (
+                    "The forum refused the request, and its reason follows the status. "
+                    "Fix what it names, or tell your researcher if you cannot."
+                )
+            raise ForumWriteError(f"{what} failed with {exc.code}: {detail} {advice}") from exc
         except urllib.error.URLError as exc:
-            raise ForumWriteError(f"{method} {path} failed: {exc.reason}") from exc
+            host = urllib.parse.urlsplit(req.full_url).netloc
+            raise ForumWriteError(
+                f"{what} failed: {host} could not be reached ({exc.reason}). Retry in a few "
+                "minutes, and tell your researcher if it keeps failing."
+            ) from exc
 
     def find_by_external_id(self, external_id: str) -> dict | None:
         """Resolve our own idempotency key back to a topic, if it exists."""
@@ -256,14 +294,8 @@ class ForumWriter:
         self._authorise(req)
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-        try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                found = json.loads(resp.read().decode() or "[]")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:200]
-            raise ForumWriteError(f"Could not resolve {short_url}: {exc.code} {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ForumWriteError(f"Could not resolve {short_url}: {exc.reason}") from exc
+        with self._open(req, 45, what=f"Resolving {short_url}") as resp:
+            found = json.loads(resp.read().decode() or "[]")
 
         url = (found[0] or {}).get("url") if found else None
         if not url:
@@ -285,17 +317,11 @@ class ForumWriter:
             self._authorise(req)
         opener = urllib.request.build_opener(KeepKeyOnForum(self.forum_url))
 
-        try:
-            with opener.open(req, timeout=90) as resp:
-                content = resp.read(MAX_ATTACHMENT_BYTES + 1)
-                content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-                disposition = resp.headers.get("Content-Disposition") or ""
-                final_url = resp.geturl()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:200]
-            raise ForumWriteError(f"GET {url} -> {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ForumWriteError(f"GET {url} failed: {exc.reason}") from exc
+        with self._open(req, 90, opener=opener) as resp:
+            content = resp.read(MAX_ATTACHMENT_BYTES + 1)
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+            disposition = resp.headers.get("Content-Disposition") or ""
+            final_url = resp.geturl()
 
         if len(content) > MAX_ATTACHMENT_BYTES:
             raise TooLarge(
@@ -335,21 +361,14 @@ class ForumWriter:
         self._authorise(req)
         req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
 
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return json.loads(resp.read().decode() or "{}")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:400]
-            if exc.code == 422:
-                # Usually authorized_extensions; the message names the list.
-                raise ForumWriteError(
-                    f"The forum refused {filename}: {detail} "
-                    "If the extension is not allowed here, convert the file or paste the "
-                    "content into the post instead."
-                ) from exc
-            raise ForumWriteError(f"Uploading {filename} -> {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ForumWriteError(f"Uploading {filename} failed: {exc.reason}") from exc
+        # A 422 here is usually authorized_extensions, and the forum's message
+        # names the extensions it takes.
+        refused = (
+            "If the file's extension is not allowed here, convert the file or paste "
+            "its content into the post instead."
+        )
+        with self._open(req, 120, what=f"Uploading {filename}", on_422=refused) as resp:
+            return json.loads(resp.read().decode() or "{}")
 
     def edit_post(self, post_id: int, raw: str, edit_reason: str | None = None) -> dict:
         """Replace a post's body; idempotent as it is, and the forum decides who may."""

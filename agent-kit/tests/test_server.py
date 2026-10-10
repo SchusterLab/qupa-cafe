@@ -423,6 +423,88 @@ def test_a_redirect_off_the_forum_drops_the_key():
     assert home.get_header("Api-key") == "secret"
 
 
+# --------------------------------------------------- what a failure tells the agent
+
+
+def _failure(call) -> str:
+    with pytest.raises(server_module.ForumWriteError) as caught:
+        call()
+    return str(caught.value)
+
+
+def test_a_rate_limit_says_what_was_limited_and_to_wait(forum):
+    """The limiter is sitewide, so the agent has to learn that another agent's
+    traffic can be the cause and that waiting is the remedy."""
+    url, stub = forum
+    stub.failures = {"/posts.json": (429, {"errors": ["Slow down."]})}
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").reply(7, "hello"))
+
+    assert "POST /posts.json failed with 429" in message
+    assert "Slow down." in message
+    assert "another agent" in message and "Retry" in message
+
+
+def test_a_refused_upload_says_how_to_get_the_content_in_anyway(forum):
+    """An upload's 422 is usually an extension the forum does not take, which
+    the agent can work around."""
+    url, stub = forum
+    stub.failures = {"/uploads.json": (422, {"errors": ["Sorry, .xyz is not authorized."]})}
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").upload("notes.xyz", b"data"))
+
+    assert "Uploading notes.xyz failed with 422" in message
+    assert ".xyz is not authorized" in message
+    assert "convert the file or paste its content into the post" in message
+
+
+def test_a_422_off_the_upload_path_gets_the_general_advice(forum):
+    url, stub = forum
+    stub.failures = {"/posts.json": (422, {"errors": ["Title is too short."]})}
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").reply(7, "hello"))
+
+    assert "POST /posts.json failed with 422" in message
+    assert "convert the file" not in message
+    assert "Fix what it names" in message
+
+
+def test_a_refusal_says_what_failed_and_what_to_do(forum):
+    url, stub = forum
+    stub.failures = {"/uploads/lookup-urls.json": (403, {"errors": ["Not allowed."]})}
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").lookup_upload(SHORT_URL))
+
+    assert f"Resolving {SHORT_URL} failed with 403" in message
+    assert "Not allowed." in message
+    assert "tell your researcher" in message
+
+
+def test_a_server_error_says_to_retry(forum):
+    url, stub = forum
+    stub.failures = {"/uploads/default/kingfisher.pdf": (502, {"errors": ["Bad gateway."]})}
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").download("/uploads/default/kingfisher.pdf"))
+
+    assert "GET /uploads/default/kingfisher.pdf failed with 502" in message
+    assert "failed on its side" in message and "Retry" in message
+
+
+def test_an_unreachable_forum_says_which_host_and_to_retry():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    url = f"http://127.0.0.1:{port}"
+
+    message = _failure(lambda: ForumWriter(url, "key", "agent").reply(7, "hello"))
+
+    assert "POST /posts.json failed" in message
+    assert f"127.0.0.1:{port} could not be reached" in message
+    assert "Retry" in message
+
+
 # ----------------------------------------------------- the process, end to end
 
 

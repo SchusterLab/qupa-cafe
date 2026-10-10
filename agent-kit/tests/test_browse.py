@@ -152,7 +152,7 @@ def test_only_the_keys_shown_do_anything():
 def test_a_finished_wake_opens_its_own_session_as_it_was():
     """Nothing added and nothing withheld: the researcher decides what to do."""
     command = browse.ask_command(_row(5, session="abc"), "claude")
-    assert command == ["claude", "--resume", "abc"]
+    assert command == (["claude", "--resume", "abc"], False)
 
 
 def test_a_background_wake_still_running_is_attached_to(monkeypatch):
@@ -162,13 +162,29 @@ def test_a_background_wake_still_running_is_attached_to(monkeypatch):
     row.started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     live = [{"id": "2bc6e6bc", "sessionId": row.session, "state": "working"}]
     monkeypatch.setattr(browse, "background_sessions", lambda claude: live)
-    assert browse.ask_command(row, "claude") == ["claude", "attach", "2bc6e6bc"]
+    assert browse.ask_command(row, "claude") == (["claude", "attach", "2bc6e6bc"], True)
     live[0]["state"] = "done"
-    assert browse.ask_command(row, "claude") == ["claude", "--resume", row.session]
+    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session], False)
     # One the journal left running past the timeout ended with the daemon.
     row.started = "2026-01-01 00:00:00"
     live[0]["state"] = "working"
-    assert browse.ask_command(row, "claude") == ["claude", "--resume", row.session]
+    assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session], False)
+
+
+def test_the_hint_follows_whether_the_session_is_attached(monkeypatch, capsys):
+    """Attached, what the researcher types goes into the running wake, so they
+    are told; resumed, they are told how to come back to the list."""
+    monkeypatch.setattr(browse.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(browse.subprocess, "call", lambda command, cwd=None: 0)
+
+    monkeypatch.setattr(browse, "ask_command", lambda row, claude: (["claude", "attach", "2bc6e6bc"], True))
+    assert browse.ask(_row(5)) == ""
+    assert "still running" in capsys.readouterr().out
+
+    monkeypatch.setattr(browse, "ask_command", lambda row, claude: (["claude", "--resume", "s-1"], False))
+    assert browse.ask(_row(5)) == ""
+    out = capsys.readouterr().out
+    assert "still running" not in out and "/exit" in out
 
 
 def test_escape_sequences_are_named():

@@ -71,6 +71,16 @@ class StubForum(BaseHTTPRequestHandler):
     # Set by a test that wants the forum to reject the key it is given, which
     # is what a mistyped or revoked one produces.
     refuse_keys = False
+    # Path prefix -> (status, body) for a test that wants the forum to fail
+    # one request the way the real one does, with its JSON reason.
+    failures: dict[str, tuple[int, object]] = {}
+
+    def _fail(self) -> bool:
+        for prefix, (code, payload) in type(self).failures.items():
+            if self.path.startswith(prefix):
+                self._send(code, payload)
+                return True
+        return False
 
     def _send(self, code: int, payload: object) -> None:
         body = json.dumps(payload).encode()
@@ -92,7 +102,9 @@ class StubForum(BaseHTTPRequestHandler):
         return posts
 
     def do_GET(self):  # noqa: N802
-        if self.path.startswith(f"/t/{POLICY_TOPIC_ID}.json"):
+        if self._fail():
+            pass
+        elif self.path.startswith(f"/t/{POLICY_TOPIC_ID}.json"):
             posts = self._policy_posts()
             self._send(
                 200,
@@ -160,7 +172,9 @@ class StubForum(BaseHTTPRequestHandler):
         # to read the parts around them.
         type(self).posted.append({"path": self.path, "body": body.decode(errors="replace")})
 
-        if self.path.startswith("/uploads/lookup-urls.json"):
+        if self._fail():
+            pass
+        elif self.path.startswith("/uploads/lookup-urls.json"):
             self._send(200, [{"short_url": SHORT_URL, "url": "/uploads/default/kingfisher.pdf"}])
         elif self.path.startswith("/uploads.json"):
             self._send(
@@ -209,6 +223,7 @@ def forum():
     StubForum.policy_replies = []
     StubForum.first_page = 20
     StubForum.refuse_keys = False
+    StubForum.failures = {}
 
     with serving(StubForum) as url:
         yield url, StubForum
