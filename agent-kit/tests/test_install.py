@@ -276,6 +276,8 @@ def _claude_state(tmp_path, monkeypatch, projects):
 
 
 def test_a_directory_claude_code_trusts_is_seen_as_trusted(tmp_path, monkeypatch):
+    # Inside the home directory and outside it alike.
+    monkeypatch.setattr(install.Path, "home", lambda: tmp_path / "home")
     agent = tmp_path / "research" / "agent"
     agent.mkdir(parents=True)
     key = str((tmp_path / "research").resolve()).replace("\\", "/")
@@ -320,4 +322,8 @@ def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path,
     agent = tmp_path / "agent"
     agent.mkdir()
     _claude_state(tmp_path, monkeypatch, {str(tmp_path.resolve()).replace("\\", "/"): {"hasTrustDialogAccepted": True}})
+    assert not install.claude_trusts(str(agent))
+    # Nor does a folder above the home directory.
+    _claude_state_again = {str(tmp_path.parent.resolve()).replace("\\", "/"): {"hasTrustDialogAccepted": True}}
+    (tmp_path / "claude-config" / ".claude.json").write_text(__import__("json").dumps({"projects": _claude_state_again}), encoding="utf-8")
     assert not install.claude_trusts(str(agent))

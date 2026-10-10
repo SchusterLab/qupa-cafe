@@ -1232,9 +1232,10 @@ def claude_trusts(directory: str) -> bool:
     }
     here = Path(directory).resolve()
     # Claude Code carries trust down from a folder, but not from the home
-    # directory: one under a trusted home is still asked about.
+    # directory or a folder above it: one under a trusted home is still asked
+    # about. A folder outside the home directory carries it as any other.
     home = Path.home().resolve()
-    above = [path for path in here.parents if home in path.parents]
+    above = [path for path in here.parents if path != home and path not in home.parents]
     return any(_trust_key(str(path)) in trusted for path in (here, *above))
 
 
