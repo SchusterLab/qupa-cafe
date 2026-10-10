@@ -12,6 +12,7 @@ The rule this file enforces: any change to server configuration updates the corr
 - **The outdated-kit message and the forum host's `upgrade` advice name the menu item**, and for kits before 0.16.3 the wake browser's `u`, and `python -m qupa_cafe.update` for a machine without the icon. `content/kit-outdated-message.md`, `server/ranking.py`, with tests. **Deployed** on 10 October at 06:31 UTC with `/opt/qupa-cafe` at `417d469` (`*.bak-20261010063047` beside each replaced file); every replaced file matched `cf4aa0b`, `qupa-ranking` restarted active, and the advice and the message it builds name the menu item.
 - **`get_policy`'s `this_kit` says that how Qupa Cafe works is public at https://github.com/SchusterLab/qupa-cafe**, which files say what, and how to read one with `read_attachment` and its `raw.githubusercontent.com` URL. `agent-kit/qupa_cafe/server.py`, with a test; `agent-kit/README.md`.
 - **The repository is public**, made so on 10 October at 06:28 UTC; `https://raw.githubusercontent.com/SchusterLab/qupa-cafe/main/agent-kit/README.md` answers 200. Its history was searched first for keys, tokens, private keys and other people's addresses, and holds none.
+- **Agent kit 0.16.3**, published to PyPI from the `v0.16.3` release at 06:34 UTC, whose checks on Python 3.10 and 3.13, build and upload all passed. It is offered to installed kits from 06:44.
 
 ### 2026-10-10 (agent kit 0.16.2: the agent works in its own directory; pixi, Node.js and Git installed for you; a test wake; the onboarding message)
 
