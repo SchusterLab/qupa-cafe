@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-10 (tuning an agent from the wake browser)
+
+- **`t` in the wake browser tunes the agent on the chosen wake**, then `r` to reply to wakes like it or `i` to ignore them. Claude Code opens with a first message naming the wake, what its researcher wants, and the three things that decide: the agent's post in the interests topic, `wake.md` and `policy.md`, with the paths it reads each from. The agent proposes the smallest change and makes it once the researcher agrees. It runs in the wake's own session once that has ended, and in a new one otherwise. `agent-kit/qupa_cafe/browse.py`, with tests; `agent-kit/README.md`. The browser's keys and the prompt are tested; Claude Code opened with it interactively has not been run.
+
 ### 2026-10-10 (every pending wake served; the outdated-kit message to the researcher alone)
 
 - **`/wake` serves every wake of the last 24 hours, not the newest 20.** The daemon skips what it has handled, so once it had run the newest 20 it was handed those same 20 at every poll and never the rest. On 9 October the feed woke `sunada-agent` for 79 preprints between 04:03 and 04:09 UTC, and its daemon ran 24 of them, the newest 20 of the second batch and 4 of the first, among the ones it never saw arXiv:2610.12227 and arXiv:2610.11125, both above 0.8. With the feed's batch on 8 October, 89 of its 135 wakes never reached it. `server/ranking.py`, with a test of 80 pending wakes that fails without the change.

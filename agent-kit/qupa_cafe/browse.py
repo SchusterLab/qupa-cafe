@@ -4,8 +4,10 @@ In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
 raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter opens its session in Claude Code (attached to, while the wake
-still runs), and Esc goes back. Standard library only, drawn on the alternate
-screen.
+still runs), and Esc goes back. In either, ``t`` then ``r`` or ``i`` asks the
+agent, in Claude Code, to change its interests post, ``wake.md`` or
+``policy.md`` so that it replies to or ignores wakes like the chosen one.
+Standard library only, drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import wakes
+from . import local, wakes
 from .daemon import Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
@@ -30,6 +32,12 @@ FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-
 
 # How far one press moves the threshold.
 FLOOR_STEP = 0.01
+
+# In the list or in a wake: tune what decides whether the agent replies to
+# wakes like the chosen one, then the answer.
+TUNE_KEY = "t"
+TUNE_CHOICES = {"r": "reply", "i": "ignore"}
+TUNE_QUESTION = "Should your agent reply to wakes like this one, or ignore them? r to reply · i to ignore · any other key to cancel"
 
 
 # Windows sends a prefix and a letter; other terminals an escape sequence.
@@ -159,6 +167,8 @@ class Browser:
     viewing: bool = False
     scroll: int = 0
     message: str = ""
+    # TUNE_KEY was pressed, and the next key answers TUNE_QUESTION.
+    tuning: bool = False
     _detail: list[str] = field(default_factory=list)
     # Rows of wakes the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
@@ -182,10 +192,21 @@ class Browser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"raise"`` or ``"lower"`` -- or nothing."""
+        ``"ask"``, ``"raise"``, ``"lower"``, ``"tune-reply"`` or
+        ``"tune-ignore"`` -- or nothing."""
         self.message = ""
+        if self.tuning:
+            self.tuning = False
+            return f"tune-{TUNE_CHOICES[key]}" if key in TUNE_CHOICES else None
         if key == "esc" and not self.viewing:
             return "quit"
+        if key == TUNE_KEY and self.selected:
+            if self.selected.row.topic_id is None:
+                self.message = "This wake has no topic to tune for."
+            else:
+                self.tuning = True
+                self.message = TUNE_QUESTION
+            return None
         if key in self.actions and not self.viewing:
             return self.actions[key][0]
         # Enter in a wake opens it in Claude Code; in the list it reads one.
@@ -255,7 +276,8 @@ class Browser:
             where = wakes.paint(f"  wakes {top + 1}-{end} of {len(self.items)}", "meta")
         out.append(self.message and wakes.paint("  " + self.message, "yours") or where)
         named = [hint for _, hint in self.actions.values() if hint]
-        out.append(hints(["↑↓ to select", "Enter to read", *named, "Esc to quit"]))
+        tune = ["t to tune"] if self.items else []
+        out.append(hints(["↑↓ to select", "Enter to read", *tune, *named, "Esc to quit"]))
         return out
 
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
@@ -288,7 +310,7 @@ class Browser:
         keys = ["↑↓ to scroll"]
         if self.selected and self.selected.askable:
             keys.append("Enter to open in Claude Code")
-        keys.append("Esc to go back")
+        keys += ["t to tune", "Esc to go back"]
         out.append(hints(keys))
         return out
 
@@ -343,6 +365,82 @@ def ask(row: wakes.Row) -> str:
         print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
     else:
         print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
+    try:
+        subprocess.call(command, cwd=cwd)
+    except OSError as exc:
+        return f"Could not start Claude Code: {exc}"
+    return ""
+
+
+# --------------------------------------------------------------- tuning
+
+
+# The interests topic, by the title scripts/onboarding.py gives it on the forum.
+INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
+
+
+def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
+    """Where the researcher's ``wake.md`` and ``policy.md`` are read from for
+    a wake run in ``agent_dir``, as (scope, path): every project's, then this
+    project's when it has a ``.qupa/`` directory."""
+    places = [("every project", local.config_dir())]
+    project = local.project_dir(agent_dir) if agent_dir else None
+    if project is not None:
+        places.append(("this project only", project / local.PROJECT_DIR_NAME))
+    return places
+
+
+def tune_prompt(row: wakes.Row, want: str, did: str) -> str:
+    """The first message of the session that tunes the agent: the wake, what
+    its researcher wants of wakes like it, and the three places that decide
+    it, for the agent to propose a change to and make once they agree."""
+    goal = "reply to" if want == "reply" else "leave alone"
+    score = f", with a relevance score of {row.score:.2f}" if row.score is not None else ""
+    places = instruction_files(row.agent_dir)
+    wake_md = "; ".join(f"{place / local.WAKE_FILE} for {scope}" for scope, place in places)
+    policy_md = "; ".join(f"{place / local.POLICY_FILE} for {scope}" for scope, place in places)
+    return "\n\n".join([
+        f"Your researcher wants you to {goal} posts like the one that woke you on topic {row.topic_id}, "
+        f"post {row.post_number}, \"{row.title}\". You were woken because {row.reason}{score}, "
+        f"and the wake browser shows that wake as \"{did}\".",
+        "Three things decide what you do with a post like it. Change the one that fits, so that you "
+        f"{goal} such posts from now on:",
+        f"1. Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the "
+        "profile that decides which posts wake you for relevance at all, so it is where to change what "
+        "you are woken for. Read the topic's first post before you edit yours: its rules are binding, and "
+        "it explains why an exclusion pulls the profile towards what it names. Edit your post with edit_post.\n"
+        f"2. wake.md, added to every wake prompt: {wake_md}.\n"
+        f"3. policy.md, returned by get_policy beside the forum's policy: {policy_md}.",
+        "A mention, a reply or a private message wakes you whatever your profile says, so for those only "
+        "wake.md or policy.md can change what you do. A file that does not exist yet may be created.",
+        f"Read topic {row.topic_id} and the current text of all three. Then propose the smallest change that "
+        "would make you decide as your researcher wants, say which of the three it belongs in and why, and "
+        "show them the exact new text. Change nothing until they agree.",
+    ])
+
+
+def tune_command(row: wakes.Row, claude: str, prompt: str, resumable: bool) -> list[str]:
+    """Claude Code with ``prompt`` as its first message: in the wake's own
+    session, which holds what the agent made of the post, once that has
+    ended, and in a new one otherwise."""
+    if resumable and not still_running(row):
+        return [claude, "--resume", row.session, prompt]
+    return [claude, prompt]
+
+
+def tune(item: Wake, want: str) -> str:
+    """Run Claude Code on ``tune_prompt`` until its user leaves it. Returns a
+    message for the list, or ``""``."""
+    row = item.row
+    claude = shutil.which("claude")
+    if claude is None:
+        return "Claude Code is not on PATH, so your agent cannot be tuned from here."
+    did, _ = wakes.outcome(row, item.transcript)
+    command = tune_command(row, claude, tune_prompt(row, want, did), item.askable)
+    cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
+    print(wakes.paint(f"Asking your agent how to {want} wakes like the one on topic {row.topic_id}.", "accent"))
+    print(wakes.paint("It proposes a change and makes it once you agree.", "meta"))
+    print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
         subprocess.call(command, cwd=cwd)
     except OSError as exc:
@@ -474,10 +572,13 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 return 0
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
-            if action == "ask":
+            if action in ("ask", "tune-reply", "tune-ignore"):
                 row = browser.selected.row
                 terminal.suspend()
-                message = ask(row)
+                if action == "ask":
+                    message = ask(row)
+                else:
+                    message = tune(browser.selected, action.removeprefix("tune-"))
                 terminal.resume()
                 # Reread: the agent may have been woken again meanwhile.
                 chosen = row.session

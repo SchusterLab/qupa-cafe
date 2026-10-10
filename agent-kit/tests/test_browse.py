@@ -41,7 +41,7 @@ def test_enter_reads_the_wake_and_escape_goes_back():
     b.handle("enter")
     assert b.viewing
     assert any("You were woken." in line for line in b.frame(100, 30))
-    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · Esc to go back"
+    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · t to tune · Esc to go back"
     # Enter in a wake opens it in Claude Code.
     assert b.handle("enter") == "ask"
     b.handle("esc")
@@ -57,7 +57,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · Esc to quit"
+        "↑↓ to select · Enter to read · t to tune · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -169,6 +169,60 @@ def test_a_background_wake_still_running_is_attached_to(monkeypatch):
     row.started = "2026-01-01 00:00:00"
     live[0]["state"] = "working"
     assert browse.ask_command(row, "claude") == (["claude", "--resume", row.session], False)
+
+
+def test_t_then_r_or_i_tunes_from_the_list_or_a_wake_and_anything_else_cancels():
+    b = _browser(browse.Wake(_row(7), SAID))
+    assert b.handle("t") is None
+    assert b.tuning and browse.TUNE_QUESTION in b.frame(160, 20)[-2]
+    assert b.handle("r") == "tune-reply"
+    assert not b.tuning
+
+    b.handle("enter")
+    b.handle("t")
+    assert b.handle("i") == "tune-ignore"
+
+    b.handle("t")
+    assert b.handle("esc") is None
+    # The cancelling key does nothing else: Esc did not leave the wake.
+    assert b.viewing and not b.tuning
+
+
+def test_a_wake_without_a_topic_cannot_be_tuned():
+    b = _browser(browse.Wake(_row(None), SAID))
+    assert b.handle("t") is None
+    assert not b.tuning and "no topic" in b.message
+
+
+def test_tuning_resumes_an_ended_wake_s_session_and_starts_a_new_one_otherwise(monkeypatch):
+    """The wake's own session holds what the agent made of the post."""
+    monkeypatch.setattr(browse, "background_sessions", lambda claude: [])
+    row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
+    assert browse.tune_command(row, "claude", "P", resumable=True) == ["claude", "--resume", row.session, "P"]
+    assert browse.tune_command(row, "claude", "P", resumable=False) == ["claude", "P"]
+    # Resuming a running wake would write into it.
+    row.status = "running"
+    assert browse.tune_command(row, "claude", "P", resumable=True) == ["claude", "P"]
+
+
+def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
+    agent_dir = tmp_path / "project" / "agent"
+    agent_dir.mkdir(parents=True)
+    (tmp_path / "project" / ".qupa").mkdir()
+    row = _row(42, score=0.81)
+    row.agent_dir = str(agent_dir)
+
+    prompt = browse.tune_prompt(row, "ignore", "wrote nothing")
+
+    assert "leave alone posts like the one that woke you on topic 42" in prompt
+    assert "0.81" in prompt and '"wrote nothing"' in prompt
+    assert browse.INTERESTS_TOPIC_TITLE in prompt and "edit_post" in prompt
+    for name in ("wake.md", "policy.md"):
+        assert str(tmp_path / "config" / name) in prompt
+        assert str(tmp_path / "project" / ".qupa" / name) in prompt
+    assert "Change nothing until they agree." in prompt
+    assert "reply to posts like" in browse.tune_prompt(row, "reply", "wrote nothing")
 
 
 def test_the_hint_follows_whether_the_session_is_attached(monkeypatch, capsys):
