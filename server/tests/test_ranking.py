@@ -1,12 +1,9 @@
-"""Tests for the parts of ranking.py that need no database.
-
-The parser and the wake ledger, which are the two places a bug is silent: a
-profile that fails to parse means an agent is never woken, and a ledger that
-loses a wake means an agent is woken twice for one post.
+"""Tests for ranking.py, with Postgres, the forum and the embedding server
+replaced by stubs.
 
 Run from the repository root::
 
-    PYTHONPATH=server python3 -m pytest server/tests -q
+    python3 -m pytest server/tests -q
 
 Requires psycopg, because ranking.py runs on the forum host and imports it at
 module level. The agent kit has no such dependency.
@@ -14,12 +11,19 @@ module level. The agent kit has no such dependency.
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import json
 import logging
 import os
+import re
+import sqlite3
 import sys
+import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -128,7 +132,7 @@ def test_categories_split_on_commas_and_semicolons():
     assert agents[0].skip_categories == ["site feedback", "meta", "policy"]
 
 
-def test_both_fields_present_prefers_the_current_one(caplog):
+def test_a_categories_line_is_not_read_as_the_skip_line():
     both = WELL_FORMED.replace(
         "**Categories to skip:** Site Feedback, Meta",
         "**Categories:** Research\n**Categories to skip:** Site Feedback",
@@ -136,7 +140,6 @@ def test_both_fields_present_prefers_the_current_one(caplog):
     agents = parse_agents([post(1, "t"), post(2, both)])
 
     assert agents[0].skip_categories == ["site feedback"]
-    assert "no longer read" not in caplog.text
 
 
 def test_blockquoted_profiles_parse():
@@ -156,6 +159,28 @@ def test_several_profiles_parse():
     agents = parse_agents([post(1, "t"), post(2, WELL_FORMED), post(3, second)])
 
     assert {a.username for a in agents} == {"yoshi-agent", "other-agent"}
+
+
+def test_an_empty_field_does_not_reach_onto_the_next_line():
+    """`Categories to skip:` is meant to be left empty, and sits last.
+
+    A pattern matching any whitespace after the label would consume the line
+    break and take whatever the author wrote next, so a sign-off underneath an
+    empty field would become an exclusion list with nothing to show it.
+    """
+    profile = (
+        "**Researcher:** Someone\n"
+        "**Agent account:** @someone-agent\n"
+        "**Watching for:** superconducting qubits and dispersive readout.\n"
+        "**Not interested in:** Cosmology.\n"
+        "**Categories to skip:**\n"
+        "\n"
+        "Thanks for reading!\n"
+    )
+    agents = parse_agents([post(1, "template"), post(2, profile)])
+
+    assert agents[0].skip_categories == []
+    assert agents[0].researcher == "Someone"
 
 
 # ------------------------------------------------------------ profile text
@@ -180,11 +205,8 @@ def state(tmp_path):
     return State(str(tmp_path / "ranking.sqlite3"))
 
 
-def test_a_new_agent_has_no_wakes(state):
-    assert state.wakes_today("agent") == 0
-
-
 def test_recording_a_wake_counts_it(state):
+    assert state.wakes_today("agent") == 0
     state.record_wake("agent", 1)
     assert state.wakes_today("agent") == 1
 
@@ -225,20 +247,17 @@ def test_feed_wakes_and_forum_wakes_are_counted_apart(state):
     assert state.wakes_today("agent") == 1
 
 
-def test_the_cursor_starts_at_zero(state):
+def test_the_cursor_starts_at_zero_and_moves(state):
     assert state.get_cursor() == 0
+    state.set_cursor(1)
+    state.set_cursor(2)
+    assert state.get_cursor() == 2
 
 
 def test_the_cursor_persists(tmp_path):
     path = str(tmp_path / "ranking.sqlite3")
     State(path).set_cursor(12345)
     assert State(path).get_cursor() == 12345
-
-
-def test_the_cursor_can_be_moved_twice(state):
-    state.set_cursor(1)
-    state.set_cursor(2)
-    assert state.get_cursor() == 2
 
 
 # ------------------------------------------------------------------ decisions
@@ -248,21 +267,13 @@ def test_a_decision_is_serialisable():
     """Every decision goes to a JSONL log, including the rejected ones -- they
     are what lets the thresholds be re-evaluated at values nobody had data for
     up front."""
-    from dataclasses import asdict
-    import json
-
-    decision = Decision(post_id=1, topic_id=2, agent="a", similarity=0.71, woke=True, reason="woken")
-
-    round_tripped = json.loads(json.dumps(asdict(decision)))
-    assert round_tripped["similarity"] == 0.71
-    assert round_tripped["woke"] is True
-    assert round_tripped["at"]
-
-
-def test_a_rejected_decision_records_why():
     decision = Decision(post_id=1, topic_id=2, agent="a", similarity=0.2, woke=False, reason="below-floor")
-    assert decision.reason == "below-floor"
-    assert decision.woke is False
+
+    round_tripped = json.loads(json.dumps(dataclasses.asdict(decision)))
+    assert round_tripped["similarity"] == 0.2
+    assert round_tripped["woke"] is False
+    assert round_tripped["reason"] == "below-floor"
+    assert round_tripped["at"]
 
 
 class OfflineRanker(Ranker):
@@ -507,8 +518,6 @@ def test_the_floor_and_the_outcomes_survive_a_restart(tmp_path):
 
 
 def test_a_ledger_without_outcomes_gains_the_column(tmp_path):
-    import sqlite3
-
     path = str(tmp_path / "ranking.sqlite3")
     old = sqlite3.connect(path)
     old.execute(
@@ -576,12 +585,9 @@ def test_the_ranker_compares_with_the_agent_s_own_floor(state):
 # -------------------------------------------------------------- the defaults
 
 
-def test_the_defaults_match_the_documented_values():
-    """These values appear in docs/06-agent-api.md and server/README.md. A
-    silent change here would make both wrong."""
-    config = Config()
-
-    assert config.feed_usernames == ("arxiv-bot",)
+def test_the_feed_account_is_the_documented_one():
+    """server/README.md gives this default, and the arXiv feed posts as it."""
+    assert Config().feed_usernames == ("arxiv-bot",)
 
 
 def test_the_similarity_floor_sits_in_the_measured_gap():
@@ -640,6 +646,14 @@ def test_older_than_pads_to_equal_length(reported, reference, behind):
     assert older_than(reported, reference) is behind
 
 
+def kit_at(latest: str | None) -> KitVersions:
+    """A KitVersions that knows ``latest`` and asks PyPI nothing."""
+    kit = KitVersions(Config())
+    kit._latest = latest
+    kit._checked_at = 1e18  # far future, so no lookup is attempted
+    return kit
+
+
 def test_an_unknown_published_version_judges_nobody_stale():
     """The check fails open: no answer from the index means no opinion.
 
@@ -647,19 +661,11 @@ def test_an_unknown_published_version_judges_nobody_stale():
     outage -- or a package that has not been published yet -- would stop every
     agent on the forum from being woken.
     """
-    kit = KitVersions(Config())
-    kit._latest = None
-    kit._checked_at = 1e18  # far future, so no lookup is attempted
-
-    assert kit.assess("someone-agent", "0.0.1") is None
+    assert kit_at(None).assess("someone-agent", "0.0.1") is None
 
 
 def test_a_client_behind_the_published_version_is_told_but_not_refused():
-    kit = KitVersions(Config())
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
-
-    verdict = kit.assess("someone-agent", "0.1.0")
+    verdict = kit_at("0.9.0").assess("someone-agent", "0.1.0")
 
     assert verdict is not None
     assert verdict["latest"] == "0.9.0"
@@ -668,29 +674,18 @@ def test_a_client_behind_the_published_version_is_told_but_not_refused():
 
 
 def test_the_published_kit_or_newer_is_told_nothing():
-    kit = KitVersions(Config())
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
+    kit = kit_at("0.9.0")
 
     assert kit.assess("someone-agent", "0.9.0") is None
     assert kit.assess("someone-agent", "0.10.0") is None
 
 
 def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current():
-    """An old client predating the header looks exactly like no version."""
-    kit = KitVersions(Config())
-    verdict = kit.assess("someone-agent", "")
+    """A client that sends no version header could be any version."""
+    verdict = KitVersions(Config()).assess("someone-agent", "")
 
     assert verdict is not None
     assert verdict["reported"] is None
-
-
-def test_a_current_client_is_left_alone():
-    kit = KitVersions(Config())
-    kit._latest = "0.1.0"
-    kit._checked_at = 1e18
-
-    assert kit.assess("someone-agent", "0.1.0") is None
 
 
 # ------------------------------------------------------- the credential check
@@ -796,20 +791,18 @@ def test_the_complaint_throttle_is_bounded():
     assert len(kit._complained) <= KitVersions.COMPLAINT_KEYS
 
 
-# ------------------------------------------ the version gate over real HTTP
+# ------------------------------------------------- /wake over real HTTP
 
 
 class StubRanker:
     """Enough Ranker for the handler. Nothing is pending, which is not the
     point of these tests."""
 
-    def __init__(self, config: Config):
-        import tempfile
-
+    def __init__(self, config: Config, state: State):
         self.config = config
         self.agents: list[Agent] = []
         self.told: list[tuple] = []
-        self.state = State(str(Path(tempfile.mkdtemp()) / "state.sqlite3"))
+        self.state = state
 
     def pending_for(self, agent: str) -> list[dict]:
         return []
@@ -838,18 +831,12 @@ class StubKeys:
 
 
 @pytest.fixture
-def endpoint():
-    """The real Handler, over real HTTP, refusing no version."""
-    import threading
-    from http.server import HTTPServer
-
+def endpoint(state):
+    """The real Handler, over real HTTP, with 0.9.0 the published kit."""
     config = Config()
-    kit = KitVersions(config)
-    kit._latest = "0.9.0"
-    kit._checked_at = 1e18
 
-    Handler.ranker = StubRanker(config)
-    Handler.kit = kit
+    Handler.ranker = StubRanker(config, state)
+    Handler.kit = kit_at("0.9.0")
     Handler.keys = StubKeys()
     Handler.texts = Texts(config)
     Handler.policy_topic = StubPolicyTopic()
@@ -864,12 +851,10 @@ def endpoint():
     server.server_close()
 
 
-def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
-    import json
-    import urllib.error
-    import urllib.request
+AUTH = {"Authorization": "Bearer right-key"}
 
-    request = urllib.request.Request(f"{base}/wake?agent=yoshi-agent", headers=headers)
+
+def _answer(request: urllib.request.Request) -> tuple[int, dict]:
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, json.load(response)
@@ -877,47 +862,51 @@ def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
         return exc.code, json.load(exc)
 
 
-def set_floor(base: str, body: bytes, key: str = "right-key") -> tuple[int, dict]:
-    import urllib.error
-    import urllib.request
+def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
+    """A daemon's poll, GET /wake."""
+    return _answer(urllib.request.Request(f"{base}/wake?agent=yoshi-agent", headers=headers))
 
+
+def post_wake(base: str, body: bytes, key: str = "right-key") -> tuple[int, dict]:
+    """A POST to /wake: a floor, or a daemon reporting in."""
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    request = urllib.request.Request(f"{base}/wake?agent=yoshi-agent", data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return response.status, json.load(response)
-    except urllib.error.HTTPError as exc:
-        return exc.code, json.load(exc)
+    return _answer(
+        urllib.request.Request(f"{base}/wake?agent=yoshi-agent", data=body, headers=headers, method="POST")
+    )
+
+
+def served_prompt(base: str) -> str:
+    return wake(base, AUTH)[1]["texts"]["wake_prompt"]
 
 
 def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoint):
-    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", "Authorization": "Bearer right-key"})
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", **AUTH})
 
     assert status == 200
     assert payload["policy"] == {"similarity_floor": 0.70, "floor_min": 0.60, "floor_max": 0.90}
 
 
 def test_a_researcher_sets_their_agent_s_floor(endpoint):
-    status, payload = set_floor(endpoint, b'{"floor": 0.75}')
+    status, payload = post_wake(endpoint, b'{"floor": 0.75}')
 
     assert status == 200
     assert payload["policy"]["similarity_floor"] == 0.75
     assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.75
-    assert wake(endpoint, {"Authorization": "Bearer right-key"})[1]["policy"]["similarity_floor"] == 0.75
+    assert wake(endpoint, AUTH)[1]["policy"]["similarity_floor"] == 0.75
 
 
 @pytest.mark.parametrize("body", [b'{"floor": 0.95}', b'{"floor": 0.5}', b'{"floor": "high"}', b'{"floor": true}', b"{}", b"not json"])
 def test_a_floor_outside_the_range_or_not_a_number_is_refused(endpoint, body):
-    status, payload = set_floor(endpoint, body)
+    status, payload = post_wake(endpoint, body)
 
     assert status == 400
     assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
 
 
 def test_setting_a_floor_needs_the_agent_s_key(endpoint):
-    status, _ = set_floor(endpoint, b'{"floor": 0.75}', key="")
+    status, _ = post_wake(endpoint, b'{"floor": 0.75}', key="")
 
     assert status == 401
     assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
@@ -939,7 +928,8 @@ def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):
 
     ranker.score_post(a_post(1, "someone"))
 
-    assert ranker.pending_for("a-agent") == [{"post_id": 1, "at": ranker.pending_for("a-agent")[0]["at"], "similarity": 0.9}]
+    [pending] = ranker.pending_for("a-agent")
+    assert pending["post_id"] == 1 and pending["similarity"] == 0.9 and pending["at"]
 
 
 def test_an_outdated_client_is_served_rather_than_refused(endpoint):
@@ -949,9 +939,7 @@ def test_an_outdated_client_is_served_rather_than_refused(endpoint):
     log, so its researcher loses relevance wakes for something nobody told
     them about. It is served, and told.
     """
-    status, payload = wake(
-        endpoint, {KIT_VERSION_HEADER: "0.1.0", "Authorization": "Bearer right-key"}
-    )
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.1.0", **AUTH})
 
     assert status == 200
     assert payload["upgrade"]["reported"] == "0.1.0"
@@ -967,7 +955,7 @@ def test_the_kit_is_told_which_topic_the_policy_is_in(endpoint):
     confirming phrase in a release, and a retitled topic would strand every
     installed agent until each researcher upgraded.
     """
-    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
+    _, payload = wake(endpoint, AUTH)
 
     assert payload["policy_topic_id"] == 42
 
@@ -1011,65 +999,48 @@ def test_no_policy_topic_is_an_answer_rather_than_a_guess():
 
 
 def test_a_current_client_with_a_credential_is_served(endpoint):
-    status, payload = wake(
-        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
-    )
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
 
     assert status == 200
     assert payload["agent"] == "yoshi-agent"
     assert "upgrade" not in payload
 
 
-def test_the_wake_is_worded_here(endpoint):
+def test_the_wake_is_worded_here_with_every_token_the_kit_fills_in(endpoint):
     """The wording of a wake travels with the answer to /wake.
 
     Held here rather than in the kit so that a sentence can be corrected
     without waiting for every researcher to upgrade. The tokens are the
-    contract with the kit: it fills them in, and one it does not recognise
-    reaches the model as literal text.
+    contract with a released kit: it fills in these and no others, and one it
+    does not recognise reaches the model as literal text.
     """
-    status, payload = wake(
-        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
-    )
+    known = {
+        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
+        "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%",
+    }
 
-    assert status == 200
-    template = payload["texts"]["wake_prompt"]
-    for token in ("%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
-                  "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%",
-                  "%BODY%"):
-        assert token in template, token
+    assert set(re.findall(r"%[A-Z_]+%", served_prompt(endpoint))) == known
 
 
-def test_the_wake_wording_sends_the_agent_to_the_policy(endpoint):
-    """A write is refused without the hash `get_policy` returns, so a prompt
-    that does not name it costs the agent a turn finding that out."""
-    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
-    template = payload["texts"]["wake_prompt"]
-
-    assert "get_policy" in template
-    assert "policy_ack" in template
-
-
-def test_the_wake_wording_says_how_to_reach_the_rest(endpoint):
-    """The wake carries one post, so an agent that needs the thread or an
-    attachment has to be told what fetches them."""
-    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
-    template = payload["texts"]["wake_prompt"]
-
-    assert "discourse_read_topic" in template
-    assert "read_attachment" in template
-
-
-def test_the_wake_wording_offers_doing_nothing(endpoint):
-    """Without this an agent woken by a guess treats the wake as an obligation.
-
-    Note what it does not say: whether to post. That is conduct and lives in
-    the policy. This says only that finishing silently is a complete outcome,
-    which is a fact about the daemon rather than about the forum.
-    """
-    _, payload = wake(endpoint, {"Authorization": "Bearer right-key"})
-
-    assert "Doing nothing is a complete outcome" in payload["texts"]["wake_prompt"]
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        # A write is refused without the hash `get_policy` returns, so a prompt
+        # that does not name it costs the agent a turn finding that out.
+        "get_policy",
+        "policy_ack",
+        # The wake carries one post, so an agent that needs the thread or an
+        # attachment has to be told what fetches them.
+        "discourse_read_topic",
+        "read_attachment",
+        # Without this an agent woken by a guess treats the wake as an
+        # obligation. Whether to post is conduct and lives in the policy; that
+        # finishing silently is a complete outcome is a fact about the daemon.
+        "Doing nothing is a complete outcome",
+    ],
+)
+def test_the_wake_wording_says(endpoint, phrase):
+    assert phrase in served_prompt(endpoint)
 
 
 def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
@@ -1091,7 +1062,7 @@ def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
     assert "%BODY%" in served["wake_prompt"]
 
 
-def test_the_messages_this_service_sends_are_files_in_config():
+def test_the_messages_this_service_sends_are_files_in_content():
     """They are posts, like the policy topic and the onboarding message.
 
     A private message written to a researcher is edited by whoever writes to
@@ -1135,7 +1106,7 @@ def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path
         ranking.message("kit-outdated-message.md", AGENT="a")
 
 
-def test_the_wake_is_worded_by_a_file_in_config(tmp_path, monkeypatch):
+def test_the_wake_is_worded_by_a_file_in_content(tmp_path, monkeypatch):
     """Edited like the policy topic and the onboarding message, because it is
     the same kind of thing: prose somebody reads, in the directory those live in."""
     written = tmp_path / "wake-prompt.md"
@@ -1177,31 +1148,10 @@ def test_a_half_saved_edit_keeps_the_last_good_wording(tmp_path, monkeypatch):
     assert texts.serve()["wake_prompt"] == "Good wording. %BODY%"
 
 
-def test_the_wording_this_repository_ships_fills_in(tmp_path):
-    """Every token the kit substitutes, and no other.
-
-    A token the kit does not recognise reaches the model as literal text, so
-    the set is a contract between this file and a released kit.
-    """
-    import re
-
-    served = Texts(Config(texts_file="")).serve()["wake_prompt"]
-    known = {
-        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
-        "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%",
-    }
-
-    assert set(re.findall(r"%[A-Z_]+%", served)) == known
-
-
-def test_nothing_is_overridden_by_default():
-    served = Texts(Config(texts_file="")).serve()
-
-    assert set(served) == {"wake_prompt"}
-
-
-def test_an_override_file_that_is_not_there_yet_is_not_an_outage(tmp_path):
-    served = Texts(Config(texts_file=str(tmp_path / "absent.json"))).serve()
+@pytest.mark.parametrize("texts_file", ["", "absent.json"], ids=["unset", "not-there-yet"])
+def test_without_an_override_file_nothing_is_overridden(tmp_path, texts_file):
+    """Including a file named but not there yet, which is not an outage."""
+    served = Texts(Config(texts_file=str(tmp_path / texts_file) if texts_file else "")).serve()
 
     assert set(served) == {"wake_prompt"}
 
@@ -1224,12 +1174,8 @@ def test_the_wake_wording_states_no_conduct(endpoint):
     """A prompt that paraphrased the policy would be a second copy of a rule
     that is edited on the forum, and this one is served by the same host that
     serves the policy -- which makes the copy look authoritative."""
-    status, payload = wake(
-        endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"}
-    )
-    template = payload["texts"]["wake_prompt"].lower()
+    template = served_prompt(endpoint).lower()
 
-    assert status == 200
     for conduct in ("silence is", "prefer", "acknowledge", "depth cap",
                     "something to add", "put the bulk", "github"):
         assert conduct not in template, conduct
@@ -1237,52 +1183,19 @@ def test_the_wake_wording_states_no_conduct(endpoint):
 
 def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
     """Reporting on versions must not have made the key optional."""
-    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
+    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
 
     assert status == 401
 
 
-def test_health_reports_no_floor(endpoint):
-    """There is no floor to report, and saying so is better than omitting it:
-    an operator reading /health should be able to see that nothing is refused."""
-    import json
-    import urllib.request
-
+def test_health_reports_no_kit_minimum(endpoint):
+    """No kit version is refused, and /health says so with a null
+    ``kit_minimum`` rather than by leaving it out."""
     with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
         payload = json.load(response)
 
     assert payload["kit_minimum"] is None
     assert payload["kit_latest"] == "0.9.0"
-
-
-def test_an_empty_field_does_not_reach_onto_the_next_line():
-    """`Categories to skip:` is meant to be left empty, and sits last.
-
-    A pattern matching any whitespace after the label would consume the line
-    break and take whatever the author wrote next, so a sign-off underneath an
-    empty field would become an exclusion list with nothing to show it.
-    """
-    profile = (
-        "**Researcher:** Someone\n"
-        "**Agent account:** @someone-agent\n"
-        "**Watching for:** superconducting qubits and dispersive readout.\n"
-        "**Not interested in:** Cosmology.\n"
-        "**Categories to skip:**\n"
-        "\n"
-        "Thanks for reading!\n"
-    )
-    agents = parse_agents([post(1, "template"), post(2, profile)])
-
-    assert agents[0].skip_categories == []
-    assert agents[0].researcher == "Someone"
-
-
-def test_the_skip_line_parses_at_the_end_of_the_template():
-    """It is the last field, so nothing follows it to terminate the match."""
-    agents = parse_agents([post(1, "template"), post(2, WELL_FORMED)])
-
-    assert agents[0].skip_categories == ["site feedback", "meta"]
-    assert agents[0].not_interested == "Cosmology."
 
 
 # ------------------------------------------------- the embedding input limit
@@ -1332,9 +1245,6 @@ class StubEmbedder(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def embedder():
-    import threading
-    from http.server import HTTPServer
-
     StubEmbedder.max_input_length = 512
     StubEmbedder.tokens_per_call = 10
     StubEmbedder.last_embed_body = None
@@ -1352,7 +1262,7 @@ def embedder():
     ranking._INPUT_LIMIT = None
 
 
-def profile(text: str) -> Agent:
+def profile(text: str = "x" * 40) -> Agent:
     return Agent(
         username="yoshi-agent",
         researcher="Yoshiki Sunada",
@@ -1464,22 +1374,13 @@ def a_ranker(tmp_path, forum, interests_topic_id=11):
     return ranker
 
 
-def over_limit_agent(text="x" * 40):
-    return Agent(
-        username="yoshi-agent",
-        researcher="Yoshiki Sunada",
-        skip_categories=[],
-        interests=text,
-    )
-
-
 def test_the_agent_is_told_once(tmp_path):
     """The agent, because the post belongs to its account: `edit_post` is its
     tool and nobody else's, and a private message wakes it -- so the message
     and the ability to act on it arrive together."""
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
-    agent = over_limit_agent()
+    agent = profile()
 
     ranker.notify_truncated(agent, 604, 512)
     ranker.notify_truncated(agent, 604, 512)
@@ -1499,15 +1400,15 @@ def test_an_edit_that_is_still_too_long_is_told_again(tmp_path):
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
 
-    ranker.notify_truncated(over_limit_agent("first version"), 600, 512)
-    ranker.notify_truncated(over_limit_agent("second version"), 590, 512)
+    ranker.notify_truncated(profile("first version"), 600, 512)
+    ranker.notify_truncated(profile("second version"), 590, 512)
 
     assert len(forum.sent) == 2
 
 
 def test_a_notice_survives_a_restart(tmp_path):
     forum = StubForumWriter()
-    agent = over_limit_agent()
+    agent = profile()
 
     a_ranker(tmp_path, forum).notify_truncated(agent, 604, 512)
     # A second Ranker over the same state database is a restart.
@@ -1526,7 +1427,7 @@ def test_an_unknown_researcher_does_not_stop_the_agent_being_told(tmp_path):
     forum = StubForumWriter(known=())
     ranker = a_ranker(tmp_path, forum)
 
-    ranker.notify_truncated(over_limit_agent(), 604, 512)
+    ranker.notify_truncated(profile(), 604, 512)
 
     assert [m["to"] for m in forum.sent] == ["yoshi-agent"]
 
@@ -1535,7 +1436,7 @@ def test_a_refused_send_is_not_recorded_as_sent(tmp_path):
     """A key without posts#create must not silence the next attempt."""
     forum = StubForumWriter(refuse=True)
     ranker = a_ranker(tmp_path, forum)
-    agent = over_limit_agent()
+    agent = profile()
 
     ranker.notify_truncated(agent, 604, 512)
     assert ranker.state.notice_sent("profile-truncated", "yoshi-agent", "") is False
@@ -1569,8 +1470,6 @@ def test_new_posts_excludes_private_messages():
     database. That is weaker than exercising it, and it does catch the filter
     being dropped, which is the failure that matters.
     """
-    import inspect
-
     sql = inspect.getsource(ranking.Ranker.new_posts)
 
     assert "t.archetype = 'regular'" in sql
@@ -1655,15 +1554,13 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
 
 
 def test_a_poll_is_recorded_as_proof_of_life(endpoint):
-    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", "Authorization": "Bearer right-key"})
+    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
     assert status == 200
     agent, last_poll = Handler.ranker.state.db.execute("SELECT agent, last_poll FROM daemons").fetchone()
     assert agent == "yoshi-agent" and last_poll
 
 
 def test_a_silent_daemon_earns_its_researcher_one_message(tmp_path):
-    from datetime import datetime, timedelta, timezone
-
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
     ranker.state.record_poll("yoshi-agent", "0.8.3")
@@ -1682,8 +1579,6 @@ def test_a_silent_daemon_earns_its_researcher_one_message(tmp_path):
 
 
 def test_a_daemon_that_polls_again_and_stops_again_earns_another(tmp_path):
-    from datetime import datetime, timedelta, timezone
-
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
     ranker.state.record_poll("yoshi-agent")
@@ -1694,8 +1589,6 @@ def test_a_daemon_that_polls_again_and_stops_again_earns_another(tmp_path):
 
 
 def test_a_daemon_that_never_polled_is_not_reported(tmp_path):
-    from datetime import datetime, timedelta, timezone
-
     forum = StubForumWriter()
     ranker = a_ranker(tmp_path, forum)
     assert ranker.check_daemons(datetime.now(timezone.utc) + timedelta(days=30)) == []
@@ -1703,8 +1596,6 @@ def test_a_daemon_that_never_polled_is_not_reported(tmp_path):
 
 
 def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
-    from datetime import datetime, timedelta, timezone
-
     forum = StubForumWriter(refuse=True)
     ranker = a_ranker(tmp_path, forum)
     ranker.state.record_poll("yoshi-agent")
@@ -1734,8 +1625,6 @@ class QueuedRanker(ReplyRanker):
 def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path):
     """Scored as *Thinking…*, an agent's reply would wake nobody it should,
     and it is not scored again once it says something."""
-    from datetime import datetime, timedelta, timezone
-
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     placeholder = {**a_reply(5, "*Thinking…*\n\n<!-- qupa-cafe:thinking abc -->"), "created_at": now}
     dead = {**a_reply(4, "*Thinking…*\n\n<!-- qupa-cafe:thinking old -->"), "created_at": now - timedelta(hours=1)}
@@ -1845,8 +1734,6 @@ class NoticeForum(StubForumWriter):
 
 
 def _noticing_ranker(tmp_path, rows, key="k"):
-    import dataclasses
-
     forum = NoticeForum()
     ranker = a_ranker(tmp_path, forum)
     ranker.config = dataclasses.replace(ranker.config, notice_api_key=key)
@@ -1870,7 +1757,7 @@ def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path
     assert "@yoshi" in raw and "2026-10-10 09:59 UTC" in raw
     assert "Restart the daemon" in raw
     assert raw.rstrip().endswith(ranking.NOTICE_MARKER)
-    assert not ranking.re.search(r"%[A-Z_]+%", raw)
+    assert not re.search(r"%[A-Z_]+%", raw)
 
 
 def test_a_failed_wake_is_told_with_its_reason(tmp_path):
@@ -1905,7 +1792,7 @@ def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_mes
     assert "[Squeezed (states)](https://forum.example.com/t/77)" in raw
     assert "> *An automatic notice from the forum" in raw and "> yoshi, if that computer" in raw
     assert "@yoshi" not in raw
-    assert not ranking.re.search(r"%[A-Z_]+%", raw)
+    assert not re.search(r"%[A-Z_]+%", raw)
 
     # The same silence, six hours on, is not told again.
     assert ranker.check_daemons(_at("2026-10-10T17:00:00+00:00")) == []
@@ -1960,17 +1847,15 @@ def test_an_agent_never_set_up_is_marked_with_its_first_notice(tmp_path):
 
 
 def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):
-    import json
-
-    status, _ = set_floor(endpoint, json.dumps({"alive": True}).encode())
+    status, _ = post_wake(endpoint, json.dumps({"alive": True}).encode())
     assert status == 200
     assert Handler.ranker.state.last_poll("yoshi-agent")
 
-    status, _ = set_floor(endpoint, json.dumps({"failed": {"topic_id": 77, "reason": "claude is not on PATH"}}).encode())
+    status, _ = post_wake(endpoint, json.dumps({"failed": {"topic_id": 77, "reason": "claude is not on PATH"}}).encode())
     assert status == 200
     assert Handler.ranker.state.failure("yoshi-agent", 77)[0] == "claude is not on PATH"
 
-    status, _ = set_floor(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
+    status, _ = post_wake(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
     assert status == 400
 
 
