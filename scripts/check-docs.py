@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Enforce the two documentation rules from CLAUDE.md.
+"""Enforce the documentation rules from CLAUDE.md, and check the paths they cite.
 
 1. ``docs/`` names no vendor. Anything host-specific belongs in ``platforms/``.
 2. Markdown prose is one paragraph per line, never hard-wrapped.
+3. Every path the Markdown points at exists.
+
+The Markdown checked is what git tracks, plus new files it does not ignore, so
+tool caches such as ``.pytest_cache/README.md`` are left out.
 
 Rule 2 is decidable: a paragraph is wrapped exactly when a prose line is
 followed by another prose line that does not begin a block of its own. So this
@@ -20,13 +24,14 @@ Usage::
     python3 scripts/check-docs.py
     python3 scripts/check-docs.py --fix    # join wrapped paragraphs in place
 
-Exits non-zero if either rule is violated.
+Exits non-zero if any check fails.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,10 +43,8 @@ VENDOR_TERMS = ["jetstream", "openstack", "access-ci", "brevo", "porkbun", "exos
 # "SU" is checked separately because it collides with ordinary words.
 SU_PATTERN = re.compile(r"\bSUs?\b")
 
-# A sentence end, then whitespace, then something that starts a new sentence.
+# Lines that begin a block of their own rather than continue a paragraph.
 THEMATIC_BREAK = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
-
-# Stripped before checking, because none of these are sentence ends.
 LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+\.|\d+\))\s+")
 TABLE_ROW = re.compile(r"^\s*\|")
 LINK_DEFINITION = re.compile(r"^\s*\[[^\]]+\]:")
@@ -50,18 +53,33 @@ BLOCKQUOTE_MARKER = re.compile(r"^\s*>\s?")
 
 
 def markdown_files() -> list[Path]:
-    return sorted(
-        path
-        for path in REPO_ROOT.rglob("*.md")
-        if ".git" not in path.parts and "node_modules" not in path.parts
-    )
+    """The repository's Markdown: tracked files, and new ones git does not ignore.
+
+    Without git, every ``*.md`` outside a dot-directory or ``node_modules``,
+    which leaves out the same caches the ignore file does.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout.decode("utf-8")
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(
+            path
+            for path in REPO_ROOT.rglob("*.md")
+            if not any(part.startswith(".") or part == "node_modules"
+                       for part in path.relative_to(REPO_ROOT).parts[:-1])
+        )
+    # --cached also lists a tracked file deleted from the working tree.
+    return sorted({REPO_ROOT / name for name in listed.split("\0") if name and (REPO_ROOT / name).is_file()})
 
 
 def check_vendor_terms() -> list[str]:
     problems = []
-    docs = REPO_ROOT / "docs"
 
-    for path in sorted(docs.rglob("*.md")):
+    for path in markdown_files():
+        if path.relative_to(REPO_ROOT).parts[0] != "docs":
+            continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             lowered = line.lower()
             for term in VENDOR_TERMS:

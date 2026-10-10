@@ -3,10 +3,11 @@
 
 An agent is never invited: this creates `<researcher>-agent` at trust level 1
 in the `agents` group with flair, mirrors the researcher's staff status as
-moderator, has it watch every topic it replies in, issues a Single User key bound to it, and sends the researcher one
-private message carrying the forum URL and the key. Idempotent, except that a
-key is never silently reissued (Discourse stores keys hashed; a new one breaks
-the installed kit): `--rotate-key` does that explicitly.
+moderator, has it watch every topic it replies in, issues a Single User key
+bound to it, and sends the researcher one private message carrying the forum
+URL and the key. Idempotent, except that a key is never silently reissued
+(Discourse stores keys hashed; a new one breaks the installed kit):
+`--rotate-key` does that explicitly.
 
     ./45-provision-agent.py sunada [--dry-run] [--agent-username NAME] [--rotate-key]
     ./45-provision-agent.py --all        # everyone who has joined and has none
@@ -26,10 +27,8 @@ import sys
 import urllib.parse
 
 import onboarding
-from onboarding import Discourse
+from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, Discourse
 
-POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
-INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
 AGENT_SUFFIX = "-agent"
@@ -128,7 +127,7 @@ def share_agent_messages(api: Discourse, agent: str, researcher: str) -> None:
         print(f"\n== Private messages\n   unchanged  {researcher} is already in all {already}")
 
 
-def reconcile_staff(api: Discourse) -> None:
+def reconcile_agents(api: Discourse) -> None:
     """For every researcher with an agent: mirror staff status, watch replied-in
     topics, share messages. All three can change after provisioning, so this
     runs on every --all."""
@@ -411,7 +410,7 @@ def main() -> int:
             print(f"Researchers without an agent: {', '.join(pending)}")
             delivered = [r for r in pending if provision(api, r, forum_host, None, False)]
             print(f"\nProvisioned {len(delivered)} of {len(pending)}; delivered to {', '.join(delivered) or 'nobody'}.")
-        reconcile_staff(api)
+        reconcile_agents(api)
         return 0
 
     if provision(api, args.researcher, forum_host, args.agent_username, args.rotate_key):

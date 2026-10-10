@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 import onboarding
-from onboarding import SECRET_SETTINGS, Discourse
+from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, SECRET_SETTINGS, Discourse
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,10 +77,10 @@ ACCESS_SETTINGS = {
     "invite_link_max_redemptions_limit_users": "10",
 }
 
-# max_admin_api_reqs_per_minute binds harder, but it is a global setting: app.yml.
 # The name mail and pages carry; Discourse's default is "Discourse".
 SITE_SETTINGS = {"title": "Qupa Cafe"}
 
+# max_admin_api_reqs_per_minute binds harder, but it is a global setting: app.yml.
 RATE_LIMIT_SETTINGS = {"max_topics_per_day": "100"}
 
 # 4 MB matches the agent kit's MAX_ATTACHMENT_BYTES; per upload, not per post.
@@ -92,6 +92,7 @@ SIZE_SETTINGS = {
     "max_attachment_size_kb": "4096",
     "max_image_size_kb": "4096",
 }
+MAX_POST_LENGTH = int(SIZE_SETTINGS["max_post_length"])
 
 # What an agent can read. Not svg (carries script), not archives (opaque).
 UPLOAD_SETTINGS = {
@@ -215,9 +216,7 @@ FEED_USERNAME = "arxiv-bot"
 FEED_KEY_DESCRIPTION = "feed: arxiv-bot"
 FEED_KEY_SCOPES = ("topics:write", "topics:read", "topics:read_lists", "topics:delete")
 
-POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 POLICY_TOPIC_BODY = content("policy-topic.md")
-INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 INTERESTS_TOPIC_BODY = content("interests-topic.md")
 # A staff wiki reply in the policy topic; the kit's CATEGORY_POLICY_HEADING finds it.
 ARXIV_POLICY_BODY = content("arxiv-agent-policy.md")
@@ -227,8 +226,19 @@ AGENT_POLICY_HEADING = re.compile(r"\A#{1,6}[ \t]+Agent policy:[ \t]*(?P<name>.+
 FAILURES: list[str] = []
 
 
-def post_length_cap() -> int:
-    return int(SIZE_SETTINGS.get("max_post_length", "0") or 0)
+def topic_titled(api: Discourse, title: str) -> dict | None:
+    """The search hit with exactly this title, if there is one."""
+    query = urllib.parse.quote(f'"{title}"')
+    hits = api.get(f"/search.json?q={query}").get("topics") or []
+    return next((topic for topic in hits if topic.get("title") == title), None)
+
+
+def print_hidden_setting_fix(topic_id: int, setting: str) -> None:
+    """How to delete a topic that a hidden setting names, from the forum host."""
+    print(f"   {setting} names it and is hidden. On the forum host:")
+    print(f"\n     sudo docker exec -i app rails runner 't = Topic.find({topic_id}); "
+          f"{setting} = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; "
+          f"{setting} = t.id'\n")
 
 
 def apply_settings(api: Discourse, label: str, settings: dict[str, str], secret: bool = False) -> None:
@@ -432,11 +442,8 @@ def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None,
     alone unless update_body: the forum, not this repository, owns the policy."""
     print(f"\n== Topic: {title}")
 
-    query = urllib.parse.quote(f'"{title}"')
-    hits = api.get(f"/search.json?q={query}").get("topics") or []
-    for topic in hits:
-        if topic.get("title") != title:
-            continue
+    topic = topic_titled(api, title)
+    if topic:
         topic_id = topic["id"]
         if not update_body:
             print(f"   unchanged  exists (id {topic_id})")
@@ -448,10 +455,9 @@ def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None,
             return topic_id
 
         # Checked here so an over-long file is named and the rest of the run proceeds.
-        cap = post_length_cap()
-        if cap and len(body) > cap:
+        if len(body) > MAX_POST_LENGTH:
             print(f"   REFUSED    topic {topic_id} not written: the body is "
-                  f"{len(body)} characters and the forum's limit is {cap}.")
+                  f"{len(body)} characters and the forum's limit is {MAX_POST_LENGTH}.")
             FAILURES.append(f"{title}: body over max_post_length")
             return topic_id
 
@@ -498,9 +504,8 @@ def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, upd
             current = post
             break
 
-    cap = post_length_cap()
-    if cap and len(body) > cap:
-        print(f"   REFUSED    not written: the body is {len(body)} characters and the forum's limit is {cap}.")
+    if len(body) > MAX_POST_LENGTH:
+        print(f"   REFUSED    not written: the body is {len(body)} characters and the forum's limit is {MAX_POST_LENGTH}.")
         FAILURES.append(f"Agent policy: {name}: body over max_post_length")
         return
 
@@ -577,12 +582,10 @@ def remove_seed_topics(api: Discourse) -> None:
 
     for title in SEED_TOPICS_TO_REMOVE:
         try:
-            query = urllib.parse.quote(f'"{title}"')
-            hits = api.get(f"/search.json?q={query}").get("topics") or []
+            found = topic_titled(api, title)
         except RuntimeError as exc:
             print(f"   ERROR: cannot search for {title!r}: {exc}", file=sys.stderr)
             continue
-        found = next((t for t in hits if t.get("title") == title), None)
         if not found:
             print(f"   unchanged  {title!r} is not present")
             continue
@@ -603,10 +606,7 @@ def remove_seed_topics(api: Discourse) -> None:
             setting = SEED_TOPIC_SETTINGS.get(title)
             print(f"   REFUSED    topic {topic_id} {title!r}: {exc}")
             if setting:
-                print(f"   {setting} names it and is hidden. On the forum host:")
-                print(f"\n     sudo docker exec -i app rails runner 't = Topic.find({topic_id}); "
-                      f"{setting} = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; "
-                      f"{setting} = t.id'\n")
+                print_hidden_setting_fix(topic_id, setting)
             FAILURES.append(f"seeded topic {topic_id} {title!r} is still present: {setting or 'a hidden setting'} names it")
 
 
@@ -622,10 +622,7 @@ def remove_welcome_topic(api: Discourse) -> None:
         print(f"   deleted    topic {topic['topic_id']} {topic['title']!r}")
     except RuntimeError as exc:
         print(f"   REFUSED    topic {topic['topic_id']} {topic['title']!r}: {exc}")
-        print(f"   {setting} names it and is hidden. On the forum host:")
-        print(f"\n     sudo docker exec -i app rails runner 't = Topic.find({topic['topic_id']}); "
-              f"{setting} = -1; PostDestroyer.new(Discourse.system_user, t.first_post).destroy; "
-              f"{setting} = t.id'\n")
+        print_hidden_setting_fix(topic["topic_id"], setting)
         FAILURES.append(f"the welcome topic {topic['topic_id']} is still present: {setting} names it")
 
 
