@@ -210,14 +210,19 @@ def test_the_kits_own_environment_is_protected_where_the_agents_directory_holds_
     assert str((tmp_path / "elsewhere").resolve()) not in sandbox.protected_paths([str(tmp_path / "elsewhere")])
 
 
-def test_a_configuration_naming_only_readable_directories_grants_no_writes(installed):
-    config = dict(installed, readable=installed["agent_dirs"], agent_dirs=[])
-    path = Path(config["readable"][0]) / "x"
-    out = sandbox.decide({"tool_name": "Write", "tool_input": {"file_path": str(path)}}, config)["hookSpecificOutput"]
-    assert "permissionDecision" not in out
+def test_the_hook_approves_reads_only_where_the_sandbox_writes(installed, tmp_path):
+    """Which is all run.mjs opens to it, so a key the configuration does not
+    define opens nothing more."""
+    other = tmp_path / "other"
+    other.mkdir()
+    config = dict(installed, readable=[str(other)])
+
+    out = sandbox.decide({"tool_name": "Read", "tool_input": {"file_path": str(other / "x")}}, config)
+    assert "permissionDecision" not in out["hookSpecificOutput"]
+    assert str(other) not in sandbox.wake_notice(config)
 
 
-def test_reads_are_approved_in_the_workspace_and_the_readable_directories(installed, tmp_path):
+def test_reads_are_approved_in_the_workspace_and_the_agents_directories(installed, tmp_path):
     read = lambda path: {"tool_name": "Read", "tool_input": {"file_path": str(path)}}  # noqa: E731
 
     assert _decision(sandbox.decide(read(Path(installed["agent_dirs"][0]) / "notes.md"), installed)) == "allow"

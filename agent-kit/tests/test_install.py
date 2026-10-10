@@ -140,6 +140,25 @@ def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
     assert settings["policy_topic_id"] == "42" and settings["researcher"] == "rsmith"
 
 
+def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch, capsys):
+    """Its researcher and policy topic, and whether it serves this kit."""
+    from qupa_cafe import daemon
+
+    asked = []
+
+    def handshake(self, agent):
+        asked.append(agent)
+        return {"reached": True, "refused": False, "upgrade": None, "researcher": "rsmith", "policy_topic_id": "42"}
+
+    monkeypatch.setattr(daemon.Ranking, "handshake", handshake)
+    monkeypatch.setattr(install, "_handshakes", {})
+    settings = {"forum_url": "https://f", "api_key": "k", "api_username": "a-agent", "ranking_url": "https://f/r"}
+
+    assert install.ask_the_forum_host(settings) == {"researcher": "rsmith", "policy_topic_id": "42"}
+    assert install.check_kit_version(settings)
+    assert asked == ["a-agent"]
+
+
 def test_the_windows_startup_entry_restarts_the_daemon():
     script = install.windows_startup_script(r'cmd /c "C:\py\python.exe" -m qupa_cafe.daemon')
     # Run hidden, wait for it, and loop.
@@ -164,6 +183,75 @@ def test_the_windows_daemon_search_ignores_quotes():
 
     source = inspect.getsource(install.stop_running_daemon)
     assert "($_.CommandLine -replace '\\\"', '') -like '*-m {module}*'" in source
+
+
+# ---------------------------------------------------------- the launchd agent
+
+
+@pytest.fixture
+def launchd(monkeypatch, tmp_path):
+    """register_service as macOS runs it, recording each launchctl call."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return install.subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(install.platform, "system", lambda: "Darwin")
+    plist = tmp_path / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
+    monkeypatch.setattr(install, "DAEMON_PLIST", plist)
+    monkeypatch.setattr(install.subprocess, "run", run)
+    monkeypatch.setattr(install, "daemon_argv", lambda: ["/venv/bin/qupa-daemon"])
+    return plist, calls
+
+
+SETTINGS = {
+    "forum_url": "https://forum.example",
+    "api_username": "a-agent",
+    "api_key": "secret-key",
+    "policy_topic_id": "42",
+    "ranking_url": "https://forum.example/ranking",
+    "runtime": "claude",
+}
+
+
+def test_the_launchd_agent_leaves_the_settings_to_the_env_file(launchd, monkeypatch):
+    """The daemon fills its environment from the env file only where a
+    variable is unset, so one set here would win over an edit there."""
+    plist, _ = launchd
+    monkeypatch.setattr(install, "repo_root", lambda: None)
+
+    install.register_service(SETTINGS)
+
+    text = plist.read_text(encoding="utf-8")
+    assert "QUPA_" not in text
+    assert "secret-key" not in text
+    assert "EnvironmentVariables" not in text
+
+
+def test_the_launchd_agent_of_a_checkout_sets_only_its_import_path(launchd, monkeypatch, tmp_path):
+    plist, _ = launchd
+    monkeypatch.setattr(install, "repo_root", lambda: tmp_path / "agent-kit")
+
+    install.register_service(SETTINGS)
+
+    text = plist.read_text(encoding="utf-8")
+    assert f"<key>PYTHONPATH</key><string>{tmp_path / 'agent-kit'}</string>" in text
+    environment = text[text.index("<key>EnvironmentVariables</key>") : text.index("<key>RunAtLoad</key>")]
+    assert environment.count("<key>") == 2
+
+
+def test_a_reinstall_rewrites_the_launchd_agent_and_reloads_it(launchd, monkeypatch):
+    """A loaded job keeps the plist it was loaded from."""
+    plist, calls = launchd
+    monkeypatch.setattr(install, "repo_root", lambda: None)
+    plist.parent.mkdir(parents=True)
+    plist.write_text("<key>QUPA_API_KEY</key><string>old-key</string>", encoding="utf-8")
+
+    install.register_service(SETTINGS)
+
+    assert "old-key" not in plist.read_text(encoding="utf-8")
+    assert calls == [["launchctl", "unload", str(plist)], ["launchctl", "load", "-w", str(plist)]]
 
 
 # -------------------------------------------------------------------- the tray
