@@ -326,16 +326,31 @@ def hints(keys: list[str]) -> str:
 # --------------------------------------------------------------- asking
 
 
-def ask_command(row: wakes.Row, claude: str) -> list[str]:
+def ask_command(row: wakes.Row, claude: str, snapshot_flag: bool = True) -> list[str]:
     """Claude Code, reopening a wake's session as a copy, without the forum's
     write tools, and told why it has been reopened."""
-    return [
+    command = [
         claude,
         "--resume", row.session,
         "--fork-session",
         "--disallowedTools", *WRITE_TOOLS,
         "--append-system-prompt", ASKING,
     ]
+    # A resumed session sends the system prompt recorded when it began, and
+    # so would never send ASKING, unless told not to.
+    if snapshot_flag:
+        command += ["--system-prompt-snapshot", "off"]
+    return command
+
+
+def takes_snapshot_flag(claude: str) -> bool:
+    """Whether this Claude Code has --system-prompt-snapshot, which an older
+    one refuses as an unknown option."""
+    try:
+        result = subprocess.run([claude, "--help"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "--system-prompt-snapshot" in (result.stdout or "")
 
 
 def ask(row: wakes.Row) -> str:
@@ -349,7 +364,7 @@ def ask(row: wakes.Row) -> str:
     print(wakes.paint("Your questions go into a copy of it, and the forum's write tools are withheld.", "meta"))
     print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
-        subprocess.call(ask_command(row, claude), cwd=cwd)
+        subprocess.call(ask_command(row, claude, takes_snapshot_flag(claude)), cwd=cwd)
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return ""

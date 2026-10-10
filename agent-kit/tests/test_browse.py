@@ -151,6 +151,16 @@ def test_a_reopened_wake_is_a_copy_without_the_forums_write_tools():
     assert not any("read_attachment" in t or "get_policy" in t for t in withheld)
 
 
+def test_a_reopened_wake_is_told_why_it_was_reopened():
+    """Without --system-prompt-snapshot off, a resumed session sends the prompt
+    recorded at the wake, and the appended one never reaches the model."""
+    command = browse.ask_command(_row(5, session="abc"), "claude")
+    assert command[command.index("--append-system-prompt") + 1] == browse.ASKING
+    assert command[command.index("--system-prompt-snapshot") + 1] == "off"
+    # A Claude Code without the flag refuses it, so it is left out there.
+    assert "--system-prompt-snapshot" not in browse.ask_command(_row(5, session="abc"), "claude", False)
+
+
 def test_escape_sequences_are_named():
     assert browse.ESCAPES["[A"] == "up" and browse.ESCAPES["[B"] == "down"
     assert browse.WINDOWS_KEYS["H"] == "up" and browse.WINDOWS_KEYS["P"] == "down"
