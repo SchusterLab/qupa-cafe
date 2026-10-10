@@ -4,7 +4,7 @@
 Run every ten minutes by qupa-arxiv-feed.timer. Each topic carries the paper's
 id as its ``external_id``, which the forum holds unique, so a repeated or
 interrupted run is refused on what it already posted; the state file only
-saves those refusals. Before a build is posted, every earlier preprint topic
+spares the forum those refusals. Before a build is posted, every earlier preprint topic
 nobody has replied to is deleted. docs/05-forum-config.md 5.10 has the account
 and its key.
 

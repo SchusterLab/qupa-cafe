@@ -192,9 +192,6 @@ class State:
     def drop_thread(self, topic_id: int) -> None:
         self._run("DELETE FROM threads WHERE topic_id = ?", topic_id)
 
-    def came_from_slack(self, post_id: int) -> bool:
-        return self._one("SELECT 1 FROM from_slack WHERE post_id = ?", post_id) is not None
-
     def origin_of(self, post_id: int) -> str | None:
         row = self._one("SELECT channel_id FROM from_slack WHERE post_id = ?", post_id)
         return row[0] if row else None
@@ -581,6 +578,11 @@ def message_title(raw: str) -> str:
     return first if len(first) >= 15 else f"From Slack: {first}" if first else "A message from Slack"
 
 
+def gone(post: dict | None) -> bool:
+    """No post, or one hidden or deleted, which the bridge leaves out of Slack."""
+    return not post or bool(post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"))
+
+
 def same_text(a: str | None, b: str | None) -> bool:
     """Equal as the forum stores them, which trims and uses bare newlines."""
     return (a or "").replace("\r\n", "\n").strip() == (b or "").replace("\r\n", "\n").strip()
@@ -719,6 +721,10 @@ class Bridge:
 
     # -------------------------------------------------------- channels
 
+    def channel_name(self, category: dict) -> str:
+        parent_id = category.get("parent_category_id")
+        return channel_name(category, self.category(parent_id) if parent_id else None, self.prefix)
+
     def ensure_channel(self, category: dict) -> str | None:
         """The category's channel, created if needed; None if read-restricted."""
         category_id = category.get("id")
@@ -728,10 +734,7 @@ class Bridge:
         if existing:
             return existing
 
-        parent = None
-        if category.get("parent_category_id"):
-            parent = self.category(category["parent_category_id"])
-        name = channel_name(category, parent, self.prefix)
+        name = self.channel_name(category)
         url = f"{self.forum.base_url}/c/{category.get('slug')}/{category_id}"
 
         channel_id = None
@@ -773,10 +776,7 @@ class Bridge:
 
     def ensure_name(self, category: dict, channel_id: str) -> None:
         """Rename the channel after its category's slug or the prefix changes."""
-        parent = None
-        if category.get("parent_category_id"):
-            parent = self.category(category["parent_category_id"])
-        wanted = channel_name(category, parent, self.prefix)
+        wanted = self.channel_name(category)
         current = (self.slack.conversations_info(channel=channel_id).get("channel") or {}).get("name")
         if current == wanted:
             return
@@ -817,6 +817,10 @@ class Bridge:
     def post_url(self, topic: dict, post_number: int) -> str:
         return f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}/{post_number}"
 
+    def title_link(self, topic: dict) -> str:
+        """The topic's title in bold, linking to the topic."""
+        return f"*<{self.forum.base_url}/t/{topic['slug']}/{topic['id']}|{slack_escape(topic['title'])}>*"
+
     def opening(
         self, topic: dict, first: dict | None, hint: str = TOPIC_HINT, mention: bool = True, codes: bool = False,
     ) -> dict:
@@ -824,12 +828,11 @@ class Bridge:
         post's author, so the conversation shows what the topic says without
         opening the thread, and ``hint`` after it in italics. With the first
         post gone, the title alone under the topic's opener."""
-        url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
-        heading = f"*<{url}|{slack_escape(topic['title'])}>*\n"
+        heading = self.title_link(topic) + "\n"
         # A paragraph of its own, so it reads apart from the post above it.
         hint = f"\n\n_{hint}_"
-        if not first or first.get("hidden") or first.get("deleted_at") or first.get("user_deleted"):
-            return {"text": heading.rstrip() + hint, "username": topic.get("opener") or "somebody"}
+        if gone(first):
+            return {"text": self.title_link(topic) + hint, "username": topic.get("opener") or "somebody"}
         # The linked title is the link to the post.
         text = self.post_text(first, topic, mention=mention, heading=heading, link=False, codes=codes).rstrip() + hint
         return {"text": text, "username": first.get("username") or "somebody"}
@@ -859,8 +862,7 @@ class Bridge:
     def ensure_link(self, topic: dict, channel_id: str) -> None:
         """A link-only topic's thread: its parent the title, linked, and nothing
         else of the bridge's. A thread holding copies is cut back to that."""
-        url = f"{self.forum.base_url}/t/{topic['slug']}/{topic['id']}"
-        text = f"*<{url}|{slack_escape(topic['title'])}>*\n\n_{LINK_ONLY_HINT}_"
+        text = f"{self.title_link(topic)}\n\n_{LINK_ONLY_HINT}_"
         marker = f"linked:{topic['id']}"
         existing = self.state.thread_for(topic["id"])
         if existing and existing[0] == channel_id:
@@ -893,9 +895,9 @@ class Bridge:
     def relay_post(self, post: dict) -> str:
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
-        if post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+        if gone(post):
             return "hidden or deleted"
-        if self.state.came_from_slack(post["id"]):
+        if self.state.origin_of(post["id"]) is not None:
             return "came from Slack"
 
         topic = self.topic_meta(post)
@@ -932,17 +934,16 @@ class Bridge:
     ) -> None:
         """One post as a thread reply. ``reopen`` restarts a thread whose parent
         was deleted in Slack; ``mention`` is off in a DM; ``codes`` is ``redact``'s."""
-        author = post.get("username") or "somebody"
         text = self.post_text(post, topic, mention=mention, codes=codes)
-        try:
-            result = self.slack.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=text,
-                username=author,
-                unfurl_links=False,
-                unfurl_media=False,
+
+        def post_in(thread: str) -> dict:
+            return self.slack.chat_postMessage(
+                channel=channel_id, thread_ts=thread, text=text, username=post.get("username") or "somebody",
+                unfurl_links=False, unfurl_media=False,
             )
+
+        try:
+            result = post_in(thread_ts)
         except Exception as exc:
             if "thread_not_found" not in str(exc) and "message_not_found" not in str(exc):
                 raise
@@ -951,10 +952,7 @@ class Bridge:
                 thread_ts = self.ensure_thread(topic, channel_id)
             else:
                 thread_ts = reopen()
-            result = self.slack.chat_postMessage(
-                channel=channel_id, thread_ts=thread_ts, text=text, username=author,
-                unfurl_links=False, unfurl_media=False,
-            )
+            result = post_in(thread_ts)
         if PLACEHOLDER.search(post.get("raw") or ""):
             self.state.watch_placeholder(post["id"], channel_id, result["ts"], thread_ts, topic, mention, codes)
             return
@@ -972,7 +970,7 @@ class Bridge:
                     LOG.error("cannot read placeholder %d: %s", post_id, exc)
                     continue
                 post = {"deleted_at": "gone"}
-            if post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+            if gone(post):
                 try:
                     self.slack.chat_delete(channel=channel_id, ts=ts)
                 except Exception as exc:
@@ -999,7 +997,7 @@ class Bridge:
         after it. Slack cannot fetch them from a forum that requires a login,
         so the bytes go. A failure costs only the files: the text is already
         in Slack, and relaying the post again would repeat it."""
-        if not post or post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+        if gone(post):
             return
         raw = post["raw"] if "raw" in post else self.forum.post(post["id"]).get("raw", "")
         found = files_in(raw or "")
@@ -1131,7 +1129,7 @@ class Bridge:
         message is between them and their agent or from the forum to them."""
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
-        if post.get("hidden") or post.get("deleted_at") or post.get("user_deleted"):
+        if gone(post):
             return "hidden or deleted"
 
         # Read afresh: who is in a private message changes.
