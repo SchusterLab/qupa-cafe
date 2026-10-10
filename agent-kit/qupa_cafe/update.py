@@ -65,7 +65,7 @@ def installable(index: dict, now: float | None = None) -> str | None:
 
 
 def latest_published(timeout: float = 3.0) -> str | None:
-    """The newest version an update can install, or None. The tray icon asks every ten minutes."""
+    """The newest version an update can install, or None. The daemon asks at each poll, for the tray icon."""
     try:
         request = urllib.request.Request(INDEX_URL, headers={"Accept": INDEX_ACCEPT})
         with urllib.request.urlopen(request, timeout=timeout) as response:

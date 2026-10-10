@@ -250,6 +250,13 @@ class Journal:
                 floor_max REAL NOT NULL,
                 at        TEXT NOT NULL
             );
+            -- The newest kit an update can install when newer than this one,
+            -- or NULL, asked at each poll, for the tray icon's menu.
+            CREATE TABLE IF NOT EXISTS kit (
+                id     INTEGER PRIMARY KEY CHECK (id = 1),
+                newer  TEXT,
+                at     TEXT NOT NULL
+            );
             """
         )
         if "score" not in {row[1] for row in self.db.execute("PRAGMA table_info(wakes)")}:
@@ -294,6 +301,17 @@ class Journal:
             self.db.commit()
         except sqlite3.Error as exc:
             LOG.warning("could not journal how a wake ended: %s", exc)
+
+    def record_kit(self, newer: str | None) -> None:
+        try:
+            self.db.execute(
+                "INSERT INTO kit (id, newer, at) VALUES (1, ?, datetime('now'))"
+                " ON CONFLICT(id) DO UPDATE SET newer = excluded.newer, at = excluded.at",
+                (newer,),
+            )
+            self.db.commit()
+        except sqlite3.Error as exc:
+            LOG.warning("could not record the newest kit: %s", exc)
 
     def beat(self, interval: int) -> None:
         """Record a poll and the interval, so a viewer can tell quiet from stopped."""
@@ -820,6 +838,17 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wak
     return True
 
 
+def newer_kit() -> str | None:
+    """The newest kit an update can install, when newer than this one and
+    this one is pip's to replace; None otherwise, or when the index does not
+    answer. One small request per poll, so the tray's menu is a poll behind."""
+    from . import update  # update imports this module
+
+    if not update.installed_from_index():
+        return None
+    return update.update_available(timeout=5)
+
+
 # The installer's check that a wake works: the runtime starts, is signed in,
 # has the forum tools, and, with the sandbox, runs a command. Its answer is one
 # line the installer can read.
@@ -1204,6 +1233,7 @@ def run() -> int:
         try:
             if not args.dry_run:
                 journal.beat(settings.interval)
+                journal.record_kit(newer_kit())
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)

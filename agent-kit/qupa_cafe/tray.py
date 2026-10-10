@@ -17,7 +17,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,10 +25,6 @@ from . import __version__, update, wakes
 from .daemon import Settings, claim_lock, load_env_file, log_path, outside_session_env
 
 REFRESH_SECONDS = 20
-
-# How often to ask the index for a newer kit: as often as a release takes to
-# become installable (update.SETTLE_SECONDS), since it is one small request.
-UPDATE_CHECK_SECONDS = 600
 
 COLOURS = {
     "polling": (46, 160, 67),
@@ -258,8 +253,8 @@ def main() -> int:
 
         threading.Thread(target=work, daemon=True).start()
 
-    # The newest kit an update can install, when newer than this one; asked
-    # in the refresh thread, never in a menu callback.
+    # The newest kit an update can install, when newer than this one, as the
+    # daemon found it at its last poll; read in the refresh thread.
     newer: dict[str, str | None] = {"version": None}
     updatable = update.installed_from_index()
 
@@ -297,7 +292,6 @@ def main() -> int:
     def refresh(icon) -> None:
         # In pystray's thread, the only one it lets change the icon everywhere.
         icon.visible = True
-        asked = 0.0
         while not stop.is_set():
             try:
                 key, text = describe(settings)
@@ -305,15 +299,13 @@ def main() -> int:
                 icon.title = text
             except Exception:  # noqa: BLE001 - a bad read is retried, not fatal
                 pass
-            if updatable and time.time() - asked >= UPDATE_CHECK_SECONDS:
-                asked = time.time()
-                found = update.update_available(timeout=10)
-                if found != newer["version"]:
-                    newer["version"] = found
-                    try:
-                        icon.update_menu()
-                    except Exception:  # noqa: BLE001 - shown at the next change instead
-                        pass
+            found = wakes.newer_kit(settings.state_path) if updatable else None
+            if found != newer["version"]:
+                newer["version"] = found
+                try:
+                    icon.update_menu()
+                except Exception:  # noqa: BLE001 - shown at the next change instead
+                    pass
             stop.wait(REFRESH_SECONDS)
 
     icon.run(setup=refresh)

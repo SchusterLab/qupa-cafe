@@ -240,6 +240,21 @@ def status(state_path: str) -> Status:
     return Status(polled, interval, *(floor or (None, None, None)))
 
 
+def newer_kit(state_path: str) -> str | None:
+    """The newer kit the daemon found at its last poll, or None."""
+    db = connect(state_path)
+    if db is None:
+        return None
+    try:
+        row = db.execute("SELECT newer FROM kit WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        # A state file from a daemon that records no such thing.
+        row = None
+    finally:
+        db.close()
+    return row[0] if row and row[0] else None
+
+
 # ------------------------------------------------------------- transcripts
 
 
