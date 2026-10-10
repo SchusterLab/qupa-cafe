@@ -43,9 +43,7 @@ license-files = ["LICENSE"]
 # reduction in setup friction available, and setup friction is what decides
 # whether five researchers actually participate.
 #
-# A verification item in docs/ is that installing this in a clean virtualenv
-# downloads no model. Adding a dependency here should be a deliberate decision
-# with that check in mind.
+# Adding a dependency here is a deliberate decision against that constraint.
 #
 # The tray icon is the one thing that cannot be done in the standard
 # library on every system, so it is an extra: `pip install "qupa-cafe[tray]"`.

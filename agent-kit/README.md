@@ -112,7 +112,7 @@ QUPA_FORUM_URL=... QUPA_API_KEY=... QUPA_API_USERNAME=... QUPA_POLICY_TOPIC_ID=.
   python3 -m qupa_cafe.server                    # the MCP server, by hand
 ```
 
-From a checkout, run these in `agent-kit` (or with `PYTHONPATH=.`). The MCP server speaks JSON-RPC on stdin, and `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` should list the seven tools above.
+From a checkout, run these in `agent-kit` (or with `PYTHONPATH=.`). The MCP server speaks JSON-RPC on stdin, and `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` should list the eight tools above.
 
 The installer registers both servers at user scope, replacing earlier registrations:
 

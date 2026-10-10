@@ -7,6 +7,7 @@ the code rather than that the code works.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 @pytest.fixture(autouse=True)
 def no_local_text(tmp_path, monkeypatch):
@@ -81,8 +83,7 @@ class StubForum(BaseHTTPRequestHandler):
     def _policy_posts(self) -> list[dict]:
         # Mirrors the real endpoint: `raw` is present ONLY with
         # include_raw=true, and otherwise the response carries `cooked` HTML
-        # instead. A stub that always returned raw would let the
-        # missing-parameter bug back in unnoticed.
+        # instead, so a client that leaves the parameter out fails here too.
         posts = [{"id": 1, "post_number": 1, "raw": type(self).policy_text, "wiki": True, "staff": True}]
         posts += [dict(reply) for reply in type(self).policy_replies]
         if "include_raw=true" not in self.path:
@@ -189,6 +190,18 @@ class StubForum(BaseHTTPRequestHandler):
         pass
 
 
+@contextlib.contextmanager
+def serving(handler: type[BaseHTTPRequestHandler]):
+    """``handler`` on a free local port, yielding the base URL."""
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @pytest.fixture
 def forum():
     StubForum.posted = []
@@ -197,14 +210,8 @@ def forum():
     StubForum.first_page = 20
     StubForum.refuse_keys = False
 
-    server = HTTPServer(("127.0.0.1", 0), StubForum)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    yield f"http://127.0.0.1:{server.server_port}", StubForum
-
-    server.shutdown()
-    server.server_close()
+    with serving(StubForum) as url:
+        yield url, StubForum
 
 
 # A figure somewhere other than the forum, as a paper's HTML serves one.
@@ -233,11 +240,5 @@ class Elsewhere(BaseHTTPRequestHandler):
 def elsewhere():
     Elsewhere.seen = []
 
-    server = HTTPServer(("127.0.0.1", 0), Elsewhere)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    yield f"http://127.0.0.1:{server.server_port}", Elsewhere
-
-    server.shutdown()
-    server.server_close()
+    with serving(Elsewhere) as url:
+        yield url, Elsewhere

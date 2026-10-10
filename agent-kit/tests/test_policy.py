@@ -17,10 +17,6 @@ from conftest import POLICY_TOPIC_ID
 # ------------------------------------------------------------------- hashing
 
 
-def test_hash_is_stable():
-    assert policy_hash("some policy") == policy_hash("some policy")
-
-
 def test_hash_ignores_whitespace_only_edits():
     """Re-indenting a paragraph must not invalidate every acknowledgement.
 
@@ -31,11 +27,10 @@ def test_hash_ignores_whitespace_only_edits():
     assert policy_hash("  padded  ") == policy_hash("padded")
 
 
-def test_hash_changes_on_a_real_edit():
+def test_hash_is_stable_short_and_changes_on_a_real_edit():
+    assert policy_hash("some policy") == policy_hash("some policy")
     assert policy_hash("do X") != policy_hash("do Y")
-
-
-def test_hash_is_short_enough_to_pass_around():
+    # Short enough for an agent to pass around.
     assert len(policy_hash("x")) == 16
 
 
@@ -51,18 +46,6 @@ def test_fetch_returns_text_and_hash(forum):
     assert "something to add" in policy.text
     assert policy.hash == policy_hash(policy.text)
     assert policy.topic_id == POLICY_TOPIC_ID
-
-
-def test_every_fetch_reads_the_forum(forum):
-    """Nothing is cached, so an edit shows on the very next read."""
-    url, stub = forum
-    client = PolicyClient(url, POLICY_TOPIC_ID)
-
-    original = client.fetch()
-    stub.policy_text = "a completely different policy"
-    updated = client.fetch()
-
-    assert updated.hash != original.hash
 
 
 def test_empty_topic_is_an_error(forum):
@@ -101,12 +84,17 @@ def test_check_refuses_a_missing_hash(forum):
         client.check("")
 
 
-def test_check_refuses_a_stale_hash(forum):
+def test_check_refuses_a_stale_hash_and_says_how_to_recover(forum):
+    """The agent reading this message is what has to act on it."""
     url, _ = forum
     client = PolicyClient(url, POLICY_TOPIC_ID)
 
-    with pytest.raises(PolicyError, match="Stale"):
+    with pytest.raises(PolicyError, match="Stale") as excinfo:
         client.check("0000000000000000")
+
+    message = str(excinfo.value)
+    assert "get_policy" in message
+    assert "retry" in message
 
 
 def test_an_edit_invalidates_an_outstanding_ack(forum):
@@ -123,19 +111,6 @@ def test_an_edit_invalidates_an_outstanding_ack(forum):
 
     with pytest.raises(PolicyError, match="edited"):
         client.check(held)
-
-
-def test_the_refusal_says_how_to_recover(forum):
-    """The agent reading this message is what has to act on it."""
-    url, _ = forum
-    client = PolicyClient(url, POLICY_TOPIC_ID)
-
-    with pytest.raises(PolicyError) as excinfo:
-        client.check("wrong")
-
-    message = str(excinfo.value)
-    assert "get_policy" in message
-    assert "retry" in message
 
 
 # -------------------------------------------------- the include_raw parameter
@@ -159,46 +134,28 @@ def test_the_fetch_asks_for_raw(forum):
 
 
 def test_cooked_only_is_reported_as_such(forum):
-    """A caller that forgets the parameter should be told what is wrong."""
+    """A request that leaves the parameter out is told what is wrong."""
     url, _ = forum
 
     class Forgetful(PolicyClient):
-        def fetch(self, force: bool = False):
-            data = self._get(f"/t/{self.topic_id}.json")
-            posts = data["post_stream"]["posts"]
-            if not (posts[0].get("raw") or "").strip():
-                if posts[0].get("cooked"):
-                    raise PolicyError("needs ?include_raw=true")
-            return None
+        def _get(self, path: str) -> dict:
+            return super()._get(path.replace("?include_raw=true", ""))
 
     with pytest.raises(PolicyError, match="include_raw"):
         Forgetful(url, POLICY_TOPIC_ID).fetch()
 
 
-# --------------------------------------------------------------- the pin
-
-
-def test_the_forums_current_text_is_the_policy(forum):
-    """Whatever it says, and with nothing on this machine getting a say.
-
-    This is the property the rest of the design rests on: editing the topic
-    reaches every agent on its next post, with nobody in the path and no
-    release. An agreement held per machine would have to be renewed on each of
-    them after every edit, and an edit that reached four researchers out of
-    five would leave a forum whose agents follow different rules.
-    """
-    url, stub = forum
-    client = PolicyClient(url, POLICY_TOPIC_ID)
-
-    assert client.fetch().hash == policy_hash(stub.policy_text)
-
-    stub.policy_text = "a policy somebody else wrote"
-    assert client.fetch().hash == policy_hash(stub.policy_text)
+# ------------------------------------------- the forum's text is the policy
 
 
 def test_an_edit_is_adopted_rather_than_refused(forum):
-    """What guards the policy is who may edit the topic, on the forum, not a
-    second opinion here -- see docs/10-security.md."""
+    """The forum's current text is the policy, with nothing on this machine
+    getting a say: editing the topic reaches every agent on its next post,
+    with nobody in the path and no release. An agreement held per machine
+    would have to be renewed on each of them after every edit, and an edit
+    that reached four researchers out of five would leave a forum whose agents
+    follow different rules. What guards the policy is who may edit the topic,
+    on the forum (docs/10-security.md)."""
     url, stub = forum
     client = PolicyClient(url, POLICY_TOPIC_ID)
     first = client.fetch().hash
@@ -242,7 +199,7 @@ def test_anything_else_in_the_topic_is_discussion():
 
 
 def test_a_forum_with_no_category_policy_hashes_as_the_topic_alone(forum):
-    """So that publishing the kit changes no agent's acknowledgement."""
+    """The hash is then the hash of the first post alone."""
     url, stub = forum
     stub.policy_replies = [reply(2, "A question about the depth cap.", wiki=False, staff=False)]
     policy = PolicyClient(url, POLICY_TOPIC_ID).fetch()

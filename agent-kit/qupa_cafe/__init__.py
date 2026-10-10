@@ -2,14 +2,15 @@
 
 ``policy`` fetches and hashes the policy topic; ``server`` is the MCP server
 whose write tools check that hash; ``daemon`` polls with no model in it and
-wakes the agent only on a hit; ``wakes`` and ``tray`` show what each wake did.
+wakes the agent only on a hit; ``wakes``, ``browse`` and ``tray`` show what
+each wake did.
 Standard library only, apart from the optional tray icon.
 """
 
 __version__ = "0.16.7"
 
-# Must match the forum host (server/ranking.py, config/app.yml.example). One
-# copy, because install.py needs them too.
+# Both must match the forum host: the path its nginx proxies to the ranking
+# service (config/app.yml.example), and the header server/ranking.py reads.
 RANKING_PATH = "/ranking"
 
 KIT_VERSION_HEADER = "X-Kit-Version"
