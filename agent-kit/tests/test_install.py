@@ -265,3 +265,59 @@ def test_the_install_fails_when_the_agent_cannot_be_woken(monkeypatch, capsys):
     settings = _wake_check(monkeypatch, daemon.WakeCheck(False, False, False, "claude is not on PATH."))
     assert install.check_agent_wakes(settings, sandboxed=None) is False
     assert "sign in" in capsys.readouterr().out
+
+
+def _claude_state(tmp_path, monkeypatch, projects):
+    import json
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    (tmp_path / "claude-config").mkdir()
+    (tmp_path / "claude-config" / ".claude.json").write_text(json.dumps({"projects": projects}), encoding="utf-8")
+
+
+def test_a_directory_claude_code_trusts_is_seen_as_trusted(tmp_path, monkeypatch):
+    agent = tmp_path / "research" / "agent"
+    agent.mkdir(parents=True)
+    key = str((tmp_path / "research").resolve()).replace("\\", "/")
+    _claude_state(tmp_path, monkeypatch, {key: {"hasTrustDialogAccepted": True}})
+    # Trust carries down to the folders inside a trusted one.
+    assert install.claude_trusts(str(agent))
+    assert not install.claude_trusts(str(tmp_path / "elsewhere"))
+
+
+def test_trust_declined_or_never_asked_is_not_trust(tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    key = str(agent.resolve()).replace("\\", "/")
+    _claude_state(tmp_path, monkeypatch, {key: {"hasTrustDialogAccepted": False}})
+    assert not install.claude_trusts(str(agent))
+
+
+def test_trust_is_asked_for_in_claude_codes_own_dialog_and_never_written(tmp_path, monkeypatch, capsys):
+    """/exit as the first message closes Claude Code once its question is answered."""
+    agent = tmp_path / "agent"
+    _claude_state(tmp_path, monkeypatch, {})
+    before = (tmp_path / "claude-config" / ".claude.json").read_text(encoding="utf-8")
+    ran = []
+
+    class Terminal:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(install.sys, "stdin", Terminal())
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/bin/claude")
+    monkeypatch.setattr(install.subprocess, "call", lambda argv, **kw: ran.append((argv, kw["cwd"])) or 0)
+
+    assert install.ensure_claude_trust(str(agent)) is False
+    assert ran == [(["/bin/claude", "/exit"], str(agent))]
+    assert (tmp_path / "claude-config" / ".claude.json").read_text(encoding="utf-8") == before
+    assert "choose to trust it" in capsys.readouterr().out
+
+
+def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path, monkeypatch):
+    """Claude Code still asks about a folder under a home it trusts."""
+    monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    _claude_state(tmp_path, monkeypatch, {str(tmp_path.resolve()).replace("\\", "/"): {"hasTrustDialogAccepted": True}})
+    assert not install.claude_trusts(str(agent))

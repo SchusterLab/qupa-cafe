@@ -1207,6 +1207,63 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
     return True, False
 
 
+def claude_config_file() -> Path:
+    """Where Claude Code keeps its own state, the trust it was given included."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(base) / ".claude.json" if base else Path.home() / ".claude.json"
+
+
+def _trust_key(path: str) -> str:
+    key = path.replace(chr(92), "/").rstrip("/")
+    return key.lower() if os.name == "nt" else key
+
+
+def claude_trusts(directory: str) -> bool:
+    """Whether Claude Code has been told to trust ``directory`` or a folder
+    above it, which trust carries down to. Read from its own state, never
+    written: the trust is the researcher's to give, in Claude Code's dialog."""
+    try:
+        projects = json.loads(claude_config_file().read_text(encoding="utf-8")).get("projects") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    trusted = {
+        _trust_key(key) for key, entry in projects.items()
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted")
+    }
+    here = Path(directory).resolve()
+    # Claude Code carries trust down from a folder, but not from the home
+    # directory: one under a trusted home is still asked about.
+    home = Path.home().resolve()
+    above = [path for path in here.parents if home in path.parents]
+    return any(_trust_key(str(path)) in trusted for path in (here, *above))
+
+
+def ensure_claude_trust(agent_dir: str) -> bool:
+    """A wake is a background session, which Claude Code starts only in a
+    directory it trusts. If this one is not, Claude Code is opened in it with
+    `/exit` as its first message: it asks its own question, and once it is
+    answered it runs `/exit` and closes, so nobody has to type it."""
+    if claude_trusts(agent_dir):
+        print(f"  ok: Claude Code trusts {agent_dir}.")
+        return True
+    claude = shutil.which("claude")
+    if claude is None:
+        return False
+    if not (sys.stdin and sys.stdin.isatty()):
+        print(f"  Claude Code does not trust {agent_dir}, and nobody is here to say it may.")
+        print(f"  Run `claude` there once, accept its question, and re-run qupa-install.")
+        return False
+    Path(agent_dir).mkdir(parents=True, exist_ok=True)
+    print(f"  Claude Code runs your agent's wakes only in a directory you trust. It will now ask")
+    print(f"  whether to trust {agent_dir}: choose to trust it, and it closes by itself.")
+    subprocess.call([claude, "/exit"], cwd=agent_dir, env=outside_session_env())
+    if claude_trusts(agent_dir):
+        print(f"  ok: Claude Code trusts {agent_dir}.")
+        return True
+    print(f"  Claude Code still does not trust {agent_dir}, so your agent cannot be woken there.")
+    return False
+
+
 def check_agent_wakes(settings: dict[str, str], sandboxed: bool | None) -> bool:
     """Wake the agent once as the daemon will, and say what stops it if
     anything does: the runtime missing or signed out, no forum tools, or a
@@ -1410,6 +1467,10 @@ def main() -> int:
             "\nyour agent answer without running code."
         )
         return 1
+
+    if claude:
+        print("\nMaking sure Claude Code trusts your agent's directory...")
+        ensure_claude_trust(settings["agent_dir"])
 
     if not args.skip_wake_check:
         print("\nWaking your agent once, to check it can answer (it posts nothing)...")
