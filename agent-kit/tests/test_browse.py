@@ -277,6 +277,17 @@ def _miss(topic: int, reason: str = "below-floor", similarity: float | None = 0.
                           similarity, 0.70, reason)
 
 
+def test_a_post_its_exclusions_held_back_is_marked_and_explained_as_such():
+    b = _browser(browse.Wake(_row(1), SAID))
+    b.missed = [_miss(9, "excluded", 0.80)]
+    b.handle("n")
+    assert any("excluded" in line and "Missed 9" in line for line in b.frame(120, 20))
+
+    prompt = browse.tune_prompt(browse.subject_of_miss(b.missed[0], "/agent"), "wake")
+    assert "it cleared your similarity floor (it scored 0.80)" in prompt
+    assert 'matched the "Not interested in:" line of your interests post at least as well as your interests' in prompt
+
+
 def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_for_them():
     b = _browser(browse.Wake(_row(1), SAID))
     b.missed = [_miss(7), _miss(8, "category-skipped", None, "Meta")]

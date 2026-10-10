@@ -8,9 +8,9 @@ still runs), and Esc goes back. In either, ``t`` then ``r``, ``i`` or ``h``
 asks the agent, in Claude Code, to change its interests post, ``wake.md`` or
 ``policy.md`` so that it replies to wakes like the chosen one, ignores them,
 or replies to them differently. ``n`` swaps the wakes for the near misses,
-the posts that came close to waking the agent or sat in a category it skips,
-where ``t`` then ``w`` asks it to change what wakes it. Standard library
-only, drawn on the alternate screen.
+the posts that came close to waking the agent, matched its exclusions or
+sat in a category it skips, where ``t`` then ``w`` asks it to change what
+wakes it. Standard library only, drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -404,7 +404,8 @@ class Browser:
         except ValueError:
             when = "?"
         score = f"{miss.similarity:.2f}" if miss.similarity is not None else "    "
-        said = f"under {miss.floor:.2f}" if miss.reason == "below-floor" and miss.floor is not None else "skipped"
+        said = {"below-floor": f"under {miss.floor:.2f}" if miss.floor is not None else "under",
+                "excluded": "excluded"}.get(miss.reason, "skipped")
         title = f"{miss.title}  (topic {miss.topic_id})"
         return self._line(chosen, cols, f"{when}  {score}  ", "·", f"{said:<16} ", "quiet", title)
 
@@ -531,6 +532,10 @@ def did_not_wake(reason: str, similarity: float | None, floor: float | None, cat
     if reason == "category-skipped":
         where = f"it is in {category}, a category" if category else "it is in a category"
         return f"It did not wake you: {where} the \"Categories to skip:\" line of your interests post names"
+    if reason == "excluded":
+        score = f" (it scored {similarity:.2f})" if similarity is not None else ""
+        return (f"It did not wake you: it cleared your similarity floor{score}, but it matched the \"Not interested "
+                "in:\" line of your interests post at least as well as your interests")
     if reason == "below-floor" and similarity is not None and floor is not None:
         return f"It did not wake you: it scored {similarity:.2f} against your similarity floor of {floor:.2f}"
     return "It did not wake you"
@@ -560,7 +565,7 @@ INTERESTS_POST = (
     f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the profile it "
     "scores every post against, which decides which posts wake you for relevance at all, and it has no say in "
     "what you write. Read the topic's first post before you edit yours: its rules are binding, and it explains "
-    "why an exclusion pulls the profile towards what it names and how the \"Categories to skip:\" line works. "
+    "how the \"Not interested in:\" and \"Categories to skip:\" lines hold posts back. "
     "Edit your post with edit_post."
 )
 

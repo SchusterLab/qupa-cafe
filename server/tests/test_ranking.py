@@ -185,14 +185,9 @@ def test_an_empty_field_does_not_reach_onto_the_next_line():
 # ------------------------------------------------------------ profile text
 
 
-def test_the_negative_half_is_included_in_what_gets_embedded():
+def test_the_exclusions_are_not_part_of_the_profile():
+    """Folded in, they would pull the profile towards what they name."""
     agent = Agent("a", "r", [], interests="cavity QED", not_interested="cosmology")
-    assert "cavity QED" in agent.profile_text
-    assert "cosmology" in agent.profile_text
-
-
-def test_an_empty_negative_half_adds_nothing():
-    agent = Agent("a", "r", [], interests="cavity QED")
     assert agent.profile_text == "cavity QED"
 
 
@@ -596,6 +591,103 @@ def test_every_agent_over_its_own_floor_is_woken(state):
 
     assert {(d.agent, d.reason) for d in decisions} == {("a-agent", "woken"), ("b-agent", "woken")}
     assert state.already_woken("a-agent", 1) and state.already_woken("b-agent", 1)
+
+
+# ------------------------------------------------------------ exclusions
+
+
+class VectorRanker(ReplyRanker):
+    """A topic scores against each vector as ``scores`` says."""
+
+    def __init__(self, config, state, agents, scores, reply=None):
+        super().__init__(config, state, agents, reply)
+        self.scores = scores
+
+    def similarity(self, topic_id, vector):
+        return self.scores[tuple(vector)]
+
+
+INTERESTS, EXCLUSION = [1.0, 0.0], [0.0, 1.0]
+
+
+def excluding_agent():
+    return Agent("a-agent", "a", [], "circuits", "algorithms", profile_vector=INTERESTS, exclusion_vector=EXCLUSION)
+
+
+def test_a_post_matching_the_exclusions_at_least_as_well_as_the_interests_does_not_wake(state):
+    scores = {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.82}
+    ranker = VectorRanker(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
+
+    [decision] = ranker.score_post({**a_post(1, "arxiv-bot"), "title": "A QAOA review"})
+
+    assert (decision.reason, decision.woke, decision.similarity, decision.exclusion) == ("excluded", False, 0.80, 0.82)
+    assert not state.already_woken("a-agent", 1)
+    [miss] = state.near_misses("a-agent", hours=48)
+    assert (miss["reason"], miss["similarity"], miss["floor"]) == ("excluded", 0.80, 0.70)
+
+
+def test_a_post_matching_the_interests_better_wakes_and_logs_the_exclusion_s_score(state):
+    scores = {tuple(INTERESTS): 0.85, tuple(EXCLUSION): 0.75}
+    ranker = VectorRanker(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
+
+    [decision] = ranker.score_post(a_post(1, "arxiv-bot"))
+
+    assert (decision.reason, decision.exclusion) == ("woken", 0.75)
+    assert state.already_woken("a-agent", 1)
+
+
+def test_the_exclusions_are_checked_only_above_the_floor_and_only_when_there_are_some(state):
+    below = VectorRanker(Config(similarity_floor=0.90), state, [excluding_agent()],
+                         {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.99})
+    assert below.score_post(a_post(1, "arxiv-bot"))[0].reason == "below-floor"
+
+    plain = Agent("b-agent", "b", [], "circuits", profile_vector=INTERESTS)
+    none = VectorRanker(Config(similarity_floor=0.70), state, [plain], {tuple(INTERESTS): 0.80})
+    [decision] = none.score_post(a_post(2, "arxiv-bot"))
+    assert (decision.reason, decision.exclusion) == ("woken", None)
+
+
+def test_a_reply_is_checked_against_the_exclusions_as_it_is_scored_against_the_interests(state):
+    """By thread, the exclusions win; the reply's own words are about the
+    interests, and the mix of the two decides."""
+    scores = {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.85}
+    ranker = VectorRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [excluding_agent()], scores,
+                          reply=INTERESTS)
+
+    [decision] = ranker.score_post(a_reply(5))
+
+    assert decision.reason == "woken"
+    assert decision.similarity == 0.90 and decision.exclusion == 0.425
+
+
+class InterestsForum:
+    """The interests topic's posts, which is all refresh_agents reads."""
+
+    def __init__(self, posts):
+        self.posts = posts
+
+    def interests_posts(self, topic_id):
+        return self.posts
+
+
+def test_changing_only_the_exclusions_embeds_them_afresh(state, monkeypatch):
+    embedded = []
+    monkeypatch.setattr(ranking, "embed", lambda text, config: embedded.append(text) or [0.5, 0.5])
+    monkeypatch.setattr(ranking, "report_profile_length", lambda agent, config: None)
+
+    def post(exclusions):
+        return [{"username": "a-agent", "raw": "**Researcher:** a\n**Agent account:** @a-agent\n"
+                 f"**Watching for:** circuits\n**Not interested in:** {exclusions}\n"}]
+
+    ranker = OfflineRanker(Config(interests_topic_id=13), state, [])
+    ranker.agents_hash = ""
+    ranker.forum = InterestsForum(post("algorithms"))
+    ranker.refresh_agents()
+    ranker.forum.posts = post("codes")
+    ranker.refresh_agents()
+
+    assert embedded == ["circuits", "algorithms", "circuits", "codes"]
+    assert ranker.agents[0].exclusion_vector == [0.5, 0.5]
 
 
 # ------------------------------------------------------------- near misses
@@ -1377,7 +1469,7 @@ def test_a_profile_over_the_limit_is_warned_about(embedder, caplog):
         report_profile_length(profile("long"), config)
 
     assert "604 tokens against a 512-token limit" in caplog.text
-    assert "Not interested in" in caplog.text
+    assert "the end of 'Watching for'" in caplog.text
 
 
 def test_a_profile_inside_the_limit_is_reported_not_warned(embedder, caplog):
@@ -1457,7 +1549,7 @@ def test_the_agent_is_told_once(tmp_path):
     assert "604 tokens" in message["raw"]
     assert "512" in message["raw"]
     assert "92" in message["raw"]  # 604 - 512, the tokens dropped
-    assert "Not interested in" in message["raw"]
+    assert 'the end of "Watching for"' in message["raw"]
     assert "/t/11" in message["raw"]
 
 

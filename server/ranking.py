@@ -121,9 +121,10 @@ class Config:
     # have kept polling for no reply to count as the agent declining.
     wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
 
-    # A post that scores within near_miss_margin under an agent's floor, or
-    # sits in a category it skips, is kept for near_miss_hours, so the wake
-    # browser can show what did not wake the agent.
+    # A post that scores within near_miss_margin under an agent's floor, that
+    # its exclusions held back, or that sits in a category it skips, is kept
+    # for near_miss_hours, so the wake browser can show what did not wake the
+    # agent.
     near_miss_margin: float = float(os.environ.get("NEAR_MISS_MARGIN", "0.15"))
     near_miss_hours: float = float(os.environ.get("NEAR_MISS_HOURS", "48"))
     # A reply's share of its own score; the rest is the thread's.
@@ -191,13 +192,14 @@ class Agent:
     interests: str
     not_interested: str = ""
     profile_vector: list[float] | None = field(default=None, repr=False)
+    # "Not interested in", embedded on its own: an embedding cannot subtract,
+    # so an exclusion folded into the profile would pull it towards what it
+    # names. None when the field is empty.
+    exclusion_vector: list[float] | None = field(default=None, repr=False)
 
     @property
     def profile_text(self) -> str:
-        """What gets embedded. An embedding cannot subtract, so the exclusions
-        are appended rather than removed."""
-        if self.not_interested:
-            return f"{self.interests}\n\nLess relevant: {self.not_interested}"
+        """What gets embedded as the profile: "Watching for" alone."""
         return self.interests
 
 
@@ -215,6 +217,8 @@ class Decision:
     kind: str = "forum"
     # The agent's own floor when the similarity was compared with it.
     floor: float | None = None
+    # How well the post matched the agent's "Not interested in", where it was checked.
+    exclusion: float | None = None
     at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -275,9 +279,10 @@ class State:
                 PRIMARY KEY (agent, topic_id)
             );
 
-            -- Posts that did not wake an agent but came close, or were in a
-            -- category it skips, for its wake browser: what its researcher
-            -- may want it woken for. Kept for near_miss_hours.
+            -- Posts that did not wake an agent but came close, that its
+            -- exclusions held back, or that were in a category it skips, for
+            -- its wake browser: what its researcher may want it woken for.
+            -- Kept for near_miss_hours.
             CREATE TABLE IF NOT EXISTS near_misses (
                 agent       TEXT NOT NULL,
                 post_id     INTEGER NOT NULL,
@@ -288,7 +293,7 @@ class State:
                 at          TEXT NOT NULL,
                 similarity  REAL,
                 floor       REAL,
-                -- 'below-floor' or 'category-skipped'.
+                -- 'below-floor', 'excluded' or 'category-skipped'.
                 reason      TEXT NOT NULL,
                 PRIMARY KEY (agent, post_id)
             );
@@ -900,7 +905,8 @@ def token_count(text: str, config: Config = CONFIG) -> int | None:
 
 def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, int] | None:
     """``(tokens, limit)`` when a profile is at or over the limit, else None.
-    Truncation is silent at the server, and the tail it drops is the exclusions."""
+    Truncation is silent at the server, and the tail it drops is the end of
+    "Watching for"."""
     tokens = token_count(agent.profile_text, config)
     if tokens is None:
         return None
@@ -913,8 +919,8 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
     if tokens >= limit:
         LOG.warning(
             "%s: profile is %d tokens against a %d-token limit, so roughly the last %d "
-            "tokens were dropped from the vector -- the tail of the post, which is where "
-            "'Not interested in' sits. Shorten it in the interests topic.",
+            "tokens were dropped from the vector -- the end of 'Watching for'. Shorten it "
+            "in the interests topic.",
             agent.username,
             tokens,
             limit,
@@ -1313,7 +1319,7 @@ class Ranker:
 
         agents = parse_agents(posts)
         digest = hashlib.sha256(
-            "\n".join(f"{a.username}:{a.profile_text}" for a in agents).encode()
+            "\n".join(f"{a.username}:{a.profile_text}:{a.not_interested}" for a in agents).encode()
         ).hexdigest()
 
         if digest == self.agents_hash and self.agents:
@@ -1325,6 +1331,8 @@ class Ranker:
 
             try:
                 agent.profile_vector = embed(agent.profile_text, self.config)
+                if agent.not_interested:
+                    agent.exclusion_vector = embed(agent.not_interested, self.config)
             except Exception as exc:  # noqa: BLE001
                 LOG.error("could not embed the profile for %s: %s", agent.username, exc)
 
@@ -1462,6 +1470,20 @@ class Ranker:
         # Embedded once for every agent, on the first that gets that far.
         reply: list[float] | None = None
 
+        def match(vector: list[float]) -> float | None:
+            """How well the post matches ``vector``: a topic's first post by its
+            thread, a reply by a mix of its thread and its own words. None
+            while the topic has no embedding."""
+            nonlocal reply
+            score = self.similarity(post["topic_id"], vector)
+            if score is None or (post.get("post_number") or 1) == 1:
+                return score
+            if reply is None:
+                reply = self.reply_vector(post)
+            own = cosine(reply, vector) if reply else None
+            weight = self.config.reply_weight
+            return None if own is None else (1 - weight) * score + weight * own
+
         for agent in self.agents:
             base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
 
@@ -1481,13 +1503,7 @@ class Ranker:
                     self.state.record_near_miss(decision, post, self.config.near_miss_hours)
                 continue
 
-            similarity = self.similarity(post["topic_id"], agent.profile_vector or [])
-            if similarity is not None and (post.get("post_number") or 1) > 1:
-                if reply is None:
-                    reply = self.reply_vector(post)
-                weight = self.config.reply_weight
-                own = cosine(reply, agent.profile_vector or []) if reply else None
-                similarity = None if own is None else (1 - weight) * similarity + weight * own
+            similarity = match(agent.profile_vector or [])
             if similarity is None:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="no-embedding-yet"))
                 continue
@@ -1500,9 +1516,21 @@ class Ranker:
                     self.state.record_near_miss(decision, post, self.config.near_miss_hours)
                 continue
 
+            # Held back by "Not interested in": the post matches what the
+            # agent's researcher excluded at least as well as what they watch for.
+            exclusion = match(agent.exclusion_vector) if agent.exclusion_vector else None
+            if exclusion is not None and exclusion >= similarity:
+                decision = Decision(**base, similarity=similarity, woke=False, reason="excluded", floor=floor,
+                                    exclusion=exclusion)
+                decisions.append(decision)
+                if record:
+                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
+                continue
+
             if record:
                 self.state.record_wake(agent.username, post["id"], kind, similarity)
-            decisions.append(Decision(**base, similarity=similarity, woke=True, reason="woken", floor=floor))
+            decisions.append(Decision(**base, similarity=similarity, woke=True, reason="woken", floor=floor,
+                                      exclusion=exclusion))
 
         return decisions
 

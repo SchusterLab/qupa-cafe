@@ -257,7 +257,8 @@ class Journal:
                 at     TEXT NOT NULL
             );
             -- Posts that did not wake the agent but came close, or sit in a
-            -- category it skips, as the forum host last served them.
+            -- category it skips, or matched its exclusions, as the forum host
+            -- last served them.
             CREATE TABLE IF NOT EXISTS near_misses (
                 post_id     INTEGER PRIMARY KEY,
                 topic_id    INTEGER NOT NULL,

@@ -231,8 +231,9 @@ def recent(state_path: str, limit: int | None) -> list[Row]:
 @dataclass
 class NearMiss:
     """A post that did not wake the agent: it scored under the agent's floor,
-    by no more than the forum host's margin, or sits in a category the
-    agent's profile skips."""
+    by no more than the forum host's margin; it cleared the floor but matched
+    the profile's "Not interested in" at least as well; or it sits in a
+    category the profile skips."""
 
     post_id: int
     topic_id: int
@@ -243,7 +244,7 @@ class NearMiss:
     at: str
     similarity: float | None
     floor: float | None
-    # "below-floor" or "category-skipped".
+    # "below-floor", "excluded" or "category-skipped".
     reason: str
 
 
