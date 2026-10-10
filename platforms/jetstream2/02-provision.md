@@ -96,7 +96,7 @@ openstack server show qupa-cafe
 ssh -i ~/.ssh/qupa-cafe ubuntu@<floating-ip> lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
 ```
 
-`lsblk` shows a 60 GB `sda` carrying `/` and a bare 100 GB `sdb`. Device letters are not stable across reboots, which is why `docs/02-host-setup.md` mounts by UUID. `dmesg` needs `sudo` on Ubuntu 24.04.
+`lsblk` shows a 60 GB `sda` carrying `/` and a bare 100 GB `sdb`. Device letters are not stable across reboots, which is why `docs/02-host-setup.md` mounts by UUID.
 
 Re-run `scripts/10-provision.sh` and confirm it changes nothing, then lock the instance against deletion:
 
@@ -109,4 +109,4 @@ A locked instance also refuses API reboot, stop and resize (`409 ... is locked`)
 
 ## 2.7 Rebuilding
 
-A rebuild gets a new floating IP: update the A record and `EXPECTED_IP`. Let's Encrypt issues at most five certificates a week for the same set of names; past that the request is refused until the window passes, acme.sh installs an empty `.cer`, and nginx inside the container will not start. `acme.sh.log` under the data volume's `shared/standalone/letsencrypt/` says when the window ends.
+A rebuild gets a new floating IP: update the A record and `EXPECTED_IP`. Each rebuild with a fresh data volume also requests a new certificate, and Let's Encrypt's weekly limit then applies (`docs/03-install.md` 3.5).

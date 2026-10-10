@@ -15,7 +15,7 @@ sudo docker exec app discourse backup
 ls -lh /mnt/qupa-cafe/shared/standalone/backups/default/
 ```
 
-These backups are on the same volume as the data, so copy them offsite on a schedule. `scripts/50-backup-check.sh` reports age and size and moves nothing.
+These backups are on the same volume as the data, so copy them offsite on a schedule. `scripts/50-backup-check.sh` reports the newest backup's age and size, and moves nothing.
 
 ## 7.2 The restore drill
 
@@ -42,11 +42,11 @@ It runs three jobs:
 
 - Provisioning (`docs/05-forum-config.md` 5.3) every fifteen minutes, as `/usr/local/sbin/qupa-provision --all`, the backstop for a missed webhook. The wrapper reads the admin key from `/etc/qupa-cafe/provision.env` rather than the cron line, because `/etc/cron.d` is world-readable.
 - `yes | ./launcher cleanup` weekly. Each rebuild leaves its image on the root filesystem, and `cleanup` asks for confirmation twice: run unattended without `yes` it reclaims nothing and exits 0. `docker system df` still shows the base image as reclaimable afterwards; `cleanup` keeps it on purpose.
-- `scripts/50-backup-check.sh` daily, with `DISCOURSE_HOSTNAME` set, or its certificate-expiry check is skipped.
+- `scripts/50-backup-check.sh` daily, with `DISCOURSE_HOSTNAME` set, or its certificate-expiry check is skipped. The line names this repository's forum; put yours there.
 
 Testing a line by hand, put the redirect inside the root command: `sudo script >> /var/log/x` fails with "Permission denied" before the script runs.
 
-The data volume fills with backups (bounded by retention) and uploads. A future major Postgres upgrade needs two to three times the database size free on the volume holding `postgres_data`.
+The data volume fills with backups (bounded by retention) and uploads, and a major Postgres upgrade needs room on it too (`docs/01-requirements.md`, "Storage layout").
 
 ## 7.4 Updating
 

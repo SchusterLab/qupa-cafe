@@ -1,4 +1,4 @@
-# Object storage
+# 3. Object storage
 
 The forum's uploads live here; `docs/05-forum-config.md` 5.6 covers the Discourse side.
 
