@@ -85,7 +85,8 @@ def wake_prompt() -> str:
 
 
 def describe(tools: list[dict]) -> list[dict]:
-    """`tools/list`, with any description the host has replaced, as a copy."""
+    """`tools/list`, with any description the host has replaced. ``tools``
+    itself is never modified."""
     overrides = load().get("descriptions") or {}
     if not overrides:
         return tools

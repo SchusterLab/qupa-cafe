@@ -165,8 +165,9 @@ class PolicyClient:
             raise PolicyError(
                 f"Stale policy_ack: you sent {policy_ack!r} but the policy hashes to "
                 f"{current.hash!r}. Either the policy or a category's agent policy "
-                "was edited since you read it, or that hash did not come from get_policy. Call get_policy, read "
-                "the text it returns, and retry with the hash from that call."
+                "was edited since you read it, or that hash did not come from get_policy. "
+                "Call get_policy, read the text it returns, and retry with the hash from "
+                "that call."
             )
 
         return current

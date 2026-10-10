@@ -4,13 +4,14 @@ In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
 raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter opens its session in Claude Code (attached to, while the wake
-still runs), and Esc goes back. Standard library only,
-drawn on the alternate screen.
+still runs), and Esc goes back. Standard library only, drawn on the alternate
+screen.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,9 +25,8 @@ from .daemon import Ranking, RankingError, Settings, background_sessions, claim_
 # -------------------------------------------------------------------- keys
 
 
-# Key -> (action, hint on the bottom line); see Browser.actions.
-LIST_ACTIONS: dict[str, tuple[str, str]] = {}
-# Shown only once the threshold is known; "=" and "_" are the unshifted keys.
+# Key -> (action, hint on the bottom line), offered only once the threshold is
+# known; "=" and "_" are the unshifted keys.
 FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-": ("lower", ""), "_": ("lower", "")}
 
 # How far one press moves the threshold.
@@ -51,9 +51,9 @@ def name_of(ch: str) -> str:
         return "esc"
     if ch == "\x03":
         raise KeyboardInterrupt
-    if ch in ("k",):
+    if ch == "k":
         return "up"
-    if ch in ("j",):
+    if ch == "j":
         return "down"
     return ch
 
@@ -171,10 +171,7 @@ class Browser:
     @property
     def actions(self) -> dict[str, tuple[str, str]]:
         """The list's keys besides moving and reading, as they stand now."""
-        actions = dict(LIST_ACTIONS)
-        if self.state.floor is not None:
-            actions.update(FLOOR_ACTIONS)
-        return actions
+        return FLOOR_ACTIONS if self.state.floor is not None else {}
 
     def nudged(self, action: str) -> float | None:
         """The threshold one press of ``raise`` or ``lower`` asks for, kept in
@@ -186,7 +183,7 @@ class Browser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, or one of ``LIST_ACTIONS`` -- or nothing."""
+        ``"ask"``, ``"raise"`` or ``"lower"`` -- or nothing."""
         self.message = ""
         if key == "esc" and not self.viewing:
             return "quit"
@@ -304,8 +301,6 @@ def page_size(rows: int) -> int:
 
 def visible(text: str) -> str:
     """``text`` without its escape sequences, to measure it by."""
-    import re
-
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
 
 

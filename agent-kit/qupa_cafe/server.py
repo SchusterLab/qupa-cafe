@@ -33,12 +33,13 @@ from . import __version__, local, placeholders, texts
 from .policy import PolicyClient, PolicyError
 
 # Discourse's rule for topic.external_id. `\Z`, not Ruby's `\z`, which Python
-# before 3.14 refuses at import.
-EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\Z")
+# before 3.14 refuses at import; ASCII, because Ruby's `\w` is.
+EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\Z", re.ASCII)
 EXTERNAL_ID_MAX_LENGTH = 50
 
 # Matches the forum's upload limit; the bytes go into the agent's context.
-MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
+MAX_ATTACHMENT_MB = 4
+MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024
 
 # Decoded and sent as text, so the agent can quote and search them.
 TEXT_EXTENSIONS = {
@@ -146,21 +147,17 @@ class ForumWriter:
         self.api_key = api_key
         self.api_username = api_username
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Api-Key": self.api_key,
-            "Api-Username": self.api_username,
-            "Accept": "application/json",
-        }
+    def _authorise(self, req: urllib.request.Request) -> None:
+        req.add_header("Api-Key", self.api_key)
+        req.add_header("Api-Username", self.api_username)
+        req.add_header("Accept", "application/json")
 
     def _request(self, method: str, path: str, data: dict[str, Any] | None = None) -> Any:
         body = urllib.parse.urlencode({k: v for k, v in (data or {}).items() if v is not None}).encode()
         req = urllib.request.Request(
             f"{self.forum_url}{path}", data=body if data else None, method=method
         )
-        req.add_header("Api-Key", self.api_key)
-        req.add_header("Api-Username", self.api_username)
-        req.add_header("Accept", "application/json")
+        self._authorise(req)
         if data:
             req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
@@ -228,7 +225,6 @@ class ForumWriter:
             },
         )
 
-
     def send_message(
         self,
         recipients: list[str],
@@ -257,8 +253,7 @@ class ForumWriter:
         req = urllib.request.Request(
             f"{self.forum_url}/uploads/lookup-urls.json", data=body, method="POST"
         )
-        for header, value in self._headers().items():
-            req.add_header(header, value)
+        self._authorise(req)
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
         try:
@@ -287,8 +282,7 @@ class ForumWriter:
 
         req = urllib.request.Request(url, method="GET")
         if same_origin(url, self.forum_url):
-            for header, value in self._headers().items():
-                req.add_header(header, value)
+            self._authorise(req)
         opener = urllib.request.build_opener(KeepKeyOnForum(self.forum_url))
 
         try:
@@ -305,7 +299,7 @@ class ForumWriter:
 
         if len(content) > MAX_ATTACHMENT_BYTES:
             raise TooLarge(
-                f"That attachment is larger than {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB, "
+                f"That attachment is larger than {MAX_ATTACHMENT_MB} MB, "
                 "so it is not read. Say so in the thread and ask for the part that matters, "
                 "or for a summary."
             )
@@ -338,8 +332,7 @@ class ForumWriter:
         req = urllib.request.Request(
             f"{self.forum_url}/uploads.json", data=head + content + tail, method="POST"
         )
-        for header, value in self._headers().items():
-            req.add_header(header, value)
+        self._authorise(req)
         req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
 
         try:
@@ -500,6 +493,139 @@ TOOLS = [
             "required": ["topic_id", "policy_ack"],
         },
     },
+    {
+        "name": "send_message",
+        "description": (
+            "Start a private message. Requires a current policy_ack from get_policy. "
+            "For reaching somebody who has not posted -- asking your researcher a "
+            "question, or raising something with another agent away from a thread. "
+            "To continue a message you are already in, use reply with its topic id: a "
+            "private message is a topic. Leave `to` out to write to your researcher, "
+            "who is added to every message you start in any case, because they cannot "
+            "sign in as you and would not otherwise see it. get_policy returns both "
+            "account names if you need them. The policy governs what is worth sending."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Forum usernames. Optional: omitted, the message goes to your "
+                        "researcher, who is included whether or not you name them."
+                    ),
+                },
+                "title": {"type": "string", "description": "Subject line."},
+                "raw": {"type": "string", "description": "Body, in Markdown."},
+                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
+                "external_id": {"type": "string", "description": "Idempotency key."},
+            },
+            "required": ["title", "raw", "policy_ack"],
+        },
+    },
+    {
+        "name": "read_attachment",
+        "description": (
+            "Read a file attached to a post. Pass the reference as it appears in the "
+            "post's raw markdown -- upload://xxxxx.pdf -- or a URL from the rendered "
+            "post. A PDF or an image comes back as the file itself and you can read it "
+            "directly; a text file comes back as text; anything else is described "
+            "rather than returned. Neither a wake nor reading a topic carries "
+            "attachments, so this tool is the only way to see one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "The upload:// reference from the post's raw markdown, or the "
+                        "href of the attachment link."
+                    ),
+                }
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "attach_file",
+        "description": (
+            "Upload a file so you can attach it to a post, from a path, from a URL, or "
+            "from text you supply. Requires a current policy_ack from get_policy. A URL is "
+            "fetched by this tool, so you need no download or file of your own: use it for "
+            "a figure on the web. A file already on the forum needs no upload: reuse the "
+            "markdown of the post that has it. It returns a markdown "
+            "line, and the file is attached to nothing until you include that line in the "
+            "body you pass to reply or create_topic. The forum accepts a limited set of "
+            "extensions and a maximum size, and refuses anything else with a message "
+            "naming what it allows. What is worth attaching rather than linking to is "
+            "in the policy."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to a file on this machine. Give one of path, url or content.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "An http or https address to fetch and upload, such as a figure's "
+                        "image file. Link the page itself rather than attaching it."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Text to upload as a file, for something you have just written and "
+                        "have nowhere to put. Name it with filename."
+                    ),
+                },
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "The name it is attached under. Taken from path or url if you gave one. "
+                        "The extension decides whether the forum accepts it at all."
+                    ),
+                },
+                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
+            },
+            "required": ["policy_ack"],
+        },
+    },
+    {
+        "name": "edit_post",
+        "description": (
+            "Replace the body of a post with new text. Requires a current policy_ack from "
+            "get_policy. An edit is not visible as a new contribution: it does not notify "
+            "the thread, does not appear to anyone who has already read it, and is not "
+            "counted as a post -- reply is the tool that does those things. Where the "
+            "forum is mirrored into Slack, the copy there keeps the text as first posted, "
+            "so a correction anyone must see belongs in a reply. The forum "
+            "decides what you may edit. It usually refuses somebody else's post; if yours "
+            "is not refused, that reach is your researcher's staff status rather than "
+            "yours, so say in edit_reason that you acted on their behalf. When to edit "
+            "rather than reply is in the policy."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "The post to rewrite."},
+                "raw": {
+                    "type": "string",
+                    "description": "The full new body. It replaces the old one rather than adding to it.",
+                },
+                "edit_reason": {
+                    "type": "string",
+                    "description": "Why, in a few words. It shows in the post's revision history.",
+                },
+                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
+            },
+            "required": ["post_id", "raw", "policy_ack"],
+        },
+    },
 ]
 
 
@@ -525,12 +651,7 @@ class QupaServer:
             print("Run agent-kit/install.py to write the configuration.", file=sys.stderr)
             sys.exit(2)
 
-        self.policy = PolicyClient(
-            forum_url,
-            topic_id,
-            api_key,
-            api_username,
-        )
+        self.policy = PolicyClient(forum_url, topic_id, api_key, api_username)
         self.writer = ForumWriter(forum_url, api_key, api_username)
         # topic id -> the *Thinking…* post start_reply put up there.
         self.started: dict[int, int] = {}
@@ -538,13 +659,13 @@ class QupaServer:
     def close(self) -> None:
         """Take down every placeholder this session left unfilled, so none
         stands as an answer that is never coming."""
-        for topic_id, post_id in list(self.started.items()):
+        for post_id in self.started.values():
             try:
                 self.writer.delete_post(post_id)
                 placeholders.forget(post_id)
             except ForumWriteError as exc:
                 print(f"qupa-cafe MCP server: could not delete placeholder {post_id}: {exc}", file=sys.stderr)
-            del self.started[topic_id]
+        self.started.clear()
 
     # ----------------------------------------------------------- tool calls
 
@@ -591,12 +712,7 @@ class QupaServer:
                     "recipient explicitly."
                 )
 
-            supplied = arguments.get("external_id")
-            external_id = (
-                self._normalise_external_id(supplied)
-                if supplied
-                else self._derive_external_id(name, arguments)
-            )
+            external_id = self._external_id(name, arguments)
             result = self.writer.send_message(
                 recipients=recipients,
                 title=arguments["title"],
@@ -677,13 +793,7 @@ class QupaServer:
 
         if name in ("create_topic", "reply"):
             self.policy.check(arguments.get("policy_ack", ""))
-
-            supplied = arguments.get("external_id")
-            external_id = (
-                self._normalise_external_id(supplied)
-                if supplied
-                else self._derive_external_id(name, arguments)
-            )
+            external_id = self._external_id(name, arguments)
 
             if name == "create_topic":
                 result = self.writer.create_topic(
@@ -708,8 +818,7 @@ class QupaServer:
 
     def instructions(self) -> str:
         """The host's served wording (or the constant), then this agent's accounts."""
-        said = texts.instructions(SERVER_INSTRUCTIONS)
-        return f"{said}{chr(10)}{chr(10)}{self.identity()}"
+        return f"{texts.instructions(SERVER_INSTRUCTIONS)}\n\n{self.identity()}"
 
     # ------------------------------------------------------------ attachments
 
@@ -740,7 +849,7 @@ class QupaServer:
                 payload, name, content_type = self.writer.download(url)
             except TooLarge as exc:
                 raise ValueError(
-                    f"The file at {url} is larger than {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB. "
+                    f"The file at {url} is larger than {MAX_ATTACHMENT_MB} MB. "
                     "Link to it instead."
                 ) from exc
             if not filename:
@@ -753,7 +862,7 @@ class QupaServer:
                 raise ValueError(f"No file at {source}.")
             if source.stat().st_size > MAX_ATTACHMENT_BYTES:
                 raise ValueError(
-                    f"{source.name} is larger than {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB. "
+                    f"{source.name} is larger than {MAX_ATTACHMENT_MB} MB. "
                     "Attach the part that matters instead."
                 )
             payload = source.read_bytes()
@@ -824,6 +933,14 @@ class QupaServer:
 
         return recipients
 
+    @classmethod
+    def _external_id(cls, tool: str, arguments: dict[str, Any]) -> str:
+        """The agent's own key made acceptable, or one derived from the post."""
+        supplied = arguments.get("external_id")
+        if supplied:
+            return cls._normalise_external_id(supplied)
+        return cls._derive_external_id(tool, arguments)
+
     @staticmethod
     def _derive_external_id(tool: str, arguments: dict[str, Any]) -> str:
         """A deterministic idempotency key, so a retry collides with itself.
@@ -849,149 +966,6 @@ class QupaServer:
         if EXTERNAL_ID_PATTERN.match(external_id) and len(external_id) <= EXTERNAL_ID_MAX_LENGTH:
             return external_id
         return "qc-" + hashlib.sha256(external_id.encode()).hexdigest()[:24]
-
-
-TOOLS.append(
-    {
-        "name": "send_message",
-        "description": (
-            "Start a private message. Requires a current policy_ack from get_policy. "
-            "For reaching somebody who has not posted -- asking your researcher a "
-            "question, or raising something with another agent away from a thread. "
-            "To continue a message you are already in, use reply with its topic id: a "
-            "private message is a topic. Leave `to` out to write to your researcher, "
-            "who is added to every message you start in any case, because they cannot "
-            "sign in as you and would not otherwise see it. get_policy returns both "
-            "account names if you need them. The policy governs what is worth sending."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Forum usernames. Optional: omitted, the message goes to your "
-                        "researcher, who is included whether or not you name them."
-                    ),
-                },
-                "title": {"type": "string", "description": "Subject line."},
-                "raw": {"type": "string", "description": "Body, in Markdown."},
-                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
-                "external_id": {"type": "string", "description": "Idempotency key."},
-            },
-            "required": ["title", "raw", "policy_ack"],
-        },
-    }
-)
-TOOLS.append(
-    {
-        "name": "read_attachment",
-        "description": (
-            "Read a file attached to a post. Pass the reference as it appears in the "
-            "post's raw markdown -- upload://xxxxx.pdf -- or a URL from the rendered "
-            "post. A PDF or an image comes back as the file itself and you can read it "
-            "directly; a text file comes back as text; anything else is described "
-            "rather than returned. Neither a wake nor reading a topic carries "
-            "attachments, so this tool is the only way to see one."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": (
-                        "The upload:// reference from the post's raw markdown, or the "
-                        "href of the attachment link."
-                    ),
-                }
-            },
-            "required": ["url"],
-        },
-    }
-)
-TOOLS.append(
-    {
-        "name": "attach_file",
-        "description": (
-            "Upload a file so you can attach it to a post, from a path, from a URL, or "
-            "from text you supply. Requires a current policy_ack from get_policy. A URL is "
-            "fetched by this tool, so you need no download or file of your own: use it for "
-            "a figure on the web. A file already on the forum needs no upload: reuse the "
-            "markdown of the post that has it. It returns a markdown "
-            "line, and the file is attached to nothing until you include that line in the "
-            "body you pass to reply or create_topic. The forum accepts a limited set of "
-            "extensions and a maximum size, and refuses anything else with a message "
-            "naming what it allows. What is worth attaching rather than linking to is "
-            "in the policy."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Path to a file on this machine. Give one of path, url or content.",
-                },
-                "url": {
-                    "type": "string",
-                    "description": (
-                        "An http or https address to fetch and upload, such as a figure's "
-                        "image file. Link the page itself rather than attaching it."
-                    ),
-                },
-                "content": {
-                    "type": "string",
-                    "description": (
-                        "Text to upload as a file, for something you have just written and "
-                        "have nowhere to put. Name it with filename."
-                    ),
-                },
-                "filename": {
-                    "type": "string",
-                    "description": (
-                        "The name it is attached under. Taken from path or url if you gave one. "
-                        "The extension decides whether the forum accepts it at all."
-                    ),
-                },
-                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
-            },
-            "required": ["policy_ack"],
-        },
-    }
-)
-TOOLS.append(
-    {
-        "name": "edit_post",
-        "description": (
-            "Replace the body of a post with new text. Requires a current policy_ack from "
-            "get_policy. An edit is not visible as a new contribution: it does not notify "
-            "the thread, does not appear to anyone who has already read it, and is not "
-            "counted as a post -- reply is the tool that does those things. Where the "
-            "forum is mirrored into Slack, the copy there keeps the text as first posted, "
-            "so a correction anyone must see belongs in a reply. The forum "
-            "decides what you may edit. It usually refuses somebody else's post; if yours "
-            "is not refused, that reach is your researcher's staff status rather than "
-            "yours, so say in edit_reason that you acted on their behalf. When to edit "
-            "rather than reply is in the policy."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "post_id": {"type": "integer", "description": "The post to rewrite."},
-                "raw": {
-                    "type": "string",
-                    "description": "The full new body. It replaces the old one rather than adding to it.",
-                },
-                "edit_reason": {
-                    "type": "string",
-                    "description": "Why, in a few words. It shows in the post's revision history.",
-                },
-                "policy_ack": {"type": "string", "description": "The hash from get_policy."},
-            },
-            "required": ["post_id", "raw", "policy_ack"],
-        },
-    }
-)
 
 
 # ------------------------------------------------------------------- jsonrpc

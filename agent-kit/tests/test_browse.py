@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from qupa_cafe import browse, wakes
 from qupa_cafe.daemon import Settings, claim_lock
@@ -136,10 +139,14 @@ def test_a_wake_without_a_transcript_cannot_be_asked():
 
 
 def test_only_the_keys_shown_do_anything():
+    """Opening the log and updating the kit are the tray icon's menu's, and the
+    forum host tells the researcher of a newer kit, so the list takes no key
+    for either and shows no notice."""
     b = _browser(browse.Wake(_row(1), SAID))
-    for key in ("o", "q", "a"):
+    for key in ("o", "q", "a", "l", "u"):
         assert b.handle(key) is None
         assert not b.viewing
+    assert not any("is available" in line for line in b.frame(100, 20))
 
 
 def test_a_finished_wake_opens_its_own_session_as_it_was():
@@ -150,8 +157,6 @@ def test_a_finished_wake_opens_its_own_session_as_it_was():
 
 def test_a_background_wake_still_running_is_attached_to(monkeypatch):
     """The wake itself, its one writer, rather than a copy."""
-    from datetime import datetime, timezone
-
     row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
     row.status = "running"
     row.started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -185,12 +190,8 @@ def test_long_views_scroll_within_their_length():
 
 def test_run_as_a_module_the_browser_shares_the_colour_switch():
     """`python -m qupa_cafe.wakes` runs the file as __main__, and the browser
-    imports qupa_cafe.wakes: two modules, two colour switches. Colour turned
-    on in the first left the browser drawing in none."""
-    import subprocess
-    import sys
-    from pathlib import Path
-
+    imports qupa_cafe.wakes: two modules, and the browser has to read the
+    colour switch the command line set, or it draws in none."""
     probe = (
         "import runpy, sys\n"
         "from qupa_cafe import browse\n"
@@ -202,21 +203,6 @@ def test_run_as_a_module_the_browser_shares_the_colour_switch():
     root = Path(__file__).resolve().parent.parent
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root)
     assert result.stdout.strip() == "colour", result.stderr
-
-
-def test_the_log_is_the_tray_icons_rather_than_the_lists():
-    b = _browser(browse.Wake(_row(1), SAID))
-    assert b.handle("l") is None
-    assert not b.viewing
-
-
-def test_the_list_shows_no_notice_of_a_newer_kit():
-    """The forum host messages the researcher about a newer kit, and the tray
-    icon's menu offers it; the list takes no key for it."""
-    b = _browser(browse.Wake(_row(1), SAID))
-    frame = b.frame(100, 20)
-    assert not any("is available" in line for line in frame)
-    assert b.handle("u") is None
 
 
 def test_reading_a_wake_takes_none_of_them():
