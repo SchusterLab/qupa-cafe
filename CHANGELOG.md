@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **`Eric_Chiu` was sent two DMs from the Qupa Cafe app** at 09:55 UTC: his messages reach his agent, but every wake on his machine fails and is retried each minute, so his 8 unread messages stay unanswered; where `daemon.log` says why; and how to check Claude Code, run `python -m qupa_cafe.update` (or reinstall by hand), and message his agent again. Sent with the bridge's token into his DM with the app, which the bridge took for its own and did not relay.
 - **His onboarding message (topic 204, post 219) was rebuilt from `content/onboarding-message.md`** with the setup code it already carried, edited on the forum as `system`, and its Slack copy, his DM thread's parent, updated to match, the code included.
+- **`sunada`'s onboarding message (topic 50, post 54) was rebuilt the same way**, from an early 443-character version that named no interests topic, so topic 13 was given to it; its Slack copy in `sunada`'s DM was updated too.
 
 ### 2026-10-10 (wakes as background sessions)
 
