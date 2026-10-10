@@ -419,42 +419,37 @@ class Ranking:
 
     def handshake(self, agent: str) -> dict:
         """One /wake call for the installer, telling refused, behind and
-        unreachable apart, and returning the researcher and policy topic."""
-        def reached(payload: dict, refused: bool) -> dict:
+        unreachable apart, and returning the researcher and policy topic.
+        Every outcome carries the same keys."""
+        def answer(payload: dict | None, refused: bool = False, error: str = "") -> dict:
+            """None for a host that gave no answer."""
             return {
-                "reached": True,
+                "reached": payload is not None,
                 "refused": refused,
-                "upgrade": payload.get("upgrade"),
-                "researcher": payload.get("researcher") or "",
-                "policy_topic_id": payload.get("policy_topic_id") or "",
-                "error": "",
+                "upgrade": (payload or {}).get("upgrade"),
+                "researcher": (payload or {}).get("researcher") or "",
+                "policy_topic_id": (payload or {}).get("policy_topic_id") or "",
+                "error": error,
             }
 
         if not self.settings.ranking_url:
-            return {
-                "reached": False,
-                "refused": False,
-                "upgrade": None,
-                "researcher": "",
-                "policy_topic_id": "",
-                "error": "no ranking URL is configured",
-            }
+            return answer(None, error="no ranking URL is configured")
 
         try:
             with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
                 payload = json.loads(resp.read().decode())
             texts.save(payload.get("texts"))
-            return reached(payload, refused=False)
+            return answer(payload)
         except urllib.error.HTTPError as exc:
             if exc.code == 426:
                 try:
                     payload = json.loads(exc.read().decode())
                 except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                     payload = {}
-                return reached(payload, refused=True)
-            return {"reached": False, "refused": False, "upgrade": None, "error": f"HTTP {exc.code}"}
+                return answer(payload, refused=True)
+            return answer(None, error=f"HTTP {exc.code}")
         except (urllib.error.URLError, json.JSONDecodeError) as exc:
-            return {"reached": False, "refused": False, "upgrade": None, "error": str(exc)}
+            return answer(None, error=str(exc))
 
     def pending(self, agent: str) -> list[dict]:
         if not self.settings.ranking_url:

@@ -10,6 +10,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -502,6 +503,27 @@ def test_an_unreachable_host_does_not_withdraw_it():
 
     assert ranking.pending("agent") == []
     assert texts.wake_prompt() == "served %BODY%"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.URLError("connection refused"),
+        urllib.error.HTTPError("http://ranking.invalid/wake", 500, "Server Error", {}, None),
+    ],
+    ids=["unreachable", "http-error"],
+)
+def test_a_handshake_that_fails_answers_in_the_same_shape(monkeypatch, failure):
+    """The installer reads every key of the answer, whatever happened."""
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", fail)
+    answer = Ranking(Settings(ranking_url="http://ranking.invalid")).handshake("agent")
+    unconfigured = Ranking(Settings(ranking_url="")).handshake("agent")
+
+    assert answer.keys() == unconfigured.keys()
+    assert answer["reached"] is False and answer["researcher"] == "" and answer["policy_topic_id"] == ""
 
 
 def test_a_pass_with_no_wording_defers_rather_than_improvises(handled, in_topic_10, monkeypatch):
