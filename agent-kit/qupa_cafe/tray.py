@@ -2,10 +2,12 @@
 
 Clicking it opens its menu: the forum in the default browser, the wake
 browser (``qupa_cafe.browse``) in a terminal, the daemon's log, a restart of
-the daemon, an update of the kit (greyed while it is the newest), and Quit. It reads the daemon's state file and holds its own lock
-so a second copy exits; restarting is the one thing it does to the daemon. Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit
-or already running and 2 without the extra, as the Windows Startup entry
-expects.
+the daemon, an update of the kit (greyed while it is the newest), and Quit.
+It reads the daemon's state file and holds its own lock so a second copy
+exits; restarting is the one thing it does to the daemon.
+
+Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit or already
+running and 2 without the extra, as the Windows Startup entry expects.
 """
 
 from __future__ import annotations
@@ -67,6 +69,7 @@ def describe(settings: Settings) -> tuple[str, str]:
 
 
 def stale(row: wakes.Row) -> bool:
+    """Whether a wake started longer ago than any wake may run."""
     started = wakes.utc(row.started)
     if started is None:
         return True

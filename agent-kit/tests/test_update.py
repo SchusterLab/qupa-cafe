@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ def test_pip_upgrades_the_kit_with_the_tray_extra(ran):
 
 
 def test_the_published_version_is_asked_for_by_number(ran):
-    """pip's own copy of the index can lag the JSON the wake browser read,
+    """pip's own copy of the index can lag the JSON page the update read,
     and then an unpinned upgrade finds nothing newer."""
     calls, outcome = ran
     outcome["latest"] = outcome["after"] = "99.0.0"
@@ -127,8 +128,6 @@ def _page(*files):
 
 
 def _at(text):
-    from datetime import datetime
-
     return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
 
 

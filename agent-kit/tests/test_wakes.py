@@ -198,8 +198,6 @@ def test_every_state_has_an_icon():
 
 
 def test_the_newer_kit_the_daemon_found_is_what_the_tray_reads(tmp_path):
-    from qupa_cafe import daemon
-
     state = str(tmp_path / "daemon.sqlite3")
     assert wakes.newer_kit(state) is None
     journal = daemon.Journal(state)

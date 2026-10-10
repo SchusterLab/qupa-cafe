@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-import inspect
+import ast
 import json
+import logging
 import os
+import re
+import sqlite3
 import subprocess
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 
 import qupa_cafe.daemon as daemon
-from qupa_cafe import texts
+from qupa_cafe import placeholders, texts
 from qupa_cafe.daemon import (
     EDITED,
     GRANTED_BADGE,
@@ -33,25 +41,100 @@ from qupa_cafe.daemon import (
 )
 
 
+def _settings(**overrides) -> Settings:
+    """Complete credentials, so that one_pass and collect run."""
+    return Settings(**{"forum_url": "http://x", "api_key": "k", "api_username": "u", **overrides})
+
+
+def _topic(topic_id):
+    return {
+        "id": topic_id,
+        "title": f"Topic {topic_id}",
+        "post_stream": {"posts": [{"post_number": 1, "username": "alice", "raw": "text"}]},
+    }
+
+
+class FakeForum:
+    """Enough of Forum for one_pass, with a record of what was acknowledged."""
+
+    def __init__(self, topics, notes=(), totals=None):
+        self.topics = topics
+        self.notes = list(notes)
+        self._totals = totals if totals is not None else {"unread_notifications": len(self.notes)}
+        self.marked_read = []
+        self.deleted = []
+
+    def totals(self):
+        return self._totals
+
+    def unread_notifications(self):
+        return self.notes
+
+    def mark_read(self, notification_id):
+        self.marked_read.append(notification_id)
+
+    def topic(self, topic_id):
+        return self.topics[topic_id]
+
+    def delete_post(self, post_id):
+        self.deleted.append(post_id)
+
+
+class FakeRanking:
+    """The ranking endpoint, sending relevance wakes and recording what the
+    daemon tells it."""
+
+    def __init__(self, post_ids=(), scores=None, policy=None):
+        self.post_ids = list(post_ids)
+        self.scores = scores or {}
+        self.policy = policy or {}
+        self.told = []
+
+    def pending(self, agent):
+        # The real one also writes down how the host wants a wake worded, and
+        # one_pass defers everything when nothing has. These tests are about
+        # what gets acknowledged, so they stand in for that here.
+        texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
+        return [{"post_id": post_id, "similarity": self.scores.get(post_id)} for post_id in self.post_ids]
+
+    def alive(self, agent):
+        self.told.append(("alive", agent))
+
+    def failed(self, agent, topic_id, reason):
+        self.told.append(("failed", agent, topic_id, reason))
+
+
+@pytest.fixture
+def in_topic_10(monkeypatch):
+    """Every relevance wake's post is in topic 10."""
+    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
+
+
+@pytest.fixture
+def handled(tmp_path):
+    return Handled(str(tmp_path / "state.sqlite3"))
+
+
+def _woken(monkeypatch, ok=True):
+    """Fake the wake itself; returns the list each wake's kwargs land in."""
+    woken = []
+    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: woken.append(k) or ok)
+    return woken
+
+
 # ------------------------------------------------------------ what wakes you
 
 
 def test_a_new_post_in_a_watched_thread_wakes_as_being_addressed_does():
     for kind in (MENTIONED, REPLIED, QUOTED, PRIVATE_MESSAGE, POSTED, WATCHING_FIRST_POST):
         assert kind in WAKE_TYPES
-
-
-def test_notifications_with_nothing_to_read_wake_nobody():
     for kind in (EDITED, LIKED, GRANTED_BADGE):
         assert kind not in WAKE_TYPES
 
 
-def test_the_forum_host_ignores_relevance_wakes_for_the_same_notifications():
+def test_the_forum_host_counts_the_same_notifications_as_waking():
     """A relevance wake in a topic the agent was notified about is folded into
     the notification's run, so the host must not count it either way."""
-    import ast
-    from pathlib import Path
-
     source = (Path(__file__).resolve().parents[2] / "server" / "ranking.py").read_text(encoding="utf-8")
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "WAKE_NOTIFICATION_TYPES" for t in node.targets):
@@ -60,74 +143,51 @@ def test_the_forum_host_ignores_relevance_wakes_for_the_same_notifications():
     raise AssertionError("server/ranking.py has no WAKE_NOTIFICATION_TYPES")
 
 
-def _collect(tmp_path, notes):
-    class NotedForum(FakeForum):
-        def totals(self):
-            return {"unread_notifications": len(notes)}
-
-        def unread_notifications(self):
-            return notes
-
-    class NoRanking:
-        def pending(self, agent):
-            return []
-
-    settings = Settings(forum_url="http://x", api_key="k", api_username="sunada-agent")
-    return daemon.collect(settings, NotedForum({}), NoRanking(), Handled(str(tmp_path / "state.sqlite3")))
+def _collect(handled, notes, totals=None):
+    settings = _settings(api_username="sunada-agent")
+    return daemon.collect(settings, FakeForum({}, notes, totals), FakeRanking(), handled)
 
 
-def test_a_post_in_a_watched_thread_wakes_the_agent_and_says_so(tmp_path):
-    [found] = _collect(tmp_path, [{"id": 9, "notification_type": POSTED, "topic_id": 551}])
+def test_a_post_in_a_watched_thread_wakes_the_agent_and_says_so(handled):
+    [found] = _collect(handled, [{"id": 9, "notification_type": POSTED, "topic_id": 551}])
     assert (found.topic_id, found.notification_ids) == (551, [9])
     assert found.reason == "there is a new post in a thread you watch"
 
 
-def test_a_topic_with_several_notifications_is_woken_once_for_the_most_direct(tmp_path):
+def test_a_topic_with_several_notifications_is_woken_once_for_the_most_direct(handled):
     notes = [
         {"id": 3, "notification_type": POSTED, "topic_id": 551},
         {"id": 2, "notification_type": MENTIONED, "topic_id": 551},
         {"id": 1, "notification_type": LIKED, "topic_id": 551},
     ]
-    [found] = _collect(tmp_path, notes)
+    [found] = _collect(handled, notes)
     assert found.notification_ids == [3, 2]
     assert found.reason == "you were mentioned"
+
+
+def test_a_private_message_counted_only_as_personal_wakes_the_agent(handled):
+    """The forum counts a private-message notification in unread_personal_messages
+    and leaves unread_notifications at 0, so the daemon has to read both."""
+    notes = [{"id": 6, "notification_type": PRIVATE_MESSAGE, "topic_id": 154}]
+    found = _collect(handled, notes, totals={"unread_notifications": 0, "unread_personal_messages": 1})
+    assert [(c.topic_id, c.notification_ids) for c in found] == [(154, [6])]
 
 
 # ---------------------------------------------------------------- dedupe
 
 
-def test_handled_is_empty_to_start(tmp_path):
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    assert not handled.seen("wake", 1)
-
-
-def test_marking_makes_it_seen(tmp_path):
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    handled.mark("wake", 1)
-    assert handled.seen("wake", 1)
-
-
-def test_kinds_do_not_collide(tmp_path):
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    handled.mark("wake", 1)
-    assert not handled.seen("notification", 1)
-
-
-def test_marking_twice_is_fine(tmp_path):
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    handled.mark("wake", 1)
-    handled.mark("wake", 1)
-    assert handled.seen("wake", 1)
-
-
-def test_state_survives_a_restart(tmp_path):
+def test_what_was_handled_is_remembered_by_kind_across_a_restart(tmp_path):
     """The guarantee that matters is "never handle the same post twice", and a
     restart is the common case in which an in-memory set would break it."""
     path = str(tmp_path / "state.sqlite3")
+    handled = Handled(path)
+    assert not handled.seen("wake", 99)
 
-    Handled(path).mark("wake", 99)
+    handled.mark("wake", 99)
+    handled.mark("wake", 99)
 
     assert Handled(path).seen("wake", 99)
+    assert not Handled(path).seen("notification", 99)
 
 
 # ------------------------------------------------------------ degraded mode
@@ -138,26 +198,24 @@ def test_no_ranking_url_means_no_wakes_and_no_crash():
     assert ranking.pending("agent") == []
 
 
-def test_an_unreachable_endpoint_degrades_quietly():
-    """Port 1 on loopback: connection refused, immediately."""
+def test_an_unreachable_endpoint_degrades_quietly_and_warns_once(caplog):
+    """Port 1 on loopback: connection refused, immediately. A day of downtime
+    at a 60-second interval would otherwise be 1,440 lines."""
     ranking = Ranking(Settings(ranking_url="http://127.0.0.1:1"))
 
     assert ranking.pending("agent") == []
+    assert ranking.pending("agent") == []
+
     assert ranking.available is False
-
-
-def test_an_outage_warns_once_not_once_per_poll():
-    """A day of downtime at a 60-second interval would otherwise be 1,440 lines."""
-    ranking = Ranking(Settings(ranking_url="http://127.0.0.1:1"))
-
-    ranking.pending("agent")
-    assert ranking._warned is True
-
-    ranking.pending("agent")
-    assert ranking._warned is True
+    assert caplog.text.count("ranking endpoint unavailable") == 1
 
 
 # --------------------------------------------------------------------- waking
+
+
+def _started(stdout, returncode=0):
+    """subprocess.run as a `claude --bg` that printed ``stdout``."""
+    return lambda argv, **kwargs: subprocess.CompletedProcess(argv, returncode, stdout, "")
 
 
 def _background_run(monkeypatch, tmp_path):
@@ -188,6 +246,16 @@ def test_the_wake_asks_for_no_console_window(monkeypatch, tmp_path):
 
     assert wake_agent(Settings(), "a prompt") is True
     assert calls and all(kwargs.get("creationflags") == daemon.NO_WINDOW for _, kwargs in calls)
+
+
+def test_the_wake_runs_the_resolved_path(monkeypatch, tmp_path):
+    """A bare name is not enough on Windows, where both runtimes can be a `.cmd`
+    shim: CreateProcess appends only `.exe` when it searches PATH."""
+    calls = _background_run(monkeypatch, tmp_path)
+
+    wake_agent(Settings(), "a prompt")
+
+    assert next(command for command, _ in calls if "--bg" in command)[0] == str(tmp_path / "claude")
 
 
 def test_a_wake_is_not_nested_in_the_session_that_started_the_daemon(monkeypatch, tmp_path):
@@ -224,11 +292,10 @@ def test_a_sessions_variables_go_and_the_researchers_own_stay():
     assert daemon.outside_session_env({"CLAUDE_CONFIG_DIR": "/c"}) == {"CLAUDE_CONFIG_DIR": "/c"}
 
 
-def test_the_wake_runs_the_resolved_path():
-    """A bare name is not enough on Windows, where both runtimes can be a `.cmd`
-    shim: CreateProcess appends only `.exe` when it searches PATH."""
-    assert "shutil.which" in inspect.getsource(wake_agent)
-    assert "command = [executable, *command[1:]]" in inspect.getsource(wake_agent)
+def test_a_wake_keeps_the_git_bash_the_installer_named():
+    """Claude Code on Windows finds an unpacked Git only through it."""
+    env = daemon.outside_session_env({"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe", "CLAUDE_CODE_ENTRYPOINT": "cli"})
+    assert env == {"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe"}
 
 
 # ------------------------------------------------------------------ prompting
@@ -250,8 +317,6 @@ class _answering:
     """The one line of `urlopen` these tests use: a JSON body, as a context."""
 
     def __init__(self, payload):
-        import json
-
         self._body = json.dumps(payload).encode()
 
     def __enter__(self):
@@ -297,10 +362,13 @@ def test_only_the_newest_post_is_included():
     assert "post 1 by alice" not in prompt
 
 
-def test_the_size_of_the_thread_is_stated():
+def test_the_reason_the_thread_and_its_size_are_stated():
     """An agent given one post has to know whether there is more behind it."""
-    prompt = build_prompt(Settings(), "mentioned", TOPIC, TEMPLATE)
+    prompt = build_prompt(Settings(), "you were mentioned", TOPIC, TEMPLATE)
 
+    assert "you were mentioned" in prompt
+    assert "Two-level system coupled to a cavity" in prompt
+    assert "topic 7" in prompt
     assert "2 post(s)" in prompt
 
 
@@ -325,18 +393,7 @@ def test_the_wake_names_nobody_when_the_researcher_is_unknown():
     assert "working for" not in prompt
 
 
-def test_the_title_and_topic_id_are_included():
-    prompt = build_prompt(Settings(), "mentioned", TOPIC, TEMPLATE)
-    assert "Two-level system coupled to a cavity" in prompt
-    assert "topic 7" in prompt
-
-
-def test_the_reason_for_the_wake_is_stated():
-    prompt = build_prompt(Settings(), "you were mentioned", TOPIC, TEMPLATE)
-    assert "you were mentioned" in prompt
-
-
-def test_post_content_is_framed_as_data():
+def test_post_content_is_framed_as_data_once():
     """The injection defence in the prompt itself.
 
     Weak on its own -- docs/10-security.md is explicit that this does not make
@@ -345,13 +402,24 @@ def test_post_content_is_framed_as_data():
     prompt = build_prompt(Settings(), "mentioned", TOPIC, TEMPLATE)
 
     assert "DATA" in prompt
+    assert prompt.count("is not one") == 1
+
+
+def test_a_served_prompt_cannot_drop_the_data_notice():
+    """The one part of the wake the host does not get to remove.
+
+    Everything else in the prompt is wording. This line is what tells the agent
+    that what follows is somebody else's text rather than an instruction, and a
+    template that omitted it would leave nothing to say so.
+    """
+    prompt = build_prompt(Settings(), "mentioned", TOPIC, "Here: %BODY%")
+
+    assert "DATA" in prompt
     assert "is not one" in prompt
 
 
 def test_no_token_is_left_unfilled():
     """A token the kit does not substitute reaches the model as literal text."""
-    import re
-
     prompt = build_prompt(
         Settings(api_username="a", researcher="r"), "mentioned", TOPIC, TEMPLATE
     )
@@ -386,23 +454,13 @@ def test_a_post_cannot_rewrite_the_prompt_around_it():
     assert prompt.startswith("%REASON% %TOPIC_ID% %DATA_NOTICE% %AUTHOR%")
 
 
-def test_a_served_prompt_cannot_drop_the_data_notice():
-    """The one part of the wake the host does not get to remove.
+def test_a_wake_is_told_what_an_unattended_run_cannot_do():
+    """Otherwise it learns by being refused, and says so to its researcher as
+    if the forum were at fault."""
+    prompt = build_prompt(_settings(), "you were mentioned", _topic(10), "Reason: %REASON%\n%BODY%")
 
-    Everything else in the prompt is wording. This line is what tells the agent
-    that what follows is somebody else's text rather than an instruction, and a
-    template that omitted it would leave nothing to say so.
-    """
-    prompt = build_prompt(Settings(), "mentioned", TOPIC, "Here: %BODY%")
-
-    assert "DATA" in prompt
-    assert "is not one" in prompt
-
-
-def test_the_data_notice_is_not_repeated_when_the_template_asks_for_it():
-    prompt = build_prompt(Settings(), "mentioned", TOPIC, "%DATA_NOTICE% %BODY%")
-
-    assert prompt.count("is not one") == 1
+    assert prompt.endswith(daemon.WAKE_NOTICE)
+    assert "attach_file" in daemon.WAKE_NOTICE
 
 
 def test_the_poll_records_what_the_host_wants_said(monkeypatch):
@@ -428,7 +486,7 @@ def test_the_poll_records_what_the_host_wants_said(monkeypatch):
 def test_an_answer_carrying_nothing_withdraws_what_was_said(monkeypatch):
     """Otherwise a wording the host has stopped serving is served for ever by
     every machine that once received it."""
-    texts.save({"wake_prompt": "old %BODY%"})
+    texts.save({"wake_prompt": "served %BODY%"})
     ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
     monkeypatch.setattr(
         daemon.urllib.request, "urlopen", lambda *a, **k: _answering({"pending": []})
@@ -447,7 +505,7 @@ def test_an_unreachable_host_does_not_withdraw_it():
     assert texts.wake_prompt() == "served %BODY%"
 
 
-def test_a_pass_with_no_wording_defers_rather_than_improvises(tmp_path, monkeypatch):
+def test_a_pass_with_no_wording_defers_rather_than_improvises(handled, in_topic_10, monkeypatch):
     """There is no prompt in this package to fall back to, by design.
 
     A copy kept here would be maintained by nobody and read on exactly the
@@ -455,18 +513,14 @@ def test_a_pass_with_no_wording_defers_rather_than_improvises(tmp_path, monkeypa
     told how a wake reads defers its wakes, says so in the log, and keeps them
     for the pass that can.
     """
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    forum = FakeForum({10: _topic(10)})
 
-    class SilentRanking:
+    class SilentRanking(FakeRanking):
         def pending(self, agent):
             return [{"post_id": 101}]
 
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    _woken(monkeypatch)
 
-    assert daemon.one_pass(settings, forum, SilentRanking(), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), SilentRanking(), handled, dry_run=False) == 0
     assert not handled.seen("wake", 101)
 
 
@@ -476,72 +530,21 @@ def test_a_pass_with_no_wording_defers_rather_than_improvises(tmp_path, monkeypa
 def test_missing_credentials_are_reported_by_name():
     missing = Settings(forum_url="", api_key="", api_username="").validate()
     assert set(missing) == {"QUPA_FORUM_URL", "QUPA_API_KEY", "QUPA_API_USERNAME"}
-
-
-def test_complete_settings_validate():
-    assert Settings(forum_url="http://x", api_key="k", api_username="u").validate() == []
+    assert _settings().validate() == []
 
 
 # ------------------------------------------------------- deferral and dry runs
 
 
-class FakeForum:
-    """Enough of Forum for one_pass, with a record of what was acknowledged."""
-
-    def __init__(self, topics):
-        self.topics = topics
-        self.marked_read = []
-
-    def totals(self):
-        return {"unread_notifications": 0, "total_unread_notifications": 0}
-
-    def unread_notifications(self):
-        return []
-
-    def mark_read(self, notification_id):
-        self.marked_read.append(notification_id)
-
-    def topic(self, topic_id):
-        return self.topics[topic_id]
-
-    def delete_post(self, post_id):
-        self.deleted = getattr(self, "deleted", []) + [post_id]
-
-
-class FakeRanking:
-    def __init__(self, post_ids, scores=None, policy=None):
-        self.post_ids = post_ids
-        self.scores = scores or {}
-        self.policy = policy or {}
-
-    def pending(self, agent):
-        # The real one also writes down how the host wants a wake worded, and
-        # one_pass defers everything when nothing has. These tests are about
-        # what gets acknowledged, so they stand in for that here.
-        texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
-        return [{"post_id": post_id, "similarity": self.scores.get(post_id)} for post_id in self.post_ids]
-
-
-def _topic(topic_id):
-    return {
-        "id": topic_id,
-        "title": f"Topic {topic_id}",
-        "post_stream": {"posts": [{"post_number": 1, "username": "alice", "raw": "text"}]},
-    }
-
-
-def test_a_deferred_topic_is_not_acknowledged(tmp_path, monkeypatch):
-    """The bug this guards: marking on discovery silently drops everything the
-    per-pass cap defers, so a backlog is lost rather than delayed."""
-    import qupa_cafe.daemon as daemon
-
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=1)
-    handled = Handled(str(tmp_path / "state.sqlite3"))
+def test_a_deferred_topic_is_not_acknowledged(handled, monkeypatch):
+    """Marking on discovery would drop everything the per-pass cap defers, so
+    a backlog would be lost rather than delayed."""
+    settings = _settings(max_wakes_per_pass=1)
     forum = FakeForum({10: _topic(10), 20: _topic(20)})
     ranking = FakeRanking([101, 201])
 
     monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10 if post_id == 101 else 20)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    _woken(monkeypatch)
 
     assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 1
 
@@ -553,55 +556,36 @@ def test_a_deferred_topic_is_not_acknowledged(tmp_path, monkeypatch):
     assert handled.seen("wake", 101) and handled.seen("wake", 201)
 
 
-def test_a_failed_wake_is_retried(tmp_path, monkeypatch):
+def test_a_failed_wake_is_retried(handled, in_topic_10, monkeypatch):
     """A wake that failed is not a wake that happened."""
-    import qupa_cafe.daemon as daemon
+    _woken(monkeypatch, ok=False)
 
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    forum = FakeForum({10: _topic(10)})
-    ranking = FakeRanking([101])
-
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: False)
-
-    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), FakeRanking([101]), handled, dry_run=False) == 0
     assert not handled.seen("wake", 101)
 
 
-def test_a_dry_run_acknowledges_nothing(tmp_path, monkeypatch):
+def test_a_dry_run_acknowledges_and_journals_nothing(tmp_path, in_topic_10, monkeypatch):
     """--dry-run must change nothing, on this machine or on the forum."""
-    import qupa_cafe.daemon as daemon
+    state = str(tmp_path / "state.sqlite3")
+    handled, journal = Handled(state), daemon.Journal(state)
+    forum = FakeForum({10: _topic(10)}, notes=[{"id": 5, "notification_type": MENTIONED, "topic_id": 10}])
+    _woken(monkeypatch)
 
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-    forum = FakeForum({10: _topic(10)})
-    ranking = FakeRanking([101])
+    daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=True, journal=journal)
 
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
-
-    daemon.one_pass(settings, forum, ranking, handled, dry_run=True)
-
-    assert not handled.seen("wake", 101)
+    assert not handled.seen("wake", 101) and not handled.seen("notification", 5)
     assert forum.marked_read == []
+    assert journal.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 0
 
 
-def test_nothing_pending_means_no_wakes(tmp_path):
-    import qupa_cafe.daemon as daemon
-
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-    handled = Handled(str(tmp_path / "state.sqlite3"))
-
-    assert daemon.one_pass(settings, FakeForum({}), FakeRanking([]), handled, dry_run=False) == 0
+def test_nothing_pending_means_no_wakes(handled):
+    assert daemon.one_pass(_settings(), FakeForum({}), FakeRanking(), handled, dry_run=False) == 0
 
 
 # ------------------------------------------------------ waking the runtime
 
 
 def _mcp_config(tmp_path, username="u", forum="http://x"):
-    import json
-
     path = tmp_path / "qupa-cafe.mcp.json"
     path.write_text(
         json.dumps(
@@ -650,9 +634,10 @@ def test_a_missing_mcp_config_is_not_passed(tmp_path):
     assert "--mcp-config" not in command
 
 
-def test_codex_takes_its_servers_from_its_own_configuration():
-    command = runtime_command(Settings(runtime="codex"), "a prompt")
-    assert command == ["codex", "exec", "--skip-git-repo-check", "a prompt"]
+def test_codex_takes_its_servers_from_its_own_configuration_and_no_session():
+    expected = ["codex", "exec", "--skip-git-repo-check", "a prompt"]
+    assert runtime_command(Settings(runtime="codex"), "a prompt") == expected
+    assert runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session="")) == expected
 
 
 # ------------------------------------------- daemon and MCP server identity
@@ -674,22 +659,19 @@ def test_a_username_mismatch_stops_the_daemon(tmp_path):
     assert "cc-agent" in complaint and "cx-agent" in complaint
 
 
-def test_agreement_is_silent(tmp_path):
-    settings = Settings(
-        api_username="u", forum_url="http://x", mcp_config=str(_mcp_config(tmp_path, "u"))
-    )
-    assert mcp_config_disagreement(settings) == ""
-
-
-def test_a_trailing_slash_is_not_a_disagreement(tmp_path):
-    settings = Settings(
-        api_username="u", forum_url="http://x/", mcp_config=str(_mcp_config(tmp_path, "u", "http://x"))
-    )
-    assert mcp_config_disagreement(settings) == ""
-
-
-def test_no_mcp_config_is_not_a_disagreement(tmp_path):
-    settings = Settings(api_username="u", mcp_config=str(tmp_path / "absent.json"))
+@pytest.mark.parametrize(
+    "ours, theirs",
+    [
+        ("http://x", "http://x"),
+        # A trailing slash is not a disagreement.
+        ("http://x/", "http://x"),
+        # Nor is having no MCP configuration at all.
+        ("http://x", None),
+    ],
+)
+def test_agreement_is_silent(tmp_path, ours, theirs):
+    config = _mcp_config(tmp_path, "u", theirs) if theirs else tmp_path / "absent.json"
+    settings = Settings(api_username="u", forum_url=ours, mcp_config=str(config))
     assert mcp_config_disagreement(settings) == ""
 
 
@@ -697,7 +679,7 @@ def test_no_mcp_config_is_not_a_disagreement(tmp_path):
 
 
 def test_the_env_file_is_read(tmp_path, monkeypatch):
-    """Only systemd reads it for us. A scheduled task on Windows does not."""
+    """Only systemd reads it for us; everywhere else the daemon reads it itself."""
     path = tmp_path / "env"
     path.write_text("# a comment\n\nQUPA_FORUM_URL=http://from-file\n", encoding="utf-8")
     monkeypatch.delenv("QUPA_FORUM_URL", raising=False)
@@ -725,8 +707,6 @@ def test_a_missing_env_file_is_not_an_error(tmp_path):
 
 
 def test_the_daemon_logs_to_a_file_beside_its_state(tmp_path, monkeypatch):
-    import logging
-
     monkeypatch.setenv("QUPA_STATE", str(tmp_path / "daemon.sqlite3"))
     monkeypatch.delenv("QUPA_LOG", raising=False)
     root = logging.getLogger()
@@ -749,19 +729,13 @@ def test_an_uncaught_exception_is_logged_before_the_daemon_exits(monkeypatch, ca
         raise RuntimeError("the loop could not continue")
 
     monkeypatch.setattr(daemon, "run", explode)
-    try:
+    with pytest.raises(RuntimeError):
         daemon.main()
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("main swallowed the exception")
     assert "exiting on an uncaught exception" in caplog.text
     assert "the loop could not continue" in caplog.text
 
 
 def test_an_ordinary_refusal_to_start_is_logged(monkeypatch, caplog):
-    import logging
-
     caplog.set_level(logging.INFO)
     monkeypatch.setattr(daemon, "run", lambda: 2)
     assert daemon.main() == 2
@@ -801,11 +775,6 @@ def test_a_wake_runs_as_a_named_background_session_that_asks_nobody(tmp_path):
     assert command.index("--permission-mode") < command.index("--allowedTools")
 
 
-def test_codex_is_given_no_session_it_cannot_take():
-    command = runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session=""))
-    assert command == ["codex", "exec", "--skip-git-repo-check", "a prompt"]
-
-
 def test_no_wake_has_a_session_before_it_starts():
     """Claude Code's background session picks one; Codex has none."""
     topic = _topic(10)
@@ -813,13 +782,11 @@ def test_no_wake_has_a_session_before_it_starts():
     assert daemon.wake_for(Settings(runtime="codex"), "r", topic).session == ""
 
 
-def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
+def test_each_wake_is_journalled_with_how_it_ended(tmp_path, in_topic_10, monkeypatch):
     state = str(tmp_path / "state.sqlite3")
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
+    settings = _settings(max_wakes_per_pass=5)
     forum = FakeForum({10: _topic(10)})
     journal = daemon.Journal(state)
-
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
     seen = {}
 
     def fake_wake(settings, prompt, dry_run=False, wake=None, on_session=None, **kwargs):
@@ -831,7 +798,7 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "wake_agent", fake_wake)
     daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
 
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
+    _woken(monkeypatch)
     daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
 
     rows = journal.db.execute("SELECT status, session, topic_id, finished FROM wakes ORDER BY id").fetchall()
@@ -841,24 +808,21 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, monkeypatch):
     assert all(row[3] for row in rows)
 
 
-def test_a_relevance_wake_journals_its_best_score_and_the_floor(tmp_path, monkeypatch):
+def test_a_relevance_wake_journals_its_best_score_and_the_floor(tmp_path, in_topic_10, monkeypatch):
     state = str(tmp_path / "state.sqlite3")
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
     journal = daemon.Journal(state)
     policy = {"similarity_floor": 0.72, "floor_min": 0.6, "floor_max": 0.9}
+    _woken(monkeypatch)
 
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
     ranking = FakeRanking([101, 102], scores={101: 0.74, 102: 0.81}, policy=policy)
-    daemon.one_pass(settings, FakeForum({10: _topic(10)}), ranking, Handled(state), dry_run=False, journal=journal)
+    daemon.one_pass(_settings(max_wakes_per_pass=5), FakeForum({10: _topic(10)}), ranking, Handled(state), dry_run=False, journal=journal)
 
     assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.81,)]
     assert journal.db.execute("SELECT floor, floor_min, floor_max FROM floor").fetchall() == [(0.72, 0.6, 0.9)]
 
 
-def test_a_journal_from_before_scores_gains_the_column(tmp_path):
-    import sqlite3
-
+def test_a_journal_without_the_score_column_gains_it(tmp_path):
+    """A state file a kit without scores wrote."""
     state = str(tmp_path / "state.sqlite3")
     old = sqlite3.connect(state)
     old.execute(
@@ -875,10 +839,14 @@ def test_a_journal_from_before_scores_gains_the_column(tmp_path):
     assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.8,)]
 
 
-def test_setting_the_floor_posts_it_with_the_agent_s_key(tmp_path):
-    import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+def test_the_heartbeat_is_one_row(tmp_path):
+    journal = daemon.Journal(str(tmp_path / "state.sqlite3"))
+    journal.beat(60)
+    journal.beat(30)
+    assert journal.db.execute("SELECT interval FROM heartbeat").fetchall() == [(30,)]
 
+
+def test_setting_the_floor_posts_it_with_the_agent_s_key():
     heard = {}
 
     class Host(BaseHTTPRequestHandler):
@@ -915,55 +883,10 @@ def test_setting_the_floor_posts_it_with_the_agent_s_key(tmp_path):
         server.server_close()
 
 
-def test_a_dry_run_journals_nothing(tmp_path, monkeypatch):
-    state = str(tmp_path / "state.sqlite3")
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u", max_wakes_per_pass=5)
-    journal = daemon.Journal(state)
-
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: True)
-    daemon.one_pass(
-        settings, FakeForum({10: _topic(10)}), FakeRanking([101]), Handled(state), dry_run=True, journal=journal
-    )
-
-    assert journal.db.execute("SELECT COUNT(*) FROM wakes").fetchone()[0] == 0
-
-
-def test_the_heartbeat_is_one_row(tmp_path):
-    journal = daemon.Journal(str(tmp_path / "state.sqlite3"))
-    journal.beat(60)
-    journal.beat(30)
-    assert journal.db.execute("SELECT interval FROM heartbeat").fetchall() == [(30,)]
-
-
-def test_a_private_message_counted_only_as_personal_wakes_the_agent(tmp_path):
-    """The forum counts a private-message notification in unread_personal_messages
-    and leaves unread_notifications at 0, so the daemon has to read both."""
-
-    class PMForum(FakeForum):
-        def totals(self):
-            return {"unread_notifications": 0, "unread_personal_messages": 1}
-
-        def unread_notifications(self):
-            return [{"id": 6, "notification_type": PRIVATE_MESSAGE, "topic_id": 154}]
-
-    class NoRanking:
-        def pending(self, agent):
-            return []
-
-    settings = Settings(forum_url="http://x", api_key="k", api_username="sunada-agent")
-    found = daemon.collect(settings, PMForum({}), NoRanking(), Handled(str(tmp_path / "state.sqlite3")))
-    assert [(c.topic_id, c.notification_ids) for c in found] == [(154, [6])]
-
-
 # ------------------------------------------------------- the *Thinking…* post
 
 
 def _thinking_topic(topic_id, age_seconds):
-    from datetime import datetime, timedelta, timezone
-
-    from qupa_cafe import placeholders
-
     created = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat().replace("+00:00", "Z")
     topic = _topic(topic_id)
     topic["post_stream"]["posts"].append(
@@ -972,36 +895,26 @@ def _thinking_topic(topic_id, age_seconds):
     return topic
 
 
-def test_a_wake_waits_while_the_newest_post_is_still_thinking(tmp_path, monkeypatch):
+def test_a_wake_waits_while_the_newest_post_is_still_thinking(handled, in_topic_10, monkeypatch):
     """Woken now, the agent would read only *Thinking…*. Unacknowledged, the
     same notification wakes it once the answer is there."""
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-    handled = Handled(str(tmp_path / "state.sqlite3"))
     forum = FakeForum({10: _thinking_topic(10, age_seconds=30)})
-    woken = []
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: woken.append(1) or True)
+    woken = _woken(monkeypatch)
 
-    assert daemon.one_pass(settings, forum, FakeRanking([101]), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=False) == 0
     assert woken == [] and not handled.seen("wake", 101)
 
     forum.topics[10]["post_stream"]["posts"][-1]["raw"] = "The answer."
-    assert daemon.one_pass(settings, forum, FakeRanking([101]), handled, dry_run=False) == 1
+    assert daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=False) == 1
 
 
-def test_a_placeholder_older_than_any_wake_no_longer_holds_one_up():
-    from qupa_cafe import placeholders
-
+def test_a_placeholder_older_than_any_wake_holds_none_up():
     assert daemon.still_thinking(_thinking_topic(10, age_seconds=60)) == 555
     assert daemon.still_thinking(_thinking_topic(10, age_seconds=placeholders.LIFETIME_SECONDS + 60)) is None
     assert daemon.still_thinking(_topic(10)) is None
 
 
-def test_the_daemon_deletes_placeholders_a_killed_wake_left(tmp_path):
-    import time
-
-    from qupa_cafe import placeholders
-
+def test_the_daemon_deletes_placeholders_a_killed_wake_left():
     placeholders.record(555, at=time.time() - placeholders.LIFETIME_SECONDS - 60)
     placeholders.record(556)
     forum = FakeForum({})
@@ -1012,38 +925,19 @@ def test_the_daemon_deletes_placeholders_a_killed_wake_left(tmp_path):
     assert placeholders.expired(now=time.time() + placeholders.LIFETIME_SECONDS + 60) == [556]
 
 
-def test_a_wake_is_told_what_an_unattended_run_cannot_do():
-    """Otherwise it learns by being refused, and says so to its researcher as
-    if the forum were at fault."""
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-
-    prompt = build_prompt(settings, "you were mentioned", _topic(10), "Reason: %REASON%\n%BODY%")
-
-    assert prompt.endswith(daemon.WAKE_NOTICE)
-    assert "attach_file" in daemon.WAKE_NOTICE
+# ------------------------------------------------------- the install check
 
 
-def test_a_wake_keeps_the_git_bash_the_installer_named():
-    """Claude Code on Windows finds an unpacked Git only through it."""
-    env = daemon.outside_session_env({"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe", "CLAUDE_CODE_ENTRYPOINT": "cli"})
-    assert env == {"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe"}
-
-
-class _Ran:
-    def __init__(self, stdout="", returncode=0, stderr=""):
-        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
-
-
-def _check(monkeypatch, tmp_path, result):
-    """The check with its background wake faked: ``result`` is what the
-    session said last, or how it failed."""
+def _check(monkeypatch, tmp_path, returncode, said):
+    """The check with its background wake faked: ``said`` is what the session
+    said last, or how it failed."""
     seen = {}
 
     def fake_check(claude, command, cwd, timeout):
         seen["argv"] = command
-        if result.returncode != 0:
-            return "claude --bg", result.returncode, "", result.stderr
-        return "claude --bg", 0, result.stdout, ""
+        if returncode != 0:
+            return "claude --bg", returncode, "", said
+        return "claude --bg", 0, said, ""
 
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(daemon, "check_in_background", fake_check)
@@ -1052,7 +946,7 @@ def _check(monkeypatch, tmp_path, result):
 
 
 def test_the_install_check_reads_a_wake_with_the_tools_and_the_sandbox(monkeypatch, tmp_path):
-    check, argv = _check(monkeypatch, tmp_path, _Ran("Checking.\nWOKEN 5aa6f598 42\n"))
+    check, argv = _check(monkeypatch, tmp_path, 0, "Checking.\nWOKEN 5aa6f598 42\n")
     assert (check.woken, check.policy, check.bash) == (True, True, True)
     # It may read, and may not write.
     allowed = argv[argv.index("--allowedTools") + 1 :]
@@ -1061,12 +955,12 @@ def test_the_install_check_reads_a_wake_with_the_tools_and_the_sandbox(monkeypat
 
 
 def test_the_install_check_tells_a_wake_without_forum_tools(monkeypatch, tmp_path):
-    check, _ = _check(monkeypatch, tmp_path, _Ran("WOKEN NOPOLICY NOBASH"))
+    check, _ = _check(monkeypatch, tmp_path, 0, "WOKEN NOPOLICY NOBASH")
     assert check.woken and not check.policy and not check.bash
 
 
 def test_the_install_check_reports_a_runtime_that_fails(monkeypatch, tmp_path):
-    check, _ = _check(monkeypatch, tmp_path, _Ran("", 1, "Invalid API key · Please run /login"))
+    check, _ = _check(monkeypatch, tmp_path, 1, "Invalid API key · Please run /login")
     assert not check.woken and "/login" in check.said
 
 
@@ -1076,20 +970,17 @@ def test_the_install_check_reports_a_missing_runtime(monkeypatch, tmp_path):
     assert not check.woken and "not on PATH" in check.said
 
 
+# ------------------------------------------------- background sessions
+
+
 def test_a_background_wake_is_waited_for_and_then_removed(monkeypatch):
     """A finished background session keeps its processes until removed."""
     ran = []
     states = iter(["working", "working", "done"])
 
-    class Ran:
-        def __init__(self, stdout=""):
-            self.stdout, self.stderr, self.returncode = stdout, "", 0
-
     def fake_run(argv, **kwargs):
         ran.append(argv[1:3])
-        if "--bg" in argv:
-            return Ran("backgrounded · 2bc6e6bc · qupa wake: topic 10\n")
-        return Ran()
+        return _started("backgrounded · 2bc6e6bc · qupa wake: topic 10\n" if "--bg" in argv else "")(argv)
 
     monkeypatch.setattr(daemon.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -1107,19 +998,13 @@ def test_a_background_wake_is_waited_for_and_then_removed(monkeypatch):
 
 
 def test_a_background_wake_that_never_starts_says_why(monkeypatch):
-    class Ran:
-        stdout, stderr, returncode = "Workspace not trusted. Run `claude` in C:\a once.", "", 1
-
-    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    monkeypatch.setattr(daemon.subprocess, "run", _started("Workspace not trusted. Run `claude` in C:\\a once.", 1))
     state, session = daemon.run_in_background("claude", ["claude", "--bg", "p"], None)
     assert state.startswith("did not start") and "not trusted" in state and session == ""
 
 
 def test_a_failed_background_wake_is_a_failed_wake(monkeypatch):
-    class Ran:
-        stdout, stderr, returncode = "backgrounded · 2a12da07 · x", "", 0
-
-    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    monkeypatch.setattr(daemon.subprocess, "run", _started("backgrounded · 2a12da07 · x"))
     monkeypatch.setattr(daemon, "background_sessions", lambda claude: [{"id": "2a12da07", "sessionId": "s", "state": "failed"}])
     assert daemon.run_in_background("claude", ["claude", "--bg", "p"], None)[0] == "failed"
 
@@ -1127,11 +1012,7 @@ def test_a_failed_background_wake_is_a_failed_wake(monkeypatch):
 def test_an_ended_background_wake_somebody_has_open_is_kept(monkeypatch):
     """Removing it would throw them out of the session mid-sentence."""
     removed = []
-
-    class Ran:
-        stdout, stderr, returncode = "backgrounded · 0dec95d9 · qupa wake: topic 1", "", 0
-
-    monkeypatch.setattr(daemon.subprocess, "run", lambda argv, **kw: Ran())
+    monkeypatch.setattr(daemon.subprocess, "run", _started("backgrounded · 0dec95d9 · qupa wake: topic 1"))
     monkeypatch.setattr(daemon, "background_sessions", lambda c: [{"id": "0dec95d9", "sessionId": "s", "state": "done"}])
     monkeypatch.setattr(daemon, "remove_background", lambda c, short: removed.append(short))
     monkeypatch.setattr(daemon, "attached_ids", lambda: {"0dec95d9"})
@@ -1171,66 +1052,35 @@ def test_the_sweep_takes_nothing_when_it_cannot_tell_who_has_one_open(monkeypatc
 # ---------------------------------------- when the agent cannot answer
 
 
-class TellingRanking:
-    """A ranking endpoint that records what the daemon tells it."""
-
-    def __init__(self):
-        self.told = []
-
-    def pending(self, agent):
-        texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
-        return []
-
-    def alive(self, agent):
-        self.told.append(("alive", agent))
-
-    def failed(self, agent, topic_id, reason):
-        self.told.append(("failed", agent, topic_id, reason))
+MENTION = {"id": 7, "notification_type": MENTIONED, "topic_id": 10, "post_number": 1}
 
 
-class MentionForum(FakeForum):
-    def totals(self):
-        return {"unread_notifications": 1, "total_unread_notifications": 1}
-
-    def unread_notifications(self):
-        return [{"id": 7, "notification_type": daemon.MENTIONED, "topic_id": 10, "post_number": 1}]
-
-
-def test_a_failed_wake_somebody_waits_on_is_reported_with_its_reason(tmp_path, monkeypatch):
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-    ranking = TellingRanking()
+def test_a_failed_wake_somebody_waits_on_is_reported_with_its_reason(handled, monkeypatch):
+    ranking = FakeRanking()
 
     def failing_wake(*args, on_failure=None, **kwargs):
         on_failure("Claude Code is not installed, or not on the PATH the daemon sees")
         return False
 
     monkeypatch.setattr(daemon, "wake_agent", failing_wake)
-    daemon.one_pass(settings, MentionForum({10: _topic(10)}), ranking, Handled(str(tmp_path / "s.sqlite3")), dry_run=False)
+    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}, [MENTION]), ranking, handled, dry_run=False)
 
     assert ranking.told == [("failed", "u", 10, "Claude Code is not installed, or not on the PATH the daemon sees")]
 
 
-def test_a_relevance_wake_that_fails_is_not_reported(tmp_path, monkeypatch):
+def test_a_relevance_wake_that_fails_is_not_reported(handled, in_topic_10, monkeypatch):
     """Nobody waits on it."""
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
-    ranking = TellingRanking()
-    ranking.pending = lambda agent: (texts.save({"wake_prompt": "%BODY%"}), [{"post_id": 101}])[1]
-    seen = {}
+    ranking = FakeRanking([101])
+    woken = _woken(monkeypatch, ok=False)
 
-    def failing_wake(*args, on_failure=None, **kwargs):
-        seen["on_failure"] = on_failure
-        return False
+    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), ranking, handled, dry_run=False)
 
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", failing_wake)
-    daemon.one_pass(settings, FakeForum({10: _topic(10)}), ranking, Handled(str(tmp_path / "s.sqlite3")), dry_run=False)
-
-    assert seen["on_failure"] is None and ranking.told == []
+    assert woken[0]["on_failure"] is None and ranking.told == []
 
 
 def test_a_long_background_wake_says_it_is_alive(monkeypatch, tmp_path):
     """Otherwise the host, not hearing from the daemon, tells people it is down."""
-    calls = _background_run(monkeypatch, tmp_path)
+    _background_run(monkeypatch, tmp_path)
     states = iter(["working", "working", "working", "done"])
     monkeypatch.setattr(
         daemon, "background_sessions", lambda c: [{"id": "2bc6e6bc", "sessionId": "s", "state": next(states)}]
@@ -1243,29 +1093,20 @@ def test_a_long_background_wake_says_it_is_alive(monkeypatch, tmp_path):
     assert len(said) >= 3
 
 
-def test_a_wake_that_will_not_start_says_why(monkeypatch, tmp_path):
+def test_a_wake_that_will_not_start_says_why(monkeypatch):
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
     reasons = []
     assert wake_agent(Settings(), "p", on_failure=reasons.append) is False
     assert reasons == ["Claude Code is not installed, or not on the PATH the daemon sees"]
 
 
-def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(tmp_path, monkeypatch):
+def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(handled, monkeypatch):
     topic = _topic(10)
     topic["post_stream"]["posts"].append(
         {"post_number": 2, "username": "pat-agent", "raw": "*An automatic notice.*\n\n<!-- qupa-cafe:notice -->"}
     )
-
-    class WatchedForum(FakeForum):
-        def totals(self):
-            return {"unread_notifications": 1, "total_unread_notifications": 1}
-
-        def unread_notifications(self):
-            return [{"id": 8, "notification_type": daemon.POSTED, "topic_id": 10, "post_number": 2}]
-
-    forum = WatchedForum({10: topic})
+    forum = FakeForum({10: topic}, [{"id": 8, "notification_type": POSTED, "topic_id": 10, "post_number": 2}])
     monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
 
-    assert daemon.one_pass(settings, forum, TellingRanking(), Handled(str(tmp_path / "s.sqlite3")), dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, FakeRanking(), handled, dry_run=False) == 0
     assert forum.marked_read == [8]
