@@ -307,3 +307,58 @@ def test_the_install_banner_says_when_there_is_no_sandbox():
 
     assert "re-run qupa-install" in install.sandbox_summary(False)
     assert "runs no code" in install.sandbox_summary(None)
+
+
+# --------------------------------------------- what qupa-install installs
+
+
+def test_nothing_is_installed_that_is_already_there(monkeypatch):
+    """pixi, Node.js and the rest come from wherever this machine has them."""
+    installed_now = []
+    monkeypatch.setattr(sandbox, "find", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(sandbox, "git_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(sandbox, "install_pixi", lambda: installed_now.append("pixi"))
+    monkeypatch.setattr(sandbox, "install_portable_git", lambda: installed_now.append("git"))
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: installed_now.append(argv))
+    monkeypatch.setattr(sandbox, "WINDOWS", True)
+
+    assert sandbox.ensure_programs(sandbox=True, claude=True) is None
+    assert installed_now == []
+
+
+def test_only_what_is_missing_is_installed(monkeypatch):
+    ran = []
+    have = {"pixi", "npm"}
+    monkeypatch.setattr(sandbox, "find", lambda name: f"/opt/{name}" if name in have else None)
+    monkeypatch.setattr(sandbox, "wanted_programs", lambda: {"node": "nodejs", "npm": "nodejs", "rg": "ripgrep"})
+    monkeypatch.setattr(sandbox, "install_pixi", lambda: pytest.fail("pixi is already there"))
+    monkeypatch.setattr(sandbox, "WINDOWS", False)
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: ran.append(argv) or Done())
+    sandbox.ensure_programs()
+    assert ran == [["/opt/pixi", "global", "install", "nodejs", "ripgrep"]]
+
+
+def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch, tmp_path):
+    import io
+    import json as _json
+
+    release = {"assets": [{"name": "PortableGit-9.9-64-bit.7z.exe", "size": 3, "digest": "sha256:" + "0" * 64,
+                           "browser_download_url": "https://example.invalid/pg.exe"}]}
+    bodies = {sandbox.GIT_RELEASE_API: _json.dumps(release).encode(), "https://example.invalid/pg.exe": b"exe"}
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(sandbox.urllib.request, "urlopen", lambda url, timeout=0: Response(bodies[url]))
+    monkeypatch.setattr(sandbox.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(sandbox, "_run", lambda *a, **k: pytest.fail("nothing unverified may run"))
+    assert sandbox.install_portable_git() is None
+    assert not sandbox.portable_git_dir().exists()

@@ -676,14 +676,22 @@ def wake_for(settings: Settings, reason: str, topic: dict, score: float | None =
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+# A Claude Code setting rather than a session's state: where its Git Bash is,
+# which the installer may have written into env.
+KEPT_FOR_WAKES = {"CLAUDE_CODE_GIT_BASH_PATH"}
+
+
 def outside_session_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """This environment without a Claude Code session's variables, which would
     nest every wake in that session; ``NO_COLOR`` goes too, but only with them."""
     env = dict(os.environ if env is None else env)
-    in_session = any(name == "CLAUDECODE" or name.startswith("CLAUDE_CODE_") for name in env)
-    for name in list(env):
-        if name in ("CLAUDECODE", "CLAUDE_PID") or name.startswith("CLAUDE_CODE_"):
-            del env[name]
+    session = [
+        name for name in env
+        if (name in ("CLAUDECODE", "CLAUDE_PID") or name.startswith("CLAUDE_CODE_")) and name not in KEPT_FOR_WAKES
+    ]
+    in_session = any(name != "CLAUDE_PID" for name in session)
+    for name in session:
+        del env[name]
     if in_session:
         env.pop("NO_COLOR", None)
     return env
@@ -810,6 +818,68 @@ def wake_agent(settings: Settings, prompt: str, dry_run: bool = False, wake: Wak
     if result.stdout:
         LOG.debug("output: %s", result.stdout[:2000])
     return True
+
+
+# The installer's check that a wake works: the runtime starts, is signed in,
+# has the forum tools, and, with the sandbox, runs a command. Its answer is one
+# line the installer can read.
+CHECK_PROMPT = (
+    "This is qupa-install checking that you can be woken; nothing here comes from the forum, "
+    "and you must not post anything. Call get_policy. Then, if you have a Bash tool, run: "
+    'python -c "print(6*7)". Answer with exactly one line and nothing else: the word WOKEN, '
+    "then the first 8 characters of the policy hash get_policy returned (or NOPOLICY if you "
+    "could not call it), then that command's output (or NOBASH if you have no Bash tool)."
+)
+
+
+@dataclass
+class WakeCheck:
+    woken: bool
+    policy: bool
+    bash: bool
+    said: str
+
+
+def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
+    """Run the agent once as a wake runs it, with the forum's write tools
+    withheld, and read its answer to CHECK_PROMPT."""
+    command = runtime_command(settings, CHECK_PROMPT)
+    if "--allowedTools" in command:
+        cut = command.index("--allowedTools") + 1
+        writes = {f"mcp__qupa-cafe__{name}" for name in ("create_topic", "reply", "start_reply", "send_message", "edit_post", "attach_file")}
+        command = command[:cut] + [tool for tool in command[cut:] if tool not in writes]
+
+    executable = shutil.which(command[0])
+    if executable is None:
+        return WakeCheck(False, False, False, f"{command[0]} is not on PATH.")
+    cwd = settings.agent_dir if settings.agent_dir and Path(settings.agent_dir).is_dir() else None
+    try:
+        result = subprocess.run(
+            [executable, *command[1:]],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=cwd,
+            env=outside_session_env(),
+            creationflags=NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        return WakeCheck(False, False, False, f"{command[0]} did not answer within {timeout // 60} minutes.")
+
+    output = (result.stdout or "").strip()
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return WakeCheck(False, False, False, f"{command[0]} exited {result.returncode}: {detail[-400:]}")
+    line = next((row for row in reversed(output.splitlines()) if "WOKEN" in row), "")
+    if not line:
+        return WakeCheck(False, False, False, f"{command[0]} answered, but not as asked: {output[-400:]}")
+    words = line.split()
+    after = words[words.index("WOKEN") + 1 :] if "WOKEN" in words else []
+    policy = bool(after) and after[0] != "NOPOLICY"
+    bash = len(after) > 1 and after[1] == "42"
+    return WakeCheck(True, policy, bash, line.strip())
 
 
 # ------------------------------------------------------------------ the loop

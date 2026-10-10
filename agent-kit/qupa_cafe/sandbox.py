@@ -300,11 +300,69 @@ def git_bash() -> str | None:
     if git:
         root = Path(git).resolve().parent.parent
         candidates += [root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"]
-    candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe")
+    # Git's own installer, for every user and for one, and the copy
+    # install_portable_git unpacks.
+    for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", "")):
+        if base:
+            candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Git" / "bin" / "bash.exe")
+    candidates.append(portable_git_dir() / "bin" / "bash.exe")
     for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def portable_git_dir() -> Path:
+    return sandbox_dir().parent / "git"
+
+
+GIT_RELEASE_API = "https://api.github.com/repos/git-for-windows/git/releases/latest"
+
+
+def install_portable_git() -> str | None:
+    """Git for Windows' portable build from its latest release, checked
+    against the SHA-256 GitHub publishes for it, unpacked into the kit's own
+    directory. No installer runs, nothing is elevated, and nothing outside
+    that directory changes. Returns its bash."""
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "64-bit"
+    try:
+        with urllib.request.urlopen(GIT_RELEASE_API, timeout=30) as response:
+            release = json.load(response)
+        asset = next(
+            item for item in release.get("assets", [])
+            if item.get("name", "").startswith("PortableGit-") and item["name"].endswith(f"-{arch}.7z.exe")
+        )
+        print(f"  downloading {asset['name']} ({asset.get('size', 0) // 2**20} MB)...")
+        with urllib.request.urlopen(asset["browser_download_url"], timeout=600) as response:
+            data = response.read()
+    except (OSError, ValueError, KeyError, StopIteration) as exc:
+        print(f"  FAILED to download Git for Windows: {exc}")
+        return None
+    if asset.get("digest") != "sha256:" + hashlib.sha256(data).hexdigest():
+        print("  FAILED: the Git for Windows download does not match its published checksum, so it was not used.")
+        return None
+
+    target = portable_git_dir()
+    archive = target.parent / asset["name"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(data)
+    try:
+        # A 7-Zip self-extractor: -y answers its prompts, -o names where.
+        result = _run([str(archive), "-y", f"-o{target}"], timeout=900)
+    finally:
+        archive.unlink(missing_ok=True)
+    bash = target / "bin" / "bash.exe"
+    if result.returncode != 0 or not bash.is_file():
+        print("  FAILED to unpack Git for Windows")
+        print(_tail(result))
+        return None
+    # Its first login shell finishes the setup a portable copy defers.
+    _run([str(bash), "-lc", "true"], timeout=300)
+    print(f"  installed Git for Windows in {target}")
+    return str(bash)
 
 
 def pixi_bin() -> Path:
@@ -394,25 +452,29 @@ def install_pixi() -> str | None:
     return str(path)
 
 
-def ensure_programs(sandbox: bool = True) -> None:
-    """Install what is missing and can be had without elevation: pixi, and
+def ensure_programs(sandbox: bool = True, claude: bool = True) -> str | None:
+    """Install what is missing and can be had without elevation, and only
+    that: on Windows, for Claude Code, Git for Windows' bash; pixi; and
     through `pixi global install` Node.js (which the Discourse server needs
     whether or not there is a sandbox) and, for the sandbox, ripgrep, socat
-    and bubblewrap. All of it goes into pixi's bin directory, for this user."""
+    and bubblewrap. All of it for this user alone. Returns the bash this kit
+    unpacked, which Claude Code is then told of, or None."""
+    unpacked = None
+    if WINDOWS and claude and not git_bash():
+        unpacked = install_portable_git()
     wanted = wanted_programs() if sandbox else {"node": "nodejs", "npm": "nodejs"}
     packages = sorted({package for name, package in wanted.items() if not find(name)})
     if not packages and (find("pixi") or not sandbox):
-        return
+        return unpacked
     pixi = find("pixi") or install_pixi()
-    if pixi is None:
-        return
-    if not packages:
-        return
+    if pixi is None or not packages:
+        return unpacked
     print(f"  installing {', '.join(packages)} with pixi, into {pixi_bin()}...")
     result = _run([pixi, "global", "install", *packages])
     if result.returncode != 0:
         print(f"  FAILED to install {', '.join(packages)}")
         print(_tail(result))
+    return unpacked
 
 
 def missing_programs() -> list[str]:
@@ -645,6 +707,12 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         # Before the environment exists, so that its files inherit the grant.
         granted = windows_grant(runtime, "RX") and windows_grant(workspace, "M")
         granted = granted and windows_grant(Path(pixi), "RX", inherit=False)
+        # The bash every command runs in. A Git under the user's profile, the
+        # copy this kit unpacked or a per-user install, is not readable to the
+        # sandbox user until granted; one in Program Files already is.
+        bash = git_bash()
+        if bash and Path.home().resolve() in Path(bash).resolve().parents:
+            granted = granted and windows_grant(Path(bash).resolve().parent.parent, "RX")
         for directory in writable:
             print(f"  Letting the sandbox work in {directory}...")
             granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)

@@ -1004,3 +1004,52 @@ def test_a_wake_is_told_what_an_unattended_run_cannot_do():
 
     assert prompt.endswith(daemon.WAKE_NOTICE)
     assert "attach_file" in daemon.WAKE_NOTICE
+
+
+def test_a_wake_keeps_the_git_bash_the_installer_named():
+    """Claude Code on Windows finds an unpacked Git only through it."""
+    env = daemon.outside_session_env({"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe", "CLAUDE_CODE_ENTRYPOINT": "cli"})
+    assert env == {"CLAUDE_CODE_GIT_BASH_PATH": r"C:\g\bin\bash.exe"}
+
+
+class _Ran:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+def _check(monkeypatch, tmp_path, result):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        return result
+
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)))
+    return daemon.check_wake(settings), seen["argv"]
+
+
+def test_the_install_check_reads_a_wake_with_the_tools_and_the_sandbox(monkeypatch, tmp_path):
+    check, argv = _check(monkeypatch, tmp_path, _Ran("Checking.\nWOKEN 5aa6f598 42\n"))
+    assert (check.woken, check.policy, check.bash) == (True, True, True)
+    # It may read, and may not write.
+    allowed = argv[argv.index("--allowedTools") + 1 :]
+    assert "mcp__qupa-cafe__get_policy" in allowed
+    assert not any(tool.endswith(("__reply", "__create_topic", "__send_message", "__edit_post")) for tool in allowed)
+
+
+def test_the_install_check_tells_a_wake_without_forum_tools(monkeypatch, tmp_path):
+    check, _ = _check(monkeypatch, tmp_path, _Ran("WOKEN NOPOLICY NOBASH"))
+    assert check.woken and not check.policy and not check.bash
+
+
+def test_the_install_check_reports_a_runtime_that_fails(monkeypatch, tmp_path):
+    check, _ = _check(monkeypatch, tmp_path, _Ran("", 1, "Invalid API key · Please run /login"))
+    assert not check.woken and "/login" in check.said
+
+
+def test_the_install_check_reports_a_missing_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
+    check = daemon.check_wake(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")))
+    assert not check.woken and "not on PATH" in check.said

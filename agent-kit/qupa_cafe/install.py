@@ -457,6 +457,13 @@ def write_env(settings: dict[str, str]) -> None:
         "# no instructions at all.",
         f"QUPA_AGENT_DIR={settings.get('agent_dir', '')}",
     ]
+    if settings.get("git_bash"):
+        lines += [
+            "",
+            "# The Git Bash Claude Code runs commands in, on Windows: the copy",
+            "# qupa-install unpacked, which Claude Code would not find by itself.",
+            f"CLAUDE_CODE_GIT_BASH_PATH={settings['git_bash']}",
+        ]
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ENV_PATH.chmod(0o600)
     print(f"  wrote {ENV_PATH}")
@@ -1200,6 +1207,49 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
     return True, False
 
 
+def check_agent_wakes(settings: dict[str, str], sandboxed: bool | None) -> bool:
+    """Wake the agent once as the daemon will, and say what stops it if
+    anything does: the runtime missing or signed out, no forum tools, or a
+    sandbox that runs nothing."""
+    from .daemon import Settings, check_wake
+
+    if settings.get("git_bash"):
+        os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = settings["git_bash"]
+    runtime = settings.get("runtime", "claude")
+    check = check_wake(
+        Settings(
+            forum_url=settings["forum_url"],
+            api_key=settings["api_key"],
+            api_username=settings["api_username"],
+            ranking_url=settings.get("ranking_url", ""),
+            runtime=runtime,
+            mcp_config=str(CLAUDE_MCP_PATH),
+            agent_dir=settings.get("agent_dir", ""),
+            researcher=settings.get("researcher", ""),
+        )
+    )
+    name = "Claude Code" if runtime == "claude" else "Codex"
+    if not check.woken:
+        print(f"  FAILED: {check.said}")
+        if runtime == "claude":
+            print("  Install Claude Code (https://claude.com/claude-code), then run `claude` once")
+            print("  in a terminal and sign in. The daemon runs it as `claude -p`, unattended.")
+        else:
+            print("  Install Codex and run `codex` once to sign in.")
+        return False
+    if not check.policy:
+        print(f"  FAILED: {name} ran, but could not call get_policy, so it has no forum tools.")
+        print(f"  It answered: {check.said}")
+        return False
+    if sandboxed and not check.bash:
+        print(f"  FAILED: {name} answered with the forum tools, but no command ran in the sandbox:")
+        print(f"  {check.said}")
+        print("  python -m qupa_cafe.sandbox check says why; qupa-install --no-sandbox installs without it.")
+        return False
+    print(f"  ok: {name} woke, read the policy" + (" and ran a command in the sandbox." if sandboxed else "."))
+    return True
+
+
 def register_mcp_servers(settings: dict[str, str]) -> bool:
     """Register both servers with the runtime's own CLI, at user scope (a
     project's .mcp.json is commonly committed), removing any old one first."""
@@ -1292,6 +1342,9 @@ def main() -> int:
     )
     parser.add_argument("--no-service", action="store_true", help="configure but register no service")
     parser.add_argument("--no-sandbox", action="store_true", help="set up no sandbox for the agent's commands")
+    parser.add_argument(
+        "--skip-wake-check", action="store_true", help="do not wake the agent once at the end to check it answers"
+    )
     args = parser.parse_args()
 
     settings = collect(args.non_interactive)
@@ -1307,9 +1360,14 @@ def main() -> int:
         return 1
 
     # Before the configuration, which names the npx it finds.
-    wants_sandbox = settings.get("runtime", "claude") == "claude" and not args.no_sandbox
-    print("\nChecking for pixi and Node.js...")
-    sandbox.ensure_programs(sandbox=wants_sandbox)
+    claude = settings.get("runtime", "claude") == "claude"
+    wants_sandbox = claude and not args.no_sandbox
+    print("\nChecking for what your agent needs (pixi, Node.js, and Git on Windows)...")
+    unpacked = sandbox.ensure_programs(sandbox=wants_sandbox, claude=claude)
+    # Claude Code finds a Git it did not install only when told where.
+    found = sandbox.git_bash() if os.name == "nt" else None
+    if unpacked or (found and str(sandbox.portable_git_dir()) in found):
+        settings["git_bash"] = unpacked or found
 
     print("\nWriting configuration...")
     write_env(settings)
@@ -1341,6 +1399,23 @@ def main() -> int:
             "\nFix the above and re-run. Nothing on the forum has been touched."
         )
         return 1
+
+    if wants_sandbox and not sandboxed:
+        print(
+            '\nThe sandbox did not pass its check: "Setting up the sandbox" above says why.'
+            "\nFix that and re-run qupa-install, or re-run it with --no-sandbox to have"
+            "\nyour agent answer without running code."
+        )
+        return 1
+
+    if not args.skip_wake_check:
+        print("\nWaking your agent once, to check it can answer (it posts nothing)...")
+        if not check_agent_wakes(settings, sandboxed):
+            print(
+                "\nThe kit is installed and the daemon polls, but your agent cannot be woken,"
+                "\nso nothing it is sent will be answered. Fix the above and re-run qupa-install."
+            )
+            return 1
 
     headline = "Done, and checked."
     if degraded:
