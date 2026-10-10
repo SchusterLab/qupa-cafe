@@ -21,13 +21,14 @@ DISCOURSE_URL, DISCOURSE_API_KEY and DISCOURSE_API_USERNAME from
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import secrets
 import sys
 import urllib.parse
 
 import onboarding
-from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, Discourse
+from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, Discourse, topic_titled
 
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
@@ -151,7 +152,10 @@ def find_user(api: Discourse, username: str) -> dict | None:
         raise
 
 
+@functools.cache
 def max_username_length(api: Discourse) -> int:
+    """The forum's limit, read once per client: `--all` names an agent for
+    every researcher, and each reading fetches every site setting."""
     try:
         for setting in api.get("/admin/site_settings.json").get("site_settings", []):
             if setting.get("setting") == "max_username_length":
@@ -273,16 +277,14 @@ def ensure_watching(api: Discourse, agent: str) -> None:
         print("   set        watching")
 
 
-def find_topic_id(api: Discourse, title: str) -> int | None:
-    try:
-        results = api.get(f"/search.json?q={urllib.parse.quote(title)}")
-    except RuntimeError:
-        return None
-    return next((t["id"] for t in results.get("topics") or [] if t.get("title") == title), None)
+# Why ensure_key returns no plaintext.
+KEY_EXISTS = "exists"  # a key stands, and its plaintext is not recoverable
+KEY_DRY_RUN = "dry run"  # a real run would issue one
 
 
-def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
-    """Issue the agent's key and return its plaintext, which exists only now."""
+def ensure_key(api: Discourse, agent: str, rotate: bool) -> tuple[str | None, str | None]:
+    """Issue the agent's key. Returns its plaintext, which exists only now, and
+    None; or None and KEY_EXISTS or KEY_DRY_RUN, saying why there is none."""
     print("\n== Credential")
     description = KEY_DESCRIPTION.format(agent=agent)
     try:
@@ -295,7 +297,7 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
         print(f"   unchanged  a key already exists (id {existing[0]['id']}, ...{existing[0].get('truncated_key')})")
         print("   Its plaintext is not recoverable. --rotate-key revokes it and issues a new one,")
         print("   which invalidates whatever the researcher has installed.")
-        return None
+        return None, KEY_EXISTS
 
     for key in existing:
         api.delete(f"/admin/api/keys/{key['id']}.json")
@@ -303,12 +305,12 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> str | None:
 
     result = api.post("/admin/api/keys.json", json_body={"key": {"description": description, "username": agent}})
     if api.dry_run:
-        return None
+        return None, KEY_DRY_RUN
     key = result.get("key", result)
     if not key.get("key"):
         die("the API did not return the new key's plaintext, so it cannot be delivered")
     print(f"   created    Single User key bound to {agent} (id {key.get('id')}, ...{key.get('truncated_key')})")
-    return key["key"]
+    return key["key"], None
 
 
 def deliver(api: Discourse, researcher: str, agent: str, key: str, interests_topic_id: int | None) -> None:
@@ -337,8 +339,9 @@ def deliver(api: Discourse, researcher: str, agent: str, key: str, interests_top
     print(f"   sent       {title!r}, with the setup code and how to start the agent")
 
 
-def provision(api: Discourse, researcher: str, forum_host: str, agent_override: str | None, rotate_key: bool) -> bool:
-    """Provision one researcher. Returns whether a credential was delivered."""
+def provision(api: Discourse, researcher: str, forum_host: str, agent_override: str | None, rotate_key: bool) -> str | None:
+    """Provision one researcher. Returns None when a credential was delivered,
+    and otherwise ensure_key's reason, KEY_EXISTS or KEY_DRY_RUN."""
     agent = agent_override or agent_username_for(api, researcher)
     print(f"\nProvisioning {agent} for {researcher} on {api.base_url}")
 
@@ -359,17 +362,20 @@ def provision(api: Discourse, researcher: str, forum_host: str, agent_override: 
     print("\n== Topics this agent needs")
     found: dict[str, int | None] = {}
     for label, title in (("policy", POLICY_TOPIC_TITLE), ("interests", INTERESTS_TOPIC_TITLE)):
-        found[label] = find_topic_id(api, title)
+        try:
+            found[label] = (topic_titled(api, title) or {}).get("id")
+        except RuntimeError:
+            found[label] = None
         print(f"   {label:10} {'id ' + str(found[label]) if found[label] else 'NOT FOUND -- run 40-configure-forum.py'}")
 
-    key = ensure_key(api, agent, rotate_key)
+    key, missing = ensure_key(api, agent, rotate_key)
     if key:
         deliver(api, researcher, agent, key, found["interests"])
         share_agent_messages(api, agent, researcher)
-        return True
+        return None
     print("\n== Delivery\n   " + ("a real run would issue a key and send the onboarding message."
-                                  if api.dry_run else "skipped: there is no new key to deliver."))
-    return False
+                                  if missing == KEY_DRY_RUN else "skipped: there is no new key to deliver."))
+    return missing
 
 
 def main() -> int:
@@ -408,14 +414,15 @@ def main() -> int:
             print("Nothing to provision: every researcher already has an agent.")
         else:
             print(f"Researchers without an agent: {', '.join(pending)}")
-            delivered = [r for r in pending if provision(api, r, forum_host, None, False)]
+            delivered = [r for r in pending if provision(api, r, forum_host, None, False) is None]
             print(f"\nProvisioned {len(delivered)} of {len(pending)}; delivered to {', '.join(delivered) or 'nobody'}.")
         reconcile_agents(api)
         return 0
 
-    if provision(api, args.researcher, forum_host, args.agent_username, args.rotate_key):
+    missing = provision(api, args.researcher, forum_host, args.agent_username, args.rotate_key)
+    if missing is None:
         print("\nThe key went by private message, the only copy there is; it is not printed here.")
-    else:
+    elif missing == KEY_EXISTS:
         print("\nNo credential delivered, because one had already been issued. If it was lost, --rotate-key.")
     return 0
 
