@@ -1829,9 +1829,18 @@ class NoticeForum(StubForumWriter):
     def __init__(self):
         super().__init__(known=("yoshi",))
         self.replies = []
+        self.statuses = []
 
     def reply_as(self, agent, topic_id, raw):
         self.replies.append((agent, topic_id, raw))
+        return True
+
+    def set_status(self, agent, description, emoji):
+        self.statuses.append((agent, description))
+        return True
+
+    def clear_status(self, agent):
+        self.statuses.append((agent, None))
         return True
 
 
@@ -1848,7 +1857,7 @@ def _noticing_ranker(tmp_path, rows, key="k"):
 
 def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path):
     now = _at("2026-10-10T10:05:00+00:00")
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))])
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
     ranker.state.db.execute(
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
     )
@@ -1866,7 +1875,7 @@ def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path
 
 def test_a_failed_wake_is_told_with_its_reason(tmp_path):
     now = _at("2026-10-10T10:01:00+00:00")
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))])
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
     ranker.state.record_poll("yoshi-agent", "0.16.7")
     ranker.state.record_failure("yoshi-agent", 77, "Claude Code is not installed, or not on the PATH the daemon sees")
     ranker.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
@@ -1877,9 +1886,77 @@ def test_a_failed_wake_is_told_with_its_reason(tmp_path):
 
 
 def test_no_notice_is_posted_without_the_key_that_may_post_as_an_agent(tmp_path):
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"))], key="")
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")], key="")
     assert ranker.check_unanswered(_at("2026-10-10T11:00:00+00:00")) == []
     assert forum.replies == []
+
+
+def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_message(tmp_path):
+    first = _at("2026-10-10T10:00:00+00:00")
+    rows = [("yoshi-agent", 77, first, False, "Squeezed [states]"), ("yoshi-agent", 78, first, True, "hi")]
+    ranker, forum = _noticing_ranker(tmp_path, rows)
+    ranker.state.db.execute(
+        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
+    )
+
+    assert len(ranker.check_unanswered(_at("2026-10-10T10:05:00+00:00"))) == 2
+    assert [m["to"] for m in forum.sent] == ["yoshi"]
+    raw = forum.sent[0]["raw"]
+    assert "[Squeezed (states)](https://forum.example.com/t/77)" in raw
+    assert "> *An automatic notice from the forum" in raw and "> yoshi, if that computer" in raw
+    assert "@yoshi" not in raw
+    assert not ranking.re.search(r"%[A-Z_]+%", raw)
+
+    # The same silence, six hours on, is not told again.
+    assert ranker.check_daemons(_at("2026-10-10T17:00:00+00:00")) == []
+    assert len(forum.sent) == 1
+
+
+def test_a_failing_agent_tells_its_researcher_once_a_day_for_one_reason(tmp_path):
+    first = _at("2026-10-10T10:00:00+00:00")
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, first, False, "a"), ("yoshi-agent", 78, first, False, "b")])
+    ranker.state.record_poll("yoshi-agent", "0.16.7")
+    for topic in (77, 78):
+        ranker.state.record_failure("yoshi-agent", topic, "Claude Code is signed out.")
+    ranker.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
+
+    ranker.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
+    assert len(forum.replies) == 2 and len(forum.sent) == 1
+    assert "Claude Code is signed out:" not in forum.sent[0]["raw"]
+
+
+def test_an_agent_that_cannot_answer_says_so_by_its_name_until_it_can():
+    config = Config()
+    now = _at("2026-10-10T10:05:00+00:00")
+    assert ranking.agent_health(now, None, None, config) == "unset"
+    assert ranking.agent_health(now, ("2026-10-10T10:02:00+00:00", "0.16.7"), None, config) == "down"
+    alive = ("2026-10-10T10:04:30+00:00", "0.16.7")
+    assert ranking.agent_health(now, alive, None, config) is None
+    assert ranking.agent_health(now, alive, ("no claude", "2026-10-10T10:04:00+00:00"), config) == "failed"
+    assert ranking.agent_health(now, alive, ("no claude", "2026-10-10T10:01:00+00:00"), config) is None
+
+
+def test_the_status_changes_only_when_the_agent_does(tmp_path):
+    ranker, forum = _noticing_ranker(tmp_path, [])
+    ranker.state.db.execute(
+        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T10:00:00+00:00", "0.16.7")
+    )
+    ranker.check_statuses(_at("2026-10-10T10:01:00+00:00"))
+    assert forum.statuses == []
+    ranker.check_statuses(_at("2026-10-10T10:03:00+00:00"))
+    ranker.check_statuses(_at("2026-10-10T10:04:00+00:00"))
+    assert forum.statuses == [("yoshi-agent", ranking.STATUSES["down"][0])]
+    ranker.state.record_poll("yoshi-agent", "0.16.7")
+    ranker.check_statuses()
+    assert forum.statuses[-1] == ("yoshi-agent", None)
+    assert ranker.state.status("yoshi-agent") is None
+
+
+def test_an_agent_never_set_up_is_marked_with_its_first_notice(tmp_path):
+    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), True, "hi")])
+    ranker.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
+    assert forum.statuses == [("yoshi-agent", ranking.STATUSES["unset"][0])]
+    assert "in a private message to it" in forum.sent[0]["raw"]
 
 
 def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):

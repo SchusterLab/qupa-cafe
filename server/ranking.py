@@ -261,6 +261,13 @@ class State:
                 PRIMARY KEY (agent, topic_id)
             );
 
+            -- The status this service set on an agent that cannot answer.
+            CREATE TABLE IF NOT EXISTS agent_status (
+                agent TEXT PRIMARY KEY,
+                kind  TEXT NOT NULL,
+                at    TEXT NOT NULL
+            );
+
             -- One row per notice delivered, keyed on what it was about, so a
             -- restart does not resend and a changed subject earns a new one.
             CREATE TABLE IF NOT EXISTS notices (
@@ -349,6 +356,36 @@ class State:
             "ON CONFLICT(agent, topic_id) DO UPDATE SET reason = excluded.reason, at = excluded.at",
             (agent, topic_id, reason, datetime.now(timezone.utc).isoformat()),
         )
+        self.db.commit()
+
+    def latest_failure(self, agent: str) -> tuple[str, str] | None:
+        """(why, when) for the last wake reported failing in any topic, or None."""
+        row = self.db.execute(
+            "SELECT reason, at FROM wake_failures WHERE agent = ? ORDER BY at DESC LIMIT 1", (agent,)
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def daemons(self) -> list[tuple[str, str, str]]:
+        """(agent, last poll, kit) for every daemon that has polled."""
+        return list(self.db.execute("SELECT agent, last_poll, kit FROM daemons ORDER BY agent"))
+
+    def status(self, agent: str) -> str | None:
+        """The kind of status this service set on an agent and has not cleared."""
+        row = self.db.execute("SELECT kind FROM agent_status WHERE agent = ?", (agent,)).fetchone()
+        return row[0] if row else None
+
+    def statuses(self) -> dict[str, str]:
+        return dict(self.db.execute("SELECT agent, kind FROM agent_status"))
+
+    def record_status(self, agent: str, kind: str | None) -> None:
+        if kind is None:
+            self.db.execute("DELETE FROM agent_status WHERE agent = ?", (agent,))
+        else:
+            self.db.execute(
+                "INSERT INTO agent_status (agent, kind, at) VALUES (?, ?, ?) "
+                "ON CONFLICT(agent) DO UPDATE SET kind = excluded.kind, at = excluded.at",
+                (agent, kind, datetime.now(timezone.utc).isoformat()),
+            )
         self.db.commit()
 
     def failure(self, agent: str, topic_id: int) -> tuple[str, str] | None:
@@ -582,21 +619,22 @@ class Forum:
                 return None
             raise
 
-    def reply_as(self, agent: str, topic_id: int, raw: str) -> bool:
-        """Post ``raw`` in a topic as ``agent``, with the key that may act as
-        any user, which is used for nothing else. False, logged, when it fails."""
+    def act_as(self, agent: str, method: str, path: str, params: dict[str, Any], what: str) -> bool:
+        """One request as ``agent``, with the key that may act as any user,
+        which is used for nothing else. False, logged, when it fails."""
         if not self.config.notice_api_key:
-            LOG.warning("RANKING_NOTICE_API_KEY is not set, so %s's notice in topic %s was not posted", agent, topic_id)
+            LOG.warning("RANKING_NOTICE_API_KEY is not set, so %s was not done", what)
             return False
-        body = urllib.parse.urlencode({"topic_id": topic_id, "raw": raw}).encode()
-        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}/posts.json", data=body, method="POST")
+        body = urllib.parse.urlencode(params).encode() if params else None
+        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}{path}", data=body, method=method)
         req.add_header("Api-Key", self.config.notice_api_key)
         req.add_header("Api-Username", agent)
         req.add_header("Accept", "application/json")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        if body is not None:
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                json.loads(resp.read().decode())
+                json.loads(resp.read().decode() or "{}")
             return True
         except (urllib.error.URLError, OSError, ValueError) as exc:
             detail = ""
@@ -605,8 +643,24 @@ class Forum:
                     detail = exc.read().decode()[:300]
                 except OSError:
                     pass
-            LOG.error("could not post %s's notice in topic %s: %s %s", agent, topic_id, exc, detail)
+            LOG.error("could not do %s: %s %s", what, exc, detail)
             return False
+
+    def reply_as(self, agent: str, topic_id: int, raw: str) -> bool:
+        """Post ``raw`` in a topic as ``agent``."""
+        return self.act_as(
+            agent, "POST", "/posts.json", {"topic_id": topic_id, "raw": raw}, f"{agent}'s notice in topic {topic_id}"
+        )
+
+    def set_status(self, agent: str, description: str, emoji: str) -> bool:
+        """The status shown by ``agent``'s name: on its profile and card, and
+        where its name is offered as a mention. Needs ``enable_user_status``."""
+        return self.act_as(
+            agent, "PUT", "/user-status.json", {"description": description, "emoji": emoji}, f"{agent}'s status"
+        )
+
+    def clear_status(self, agent: str) -> bool:
+        return self.act_as(agent, "DELETE", "/user-status.json", {}, f"clearing {agent}'s status")
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
         """Send one private message, the only write this service makes. A 403
@@ -912,6 +966,34 @@ def unanswered_verdict(
     return None
 
 
+# The status an agent that cannot answer shows by its name, as (text, emoji).
+STATUSES = {
+    "down": ("Not answering: its daemon is not running", "zzz"),
+    "failed": ("Not answering: its wakes are failing", "warning"),
+    "unset": ("Not answering: not set up yet", "hourglass"),
+}
+
+
+def agent_health(
+    now: datetime, daemon: tuple[str, str] | None, failure: tuple[str, str] | None, config: Config
+) -> str | None:
+    """Why an agent cannot answer anybody, whether or not anybody is waiting:
+    "unset", "down" (as in unanswered_verdict), or "failed" while its daemon
+    has reported a failed wake within ``down_after_seconds``, which a daemon
+    whose wakes keep failing does each minute. None when it can."""
+    if daemon is None:
+        return "unset"
+    last_poll, kit = daemon
+    limit = config.down_after_seconds
+    if not kit or older_than(kit, ALIVE_KIT):
+        limit = config.down_after_seconds_old_kit
+    if (now - datetime.fromisoformat(last_poll)).total_seconds() >= limit:
+        return "down"
+    if failure is not None and (now - datetime.fromisoformat(failure[1])).total_seconds() < config.down_after_seconds:
+        return "failed"
+    return None
+
+
 class Ranker:
     def __init__(self, config: Config = CONFIG):
         self.config = config
@@ -976,12 +1058,15 @@ class Ranker:
             LOG.info("told %s and %s that the kit is behind", researcher, agent)
             self.state.record_notice("kit-outdated", agent, digest)
 
-    def unanswered(self, since: datetime) -> list[tuple[str, int, datetime]]:
-        """(agent, topic, earliest unread notification) for each topic where an
-        agent has been mentioned or messaged and has not posted since."""
+    def unanswered(self, since: datetime) -> list[tuple[str, int, datetime, bool, str]]:
+        """(agent, topic, earliest unread notification, whether the topic is a
+        private message, its title) for each topic where an agent has been
+        mentioned or messaged and has not posted since."""
         sql = """
-            SELECT u.username, n.topic_id, min(n.created_at)
+            SELECT u.username, n.topic_id, min(n.created_at),
+                   t.archetype = 'private_message', t.title
             FROM notifications n JOIN users u ON u.id = n.user_id
+              JOIN topics t ON t.id = n.topic_id
             WHERE n.read = false AND n.notification_type = ANY(%(types)s)
               AND n.created_at > %(since)s AND n.topic_id IS NOT NULL
               AND u.username LIKE %(agents)s
@@ -990,12 +1075,12 @@ class Ranker:
                   WHERE p.user_id = u.id AND p.topic_id = n.topic_id
                     AND p.created_at > n.created_at AND p.deleted_at IS NULL
               )
-            GROUP BY u.username, n.topic_id
+            GROUP BY u.username, n.topic_id, t.archetype, t.title
             ORDER BY 3
         """
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(sql, {"types": list(NOTICE_TYPES), "since": since, "agents": "%-agent"})
-            return [(row[0], int(row[1]), _utc(row[2])) for row in cur.fetchall()]
+            return [(row[0], int(row[1]), _utc(row[2]), bool(row[3]), row[4] or "") for row in cur.fetchall()]
 
     def check_unanswered(self, now: datetime | None = None) -> list[tuple[str, int]]:
         """Tell whoever is waiting on an agent that cannot answer, and its
@@ -1005,7 +1090,7 @@ class Ranker:
         if not self.config.notice_api_key:
             return []
         posted = []
-        for agent, topic_id, first in self.unanswered(now - timedelta(days=1)):
+        for agent, topic_id, first, private, title in self.unanswered(now - timedelta(days=1)):
             verdict = unanswered_verdict(
                 now, first, self.state.daemon(agent), self.state.failure(agent, topic_id), self.config
             )
@@ -1021,18 +1106,72 @@ class Ranker:
                 LOG.warning("cannot look up the researcher behind %s: %s", agent, exc)
                 researcher = None
             failure = self.state.failure(agent, topic_id)
-            body = message(
-                NOTICE_FILES[kind],
-                AGENT=agent,
-                OWNER=f"@{researcher}" if researcher else "Its researcher",
-                SINCE=_stamp(since) if kind == "down" else "",
-                REASON=(failure[0] if failure else "").rstrip("."),
-            )
-            if self.forum.reply_as(agent, topic_id, f"{body}\n\n{NOTICE_MARKER}"):
-                LOG.info("told topic %s that %s cannot answer (%s)", topic_id, agent, kind)
-                self.state.record_notice("unanswered", agent, digest)
-                posted.append((agent, topic_id))
+            reason = (failure[0] if failure else "").rstrip(".")
+
+            def notice(owner: str) -> str:
+                return message(
+                    NOTICE_FILES[kind],
+                    AGENT=agent,
+                    OWNER=owner,
+                    SINCE=_stamp(since) if kind == "down" else "",
+                    REASON=reason,
+                )
+
+            body = notice(f"@{researcher}" if researcher else "Its researcher")
+            if not self.forum.reply_as(agent, topic_id, f"{body}\n\n{NOTICE_MARKER}"):
+                continue
+            LOG.info("told topic %s that %s cannot answer (%s)", topic_id, agent, kind)
+            self.state.record_notice("unanswered", agent, digest)
+            posted.append((agent, topic_id))
+            if kind == "unset" and self.state.status(agent) != "unset":
+                self.show_status(agent, "unset")
+            if researcher:
+                outage = {"down": f"down:{since}", "unset": "unset"}.get(kind, f"failed:{reason}:{now:%Y-%m-%d}")
+                where = (
+                    "in a private message to it"
+                    if private
+                    else f"in [{title.replace('[', '(').replace(']', ')')}]"
+                    f"({self.config.forum_url.rstrip('/')}/t/{topic_id})"
+                )
+                self.tell_owner(agent, researcher, outage, where, notice(researcher), since if kind == "down" else "")
         return posted
+
+    def tell_owner(self, agent: str, researcher: str, outage: str, where: str, notice: str, last_poll: str) -> None:
+        """A private message to the researcher of an agent that cannot answer,
+        once an outage, when the first conversation waiting on it is told. It
+        stands for the silent-daemon message of the same outage."""
+        if self.state.notice_sent("owner-unanswered", agent, outage):
+            return
+        quoted = "\n".join(f"> {line}" if line else ">" for line in notice.strip().splitlines())
+        body = message("agent-cannot-answer-message.md", AGENT=agent, WHERE=where, NOTICE=quoted)
+        if self.forum.private_message(researcher, f"{agent} cannot answer, and somebody is waiting on it", body):
+            LOG.info("told %s that %s cannot answer (%s)", researcher, agent, outage)
+            self.state.record_notice("owner-unanswered", agent, outage)
+            if last_poll:
+                self.state.record_notice("daemon-silent", agent, last_poll)
+
+    def show_status(self, agent: str, kind: str | None) -> None:
+        """Set the status by an agent's name to ``kind``'s, or clear it."""
+        if kind is None:
+            done = self.forum.clear_status(agent)
+        else:
+            done = self.forum.set_status(agent, *STATUSES[kind])
+        if done:
+            LOG.info("%s %s's status%s", "cleared" if kind is None else "set", agent, f" ({kind})" if kind else "")
+            self.state.record_status(agent, kind)
+
+    def check_statuses(self, now: datetime | None = None) -> None:
+        """Keep the status by each daemon's agent saying whether it can answer,
+        so that somebody about to mention it sees that first. An agent no
+        daemon has polled for is marked when somebody waits on it."""
+        now = now or datetime.now(timezone.utc)
+        if not self.config.notice_api_key:
+            return
+        shown = self.state.statuses()
+        for agent, last_poll, kit in self.state.daemons():
+            kind = agent_health(now, (last_poll, kit), self.state.latest_failure(agent), self.config)
+            if kind != shown.get(agent):
+                self.show_status(agent, kind)
 
     def check_daemons(self, now: datetime | None = None) -> list[str]:
         """Tell each researcher whose daemon has not polled for
@@ -1733,6 +1872,10 @@ def serve(ranker: Ranker) -> None:
             ranker.check_unanswered()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to post one
             LOG.exception("unanswered check failed: %s", exc)
+        try:
+            ranker.check_statuses()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to set a status
+            LOG.exception("status check failed: %s", exc)
         time.sleep(ranker.config.poll_seconds)
 
 

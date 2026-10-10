@@ -133,6 +133,9 @@ THEME_TYPE_JS = 6
 # The onboarding message is the one welcome a researcher gets.
 ONBOARDING_SETTINGS = {"send_tl1_welcome_message": "false"}
 
+# An agent that cannot answer says so by its name, set by server/ranking.py.
+STATUS_SETTINGS = {"enable_user_status": "true"}
+
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
 
 # Seeded by the qupa-site-images fixture in app.yml; the id must match it.
@@ -726,6 +729,7 @@ def main() -> int:
     apply_settings(api, "Backups", BACKUP_SETTINGS)
     apply_settings(api, "Onboarding messages", ONBOARDING_SETTINGS)
     apply_settings(api, "Usernames", USERNAME_SETTINGS)
+    apply_settings(api, "User status", STATUS_SETTINGS)
     apply_settings(api, "Math rendering", MATH_SETTINGS)
 
     print("\n== Global settings, which this script cannot change (app.yml, then a rebuild)")
