@@ -142,7 +142,7 @@ class DiaryBrowser:
         following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
         mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
         keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), mode,
-                "+/- for the hour", browse.MODEL_HINT, "e to change how it is written", "Esc to quit"]
+                "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
         return out
 

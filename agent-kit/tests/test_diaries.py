@@ -65,7 +65,7 @@ def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
 def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     wakes.set_colour(False)
     off = "\n".join(_browser().frame(160, 20))
-    assert "The diary is off" in off and "d to turn it on" in off and "+/- for the hour" in off
+    assert "The diary is off" in off and "d to turn it on" in off and "+ makes it later" in off
     public = "\n".join(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18).frame(160, 20))
     assert "The diary is public, in your agent's topic in Diary; posted at 18:00" in public
     # The hour is followed by the keys that move it, as the threshold is.

@@ -57,7 +57,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · t to tune replies · n for near misses · m/f for model, effort · Esc to quit"
+        "↑↓ to select · Enter to read · t to tune replies · n for near misses · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -77,7 +77,7 @@ def test_the_list_shows_each_wake_s_score_and_the_threshold():
     rows = [line for line in frame if "Topic" in line]
     assert "0.83" in rows[0] and "0.8" not in rows[1].split("Topic")[0]
     assert any("Relevance threshold 0.72" in line for line in frame)
-    assert "+/- for the threshold" in frame[-1]
+    assert any("+ raises it, - lowers it" in line for line in frame) and "+" not in frame[-1]
 
 
 def test_plus_and_minus_ask_for_a_threshold_one_step_away_within_range():
@@ -308,7 +308,7 @@ def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_f
     frame = b.frame(120, 20)
     assert any("under 0.70" in line and "Missed 7" in line for line in frame)
     assert any("skipped" in line and "Missed 8" in line for line in frame)
-    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · m/f for model, effort · Esc to quit"
+    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · Esc to quit"
 
     b.handle("down")
     b.handle("t")

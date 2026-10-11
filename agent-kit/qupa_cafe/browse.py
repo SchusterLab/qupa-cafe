@@ -32,7 +32,7 @@ from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Ranking, RankingError, Sett
 
 # Key -> (action, hint on the bottom line), offered only once the threshold is
 # known; "=" and "_" are the unshifted keys.
-FLOOR_ACTIONS = {"+": ("raise", "+/- for the threshold"), "=": ("raise", ""), "-": ("lower", ""), "_": ("lower", "")}
+FLOOR_ACTIONS = {"+": "raise", "=": "raise", "-": "lower", "_": "lower"}
 
 # How far one press moves the threshold.
 FLOOR_STEP = 0.01
@@ -57,7 +57,6 @@ MISSED_KEY = "n"
 
 # In either browser's list: step the model its wakes run on, and the effort.
 MODEL_KEYS = {"m": "model", "f": "effort"}
-MODEL_HINT = "m/f for model, effort"
 
 
 def model_line(kind: str) -> str:
@@ -254,7 +253,7 @@ class Browser:
         return bool(self.choices)
 
     @property
-    def actions(self) -> dict[str, tuple[str, str]]:
+    def actions(self) -> dict[str, str]:
         """The list's keys besides moving and reading, as they stand now."""
         return FLOOR_ACTIONS if self.state.floor is not None else {}
 
@@ -289,7 +288,7 @@ class Browser:
             self.showing_missed = not self.showing_missed
             return None
         if key in self.actions and not self.viewing:
-            return self.actions[key][0]
+            return self.actions[key]
         if key in MODEL_KEYS and not self.viewing:
             return MODEL_KEYS[key]
         # Enter in a wake opens it in Claude Code; in the list it reads one.
@@ -381,8 +380,7 @@ class Browser:
             where = wakes.paint(f"  {what} {top + 1}-{end} of {count}", "meta")
         out.append(self.status_line() or where)
         other = "n for wakes" if self.showing_missed else "n for near misses"
-        named = [hint for _, hint in self.actions.values() if hint]
-        out.append(hints([*keys, other, *named, MODEL_HINT, "Esc to quit"]))
+        out.append(hints([*keys, other, "Esc to quit"]))
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
