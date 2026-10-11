@@ -1447,7 +1447,7 @@ def diary_pass(
 
     prompt = diary.build_prompt(
         settings, template, day, start, end,
-        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day),
+        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
         diary.digest(found), wake_notice(settings), diary.transcripts_notice(directory),
     )
     wake = Wake(

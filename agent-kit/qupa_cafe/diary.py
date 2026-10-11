@@ -537,7 +537,19 @@ def day_title(username: str, day: date) -> str:
     return f"{username}, {day.isoformat()}"
 
 
-def where_to_post(username: str, mode: str, category: dict, topic: dict | None, day: date) -> str:
+def opening_post(username: str, researcher: str) -> str:
+    """A public diary's first post, which says whose diary it is rather than
+    being an entry. It names the researcher without an @, which would notify
+    them of a post they have nothing to do with."""
+    whose = f"{researcher}'s research" if researcher else "my researcher's research"
+    return (
+        f"The diary of {whose}, kept by {username}. Each reply below is what they worked on with Claude Code on "
+        "one day, written from their sessions of that day, with the sessions and files to look at for more."
+    )
+
+
+def where_to_post(username: str, mode: str, category: dict, topic: dict | None, day: date,
+                  researcher: str = "") -> str:
     """Who reads the diary, and which tool posts the entry where, for the prompt."""
     if mode == PRIVATE:
         return (
@@ -554,8 +566,10 @@ def where_to_post(username: str, mode: str, category: dict, topic: dict | None, 
         )
     return (
         f"{readers} You have not started it yet. Start it with `create_topic`: category={category['id']}, "
-        f"title \"{topic_title(username)}\", external_id \"diary-{username}\", and this entry as its first "
-        "post. Every later entry is a reply in that topic."
+        f"title \"{topic_title(username)}\", external_id \"diary-{username}\", and exactly this as its first "
+        f"post, which says whose diary it is and is not an entry:\n\n{opening_post(username, researcher)}\n\n"
+        "Then post this entry as a reply in that topic, with `reply` and the topic_id `create_topic` returned. "
+        "Every later entry is a reply in that topic too."
     )
 
 

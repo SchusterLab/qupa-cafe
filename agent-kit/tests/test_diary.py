@@ -163,9 +163,13 @@ def test_a_diary_goes_in_diary_or_in_the_researcher_s_own_private_diary():
 
 def test_the_agent_is_told_who_reads_its_diary_and_how_to_post_in_it():
     public, private = SITE[1], SITE[2]
-    first = diary.where_to_post("a-agent", diary.PUBLIC, public, None, DAY)
+    first = diary.where_to_post("a-agent", diary.PUBLIC, public, None, DAY, "a")
     assert "create_topic" in first and "category=5" in first and '"Diary of a-agent"' in first
     assert "every member" in first
+    # The topic opens with whose diary it is, and the entry is its first reply.
+    opening = diary.opening_post("a-agent", "a")
+    assert opening in first and "is not an entry" in first and "post this entry as a reply" in first
+    assert opening.startswith("The diary of a's research, kept by a-agent.") and "@" not in opening
 
     later = diary.where_to_post("a-agent", diary.PUBLIC, public, {"id": 90, "title": "Diary of a-agent"}, DAY)
     assert "`reply`, topic_id=90" in later and "create_topic" not in later
