@@ -454,6 +454,8 @@ def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
     diary.write_transcripts([session], tmp_path / "out")
     assert "Title: Split mergemon coupling" in session.written.read_text(encoding="utf-8")
     assert "Files edited: scripts/fit.py" in diary.digest([session])
+    # The id, for the entry to name so the researcher can open the session.
+    assert "Session: s1" in diary.digest([session])
 
 
 def test_a_compaction_summary_is_claude_code_s_not_the_researcher_s(tmp_path):

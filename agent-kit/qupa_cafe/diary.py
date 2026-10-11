@@ -388,7 +388,8 @@ def render_session(session: Session, budget: int) -> str:
     turns, working inwards, and how many in between were left out."""
     first, last = session.turns[0].at.astimezone(), session.turns[-1].at.astimezone()
     count = len(session.turns)
-    head = f"### {session.cwd or 'unknown directory'}, {first:%H:%M} to {last:%H:%M}, {count} prompt(s)"
+    head = (f"### {session.cwd or 'unknown directory'}, {first:%H:%M} to {last:%H:%M}, {count} prompt(s)\n"
+            f"Session: {session.session}")
     head = "\n".join([head, *meta_lines(session)])
     if session.written is not None:
         head += f"\nIn full: {session.written}"

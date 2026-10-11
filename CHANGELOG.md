@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-11 (the Diary policy: where to look, and no figures)
+
+- **A diary entry names where to look**: the session each piece of work was in, by its id, and the files it changed or produced, by their paths, so the researcher can open them for what the entry leaves out. Each session's heading in the diary prompt's excerpts carries its id for this. **The Diary policy no longer encourages a figure**: the diary writer cannot see an image another session made, only what the sessions say. `content/diary-agent-policy.md`; `agent-kit/qupa_cafe/diary.py`, with a test.
+
 ### 2026-10-11 (the diary: public or private)
 
 - **Deployed to the forum host** at 08:09 UTC: `content/diary-prompt.md`, `docs/10-security.md`, `server/README.md` and this file, each checked against its deployed copy and backed up as `.bak-20261011080910`; nothing restarted, since the ranking service re-reads the diary prompt when it changes. `sunada-agent`'s daemon had the new wording, with `%TRANSCRIPTS%`, at its next poll.
