@@ -174,6 +174,12 @@ class Settings:
     diary: bool = field(default_factory=lambda: _env("QUPA_DIARY") == "1")
     # Diary, or the name of a private diary under it; empty means Diary.
     diary_category: str = field(default_factory=lambda: _env("QUPA_DIARY_CATEGORY"))
+    # The local hour, 0 to 23, it is posted at.
+    diary_hour: int = field(default_factory=lambda: diary.hour_of(_env("QUPA_DIARY_HOUR", "0")))
+
+    def diary_choice(self) -> diary.Choice:
+        """The diary's settings as this process started with them."""
+        return diary.Choice(self.diary, self.diary_category, self.diary_hour)
 
     def validate(self) -> list[str]:
         missing = []
@@ -1372,12 +1378,14 @@ def diary_pass(
     journal: Journal | None = None,
     now: datetime | None = None,
 ) -> bool:
-    """Wake the agent for its diary once a day has ended in which its
-    researcher used Claude Code (qupa_cafe.diary). Returns whether it woke."""
-    on, where = diary.choice(settings.diary, settings.diary_category)
-    if not on:
+    """Wake the agent for its diary once 24 hours have ended at the hour it
+    is posted, if its researcher used Claude Code in them (qupa_cafe.diary).
+    Returns whether it woke."""
+    chosen = diary.choice(settings.diary_choice())
+    if not chosen.on:
         return False
-    due = state.due(handled, now, mark=not dry_run)
+    where = chosen.category
+    due = state.due(handled, now, mark=not dry_run, hour=chosen.hour)
     if due is None:
         return False
     day, start, end = due

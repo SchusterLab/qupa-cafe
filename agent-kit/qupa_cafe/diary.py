@@ -3,20 +3,22 @@ their agent in a thread of its own in the forum's Diary category, which every
 member reads, or in a private diary under it, which only its members and their
 agents read (scripts/46-private-diary.py makes one).
 
-Opt-in, with ``QUPA_DIARY=1`` in env and the category's name in
-``QUPA_DIARY_CATEGORY``, both of which qupa-install asks about. At the
-first poll after local midnight the daemon reads the transcripts of the
-researcher's own Claude Code sessions in the day that has just ended, in every
-project, leaving out the sessions the kit starts itself. When there are any it
+Opt-in, with ``QUPA_DIARY=1`` in env, the category's name in
+``QUPA_DIARY_CATEGORY`` and the hour it is posted at in ``QUPA_DIARY_HOUR``
+(0 to 23, local time; midnight when unset), which qupa-install asks about. At
+the first poll after that hour the daemon reads the transcripts of the
+researcher's own Claude Code sessions in the 24 hours that have just ended, in
+every project, leaving out the sessions the kit starts itself. When there are any it
 wakes the agent once with a digest of them: each prompt the researcher typed
 and the answer that ended it, clipped. A day with none wakes nothing. What of
 it was research, and whether to post at all, the Diary category's agent policy
 decides.
 
-A daemon not running at midnight posts at its first poll afterwards, for the
-day that ended last; the days before that are not caught up. The first poll
-with the diary on starts it from the day in progress, so opting in does not
-post about the day before.
+A daemon not running at that hour posts at its first poll afterwards, for the
+24 hours that ended last; the ones before that are not caught up. The first
+poll with the diary on starts it from the hours in progress, so opting in does
+not post about the day before. Each entry is the diary of the day its last
+hour is in, and a day is written once, whatever the hour is changed to.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ REASON = "it was time for your diary of"
 
 # The settings the diary browser changes in env, which the daemon reads there
 # again at every poll so that a change needs no restart.
-ON, WHERE = "QUPA_DIARY", "QUPA_DIARY_CATEGORY"
+ON, WHERE, HOUR = "QUPA_DIARY", "QUPA_DIARY_CATEGORY", "QUPA_DIARY_HOUR"
 
 # How much of a day the prompt carries. Windows caps a command line at 32,767
 # characters and the prompt is one argument of it, quoting included, so the
@@ -81,47 +83,78 @@ def day_key(day: date) -> int:
     return int(day.strftime("%Y%m%d"))
 
 
-def last_day(now: datetime | None = None) -> tuple[date, datetime, datetime]:
-    """The local day that ended at the last midnight, and its start and end."""
+def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime, datetime]:
+    """The 24 hours that ended at the last ``hour``:00 local time, their start
+    and end, and the day they are the diary of: the day the last of them is
+    in, so that at midnight it is the day just ended and in the evening the
+    day in progress."""
     now = (now or datetime.now(timezone.utc)).astimezone()
-    today = now.date()
-    day = today - timedelta(days=1)
     # A naive time given astimezone() is local, so a day across a change of
     # clocks is 23 or 25 hours long, as it was lived.
-    return day, datetime.combine(day, time.min).astimezone(), datetime.combine(today, time.min).astimezone()
+    ends = now.date() if now.hour >= hour else now.date() - timedelta(days=1)
+    start = datetime.combine(ends - timedelta(days=1), time(hour)).astimezone()
+    end = datetime.combine(ends, time(hour)).astimezone()
+    return (end - timedelta(seconds=1)).date(), start, end
 
 
 # ------------------------------------------------------------- the setting
+
+
+@dataclass
+class Choice:
+    """Whether the diary is kept, where, and at which hour it is posted."""
+
+    on: bool = False
+    # A private diary's name; empty for Diary itself.
+    category: str = ""
+    hour: int = 0
+
+    def at(self) -> str:
+        return "midnight" if self.hour == 0 else f"{self.hour:02d}:00"
 
 
 def env_file() -> Path:
     return Path(os.environ.get("QUPA_ENV_FILE") or Path.home() / ".config" / "qupa-cafe" / "env")
 
 
-def choice(on: bool, category: str, path: Path | None = None) -> tuple[bool, str]:
-    """Whether the diary is on and where, as env says now; ``on`` and
-    ``category``, as the daemon started with them, for what it does not say."""
+def hour_of(value: str, default: int = 0) -> int:
+    """An hour from 0 to 23, or ``default`` for anything else."""
+    try:
+        hour = int(value.strip())
+    except ValueError:
+        return default
+    return hour if 0 <= hour <= 23 else default
+
+
+def choice(started: Choice, path: Path | None = None) -> Choice:
+    """The diary's settings as env says now; as the daemon ``started`` with
+    them for what it does not say."""
+    found = Choice(started.on, started.category, started.hour)
     try:
         lines = (path or env_file()).read_text(encoding="utf-8").splitlines()
     except OSError:
-        return on, category
+        return found
     for line in lines:
         key, sep, value = line.strip().partition("=")
-        if sep and key.strip() == ON:
-            on = value.strip() == "1"
-        elif sep and key.strip() == WHERE:
-            category = value.strip()
-    return on, category
+        if not sep:
+            continue
+        if key.strip() == ON:
+            found.on = value.strip() == "1"
+        elif key.strip() == WHERE:
+            found.category = value.strip()
+        elif key.strip() == HOUR:
+            found.hour = hour_of(value, found.hour)
+    return found
 
 
-def set_choice(on: bool, category: str, path: Path | None = None) -> None:
-    """Write both settings into env, in place, leaving every other line be."""
+def set_choice(chosen: Choice, path: Path | None = None) -> None:
+    """Write the settings into env, in place, leaving every other line be."""
     path = path or env_file()
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         lines = []
-    wanted = {ON: "1" if on else "0", WHERE: category}
+    wanted = {ON: "1" if chosen.on else "0", WHERE: chosen.category, HOUR: str(chosen.hour)}
     kept = []
     for line in lines:
         key = line.partition("=")[0].strip()
@@ -397,17 +430,19 @@ class Diary:
         # not repeated at every poll.
         self._failed: dict[int, float] = {}
 
-    def due(self, handled, now: datetime | None = None, mark: bool = True) -> tuple[date, datetime, datetime] | None:
-        """The day to write about, or None. The first time, the day before
-        is marked handled, unless not ``mark``, so the diary starts with the
-        day in progress."""
-        day, start, end = last_day(now)
+    def due(self, handled, now: datetime | None = None, mark: bool = True,
+            hour: int = 0) -> tuple[date, datetime, datetime] | None:
+        """The day to write about, its entry posted at ``hour``, or None. A
+        day is written once, whatever the hour is changed to. The first time,
+        the day that ended last is marked handled, unless not ``mark``, so
+        the first entry is the next one due."""
+        day, start, end = last_day(now, hour)
         if handled.seen(HANDLED_KIND, day_key(day)):
             return None
         if not handled.any(HANDLED_KIND):
             if mark:
                 handled.mark(HANDLED_KIND, day_key(day))
-                LOG.info("the diary starts today; the first entry is posted after midnight")
+                LOG.info("the diary starts now; the first entry is posted at %s", Choice(hour=hour).at())
             return None
         failed = self._failed.get(day_key(day))
         moment = (now or datetime.now(timezone.utc)).timestamp()

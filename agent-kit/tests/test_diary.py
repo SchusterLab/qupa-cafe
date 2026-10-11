@@ -61,6 +61,17 @@ def test_the_day_is_the_one_that_ended_at_the_last_local_midnight():
     assert diary.last_day(end + timedelta(minutes=1))[0] == DAY
 
 
+def test_at_another_hour_the_day_is_the_one_the_last_hour_is_in():
+    """At 15:00 the entry covers 15:00 the day before to 15:00, and is the
+    diary of the day in progress; before 16:00 the 16:00 one is still the
+    day before's."""
+    day, start, end = diary.last_day(NOW, hour=15)
+    assert day == DAY + timedelta(days=1)
+    assert (start.date(), start.hour, end.date(), end.hour) == (DAY, 15, DAY + timedelta(days=1), 15)
+    day, start, end = diary.last_day(NOW, hour=16)
+    assert day == DAY and (start.hour, end.hour) == (16, 16)
+
+
 # ------------------------------------------------------------ the sessions
 
 
@@ -210,6 +221,16 @@ def test_a_dry_run_does_not_start_the_diary(handled):
     assert not handled.any(diary.HANDLED_KIND)
 
 
+def test_a_day_is_written_once_whatever_the_hour_is_moved_to(handled):
+    handled.mark(diary.HANDLED_KIND, 20000101)
+    state = diary.Diary()
+    # NOW is 15:00: at midnight the day before is due, and at 15:00 today.
+    assert state.due(handled, NOW, hour=0)[0] == DAY
+    handled.mark(diary.HANDLED_KIND, diary.day_key(DAY))
+    assert state.due(handled, NOW, hour=15)[0] == DAY + timedelta(days=1)
+    assert state.due(handled, NOW, hour=16) is None
+
+
 def test_a_failed_diary_is_tried_again_after_an_hour_not_at_every_poll(handled):
     handled.mark(diary.HANDLED_KIND, 20000101)
     state = diary.Diary()
@@ -298,7 +319,7 @@ def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects,
     """The diary browser writes env; the daemon started with the diary off."""
     texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
     write_session(projects, "mine", [prompt("work", at(9))])
-    diary.set_choice(True, "Schuster lab")
+    diary.set_choice(diary.Choice(True, "Schuster lab"))
     woke, woken = _pass(Settings(api_username="a-agent", diary=False), handled, None, monkeypatch,
                         created=[{"id": 41, "category_id": 6}])
     assert woke and "Schuster lab" in woken[0][0]

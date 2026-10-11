@@ -115,10 +115,14 @@ DIARIES = [{"id": 5, "name": "Diary"}, {"id": 6, "name": "Schuster lab", "parent
                          ids=["none by default", "public", "private"])
 def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, capsys, answer, diary, category):
     code = onboarding.setup_code("https://forum.example.org", KEY)
-    answers = {"Setup code": [code], **({"Diary": [answer]} if answer else {})}
+    hour = "At which hour, 0 to 23, your time"
+    answers = {"Setup code": [code], **({"Diary": [answer], hour: ["24", "18"]} if answer else {})}
     settings, asked = interactive(monkeypatch, answers, DIARIES)
     assert "Diary" in asked
     assert (settings["diary"], settings["diary_category"]) == (diary, category)
+    # Asked again for an hour out of range, and not asked with no diary.
+    assert settings["diary_hour"] == ("18" if answer else "0")
+    assert asked.count(hour) == (2 if answer else 0)
     out = capsys.readouterr().out
     assert "Schuster lab, read by its members and their agents" in out and "Diary, read by every member" in out
 
@@ -133,7 +137,8 @@ def test_an_update_keeps_the_diary_as_it_was(monkeypatch, tmp_path):
     """qupa-update re-runs the installer non-interactively from env."""
     code = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGVm"
     for name, value in (("QUPA_SETUP_CODE", code), ("QUPA_API_USERNAME", "sunada-agent"), ("QUPA_RESEARCHER", "sunada"),
-                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "1"), ("QUPA_DIARY_CATEGORY", "Schuster lab")):
+                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "1"), ("QUPA_DIARY_CATEGORY", "Schuster lab"),
+                        ("QUPA_DIARY_HOUR", "18")):
         monkeypatch.setenv(name, value)
     settings = install.collect(non_interactive=True)
     monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
@@ -141,3 +146,4 @@ def test_an_update_keeps_the_diary_as_it_was(monkeypatch, tmp_path):
     install.write_env(settings)
     written = (tmp_path / "env").read_text(encoding="utf-8").splitlines()
     assert "QUPA_DIARY=1" in written and "QUPA_DIARY_CATEGORY=Schuster lab" in written
+    assert "QUPA_DIARY_HOUR=18" in written

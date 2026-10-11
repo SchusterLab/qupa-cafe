@@ -12,8 +12,8 @@ def _row(title="Diary of a-agent, 2026-10-10", session="", topic_id=None, reason
                      title=title, reason=reason)
 
 
-def _browser(items=(), on=False, category=""):
-    return diaries.DiaryBrowser(list(items), wakes.Status(None, 60), on, category, "a-agent")
+def _browser(items=(), on=False, category="", hour=0):
+    return diaries.DiaryBrowser(list(items), wakes.Status(None, 60), diary.Choice(on, category, hour), "a-agent")
 
 
 # ------------------------------------------------------------ the settings
@@ -21,14 +21,16 @@ def _browser(items=(), on=False, category=""):
 
 def test_the_settings_are_read_from_env_as_it_stands_and_written_in_place(tmp_path):
     env = tmp_path / "env"
-    assert diary.choice(True, "Lab", env) == (True, "Lab")
-    env.write_text("# a comment\nQUPA_API_KEY=k\nQUPA_DIARY=0\n", encoding="utf-8")
-    assert diary.choice(True, "Lab", env) == (False, "Lab")
+    started = diary.Choice(True, "Lab", 7)
+    assert diary.choice(started, env) == started
+    env.write_text("# a comment\nQUPA_API_KEY=k\nQUPA_DIARY=0\nQUPA_DIARY_HOUR=25\n", encoding="utf-8")
+    # An hour out of range keeps the one started with.
+    assert diary.choice(started, env) == diary.Choice(False, "Lab", 7)
 
-    diary.set_choice(True, "Schuster lab", env)
+    diary.set_choice(diary.Choice(True, "Schuster lab", 18), env)
     assert env.read_text(encoding="utf-8").splitlines() == [
-        "# a comment", "QUPA_API_KEY=k", "QUPA_DIARY=1", "QUPA_DIARY_CATEGORY=Schuster lab"]
-    assert diary.choice(False, "", env) == (True, "Schuster lab")
+        "# a comment", "QUPA_API_KEY=k", "QUPA_DIARY=1", "QUPA_DIARY_HOUR=18", "QUPA_DIARY_CATEGORY=Schuster lab"]
+    assert diary.choice(diary.Choice(), env) == diary.Choice(True, "Schuster lab", 18)
     assert b"\r" not in env.read_bytes()
 
 
@@ -42,10 +44,11 @@ def test_only_diary_wakes_are_entries():
 
 def test_the_list_says_whether_the_diary_is_on_and_where():
     wakes.set_colour(False)
-    off = "\n".join(_browser().frame(100, 20))
-    assert "The diary is off" in off and "d to turn it on" in off
-    on = "\n".join(_browser([browse.Wake(_row(), None)], on=True, category="Schuster lab").frame(100, 20))
-    assert "posted in Schuster lab" in on and "Diary of a-agent, 2026-10-10" in on and "d to turn it off" in on
+    off = "\n".join(_browser().frame(140, 20))
+    assert "The diary is off" in off and "d to turn it on" in off and "[ ] for the hour" in off
+    on = "\n".join(_browser([browse.Wake(_row(), None)], on=True, category="Schuster lab", hour=18).frame(140, 20))
+    assert "posted in Schuster lab at 18:00" in on and "Diary of a-agent, 2026-10-10" in on and "d to turn it off" in on
+    assert "at midnight" in "\n".join(_browser(on=True).frame(140, 20))
 
 
 def test_d_toggles_c_asks_where_and_a_number_answers(tmp_path):
@@ -66,15 +69,23 @@ def test_no_place_to_post_says_so():
     assert not b.choices and "no Diary category" in b.message
 
 
-def test_toggling_and_choosing_write_env(tmp_path):
+def test_toggling_choosing_and_moving_the_hour_write_env(tmp_path):
     b = _browser()
-    assert "on, posted in Diary" in diaries.toggle(b)
-    assert diary.choice(False, "") == (True, "")
+    assert "on, posted in Diary, from the next midnight" in diaries.toggle(b)
+    assert diary.choice(diary.Choice()) == diary.Choice(True, "", 0)
     assert "Schuster lab" in diaries.choose(b, "Schuster lab")
-    assert diary.choice(False, "") == (True, "Schuster lab")
+    assert diary.choice(diary.Choice()).category == "Schuster lab"
     diaries.choose(b, "Diary")
-    assert diary.choice(False, "x") == (True, "")
-    assert "off" in diaries.toggle(b) and diary.choice(True, "") == (False, "")
+    assert diary.choice(diary.Choice(category="x")).category == ""
+    # Round the clock either way.
+    assert "23:00" in diaries.move_hour(b, -1) and diary.choice(diary.Choice()).hour == 23
+    assert "midnight" in diaries.move_hour(b, 1) and diary.choice(diary.Choice(hour=5)).hour == 0
+    assert "off" in diaries.toggle(b) and not diary.choice(diary.Choice(on=True)).on
+
+
+def test_the_bracket_keys_move_the_hour():
+    b = _browser()
+    assert b.handle("[") == "hour:-1" and b.handle("]") == "hour:1"
 
 
 def test_enter_reads_an_entry_and_e_asks_for_a_change_from_the_list_or_an_entry():

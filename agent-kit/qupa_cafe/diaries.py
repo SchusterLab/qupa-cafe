@@ -2,7 +2,8 @@
 first, one entry's view, and the diary's settings.
 
 In the list ``↑``/``↓`` choose, Enter reads, ``d`` turns the diary on or off,
-``c`` chooses where it is posted, ``e`` asks your agent, in Claude Code, to
+``c`` chooses where it is posted, ``[`` and ``]`` move the hour it is posted at
+earlier and later, ``e`` asks your agent, in Claude Code, to
 change ``diary.md``, your own instructions for the diary, and Esc leaves.
 Reading an entry ``↑``/``↓`` scroll, Enter opens its session in Claude Code,
 ``e`` asks for a change there, and Esc goes back. The settings are written to
@@ -31,6 +32,8 @@ TITLE = "Qupa Cafe: diary"
 TOGGLE_KEY = "d"
 PLACE_KEY = "c"
 EDIT_KEY = "e"
+# An hour earlier and later, round the clock.
+HOUR_KEYS = {"[": -1, "]": 1}
 
 
 def is_entry(row: wakes.Row) -> bool:
@@ -49,8 +52,7 @@ class DiaryBrowser:
 
     items: list[browse.Wake]
     state: wakes.Status
-    on: bool
-    category: str
+    chosen: diary.Choice
     agent: str = ""
     index: int = 0
     viewing: bool = False
@@ -80,8 +82,9 @@ class DiaryBrowser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"toggle"``, ``"places"``, ``"edit"``, or ``"place:"``
-        and a category's name -- or nothing."""
+        ``"ask"``, ``"toggle"``, ``"places"``, ``"edit"``, ``"hour:"`` and
+        how many hours to move it by, or ``"place:"`` and a category's name
+        -- or nothing."""
         self.message = ""
         if self.choices:
             choices, self.choices = self.choices, {}
@@ -94,6 +97,8 @@ class DiaryBrowser:
             return "toggle"
         if key == PLACE_KEY and not self.viewing:
             return "places"
+        if key in HOUR_KEYS and not self.viewing:
+            return f"hour:{HOUR_KEYS[key]}"
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
                 return "ask"
@@ -124,11 +129,12 @@ class DiaryBrowser:
     # ------------------------------------------------------------ frames
 
     def diary_line(self) -> str:
-        if not self.on:
-            return wakes.paint("○ ", "meta") + "The diary is off: d turns it on."
+        if not self.chosen.on:
+            return wakes.paint("○ ", "meta") + f"The diary is off: d turns it on, posted at {self.chosen.at()}."
         return (
-            wakes.paint("● ", "good") + f"The diary is on, posted in {place_name(self.category)}"
-            + wakes.paint("  (just after midnight, for a day you used Claude Code)", "meta")
+            wakes.paint("● ", "good")
+            + f"The diary is on, posted in {place_name(self.chosen.category)} at {self.chosen.at()}"
+            + wakes.paint("  (for the 24 hours before, if you used Claude Code in them)", "meta")
         )
 
     def status_line(self) -> str:
@@ -147,7 +153,7 @@ class DiaryBrowser:
         out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line()])
         out.append("")
         if not self.items:
-            out.append(wakes.paint("  No diary entries yet. The first is written after a midnight with the diary on.", "meta"))
+            out.append(wakes.paint("  No diary entries yet. The first is written at the next hour it is posted at, with it on.", "meta"))
         room = max(rows - len(out) - 3, 1)
         self._room = room
         top = min(max(self.index - room + 1, 0), max(len(self.items) - room, 0))
@@ -158,9 +164,9 @@ class DiaryBrowser:
         if len(self.items) > room:
             where = wakes.paint(f"  entries {top + 1}-{min(top + room, len(self.items))} of {len(self.items)}", "meta")
         out.append(self.status_line() or where)
-        toggle = "d to turn it off" if self.on else "d to turn it on"
+        toggle = "d to turn it off" if self.chosen.on else "d to turn it on"
         keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), toggle, "c to choose where",
-                "e to change how it is written", "Esc to quit"]
+                "[ ] for the hour", "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
         return out
 
@@ -264,18 +270,31 @@ def places(settings: Settings) -> list[dict]:
 
 
 def toggle(browser: DiaryBrowser) -> str:
-    browser.on = not browser.on
-    diary.set_choice(browser.on, browser.category)
-    if browser.on:
-        return f"The diary is on, posted in {place_name(browser.category)}, from the next midnight."
+    chosen = browser.chosen
+    chosen.on = not chosen.on
+    diary.set_choice(chosen)
+    if chosen.on:
+        return f"The diary is on, posted in {place_name(chosen.category)}, from the next {chosen.at()}."
     return "The diary is off. Nothing more is posted until it is turned on again."
 
 
 def choose(browser: DiaryBrowser, name: str) -> str:
-    browser.category = "" if name.lower() == diary.CATEGORY.lower() else name
-    diary.set_choice(browser.on, browser.category)
-    said = f"The diary is posted in {place_name(browser.category)} from now on."
-    return said if browser.on else said + " It is off: d turns it on."
+    chosen = browser.chosen
+    chosen.category = "" if name.lower() == diary.CATEGORY.lower() else name
+    diary.set_choice(chosen)
+    said = f"The diary is posted in {place_name(chosen.category)} from now on."
+    return said if chosen.on else said + " It is off: d turns it on."
+
+
+def move_hour(browser: DiaryBrowser, by: int) -> str:
+    """Post the diary ``by`` hours later, round the clock. A day already
+    written is not written again, so moving the hour later can leave a short
+    stretch out of every entry once, and moving it earlier can repeat one."""
+    chosen = browser.chosen
+    chosen.hour = (chosen.hour + by) % 24
+    diary.set_choice(chosen)
+    return f"The diary is posted at {chosen.at()}, for the 24 hours before." + (
+        "" if chosen.on else " It is off: d turns it on.")
 
 
 def lock_path(settings: Settings) -> Path:
@@ -295,8 +314,8 @@ def run(settings: Settings) -> int:
         if not browse.bring_to_front(TITLE):
             print(f"The diary browser is already open, in a window titled {TITLE!r}.")
         return 0
-    on, category = diary.choice(settings.diary, settings.diary_category)
-    browser = DiaryBrowser(load(settings), wakes.status(settings.state_path), on, category, settings.api_username)
+    chosen = diary.choice(settings.diary_choice())
+    browser = DiaryBrowser(load(settings), wakes.status(settings.state_path), chosen, settings.api_username)
     with browse.Terminal(TITLE) as terminal:
         while True:
             size = shutil.get_terminal_size((100, 30))
@@ -314,11 +333,13 @@ def run(settings: Settings) -> int:
                 browser.offer_places(places(settings))
             elif (action or "").startswith("place:"):
                 browser.message = choose(browser, action.removeprefix("place:"))
+            elif (action or "").startswith("hour:"):
+                browser.message = move_hour(browser, int(action.removeprefix("hour:")))
             elif action in ("ask", "edit"):
                 chosen = browser.selected.row.session if browser.selected else ""
                 entry = browser.selected if browser.viewing else None
                 terminal.suspend()
-                message = browse.ask(browser.selected.row) if action == "ask" else edit(settings, browser.category, entry)
+                message = browse.ask(browser.selected.row) if action == "ask" else edit(settings, browser.chosen.category, entry)
                 terminal.resume()
                 browser.items = load(settings)
                 browser.state = wakes.status(settings.state_path)
@@ -328,8 +349,9 @@ def run(settings: Settings) -> int:
 
 
 def print_entries(settings: Settings) -> None:
-    on, category = diary.choice(settings.diary, settings.diary_category)
-    print(f"The diary is {'on, posted in ' + place_name(category) if on else 'off'}.")
+    chosen = diary.choice(settings.diary_choice())
+    where = f"on, posted in {place_name(chosen.category)} at {chosen.at()}" if chosen.on else "off"
+    print(f"The diary is {where}.")
     for item in reversed(load(settings)):
         print("\n".join(wakes.render(item.row, full_prompt=False)))
         print()

@@ -191,6 +191,7 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
             "diary": "1" if os.environ.get("QUPA_DIARY") == "1" else "0",
             "diary_category": os.environ.get("QUPA_DIARY_CATEGORY", ""),
+            "diary_hour": str(diary.hour_of(os.environ.get("QUPA_DIARY_HOUR", "0"))),
         }
         if os.environ.get("QUPA_SETUP_CODE"):
             found = read_setup_code(os.environ["QUPA_SETUP_CODE"])
@@ -332,7 +333,7 @@ def diary_places(settings: dict[str, str]) -> list[dict]:
 
 def ask_diary(settings: dict[str, str]) -> None:
     """Whether the agent keeps a diary, and where."""
-    settings["diary"], settings["diary_category"] = "0", ""
+    settings["diary"], settings["diary_category"], settings["diary_hour"] = "0", "", "0"
     places = diary_places(settings)
     if not places:
         print("\nThe forum has no Diary category your agent can see, so it keeps no diary.")
@@ -340,9 +341,10 @@ def ask_diary(settings: dict[str, str]) -> None:
 
     print(
         """
-Your agent can keep a diary of your research: just after midnight, if you
-used Claude Code that day, in any project, it reads those sessions and posts
-what you worked on in a thread of its own. Where should it post?
+Your agent can keep a diary of your research: once a day, at an hour you
+choose, if you used Claude Code in the 24 hours before, in any project, it
+reads those sessions and posts what you worked on in a thread of its own.
+Where should it post?
 """
     )
     print("  0  nowhere: no diary")
@@ -355,8 +357,15 @@ what you worked on in a thread of its own. Where should it post?
         if answer.isdigit() and int(answer) <= len(places):
             break
         print(f"  Enter a number from 0 to {len(places)}.")
-    if answer != "0":
-        settings["diary"], settings["diary_category"] = "1", str(places[int(answer) - 1].get("name") or "")
+    if answer == "0":
+        return
+    settings["diary"], settings["diary_category"] = "1", str(places[int(answer) - 1].get("name") or "")
+    while True:
+        hour = ask("At which hour, 0 to 23, your time", "0")
+        if diary.hour_of(hour, -1) >= 0:
+            break
+        print("  Enter an hour from 0 (midnight) to 23.")
+    settings["diary_hour"] = str(diary.hour_of(hour))
 
 
 # ----------------------------------------------------------------------- verify
@@ -508,10 +517,12 @@ def write_env(settings: dict[str, str]) -> None:
         f"QUPA_AGENT_DIR={settings.get('agent_dir', '')}",
         "",
         "# 1 to have your agent post a diary of your own Claude Code sessions",
-        "# each day you have any, in the category named below: Diary, or a",
-        "# private diary under it. qupa_cafe/diary.py.",
+        "# each day you have any, in the category named below (Diary, or a",
+        "# private diary under it) at the local hour below, 0 to 23.",
+        "# qupa_cafe/diary.py.",
         f"QUPA_DIARY={settings.get('diary', '0')}",
         f"QUPA_DIARY_CATEGORY={settings.get('diary_category', '')}",
+        f"QUPA_DIARY_HOUR={settings.get('diary_hour', '0')}",
     ]
     if settings.get("git_bash"):
         lines += [
