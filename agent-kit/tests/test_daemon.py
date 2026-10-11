@@ -632,7 +632,7 @@ def test_claude_is_given_the_mcp_config_and_the_tools(tmp_path):
     says so into a log nobody reads.
     """
     config = _mcp_config(tmp_path)
-    settings = Settings(runtime="claude", mcp_config=str(config))
+    settings = Settings(mcp_config=str(config))
 
     command = runtime_command(settings, "a prompt")
 
@@ -645,22 +645,15 @@ def test_claude_is_given_the_mcp_config_and_the_tools(tmp_path):
 
 def test_no_write_tool_outside_the_policy_checked_server_is_pre_authorised(tmp_path):
     """`discourse` is allowed wholesale only because it is mounted read-only."""
-    command = runtime_command(Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path))), "p")
+    command = runtime_command(Settings(mcp_config=str(_mcp_config(tmp_path))), "p")
 
     allowed = command[command.index("--allowedTools") + 1 :]
     assert all(tool.startswith("mcp__qupa-cafe__") or tool == "mcp__discourse" for tool in allowed)
 
 
 def test_a_missing_mcp_config_is_not_passed(tmp_path):
-    command = runtime_command(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")), "p")
+    command = runtime_command(Settings(mcp_config=str(tmp_path / "absent.json")), "p")
     assert "--mcp-config" not in command
-
-
-def test_codex_takes_its_servers_from_its_own_configuration_and_no_session():
-    # The prompt goes in on stdin, since npm's codex.cmd cuts an argument at a line break.
-    expected = ["codex", "exec", "--skip-git-repo-check", "--sandboxed", "-"]
-    assert runtime_command(Settings(runtime="codex"), "a prompt") == expected
-    assert runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session="")) == expected
 
 
 # ------------------------------------------- daemon and MCP server identity
@@ -770,7 +763,6 @@ def test_an_ordinary_refusal_to_start_is_logged(monkeypatch, caplog):
 
 def _wake(**overrides):
     fields = dict(
-        runtime="claude",
         agent_dir="/agent",
         topic_id=10,
         post_number=1,
@@ -787,7 +779,7 @@ def test_a_wake_runs_as_a_named_background_session_that_asks_nobody(tmp_path):
     and what tells one wake from another in `/resume`; don't-ask refuses a tool
     nothing approved rather than leaving the wake waiting for somebody."""
     wake = _wake()
-    command = runtime_command(Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path))), "p", wake)
+    command = runtime_command(Settings(mcp_config=str(_mcp_config(tmp_path))), "p", wake)
 
     assert command[:3] == ["claude", "--bg", "p"]
     assert "-p" not in command and "--session-id" not in command
@@ -799,10 +791,8 @@ def test_a_wake_runs_as_a_named_background_session_that_asks_nobody(tmp_path):
 
 
 def test_no_wake_has_a_session_before_it_starts():
-    """Claude Code's background session picks one; Codex has none."""
-    topic = _topic(10)
-    assert daemon.wake_for(Settings(runtime="claude"), "r", topic).session == ""
-    assert daemon.wake_for(Settings(runtime="codex"), "r", topic).session == ""
+    """Claude Code's background session picks one."""
+    assert daemon.wake_for(Settings(), "r", _topic(10)).session == ""
 
 
 def test_each_wake_is_journalled_with_how_it_ended(tmp_path, in_topic_10, monkeypatch):
@@ -963,7 +953,7 @@ def _check(monkeypatch, tmp_path, returncode, said):
 
     monkeypatch.setattr(daemon.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(daemon, "check_in_background", fake_check)
-    settings = Settings(runtime="claude", mcp_config=str(_mcp_config(tmp_path)))
+    settings = Settings(mcp_config=str(_mcp_config(tmp_path)))
     return daemon.check_wake(settings), seen["argv"]
 
 
@@ -988,7 +978,7 @@ def test_the_install_check_reports_a_runtime_that_fails(monkeypatch, tmp_path):
 
 def test_the_install_check_reports_a_missing_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon.shutil, "which", lambda name: None)
-    check = daemon.check_wake(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")))
+    check = daemon.check_wake(Settings(mcp_config=str(tmp_path / "absent.json")))
     assert not check.woken and "not on PATH" in check.said
 
 

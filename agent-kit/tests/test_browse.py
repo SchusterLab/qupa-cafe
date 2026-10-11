@@ -13,7 +13,7 @@ from qupa_cafe.daemon import Settings, claim_lock
 
 def _row(topic: int, session: str = "s-1", status: str = "finished", score: float | None = None) -> wakes.Row:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    return wakes.Row(now, now, status, "claude", session, "/agent", topic, 1, f"Topic {topic}", "you were mentioned", score)
+    return wakes.Row(now, now, status, session, "/agent", topic, 1, f"Topic {topic}", "you were mentioned", score)
 
 
 def _browser(*items: browse.Wake, floor: float | None = None) -> browse.Browser:

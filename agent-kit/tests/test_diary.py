@@ -536,7 +536,5 @@ def test_a_diary_wake_runs_on_sonnet_and_other_wakes_on_the_researcher_s_default
     assert command[command.index("--model") + 1] == "sonnet"
     # Before --allowedTools, which takes every word after it.
     assert command.index("--model") < command.index("--allowedTools")
-    forum_wake = daemon.Wake("claude", "", 10, 1, "Topic", "you were mentioned")
+    forum_wake = daemon.Wake("", 10, 1, "Topic", "you were mentioned")
     assert "--model" not in daemon.runtime_command(_settings(), "P", forum_wake)
-    codex = Settings(runtime="codex")
-    assert "--model" not in daemon.runtime_command(codex, "P", wake)

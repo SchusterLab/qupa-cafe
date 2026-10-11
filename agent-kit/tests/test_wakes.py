@@ -43,7 +43,6 @@ def _journal(tmp_path, **overrides):
     state = str(tmp_path / "state.sqlite3")
     journal = daemon.Journal(state)
     fields = dict(
-        runtime="claude",
         agent_dir="/agent",
         topic_id=59,
         post_number=3,
@@ -117,15 +116,15 @@ def test_an_expired_transcript_still_lists_the_wake(tmp_path, claude_home):
     assert "no longer has this session" in text
 
 
-def test_a_codex_wake_is_listed_without_a_transcript(tmp_path, claude_home):
-    [row] = wakes.recent(_journal(tmp_path, runtime="codex", session=""), 20)
-    assert "codex names no session" in "\n".join(wakes.render(row))
+def test_a_wake_with_no_session_is_listed_without_a_transcript(tmp_path, claude_home):
+    [row] = wakes.recent(_journal(tmp_path, session=""), 20)
+    assert "No session was recorded" in "\n".join(wakes.render(row))
 
 
 def test_the_newest_wake_is_last(tmp_path):
     state = _journal(tmp_path, topic_id=1)
     journal = daemon.Journal(state)
-    journal.begin(daemon.Wake("claude", "/a", 2, 1, "Second", "r", SESSION))
+    journal.begin(daemon.Wake("/a", 2, 1, "Second", "r", SESSION))
     assert [row.topic_id for row in wakes.recent(state, 20)] == [1, 2]
     assert [row.topic_id for row in wakes.recent(state, 1)] == [2]
 
@@ -141,7 +140,7 @@ def test_a_state_file_with_no_journal_shows_nothing(tmp_path):
 def test_a_relevance_wake_shows_its_score_and_a_mention_none(tmp_path, claude_home):
     state = _journal(tmp_path, score=0.83, reason="a post scored as relevant to your interests")
     journal = daemon.Journal(state)
-    journal.begin(daemon.Wake("claude", "/a", 2, 1, "Second", "you were mentioned", SESSION))
+    journal.begin(daemon.Wake("/a", 2, 1, "Second", "you were mentioned", SESSION))
 
     scored, mention = wakes.recent(state, 20)
 
@@ -172,7 +171,7 @@ def test_a_wake_past_its_timeout_is_not_running_anywhere():
     """The wake list, the tray and the browser agree on one age."""
     now = datetime.now(timezone.utc)
     within, past = (
-        wakes.Row((now - timedelta(seconds=age)).strftime("%Y-%m-%d %H:%M:%S"), None, "running", "claude",
+        wakes.Row((now - timedelta(seconds=age)).strftime("%Y-%m-%d %H:%M:%S"), None, "running",
                   SESSION, "/a", 7, 1, "T", "r")
         for age in (wakes.WAKE_TIMEOUT_SECONDS - 60, wakes.WAKE_TIMEOUT_SECONDS + 60)
     )
@@ -192,7 +191,7 @@ def test_the_icon_follows_the_daemon(tmp_path):
     journal.beat(60)
     assert tray.describe(settings)[0] == "polling"
 
-    journal.begin(daemon.Wake("claude", "/a", 7, 1, "T", "r", SESSION))
+    journal.begin(daemon.Wake("/a", 7, 1, "T", "r", SESSION))
     key, tooltip = tray.describe(settings)
     assert key == "waking" and "topic 7" in tooltip
     assert len(tooltip) <= tray.TOOLTIP_CHARS

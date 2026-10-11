@@ -258,7 +258,7 @@ def test_the_hook_runs_as_a_script(installed):
 
 
 def test_a_claude_wake_with_the_sandbox_gets_its_hook(installed, tmp_path):
-    command = runtime_command(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")), "p")
+    command = runtime_command(Settings(mcp_config=str(tmp_path / "absent.json")), "p")
 
     settings = json.loads(command[command.index("--settings") + 1])
     hook = settings["hooks"]["PreToolUse"][0]
@@ -270,79 +270,13 @@ def test_a_claude_wake_with_the_sandbox_gets_its_hook(installed, tmp_path):
 
 
 def test_a_wake_without_the_sandbox_gets_no_hook(tmp_path):
-    command = runtime_command(Settings(runtime="claude", mcp_config=str(tmp_path / "absent.json")), "p")
+    command = runtime_command(Settings(mcp_config=str(tmp_path / "absent.json")), "p")
     assert "--settings" not in command
-
-
-def test_a_claude_sandbox_wakes_no_codex_agent(installed):
-    """Each runtime has its own sandbox, so one set up for Claude Code is
-    none for Codex, and the daemon wakes nobody rather than Codex unsandboxed."""
-    assert daemon.sandbox_config(Settings(runtime="claude")) is not None
-    assert daemon.sandbox_config(Settings(runtime="codex")) is None
-
-
-@pytest.fixture
-def codex_installed(installed, tmp_path):
-    codex = tmp_path / "codex"
-    codex.write_text("", encoding="utf-8")
-    config = {**installed, "runtime": "codex", "codex": str(codex)}
-    for key in ("node", "run", "bash"):
-        config.pop(key)
-    sandbox.config_path().write_text(json.dumps(config), encoding="utf-8")
-    return config
-
-
-def test_a_codex_wake_runs_under_the_kit_s_permission_profile(codex_installed, monkeypatch):
-    monkeypatch.setattr(sandbox, "pixi_environment", lambda config: {"PATH": "/env/bin"})
-    command = runtime_command(Settings(runtime="codex", agent_dir=codex_installed["agent_dirs"][0]), "p")
-    assert command[:3] == ["codex", "exec", "--skip-git-repo-check"] and command[-1] == "-"
-    assert command[command.index("-p") + 1] == "qupa-cafe"
-    assert command[command.index("-C") + 1] == codex_installed["agent_dirs"][0]
-    # In a profile file, since the environment's PATH alone can pass Windows'
-    # limit on a command line.
-    written = (sandbox.codex_home() / "qupa-cafe.config.toml").read_text(encoding="utf-8")
-    assert 'default_permissions = "qupa-cafe"' in written
-    profile = next(line for line in written.splitlines() if line.startswith("permissions = "))
-    # The workspace written, the researcher's instructions read only, the key denied.
-    assert json.dumps(codex_installed["workspace"]) + "=true" in profile
-    assert json.dumps(str(Path(codex_installed["agent_dirs"][0]) / "QUPA.md")) + '="read"' in profile
-    assert json.dumps(str(Path.home().resolve() / ".config" / "qupa-cafe")) + '="deny"' in profile
-    assert json.dumps(str(sandbox.sandbox_dir().resolve())) + '="deny"' not in profile
-    environment = next(line for line in written.splitlines() if line.startswith("shell_environment_policy = "))
-    assert '"QUPA_*"' in environment and '"PATH"="/env/bin"' in environment
-    assert "codex-hook" in written and 'mcp_servers.qupa-cafe.default_tools_approval_mode="approve"' in command
-
-
-def test_the_codex_hook_refuses_pip_and_leaves_the_rest_to_codex(codex_installed):
-    refused = sandbox.codex_decide(_bash("pip install requests"), codex_installed)
-    assert refused["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "pixi add" in refused["hookSpecificOutput"]["permissionDecisionReason"]
-    assert sandbox.codex_decide(_bash("python fit.py"), codex_installed) is None
-    assert sandbox.codex_decide({"tool_name": "mcp__qupa-cafe__reply"}, codex_installed) is None
-    gone = sandbox.codex_decide(_bash("python fit.py"), None)
-    assert gone["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_setup_creates_each_missing_protected_file_empty_for_codex(codex_installed):
-    """Codex's sandbox keeps an existing path read-only, but lets a missing one be created."""
-    research = Path(codex_installed["agent_dirs"][0])
-    (research / "AGENTS.md").write_text("keep", encoding="utf-8")
-    made = {path.name for path in sandbox.codex_placeholders(codex_installed)}
-    assert made == {"QUPA.md", "CLAUDE.md", "CLAUDE.local.md", ".mcp.json"}
-    assert (research / "AGENTS.md").read_text(encoding="utf-8") == "keep"
-    assert (research / "QUPA.md").read_text(encoding="utf-8") == ""
-    assert json.loads((research / ".mcp.json").read_text(encoding="utf-8")) == {}
-    assert not (research / ".venv").exists()
-
-
-def test_a_codex_wake_is_told_of_codex_s_tools(codex_installed):
-    notice = sandbox.wake_notice(codex_installed, codex_installed["agent_dirs"][0])
-    assert "Codex's sandbox" in notice and "view_image" in notice and "Bash" not in notice
 
 
 def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
     settings = Settings(
-        forum_url="http://x", api_key="k", api_username="u", runtime="claude", agent_dir=installed["agent_dirs"][0]
+        forum_url="http://x", api_key="k", api_username="u", agent_dir=installed["agent_dirs"][0]
     )
     topic = {"id": 10, "title": "t", "post_stream": {"posts": [{"post_number": 1, "raw": "b"}]}}
 
@@ -383,7 +317,7 @@ def test_nothing_is_installed_that_is_already_there(monkeypatch):
     monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: installed_now.append(argv))
     monkeypatch.setattr(sandbox, "WINDOWS", True)
 
-    assert sandbox.ensure_programs("claude") is None
+    assert sandbox.ensure_programs() is None
     assert installed_now == []
 
 
@@ -391,7 +325,7 @@ def test_only_what_is_missing_is_installed(monkeypatch):
     ran = []
     have = {"pixi", "npm"}
     monkeypatch.setattr(sandbox, "find", lambda name: f"/opt/{name}" if name in have else None)
-    monkeypatch.setattr(sandbox, "wanted_programs", lambda runtime="claude": {"node": "nodejs", "npm": "nodejs", "rg": "ripgrep"})
+    monkeypatch.setattr(sandbox, "wanted_programs", lambda: {"node": "nodejs", "npm": "nodejs", "rg": "ripgrep"})
     monkeypatch.setattr(sandbox, "install_pixi", lambda: pytest.fail("pixi is already there"))
     monkeypatch.setattr(sandbox, "WINDOWS", False)
 
@@ -426,7 +360,7 @@ def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch
 
 def test_a_setup_that_fails_leaves_no_sandbox_behind(installed, monkeypatch):
     """Not the configuration of a sandbox it has half replaced."""
-    monkeypatch.setattr(sandbox, "missing_programs", lambda runtime="claude": ["pixi: https://pixi.sh"])
+    monkeypatch.setattr(sandbox, "missing_programs", lambda: ["pixi: https://pixi.sh"])
     assert sandbox.setup(installed["agent_dirs"][0], interactive=False) is False
     assert not sandbox.config_path().exists()
     assert sandbox.load_config() is None

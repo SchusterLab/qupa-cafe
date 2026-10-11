@@ -1,35 +1,23 @@
 """The sandbox a woken agent runs commands in.
 
-Every wake gets one, whichever the runtime. Its commands get open internet
-access; reads and writes in the sandbox's workspace and in the researcher's
-``QUPA_AGENT_DIR``, except that what steers later wakes stays read-only; and
-none of the variables that hold keys. Python there is a pixi workspace with
-the packages of Jupyter's scipy-notebook image (``sandbox_files/pixi.toml``),
-already active.
+Every wake gets Bash, and every command it runs goes through Anthropic's
+sandbox-runtime (``sandbox_files/run.mjs``): open internet access; reads and
+writes in the sandbox's workspace and in the researcher's ``QUPA_AGENT_DIR``,
+except that what steers later wakes stays read-only; nothing else in the home
+directory but the programs it runs; and none of the variables that hold
+keys. Python there is a pixi workspace with the packages of Jupyter's
+scipy-notebook image (``sandbox_files/pixi.toml``), already active.
 
-A Claude Code wake's Bash goes through Anthropic's sandbox-runtime
-(``sandbox_files/run.mjs``), which also keeps the rest of the home directory
-unreadable apart from the programs it runs. The daemon hands the wake a
-``PreToolUse`` hook, which is this module run as a script. For Bash it
-approves the command rewritten to run inside the sandbox, or refuses a pip or
-conda install with the pixi command to run instead (``qupa_cafe.pixi_advice``).
-For the file tools (``READ_TOOLS`` and ``WRITE_TOOLS``) it approves a path the
-sandbox could reach the same way, and leaves any other path to the
-researcher's own Claude Code settings.
+The daemon hands the wake a ``PreToolUse`` hook, which is this module run as a
+script. For Bash it approves the command rewritten to run inside the sandbox,
+or refuses a pip or conda install with the pixi command to run instead
+(``qupa_cafe.pixi_advice``). For the file tools (``READ_TOOLS`` and
+``WRITE_TOOLS``) it approves a path the sandbox could reach the same way, and
+leaves any other path to the researcher's own Claude Code settings.
 
-A Codex wake's commands go through Codex's own sandbox, the one ``codex
-sandbox`` runs a command in, under a permission profile the daemon passes to
-``codex exec`` (``codex_args``). It denies the home directory's secrets by
-name. On Windows a command reads what Windows lets Codex's sandbox users
-read, which includes every directory an earlier Codex session used as a
-workspace, since Codex grants them those and leaves the grants. Its commands reach the
-internet through Codex's network proxy, an experimental feature, which
-refuses this machine's own and private addresses. Its hook only refuses pip
-and conda installs. A protected name that does not exist yet can be created
-inside Codex's sandbox, so setup creates each missing protected file empty.
-
-``qupa-install`` sets it up with ``setup`` and stops when it cannot; the
-daemon wakes nobody without it.
+``qupa-install`` sets it up with ``setup``, and stops when it cannot: without
+node, npm and pixi, or on Windows without the runtime's one-time elevated
+install, it reports what is missing. The daemon wakes nobody without it.
 
     python -m qupa_cafe.sandbox check     # run a test command in the sandbox
 """
@@ -97,10 +85,6 @@ def env_dir(workspace: Path) -> Path:
     return workspace / ".pixi" / "envs" / "default"
 
 
-def env_python(workspace: Path) -> Path:
-    return env_dir(workspace) / ("python.exe" if WINDOWS else "bin/python")
-
-
 def load_config() -> dict | None:
     try:
         return json.loads(config_path().read_text(encoding="utf-8"))
@@ -108,21 +92,18 @@ def load_config() -> dict | None:
         return None
 
 
-def ready(config: dict | None = None, runtime: str = "") -> bool:
-    """Whether a wake can be given the sandbox: set up for ``runtime`` (the
-    one it was set up for, when not named), and still there."""
+def ready(config: dict | None = None) -> bool:
+    """Whether a wake can be given the sandbox: set up, and still there."""
     config = config if config is not None else load_config()
-    if not config or (runtime and config.get("runtime", "claude") != runtime):
+    if not config:
         return False
-    needed = [config.get("pixi", ""), str(env_dir(Path(config.get("workspace", ""))))]
-    if config.get("runtime", "claude") == "codex":
-        needed.append(config.get("codex", ""))
-    else:
-        needed += [
-            config.get("node", ""),
-            config.get("run", ""),
-            str(Path(config.get("run", "")).parent / "node_modules" / "@anthropic-ai" / "sandbox-runtime"),
-        ]
+    needed = [
+        config.get("node", ""),
+        config.get("run", ""),
+        config.get("pixi", ""),
+        str(Path(config.get("run", "")).parent / "node_modules" / "@anthropic-ai" / "sandbox-runtime"),
+        str(env_dir(Path(config.get("workspace", "")))),
+    ]
     return all(item and Path(item).exists() for item in needed)
 
 
@@ -219,12 +200,12 @@ def context(text: str) -> dict:
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
 
 
-def hook_main(codex: bool = False) -> int:
+def hook_main() -> int:
     try:
         event = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         return 0
-    result = (codex_decide if codex else decide)(event, load_config())
+    result = decide(event, load_config())
     if result is not None:
         sys.stdout.write(json.dumps(result))
     return 0
@@ -241,188 +222,6 @@ def claude_settings() -> str:
     return json.dumps(
         {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]}]}}
     )
-
-
-# ------------------------------------------------------------- Codex's sandbox
-
-# The permission profile a Codex wake runs under, by the name `codex exec`
-# and `codex sandbox` are given.
-CODEX_PROFILE = "qupa-cafe"
-
-# Kept out of a Codex command's environment, as run.mjs keeps them out of a
-# Claude Code one: what looks like a credential, and what would make its
-# Python something other than the workspace's. Codex's own default excludes
-# (any name holding KEY, SECRET or TOKEN) apply as well.
-CODEX_EXCLUDE = (
-    "QUPA_*", "ANTHROPIC_*", "CLAUDE*", "OPENAI_*", "CODEX_*", "AWS_*", "AZURE_*", "GOOGLE_*", "GCLOUD_*",
-    "GH_*", "GITHUB_*", "HF_*", "HUGGING*", "NPM_*", "PYPI_*", "TWINE_*", "SSH_AUTH*", "*PASSW*", "*CREDENTIAL*",
-    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "VIRTUAL_ENV", "CONDA_*", "PIXI_*", "PIP_*",
-    "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_*",
-)
-
-
-def toml(value) -> str:
-    """``value`` as a TOML inline value, for a `-c` override: strings are
-    JSON's, whose escapes TOML's basic strings share."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, dict):
-        return "{" + ", ".join(f"{json.dumps(str(key))}={toml(item)}" for key, item in value.items()) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(toml(item) for item in value) + "]"
-    return json.dumps(str(value))
-
-
-def home_secrets() -> list[Path]:
-    """What in the home directory no sandbox reads: the kit's key, the
-    runtimes' own credentials, ssh keys, and the sandbox's own directory."""
-    home = Path.home().resolve()
-    return [home / ".config" / "qupa-cafe", home / ".claude", home / ".ssh", home / ".codex", sandbox_dir().resolve()]
-
-
-def codex_profile(config: dict) -> dict:
-    """The permission profile: the system's minimum and the programs read,
-    the workspace and the agent's directory written, what steers wakes read
-    only, the secrets denied, and the internet open."""
-    filesystem: dict = {":minimal": "read"}
-    for directory in config.get("programs") or []:
-        filesystem[directory] = "read"
-    # Not the sandbox's own directory, which holds the workspace: on Windows
-    # a deny there outranks the workspace's write.
-    for secret in home_secrets()[:-1]:
-        filesystem[str(secret)] = "deny"
-    filesystem[":workspace_roots"] = {".": "write"}
-    for path in config.get("protected") or []:
-        filesystem[path] = "read"
-    return {
-        "workspace_roots": {config["workspace"]: True},
-        "filesystem": filesystem,
-        # Through Codex's network proxy, which refuses this machine's own and
-        # private addresses, as sandbox-runtime does for Claude Code.
-        "network": {"enabled": True, "mode": "full", "domains": {"*": "allow"}, "allow_local_binding": False},
-    }
-
-
-def pixi_environment(config: dict) -> dict[str, str]:
-    """The workspace's environment activated, as pixi gives its variables."""
-    workspace = config["workspace"]
-    result = _run(
-        [config["pixi"], "shell-hook", "--json", "--manifest-path", str(Path(workspace) / "pixi.toml")],
-        env=dict(os.environ, PIXI_CACHE_DIR=str(Path(workspace) / ".cache" / "rattler")),
-        timeout=120,
-    )
-    try:
-        variables = json.loads(result.stdout)["environment_variables"]
-    except (ValueError, KeyError, TypeError):
-        return {}
-    return {str(name): str(value) for name, value in variables.items()}
-
-
-def codex_environment(config: dict) -> dict:
-    """The `shell_environment_policy`: this environment without its
-    credentials, and with the workspace's pixi environment active and the
-    workspace as HOME."""
-    workspace = Path(config["workspace"])
-    scratch = str(workspace / ".tmp")
-    settings = pixi_environment(config)
-    settings.update({
-        "HOME": str(workspace), "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
-        "PIXI_CACHE_DIR": str(workspace / ".cache" / "rattler"),
-        # No display: a figure is saved, never shown.
-        "MPLBACKEND": "Agg",
-    })
-    return {"inherit": "all", "ignore_default_excludes": False, "exclude": list(CODEX_EXCLUDE), "set": settings}
-
-
-def codex_hook_command() -> str:
-    """The hook as Codex runs it. On Windows Codex runs it in PowerShell,
-    which reads a quoted path followed by arguments as an error unless it is
-    called with `&`; a hook that cannot start is skipped, not refused."""
-    command = f'"{posix(sys.executable)}" "{posix(str(Path(__file__).resolve()))}" codex-hook'
-    return f"& {command}" if WINDOWS else command
-
-
-def codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-
-
-def write_codex_profile(config: dict) -> Path:
-    """The sandbox's settings as a Codex config profile, `<CODEX_HOME>/
-    qupa-cafe.config.toml`, which `-p qupa-cafe` layers over the researcher's
-    own configuration: the permission profile and its selection, the
-    environment, and the hook. A file, since on the command line the
-    environment's PATH alone can pass Windows' limit on its length. Written
-    again for each session, so that the environment is the one pixi gives now."""
-    hooks = [{"matcher": "Bash", "hooks": [{"type": "command", "command": codex_hook_command(), "timeout": 30}]}]
-    lines = [
-        "# Written by the qupa-cafe agent kit for each wake; changes here are lost.",
-        f"default_permissions = {toml(CODEX_PROFILE)}",
-        'features = {network_proxy = true}',
-        'approval_policy = "never"',
-        f"permissions = {toml({CODEX_PROFILE: codex_profile(config)})}",
-        f"shell_environment_policy = {toml(codex_environment(config))}",
-        f"hooks = {toml({'PreToolUse': hooks})}",
-    ]
-    path = codex_home() / f"{CODEX_PROFILE}.config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(NL.join(lines) + NL, encoding="utf-8")
-    return path
-
-
-def codex_overrides(config: dict) -> list[str]:
-    """What puts a Codex session's commands in the sandbox, for `codex exec`
-    and `codex sandbox` alike: the profile file, and on Windows the sandbox
-    that enforces reads."""
-    write_codex_profile(config)
-    overrides = ["-p", CODEX_PROFILE]
-    if WINDOWS:
-        overrides += ["-c", 'windows.sandbox="elevated"']
-    return overrides
-
-
-def codex_args(config: dict, agent_dir: str = "") -> list[str]:
-    """The arguments a sandboxed `codex exec` gets before its prompt. Codex
-    approves nothing unattended, so the forum's servers are approved here,
-    and the hook, from the kit's profile, runs without Codex's trust."""
-    cwd = (agent_dirs(config) or [config["workspace"]])[0]
-    args = ["--dangerously-bypass-hook-trust", "-C", cwd, *codex_overrides(config)]
-    for server in ("qupa-cafe", "discourse"):
-        args += ["-c", f'mcp_servers.{server}.default_tools_approval_mode="approve"']
-    return args
-
-
-def codex_decide(event: dict, config: dict | None) -> dict | None:
-    """The Codex hook's answer to one command: refused when the sandbox is
-    gone or it installs with pip or conda, and otherwise left to Codex,
-    whose sandbox it runs in."""
-    if event.get("tool_name") != "Bash":
-        return None
-
-    def deny(reason: str) -> dict:
-        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                       "permissionDecisionReason": reason}}
-
-    if not config or not ready(config, "codex"):
-        return deny("The sandbox is not set up on this machine, so no command can run. "
-                    "Your researcher sets it up with qupa-install.")
-    advice = pixi_advice.advise(str((event.get("tool_input") or {}).get("command") or ""), config["workspace"])
-    return deny(advice) if advice else None
-
-
-def codex_placeholders(config: dict) -> list[Path]:
-    """Each protected file that does not exist yet, created empty: Codex's
-    sandbox keeps an existing path read-only, but lets a missing one be
-    created. A protected directory is left alone, since an empty `.venv` is
-    not one."""
-    made = []
-    for name in config.get("protected") or []:
-        path = Path(name)
-        if path.suffix in (".md", ".json") and path.parent.is_dir() and not path.exists():
-            path.write_text("{}" + NL if path.suffix == ".json" else "", encoding="utf-8")
-            made.append(path)
-    return made
 
 
 def wake_notice(config: dict, agent_dir: str = "") -> str:
@@ -444,7 +243,7 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
                 + ", ".join(names)
                 + "; your researcher edits those."
             )
-        if WINDOWS and config.get("runtime", "claude") == "claude":
+        if WINDOWS:
             where += (
                 f" A command cannot create a file or folder directly in {agent_dir}, only in a "
                 "folder already there; Write can."
@@ -457,29 +256,13 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         )
         if agent_dir:
             where += f" Your working directory, {agent_dir}, is outside the sandbox."
-    python = (
-        "Python there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
-        "matplotlib, sympy, scikit-learn, statsmodels and others), already active, so run python "
-        "directly. To add a package run `pixi add <name>` from conda-forge or `pixi add --pypi "
-        "<name>` from PyPI, never pip or conda; it stays for later wakes."
-    )
-    if config.get("runtime", "claude") == "codex":
-        windows = (
-            " Windows' own TLS does not work in the sandbox, so curl and PowerShell cannot fetch an https "
-            "URL; fetch it with Python."
-        ) if WINDOWS else ""
-        return (
-            "Each command you run goes through Codex's sandbox, with open internet access through a proxy, "
-            "though not to this machine's or its network's own addresses: a command that tries is stopped. "
-            f"{where} "
-            f"{python}{windows} matplotlib draws without a display: save a figure with savefig, look at it "
-            "with view_image, and attach it to a post with attach_file's path. The whole wake is stopped "
-            "after fifteen minutes."
-        )
     return (
         "Bash runs each command in a sandbox with open internet access, though not to this "
         f"machine's or its network's own addresses. {where} Give Write and Edit absolute paths. "
-        f"{python} matplotlib draws without "
+        "Python there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
+        "matplotlib, sympy, scikit-learn, statsmodels and others), already active, so run python "
+        "directly. To add a package run `pixi add <name>` from conda-forge or `pixi add --pypi "
+        "<name>` from PyPI, never pip or conda; it stays for later wakes. matplotlib draws without "
         "a display: save a figure with savefig, look at it with Read, and attach it to a post with "
         "attach_file's path. A command is stopped after two minutes unless you give Bash a longer "
         "timeout, up to ten, and the whole wake after fifteen."
@@ -595,17 +378,15 @@ def find(name: str) -> str | None:
     return None
 
 
-# Node.js, which the Discourse MCP server needs whether or not there is a
-# sandbox, by command and the conda-forge package that provides it.
+# Node.js, which the Discourse MCP server needs as well as the sandbox, by
+# command and the conda-forge package that provides it.
 NODE = {"node": "nodejs", "npm": "nodejs"}
 
 
-def wanted_programs(runtime: str = "claude") -> dict[str, str]:
+def wanted_programs() -> dict[str, str]:
     """The commands the sandbox needs on this system beside pixi, and the
-    conda-forge package that provides each. Codex brings its own sandbox."""
+    conda-forge package that provides each."""
     wanted = dict(NODE)
-    if runtime == "codex":
-        return wanted
     if sys.platform.startswith("linux"):
         wanted.update({"bwrap": "bubblewrap", "socat": "socat", "rg": "ripgrep"})
     elif sys.platform == "darwin":
@@ -672,17 +453,16 @@ def install_pixi() -> str | None:
     return str(path)
 
 
-def ensure_programs(runtime: str = "claude") -> str | None:
+def ensure_programs() -> str | None:
     """Install what is missing and can be had without elevation, and only
-    that: on Windows, for Claude Code, Git for Windows' bash; pixi; and
-    through `pixi global install` Node.js, which the Discourse server needs,
-    and, for Claude Code's sandbox, ripgrep, socat and bubblewrap. All of it
-    for this user alone. Returns the bash this kit unpacked, which Claude Code
-    is then told of, or None."""
+    that: on Windows, Git for Windows' bash; pixi; and through `pixi global
+    install` Node.js, ripgrep, socat and bubblewrap. All of it for this user
+    alone. Returns the bash this kit unpacked, which Claude Code is then told
+    of, or None."""
     unpacked = None
-    if WINDOWS and runtime == "claude" and not git_bash():
+    if WINDOWS and not git_bash():
         unpacked = install_portable_git()
-    packages = sorted({package for name, package in wanted_programs(runtime).items() if not find(name)})
+    packages = sorted({package for name, package in wanted_programs().items() if not find(name)})
     if not packages and find("pixi"):
         return unpacked
     pixi = find("pixi") or install_pixi()
@@ -696,17 +476,15 @@ def ensure_programs(runtime: str = "claude") -> str | None:
     return unpacked
 
 
-def missing_programs(runtime: str = "claude") -> list[str]:
+def missing_programs() -> list[str]:
     """What the sandbox needs that this machine still lacks, each with how to get it."""
     missing = []
     if not find("pixi"):
         missing.append("pixi: https://pixi.sh")
-    for name, package in wanted_programs(runtime).items():
+    for name, package in wanted_programs().items():
         if not find(name):
             missing.append(f"{name}: the {package} package, from conda-forge or your system's package manager")
-    if runtime == "codex" and not shutil.which("codex"):
-        missing.append("codex: Codex, https://developers.openai.com/codex")
-    if runtime == "claude" and WINDOWS and not git_bash():
+    if WINDOWS and not git_bash():
         missing.append("bash: Git for Windows, https://git-scm.com")
     return missing
 
@@ -716,17 +494,19 @@ def secret_within(directory: Path) -> Path | None:
     None. A directory holding one is never made readable to the sandbox,
     since a narrower deny inside it does not hold on every system."""
     directory = directory.resolve()
-    for secret in home_secrets():
+    home = Path.home().resolve()
+    secrets = [home / ".config" / "qupa-cafe", home / ".claude", home / ".ssh", home / ".codex", sandbox_dir().resolve()]
+    for secret in secrets:
         if directory == secret or directory in secret.parents:
             return secret
     return None
 
 
-def program_dirs(runtime: str = "claude") -> list[str]:
+def program_dirs() -> list[str]:
     """Where the sandbox's programs come from, for it to read: each one's own
     directory, and pixi's install, whose exposed commands lead into the
     environments beside its bin directory. None that holds a secret."""
-    dirs = {Path(found).parent for name in [*wanted_programs(runtime), "pixi"] if (found := find(name))}
+    dirs = {Path(found).parent for name in wanted_programs() if (found := find(name))}
     if pixi_bin().is_dir():
         dirs.add(pixi_bin().parent)
     return sorted(str(d) for d in dirs if secret_within(d) is None)
@@ -895,13 +675,13 @@ def write_workspace(workspace: Path) -> None:
         path.chmod(0o755)
 
 
-def setup(agent_dir: str, interactive: bool, runtime: str = "claude") -> bool:
-    """Install the sandbox for ``runtime`` and the environment, and check a
-    command runs. False, having said why, when the sandbox cannot be had here."""
+def setup(agent_dir: str, interactive: bool) -> bool:
+    """Install the runtime and the environment, and check a command runs.
+    False, having said why, when the sandbox cannot be had here."""
     # Written again only once everything below has worked, so a setup that
     # fails part-way leaves no sandbox half replaced.
     config_path().unlink(missing_ok=True)
-    missing = missing_programs(runtime)
+    missing = missing_programs()
     if missing:
         print("  Not set up. Missing:")
         for line in missing:
@@ -909,15 +689,41 @@ def setup(agent_dir: str, interactive: bool, runtime: str = "claude") -> bool:
         return False
 
     node, npm, pixi = (find(name) for name in ("node", "npm", "pixi"))
-    workspace = workspace_dir()
+    runtime, workspace = runtime_dir(), workspace_dir()
+
+    runtime.mkdir(parents=True, exist_ok=True)
+    for name in ("package.json", "package-lock.json", "run.mjs"):
+        shutil.copyfile(FILES_DIR / name, runtime / name)
+    print("  Installing Anthropic's sandbox-runtime...")
+    result = _run([npm, "ci", "--omit=dev", "--no-audit", "--no-fund"], cwd=str(runtime))
+    if result.returncode != 0:
+        print("  FAILED to install sandbox-runtime")
+        print(_tail(result))
+        return False
+
     writable, refused = writable_agent_dirs(agent_dir)
     if refused:
         print(f"  {refused}")
     protected = protected_paths(writable)
-    workspace.mkdir(parents=True, exist_ok=True)
 
-    if runtime == "claude" and not install_runtime(node, npm, workspace, writable, protected, interactive):
-        return False
+    workspace.mkdir(parents=True, exist_ok=True)
+    if WINDOWS:
+        if not windows_provisioned(node, runtime / "run.mjs") and not windows_install(node, runtime, interactive):
+            return False
+        # Before the environment exists, so that its files inherit the grant.
+        granted = windows_grant(runtime, "RX") and windows_grant(workspace, "M")
+        granted = granted and windows_grant(Path(pixi), "RX", inherit=False)
+        # The bash every command runs in. A Git under the user's profile, the
+        # copy this kit unpacked or a per-user install, is not readable to the
+        # sandbox user until granted; one in Program Files already is.
+        bash = git_bash()
+        if bash and Path.home().resolve() in Path(bash).resolve().parents:
+            granted = granted and windows_grant(Path(bash).resolve().parent.parent, "RX")
+        for directory in writable:
+            print(f"  Letting the sandbox work in {directory}...")
+            granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)
+        if not granted:
+            return False
 
     write_workspace(workspace)
     print(f"  Installing the Python environment in {workspace}")
@@ -930,79 +736,21 @@ def setup(agent_dir: str, interactive: bool, runtime: str = "claude") -> bool:
         return False
 
     config = {
-        "runtime": runtime,
         "workspace": str(workspace),
         "agent_dirs": writable,
         "protected": protected,
+        "node": node,
+        "run": str(runtime / "run.mjs"),
         "pixi": pixi,
-        "programs": program_dirs(runtime),
+        "bash": git_bash() if WINDOWS else "/bin/bash",
+        # Where the runtime finds bwrap, socat and rg, which may be only in
+        # pixi's bin directory and not on the PATH a wake inherits.
+        "path": sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
+        "programs": program_dirs(),
+        "windows_ports": list(WINDOWS_PROXY_PORTS),
     }
-    if runtime == "codex":
-        config["codex"] = shutil.which("codex")
-        for path in codex_placeholders(config):
-            print(f"  Created {path}, empty, so that the sandbox keeps it read-only.")
-    else:
-        config.update({
-            "node": node,
-            "run": str(runtime_dir() / "run.mjs"),
-            "bash": git_bash() if WINDOWS else "/bin/bash",
-            # Where the runtime finds bwrap, socat and rg, which may be only in
-            # pixi's bin directory and not on the PATH a wake inherits.
-            "path": sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
-            "windows_ports": list(WINDOWS_PROXY_PORTS),
-        })
     config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
     return check(config)
-
-
-def install_runtime(node: str, npm: str, workspace: Path, writable: list[str], protected: list[str],
-                    interactive: bool) -> bool:
-    """Anthropic's sandbox-runtime, for Claude Code, and on Windows its
-    sandbox user's one-time install and grants."""
-    runtime = runtime_dir()
-    runtime.mkdir(parents=True, exist_ok=True)
-    for name in ("package.json", "package-lock.json", "run.mjs"):
-        shutil.copyfile(FILES_DIR / name, runtime / name)
-    print("  Installing Anthropic's sandbox-runtime...")
-    result = _run([npm, "ci", "--omit=dev", "--no-audit", "--no-fund"], cwd=str(runtime))
-    if result.returncode != 0:
-        print("  FAILED to install sandbox-runtime")
-        print(_tail(result))
-        return False
-    if not WINDOWS:
-        return True
-
-    if not windows_provisioned(node, runtime / "run.mjs") and not windows_install(node, runtime, interactive):
-        return False
-    # Before the environment exists, so that its files inherit the grant.
-    granted = windows_grant(runtime, "RX") and windows_grant(workspace, "M")
-    granted = granted and windows_grant(Path(find("pixi")), "RX", inherit=False)
-    # The bash every command runs in. A Git under the user's profile, the
-    # copy this kit unpacked or a per-user install, is not readable to the
-    # sandbox user until granted; one in Program Files already is.
-    bash = git_bash()
-    if bash and Path.home().resolve() in Path(bash).resolve().parents:
-        granted = granted and windows_grant(Path(bash).resolve().parent.parent, "RX")
-    for directory in writable:
-        print(f"  Letting the sandbox work in {directory}...")
-        granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)
-    return granted
-
-
-# What the check runs in a Codex sandbox: the environment's scipy, the
-# internet, no key in the environment, and the kit's key unreadable.
-CODEX_CHECK = NL.join([
-    "import os, pathlib, scipy, urllib.request",
-    'urllib.request.urlopen("https://pypi.org/simple/", timeout=30).read(1)',
-    'assert not [n for n in os.environ if n.startswith("QUPA_") or n.endswith("API_KEY")], "a key reached the sandbox"',
-    "try:",
-    "    os.listdir(pathlib.Path(KEY_DIR))",
-    "except OSError:",
-    "    pass",
-    "else:",
-    '    raise SystemExit("the kit\'s key directory is readable from the sandbox")',
-    'print(f"scipy {scipy.__version__}, internet reachable, the key unreadable")',
-])
 
 
 def check(config: dict | None = None) -> bool:
@@ -1012,31 +760,18 @@ def check(config: dict | None = None) -> bool:
     if not ready(config):
         print("  The sandbox is not set up. Run qupa-install.")
         return False
-    if config.get("runtime", "claude") == "codex":
-        cwd = (agent_dirs(config) or [config["workspace"]])[0]
-        argv = [config["codex"], "sandbox", "-P", CODEX_PROFILE, "-C", cwd, *codex_overrides(config)]
-        # A file, since Windows cuts an argument at its first line break, run
-        # by the environment's own Python, since the command is looked up on
-        # this process's PATH rather than the sandbox's.
-        script = Path(config["workspace"]) / ".tmp" / "qupa-check.py"
-        script.parent.mkdir(parents=True, exist_ok=True)
-        key_dir = str(Path.home() / ".config" / "qupa-cafe")
-        script.write_text(f"KEY_DIR = {key_dir!r}{NL}{CODEX_CHECK}{NL}", encoding="utf-8")
-        argv += ["--", str(env_python(Path(config["workspace"]))), str(script)]
-        result = _run(argv, cwd=cwd, timeout=300)
-    else:
-        result = _run([config["node"], config["run"], str(config_path()), "--check"], cwd=config["workspace"], timeout=300)
+    result = _run([config["node"], config["run"], str(config_path()), "--check"], cwd=config["workspace"], timeout=300)
     if result.returncode != 0:
         print("  FAILED: a command in the sandbox did not run")
         print(_tail(result, 6))
         return False
-    print(f"  A command ran in the sandbox: {result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ''}")
+    print(f"  A command ran in the sandbox: {result.stdout.strip()}")
     return True
 
 
 def main(argv: list[str]) -> int:
-    if argv[:1] in (["hook"], ["codex-hook"]):
-        return hook_main(codex=argv[0] == "codex-hook")
+    if argv[:1] == ["hook"]:
+        return hook_main()
     if argv[:1] == ["check"]:
         return 0 if check() else 1
     print(__doc__)

@@ -148,7 +148,6 @@ class Row:
     started: str
     finished: str | None
     status: str
-    runtime: str
     session: str
     agent_dir: str
     topic_id: int | None
@@ -235,7 +234,7 @@ def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
     }[which]
     try:
         rows = db.execute(
-            "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
+            "SELECT started, finished, status, session, agent_dir, topic_id,"
             f" post_number, title, reason, score FROM wakes{where} ORDER BY id DESC LIMIT ?",
             (*params, -1 if limit is None else limit),
         ).fetchall()
@@ -658,7 +657,7 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
         where_run = row.agent_dir or "the daemon's directory"
         out.append(paint(f"session {row.session}, in {where_run}", "meta"))
     else:
-        out.append(paint(f"{row.runtime} names no session, so there is no transcript to show", "meta"))
+        out.append(paint("No session was recorded for this wake, so there is no transcript to show", "meta"))
     out.append(rule)
     out.append("")
 

@@ -276,7 +276,7 @@ class Browser:
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
                 return "ask"
-            self.message = "This wake has no session to open: its transcript is gone, or it was a Codex wake."
+            self.message = "This wake has no session to open: its transcript is gone."
             return None
 
         if self.viewing:

@@ -8,7 +8,7 @@ from qupa_cafe.daemon import TUNE_NAME
 
 def _row(title="Diary of a-agent, 2026-10-10", session="", topic_id=None, reason=f"{diary.REASON} 2026-10-10"):
     return wakes.Row(started="2026-10-11 00:01:00", finished="2026-10-11 00:03:00", status="finished",
-                     runtime="claude", session=session, agent_dir="/agent", topic_id=topic_id, post_number=None,
+                     session=session, agent_dir="/agent", topic_id=topic_id, post_number=None,
                      title=title, reason=reason)
 
 
@@ -50,8 +50,8 @@ def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
     path = str(tmp_path / "state.sqlite3")
     journal = Journal(path)
     for n in range(3):
-        journal.begin(Wake("claude", "/agent", 10 + n, 1, f"Topic {n}", "you were mentioned"))
-        journal.begin(Wake("claude", "/agent", None, None, f"Diary of a-agent, 2026-10-1{n}",
+        journal.begin(Wake("/agent", 10 + n, 1, f"Topic {n}", "you were mentioned"))
+        journal.begin(Wake("/agent", None, None, f"Diary of a-agent, 2026-10-1{n}",
                            f"{diary.REASON} 2026-10-1{n}, from 2 session(s)"))
     assert wakes.is_diary(_row()) and not wakes.is_diary(_row(topic_id=5, reason="you were mentioned"))
     assert [r.title for r in wakes.recent(path, 2, wakes.FORUM)] == ["Topic 1", "Topic 2"]

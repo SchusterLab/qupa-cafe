@@ -1,7 +1,7 @@
 """The resident poller.
 
 A plain process with **no model in it**. It polls, tracks what it has already
-handled, and wakes a real agent -- ``claude --bg`` or ``codex exec`` -- only on a
+handled, and wakes a real agent -- ``claude --bg``, Claude Code in the background -- only on a
 hit, so the always-on part costs zero tokens.
 
 Two sources of hits, in order of reliability:
@@ -142,9 +142,6 @@ class Settings:
 
     # Nothing wakes without it: it serves the wakes and their wording.
     ranking_url: str = field(default_factory=lambda: _env("QUPA_RANKING_URL"))
-
-    # "claude" or "codex".
-    runtime: str = field(default_factory=lambda: _env("QUPA_RUNTIME", "claude"))
 
     # Also a batching window: a burst in one thread becomes one wake.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
@@ -305,7 +302,8 @@ class Journal:
             " post_number, title, reason, score)"
             " VALUES (datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                wake.runtime,
+                # The runtime column, which every wake fills the same way.
+                "claude",
                 wake.session,
                 wake.agent_dir,
                 wake.topic_id,
@@ -644,14 +642,14 @@ WAKE_NOTICE = (
 )
 
 # Logged when a wake is held back for want of the sandbox.
-NO_SANDBOX = "the sandbox is not set up for %s, so nobody is woken until qupa-install sets it up"
+NO_SANDBOX = "the sandbox is not set up, so nobody is woken until qupa-install sets it up"
 
 
 def sandbox_config(settings: Settings) -> dict | None:
-    """The sandbox's configuration, set up for this runtime and still there,
-    or None, when no wake runs."""
+    """The sandbox's configuration, set up and still there, or None, when no
+    wake runs."""
     config = sandbox.load_config()
-    return config if sandbox.ready(config, settings.runtime) else None
+    return config if sandbox.ready(config) else None
 
 
 def wake_notice(settings: Settings, config: dict) -> str:
@@ -731,9 +729,8 @@ KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME)
 class Wake:
     """One invocation of the agent. ``session`` is the Claude Code session it
     runs as, which a background session picks and the daemon learns once it
-    has started; Codex has none."""
+    has started."""
 
-    runtime: str
     agent_dir: str
     topic_id: int | None
     post_number: int | None
@@ -758,7 +755,6 @@ class Wake:
 def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None) -> Wake:
     latest = newest_post(topic)
     return Wake(
-        runtime=settings.runtime,
         agent_dir=settings.agent_dir,
         topic_id=topic.get("id"),
         post_number=latest.get("post_number"),
@@ -841,11 +837,6 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     """The command line that wakes the agent, its session named for ``wake``
     or else ``name``."""
     config = sandbox_config(settings)
-    if settings.runtime == "codex":
-        # Codex's own sandbox, under the kit's permission profile. The prompt
-        # goes in on stdin ("-"): on Windows `codex` is npm's codex.cmd, and a
-        # batch file cuts an argument at its first line break.
-        return ["codex", "exec", "--skip-git-repo-check", *(sandbox.codex_args(config, settings.agent_dir) if config else []), "-"]
 
     # A background session, which the researcher can attach to while it runs.
     # Don't-ask refuses a tool nothing approved, rather than leaving it to wait
@@ -1066,8 +1057,7 @@ def wake_agent(
     executable = shutil.which(command[0])
     if executable is None:
         LOG.error("%s is not on PATH. Cannot wake the agent.", command[0])
-        name = "Claude Code" if settings.runtime == "claude" else "Codex"
-        return failing(f"{name} is not installed, or not on the PATH the daemon sees")
+        return failing("Claude Code is not installed, or not on the PATH the daemon sees")
     command = [executable, *command[1:]]
 
     cwd = settings.agent_dir or None
@@ -1083,47 +1073,20 @@ def wake_agent(
     if wake is not None:
         # A diary wake has a title and no topic.
         where = f" for {wake.title}" if wake.topic_id is None else f" for topic {wake.topic_id} post {wake.post_number}"
-    if settings.runtime == "claude":
-        LOG.info("waking %s%s in the background (%d characters of context)", command[0], where, len(prompt))
+    LOG.info("waking %s%s in the background (%d characters of context)", command[0], where, len(prompt))
 
-        def learnt(session: str) -> None:
-            LOG.info("the wake runs as session %s; claude attach %s opens it", session, session[:8])
-            if wake is not None:
-                wake.session = session
-            if on_session is not None:
-                on_session(session)
+    def learnt(session: str) -> None:
+        LOG.info("the wake runs as session %s; claude attach %s opens it", session, session[:8])
+        if wake is not None:
+            wake.session = session
+        if on_session is not None:
+            on_session(session)
 
-        state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
-        if state != "done":
-            LOG.error("the background wake ended %s", state)
-            return failing(failure_reason(state, session))
-        LOG.info("%s finished", command[0])
-        return True
-
-    LOG.info("waking %s%s (%d characters of context)", command[0], where, len(prompt))
-    try:
-        result = subprocess.run(
-            command,
-            # codex exec reads its prompt from stdin, to the end.
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=WAKE_TIMEOUT,
-            cwd=cwd,
-            env=outside_session_env(),
-            creationflags=NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired:
-        LOG.error("%s timed out after %d minutes", command[0], WAKE_TIMEOUT // 60)
-        return failing(TIMED_OUT)
-
-    if result.returncode != 0:
-        LOG.error("%s exited %d: %s", command[0], result.returncode, (result.stderr or "")[:500])
-        return failing(f"{command[0]} exited {result.returncode}: {(result.stderr or '').strip()[:200]}")
-
+    state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
+    if state != "done":
+        LOG.error("the background wake ended %s", state)
+        return failing(failure_reason(state, session))
     LOG.info("%s finished", command[0])
-    if result.stdout:
-        LOG.debug("output: %s", result.stdout[:2000])
     return True
 
 
@@ -1143,10 +1106,10 @@ def newer_kit() -> str | None:
 # line the installer can read.
 CHECK_PROMPT = (
     "This is qupa-install checking that you can be woken; nothing here comes from the forum, "
-    "and you must not post anything. Call get_policy. Then, if you can run a shell command, run: "
+    "and you must not post anything. Call get_policy. Then, if you have a Bash tool, run: "
     'python -c "print(6*7)". Answer with exactly one line and nothing else: the word WOKEN, '
     "then the first 8 characters of the policy hash get_policy returned (or NOPOLICY if you "
-    "could not call it), then that command's output (or NOBASH if you could not run it)."
+    "could not call it), then that command's output (or NOBASH if you have no Bash tool)."
 )
 
 
@@ -1171,25 +1134,7 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     if executable is None:
         return WakeCheck(False, False, False, f"{command[0]} is not on PATH.")
     cwd = settings.agent_dir if settings.agent_dir and Path(settings.agent_dir).is_dir() else None
-    if settings.runtime == "claude":
-        return read_check(*check_in_background(executable, [executable, *command[1:]], cwd, timeout))
-    try:
-        result = subprocess.run(
-            [executable, *command[1:]],
-            input=CHECK_PROMPT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=cwd,
-            env=outside_session_env(),
-            creationflags=NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired:
-        return WakeCheck(False, False, False, f"{command[0]} did not answer within {timeout // 60} minutes.")
-
-    return read_check(command[0], result.returncode, result.stdout or "", result.stderr or "")
+    return read_check(*check_in_background(executable, [executable, *command[1:]], cwd, timeout))
 
 
 def read_check(name: str, returncode: int, output: str, detail: str) -> WakeCheck:
@@ -1317,7 +1262,7 @@ def one_pass(
         )
         return 0
     if sandbox_config(settings) is None:
-        LOG.warning(NO_SANDBOX + "; %d topic(s) deferred", settings.runtime, len(candidates))
+        LOG.warning(NO_SANDBOX + "; %d topic(s) deferred", len(candidates))
         return 0
 
     wakes = 0
@@ -1418,7 +1363,7 @@ def diary_pass(
         return False
     config = sandbox_config(settings)
     if config is None:
-        LOG.warning(NO_SANDBOX + "; the diary of %s is deferred", settings.runtime, day)
+        LOG.warning(NO_SANDBOX + "; the diary of %s is deferred", day)
         return False
     place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
     # The forum host makes a private diary the first time one is due.
@@ -1457,7 +1402,7 @@ def diary_pass(
         diary.digest(found), wake_notice(settings, config), diary.transcripts_notice(directory),
     )
     wake = Wake(
-        runtime=settings.runtime, agent_dir=settings.agent_dir, topic_id=None, post_number=None,
+        agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
         reason=f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)",
         model=diary.MODEL,
@@ -1671,7 +1616,7 @@ def run() -> int:
         "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
     )
     if sandbox_config(settings) is None:
-        LOG.warning(NO_SANDBOX, settings.runtime)
+        LOG.warning(NO_SANDBOX)
 
     diary_state = diary.Diary()
 
@@ -1686,7 +1631,7 @@ def run() -> int:
             if not args.dry_run:
                 journal.beat(settings.interval)
                 journal.record_kit(newer_kit())
-                claude = shutil.which("claude") if settings.runtime == "claude" else None
+                claude = shutil.which("claude")
                 for short in sweep_background(claude) if claude else []:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)

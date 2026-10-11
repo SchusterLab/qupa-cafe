@@ -641,8 +641,8 @@ def test_get_policy_returns_the_hash_both_accounts_and_the_kit(forum):
     answer = _get_policy(url)
 
     assert answer["policy_hash"] == policy_hash(POLICY_TEXT)
-    # Both accounts, because a runtime need not forward the connection
-    # instructions -- Codex does not -- and an agent that cannot name its
+    # Both accounts, because a client need not forward the connection
+    # instructions, and an agent that cannot name its
     # researcher cannot write to them.
     assert answer["you_post_as"] == "test-agent"
     # Unset in the subprocess's environment, so it reports being untold rather

@@ -705,7 +705,7 @@ class QupaServer:
                     ],
                     "policy_hash": policy.hash,
                     "topic_id": policy.topic_id,
-                    # Also here because Codex does not forward the instructions.
+                    # Also here because a client may drop the instructions.
                     "you_post_as": self.writer.api_username,
                     "your_researcher": self.researcher_name(),
                     "from_your_researcher": local.instructions() or None,
