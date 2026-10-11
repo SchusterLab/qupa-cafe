@@ -130,6 +130,14 @@ class Choice:
             return "in a topic for each day in your private diary, which only you and your agent read"
         return "nowhere"
 
+    def category(self) -> str:
+        """The category it goes in, in words, for a person."""
+        if self.mode == PUBLIC:
+            return f"in the {CATEGORY} category, which every member reads"
+        if self.mode == PRIVATE:
+            return "in your private diary category, which only you and your agent read"
+        return "nowhere"
+
 
 def mode_of(value: str, default: str = OFF) -> str:
     value = value.strip().lower()

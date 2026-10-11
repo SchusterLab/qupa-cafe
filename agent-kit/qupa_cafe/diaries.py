@@ -240,7 +240,7 @@ def next_mode(browser: DiaryBrowser) -> str:
     diary.set_choice(chosen)
     if not chosen.on:
         return "The diary is off. Nothing more is posted until it is turned on again."
-    return f"The diary is {chosen.mode}, posted from the next {chosen.at()} {chosen.where()}."
+    return f"The diary is {chosen.mode}, posted {chosen.category()}."
 
 
 def move_hour(browser: DiaryBrowser, by: int) -> str:

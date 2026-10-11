@@ -63,11 +63,13 @@ def test_the_list_says_whether_the_diary_is_kept_where_and_when():
 def test_d_steps_from_off_to_public_to_private_and_back_writing_env():
     b = _browser()
     assert b.handle("d") == "mode"
-    assert "public, posted from the next midnight" in diaries.next_mode(b)
+    assert diaries.next_mode(b) == "The diary is public, posted in the Diary category, which every member reads."
     assert diary.choice(diary.Choice()).mode == diary.PUBLIC
     # Whether the private diary is there yet or not: the forum host makes it
     # when the first private entry is due.
-    assert "private" in diaries.next_mode(b) and diary.choice(diary.Choice()).mode == diary.PRIVATE
+    assert diaries.next_mode(b) == (
+        "The diary is private, posted in your private diary category, which only you and your agent read.")
+    assert diary.choice(diary.Choice()).mode == diary.PRIVATE
     assert "off" in diaries.next_mode(b) and diary.choice(diary.Choice(diary.PUBLIC)).mode == diary.OFF
 
 
