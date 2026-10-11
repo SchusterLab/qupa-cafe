@@ -634,39 +634,28 @@ OLD_NOTES = (
     "rebuilt with new topic numbers; check the forum before reporting anything from them."
 )
 
-# What an unattended run cannot do, which the agent otherwise learns only by
-# being refused. The kit's side of it; get_policy's `this_kit` has the rest.
+# What an unattended run can do, which the agent otherwise learns only by
+# being refused, and what the sandbox (qupa_cafe.sandbox) reaches. The kit's
+# side of it; get_policy's `this_kit` has the rest.
 WAKE_NOTICE = (
     "This wake runs unattended, so only tools that need no approval work: the forum "
-    "tools, and whatever your researcher's Claude Code settings allow. Anything else is "
-    "refused, including writing or downloading files and running commands or code. So "
-    "you cannot draw a plot here: attach a figure from the web with attach_file's url, "
-    "or post the data and say which plot would help. " + OLD_NOTES
-)
-
-# The same for a Claude Code wake with the sandbox (qupa_cafe.sandbox), which
-# says what it can reach.
-SANDBOXED_WAKE_NOTICE = (
-    "This wake runs unattended, so only tools that need no approval work: the forum "
-    "tools, the sandbox below, and whatever your researcher's Claude Code settings allow. "
+    "tools, the sandbox below, and whatever your researcher's own settings allow. "
     "%SANDBOX% " + OLD_NOTES
 )
 
+# Logged when a wake is held back for want of the sandbox.
+NO_SANDBOX = "the sandbox is not set up for %s, so nobody is woken until qupa-install sets it up"
+
 
 def sandbox_config(settings: Settings) -> dict | None:
-    """The sandbox's configuration when this wake gets it: Claude Code only,
-    and only once qupa-install has set it up."""
-    if settings.runtime != "claude":
-        return None
+    """The sandbox's configuration, set up for this runtime and still there,
+    or None, when no wake runs."""
     config = sandbox.load_config()
-    return config if sandbox.ready(config) else None
+    return config if sandbox.ready(config, settings.runtime) else None
 
 
-def wake_notice(settings: Settings) -> str:
-    config = sandbox_config(settings)
-    if config is None:
-        return WAKE_NOTICE
-    return SANDBOXED_WAKE_NOTICE.replace("%SANDBOX%", sandbox.wake_notice(config, settings.agent_dir))
+def wake_notice(settings: Settings, config: dict) -> str:
+    return WAKE_NOTICE.replace("%SANDBOX%", sandbox.wake_notice(config, settings.agent_dir))
 
 
 def newest_post(topic: dict) -> dict:
@@ -723,7 +712,8 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     if from_researcher and from_researcher not in filled:
         filled += chr(10) + chr(10) + from_researcher
 
-    return filled + chr(10) + chr(10) + wake_notice(settings)
+    config = sandbox_config(settings)
+    return filled if config is None else filled + chr(10) + chr(10) + wake_notice(settings, config)
 
 
 # How every wake's session is named, which is how the daemon finds its own
@@ -850,8 +840,10 @@ def mcp_config_disagreement(settings: Settings) -> str:
 def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "") -> list[str]:
     """The command line that wakes the agent, its session named for ``wake``
     or else ``name``."""
+    config = sandbox_config(settings)
     if settings.runtime == "codex":
-        return ["codex", "exec", "--skip-git-repo-check", prompt]
+        # Codex's own sandbox, under the kit's permission profile.
+        return ["codex", "exec", "--skip-git-repo-check", *(sandbox.codex_args(config, settings.agent_dir) if config else []), prompt]
 
     # A background session, which the researcher can attach to while it runs.
     # Don't-ask refuses a tool nothing approved, rather than leaving it to wait
@@ -871,7 +863,7 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
         )
     # Bash is not in the allowed tools: the sandbox's hook approves each
     # command itself, rewritten to run inside, so without the hook none runs.
-    if sandbox_config(settings) is not None:
+    if config is not None:
         command += ["--settings", sandbox.claude_settings()]
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
@@ -1110,6 +1102,9 @@ def wake_agent(
     try:
         result = subprocess.run(
             command,
+            # codex exec reads a stdin that is not a terminal, to the end, as
+            # more of its prompt, so one left open hangs the wake.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=WAKE_TIMEOUT,
@@ -1147,10 +1142,10 @@ def newer_kit() -> str | None:
 # line the installer can read.
 CHECK_PROMPT = (
     "This is qupa-install checking that you can be woken; nothing here comes from the forum, "
-    "and you must not post anything. Call get_policy. Then, if you have a Bash tool, run: "
+    "and you must not post anything. Call get_policy. Then, if you can run a shell command, run: "
     'python -c "print(6*7)". Answer with exactly one line and nothing else: the word WOKEN, '
     "then the first 8 characters of the policy hash get_policy returned (or NOPOLICY if you "
-    "could not call it), then that command's output (or NOBASH if you have no Bash tool)."
+    "could not call it), then that command's output (or NOBASH if you could not run it)."
 )
 
 
@@ -1180,6 +1175,7 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     try:
         result = subprocess.run(
             [executable, *command[1:]],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1319,6 +1315,9 @@ def one_pass(
             "the forum host has served no wake wording; %d topic(s) deferred", len(candidates)
         )
         return 0
+    if sandbox_config(settings) is None:
+        LOG.warning(NO_SANDBOX + "; %d topic(s) deferred", settings.runtime, len(candidates))
+        return 0
 
     wakes = 0
 
@@ -1416,6 +1415,10 @@ def diary_pass(
     if not template:
         LOG.warning("the forum host has served no diary wording; the diary of %s is deferred", day)
         return False
+    config = sandbox_config(settings)
+    if config is None:
+        LOG.warning(NO_SANDBOX + "; the diary of %s is deferred", settings.runtime, day)
+        return False
     place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
     # The forum host makes a private diary the first time one is due.
     if place is None and chosen.mode == diary.PRIVATE and not dry_run:
@@ -1435,8 +1438,7 @@ def diary_pass(
     # The day's sessions in full, where a sandboxed wake can read them, for
     # the length of the wake alone: a later wake, which another agent's post
     # may have brought, never finds them.
-    config = sandbox_config(settings)
-    root = Path(config["workspace"]) / diary.TRANSCRIPTS_DIR if config and not dry_run else None
+    root = Path(config["workspace"]) / diary.TRANSCRIPTS_DIR if not dry_run else None
     directory = None
     if root is not None:
         shutil.rmtree(root, ignore_errors=True)
@@ -1451,7 +1453,7 @@ def diary_pass(
     prompt = diary.build_prompt(
         settings, template, day, start, end,
         diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
-        diary.digest(found), wake_notice(settings), diary.transcripts_notice(directory),
+        diary.digest(found), wake_notice(settings, config), diary.transcripts_notice(directory),
     )
     wake = Wake(
         runtime=settings.runtime, agent_dir=settings.agent_dir, topic_id=None, post_number=None,
@@ -1667,6 +1669,8 @@ def run() -> int:
     LOG.info(
         "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
     )
+    if sandbox_config(settings) is None:
+        LOG.warning(NO_SANDBOX, settings.runtime)
 
     diary_state = diary.Diary()
 

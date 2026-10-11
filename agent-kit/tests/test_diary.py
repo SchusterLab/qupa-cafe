@@ -492,7 +492,7 @@ def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends
     write_session(projects, "mine", [prompt("Fit the T1 data", at(9)), answer("T1 is 42 us.", at(9, 1))])
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
-    monkeypatch.setattr(daemon, "wake_notice", lambda settings: "NOTICE")
+    monkeypatch.setattr(daemon, "wake_notice", lambda settings, config: "NOTICE")
     root = workspace / diary.TRANSCRIPTS_DIR
     # Left by a wake that never finished, which the next one clears.
     (root / "2026-10-01").mkdir(parents=True)
@@ -511,19 +511,19 @@ def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends
     assert not root.exists()
 
 
-def test_the_sessions_go_even_when_the_wake_fails_and_none_are_written_without_a_sandbox(
+def test_the_sessions_go_even_when_the_wake_fails_and_without_a_sandbox_no_diary_is_written(
         handled, projects, tmp_path, monkeypatch):
     texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%\n%TRANSCRIPTS%"})
     write_session(projects, "mine", [prompt("work", at(9))])
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
-    monkeypatch.setattr(daemon, "wake_notice", lambda settings: "NOTICE")
+    monkeypatch.setattr(daemon, "wake_notice", lambda settings, config: "NOTICE")
     woke, _ = _pass(_settings(), handled, None, monkeypatch, ok=False)
     assert not woke and not (workspace / diary.TRANSCRIPTS_DIR).exists()
 
     monkeypatch.setattr(daemon, "sandbox_config", lambda settings: None)
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
-    assert woke and "excerpts above alone" in woken[0][0] and not (workspace / diary.TRANSCRIPTS_DIR).exists()
+    assert not woke and woken == []
 
 
 def test_a_diary_wake_runs_on_sonnet_and_other_wakes_on_the_researcher_s_default(handled, projects, monkeypatch):

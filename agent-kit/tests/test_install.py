@@ -331,17 +331,15 @@ def test_the_install_fails_when_the_sandbox_ran_no_command(monkeypatch, capsys):
     from qupa_cafe import daemon
 
     settings = _wake_check(monkeypatch, daemon.WakeCheck(True, True, False, "WOKEN 5aa6f598 NOBASH"))
-    assert install.check_agent_wakes(settings, sandboxed=True) is False
+    assert install.check_agent_wakes(settings) is False
     assert "no command ran in the sandbox" in capsys.readouterr().out
-    # Without a sandbox, no command is expected.
-    assert install.check_agent_wakes(settings, sandboxed=None) is True
 
 
 def test_the_install_fails_when_the_agent_cannot_be_woken(monkeypatch, capsys):
     from qupa_cafe import daemon
 
     settings = _wake_check(monkeypatch, daemon.WakeCheck(False, False, False, "claude is not on PATH."))
-    assert install.check_agent_wakes(settings, sandboxed=None) is False
+    assert install.check_agent_wakes(settings) is False
     assert "sign in" in capsys.readouterr().out
 
 

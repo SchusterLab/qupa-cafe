@@ -34,12 +34,29 @@ def no_local_text(tmp_path, monkeypatch):
     # suite on a machine with an installed kit has both files, and they would
     # otherwise be appended to every prompt these tests build.
     monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
+    # And Codex's home, where a Codex wake's sandbox profile is written.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     # And the placeholders this machine has put up.
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
     # And its env, where the diary's settings are read again at every poll.
     monkeypatch.setenv("QUPA_ENV_FILE", str(tmp_path / "env"))
+
+
+@pytest.fixture(autouse=True)
+def a_sandbox(request, tmp_path, monkeypatch):
+    """A sandbox set up for whichever runtime a test wakes, since no wake runs
+    without one. test_sandbox.py sets up its own, and is left to it."""
+    if request.module.__name__.endswith("test_sandbox"):
+        return
+    from qupa_cafe import daemon
+
+    def config(settings):
+        return {"runtime": settings.runtime, "workspace": str(tmp_path / "workspace"), "agent_dirs": [], "protected": []}
+
+    monkeypatch.setattr(daemon, "sandbox_config", config)
+    monkeypatch.setattr(daemon.sandbox, "codex_args", lambda config, agent_dir="": ["--sandboxed"])
 
 
 POLICY_TEXT = (

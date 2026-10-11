@@ -460,8 +460,8 @@ def test_a_wake_is_told_what_an_unattended_run_cannot_do():
     if the forum were at fault."""
     prompt = build_prompt(_settings(), "you were mentioned", _topic(10), "Reason: %REASON%\n%BODY%")
 
-    assert prompt.endswith(daemon.WAKE_NOTICE)
-    assert "attach_file" in daemon.WAKE_NOTICE
+    assert prompt.endswith(daemon.wake_notice(_settings(), daemon.sandbox_config(_settings())))
+    assert "attach_file" in prompt
 
 
 def test_the_poll_records_what_the_host_wants_said(monkeypatch):
@@ -657,7 +657,7 @@ def test_a_missing_mcp_config_is_not_passed(tmp_path):
 
 
 def test_codex_takes_its_servers_from_its_own_configuration_and_no_session():
-    expected = ["codex", "exec", "--skip-git-repo-check", "a prompt"]
+    expected = ["codex", "exec", "--skip-git-repo-check", "--sandboxed", "a prompt"]
     assert runtime_command(Settings(runtime="codex"), "a prompt") == expected
     assert runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session="")) == expected
 
