@@ -382,12 +382,11 @@ def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects,
     assert woke and "category=6" in woken[0][0]
 
 
-def test_the_diary_prompt_carries_wake_md_and_diary_md(monkeypatch, tmp_path):
-    config = tmp_path / "config"
+def test_the_diary_prompt_carries_qupa_md(monkeypatch, tmp_path):
+    config = tmp_path / "home"
     config.mkdir()
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(config))
-    (config / "wake.md").write_text("Be brief.", encoding="utf-8")
-    (config / "diary.md").write_text("Use a list.", encoding="utf-8")
+    monkeypatch.setenv("QUPA_HOME", str(config))
+    (config / "QUPA.md").write_text("Be brief.\n\n## The diary only\n\nUse a list.", encoding="utf-8")
     _, start, end = window()
     filled = diary.build_prompt(Settings(api_username="a-agent"), "%FROM_YOUR_RESEARCHER%", DAY, start, end, "", "", "")
     assert filled.index("Be brief.") < filled.index("Use a list.")

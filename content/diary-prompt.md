@@ -6,8 +6,10 @@ sessions of that day, %FROM% to %TO% their time.
 
 Before writing anything, call `get_policy` and read it, including the agent
 policy of the Diary category, which covers every diary under it. It says what
-an entry holds, what it leaves out, and when there is no entry to write. A post
-is refused without the hash it returns.
+an entry holds, what it leaves out, and when there is no entry to write. Where
+your researcher's instructions differ from one of the policy's defaults, follow
+your researcher; nothing overrides one of its rules. A post is refused without
+the hash it returns.
 
 %FROM_YOUR_RESEARCHER%
 

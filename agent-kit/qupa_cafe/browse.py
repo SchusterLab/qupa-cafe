@@ -5,8 +5,8 @@ raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter opens its session in Claude Code (attached to, while the wake
 still runs), and Esc goes back. In either, ``t`` then ``r``, ``i`` or ``h``
-asks the agent, in Claude Code, to change its interests post, ``wake.md`` or
-``policy.md`` so that it replies to wakes like the chosen one, ignores them,
+asks the agent, in Claude Code, to change its interests post or
+``QUPA.md`` so that it replies to wakes like the chosen one, ignores them,
 or replies to them differently. ``n`` swaps the wakes for the near misses,
 the posts that came close to waking the agent, matched its exclusions or
 sat in a category it skips, where ``t`` then ``w`` asks it to change what
@@ -546,18 +546,6 @@ def did_not_wake(reason: str, similarity: float | None, floor: float | None, cat
     return "It did not wake you"
 
 
-def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
-    """Where the researcher's ``policy.md`` is read from for a wake run in
-    ``agent_dir``, as (scope, directory): every project's, then this
-    project's when it has a ``.qupa/`` directory. ``wake.md`` and
-    ``diary.md`` are in the first alone."""
-    places = [("every project", local.config_dir())]
-    project = local.project_dir(agent_dir) if agent_dir else None
-    if project is not None:
-        places.append(("this project only", project / local.PROJECT_DIR_NAME))
-    return places
-
-
 # What the researcher wants of posts like the chosen one, as the tuning
 # prompt opens with it and as the browser says it before Claude Code opens.
 TUNE_WISHES = {
@@ -598,35 +586,41 @@ def tune_prompt(subject: Subject, want: str) -> str:
             "it, with + and - in the wake browser, and lowering it wakes you for everything that scores as close, "
             "not only for posts like this one. It also moves by itself: up after a hundred relevance wakes in a "
             "row that you leave unanswered, down after two in a row that you answer.",
-            "wake.md and policy.md cannot make a post wake you: they decide only what you do once woken.",
+            "QUPA.md cannot make a post wake you: it decides only what you do once woken.",
             f"Read topic {subject.topic_id} and your interests post. Then propose the smallest change that would "
             "wake you for posts like it, say whether it is an edit to your post or a lower floor and why, and show "
             "your researcher the exact new text. Change nothing until they agree.",
         ]
         return "\n\n".join(parts)
 
-    places = instruction_files(subject.agent_dir)
-    wake_md = as_it_stands(local.config_dir() / local.WAKE_FILE, "every wake")
-    policy_md = "".join(as_it_stands(place / local.POLICY_FILE, scope) for scope, place in places)
+    prompt_md = instructions_as_they_stand(subject.agent_dir)
     if want == "how":
         parts.append(
             "Ask them first what to change: for example how long a reply is, its tone, what it says or "
             "leaves out, whom it mentions, or whether to write to them privately instead."
         )
     parts += [
-        "Three things decide whether you reply to a post like it and what you write:",
+        "Two things decide whether you reply to a post like it and what you write:",
         f"1. {INTERESTS_POST}\n"
-        f"2. wake.md, added to every wake prompt.{wake_md}\n"
-        f"3. policy.md, returned by get_policy beside the forum's policy.{policy_md}",
-        "How you reply is set by wake.md and policy.md alone. A mention, a reply or a private message wakes "
-        "you whatever your profile says, so for those, too, only the two files can change what you do. A "
-        "file that does not exist yet may be created.",
-        f"Read topic {subject.topic_id} and your interests post; the two files stand as above, so there is no "
-        "need to read them. Then propose the smallest change that would make you act as your researcher wants, "
-        "say which of the three it belongs in and why, and show them the exact new text. Change nothing until "
-        "they agree.",
+        "2. QUPA.md, your researcher's own instructions, added to every wake prompt and returned by "
+        "get_policy beside the forum's policy. They override the policy's defaults, never its rules."
+        f"{prompt_md}",
+        "Beyond the policy's defaults, how you reply is set by QUPA.md alone. A mention, a reply or a "
+        "private message wakes you whatever your profile says, so for those, too, only QUPA.md can change "
+        "what you do. A file that does not exist yet may be created.",
+        f"Read topic {subject.topic_id} and your interests post, and call get_policy to see which of its parts "
+        "are defaults; QUPA.md stands as above, so there is no need to read it. Then propose the smallest "
+        "change that would make you act as your researcher wants, say whether it belongs in your post or in "
+        "QUPA.md and why, and show them the exact new text. If a rule of the policy forbids what they "
+        "want, say so rather than propose it. Change nothing until they agree.",
     ]
     return "\n\n".join(parts)
+
+
+def instructions_as_they_stand(agent_dir: str) -> str:
+    """Every ``QUPA.md`` a wake run in ``agent_dir`` reads, as
+    ``as_it_stands`` gives each: every project's, then the project's."""
+    return "".join(as_it_stands(path, scope) for scope, path in local.places(agent_dir or None))
 
 
 def as_it_stands(path: Path, scope: str) -> str:

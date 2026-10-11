@@ -33,7 +33,7 @@ def no_local_text(tmp_path, monkeypatch):
     # Likewise for the researcher's own instructions. A developer running this
     # suite on a machine with an installed kit has both files, and they would
     # otherwise be appended to every prompt these tests build.
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     # And the placeholders this machine has put up.
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
     # And its sandbox, which would otherwise decide what every wake is given.

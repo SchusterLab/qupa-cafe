@@ -409,15 +409,15 @@ def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path,
 
 
 def test_the_closing_message_says_where_instructions_go(tmp_path, monkeypatch):
-    """wake.md in one place; policy.md there, or in a project for its sessions,
+    """QUPA.md for every project, or in a project for its sessions,
     naming the one the agent's wakes read."""
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "thesis" / "agent"
     agent_dir.mkdir(parents=True)
     said = install.instructions_summary(str(agent_dir))
-    assert str(tmp_path / "config") in said and str(agent_dir / ".qupa") in said
-    assert "wake.md" in said and "A policy.md in a project's .qupa/" in said
-    # A .qupa/ further up is the one a wake reads, so that is the one named.
-    (tmp_path / "thesis" / ".qupa").mkdir()
-    assert str(tmp_path / "thesis" / ".qupa") in install.instructions_summary(str(agent_dir))
+    assert str(tmp_path / "home" / "QUPA.md") in said and str(agent_dir / "QUPA.md") in said
+    assert "A QUPA.md at the top of a project" in said and "none of its rules" in said
+    # A QUPA.md further up is the one a wake reads, so that is the one named.
+    (tmp_path / "thesis" / "QUPA.md").write_text("x", encoding="utf-8")
+    assert str(tmp_path / "thesis" / "QUPA.md") in install.instructions_summary(str(agent_dir))
     assert "For your agent's wakes" not in install.instructions_summary("")

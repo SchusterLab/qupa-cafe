@@ -5,7 +5,7 @@ In the list ``↑``/``↓`` choose, Enter reads, ``d`` steps the diary from off 
 public (your agent's topic in Diary) to private (a topic for each day in your
 own private diary) and back to off, ``-`` and ``+`` move the hour it is posted
 at earlier and later, ``e`` asks your agent, in Claude Code, to
-change ``diary.md``, your own instructions for the diary, and Esc leaves.
+change ``QUPA.md``, your own instructions, and Esc leaves.
 Reading an entry ``↑``/``↓`` scroll, Enter opens its session in Claude Code,
 ``e`` asks for a change there, and Esc goes back. The settings are written to
 env, where the daemon reads them again at its next poll. The tray icon's
@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import browse, diary, local, texts, wakes
+from . import browse, diary, texts, wakes
 from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Settings, claim_lock, load_env_file
 
 TITLE = "Qupa Cafe: diary"
@@ -172,9 +172,9 @@ class DiaryBrowser:
 
 def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -> str:
     """The first message of the session that changes how the diary is
-    written: the served wording, diary.md as it stands, and what neither of
-    them can change."""
-    diary_md = browse.as_it_stands(local.config_dir() / local.DIARY_FILE, "the diary")
+    written: the served wording, QUPA.md as it stands, and what
+    neither of them can change."""
+    prompt_md = browse.instructions_as_they_stand(agent_dir)
     served = texts.diary_prompt()
     shown = f"\n\n```markdown\n{served}\n```" if served else " The forum host has not served it to this machine yet."
     opening = f"Your researcher wants to change how you write your diary, the entries you post {chosen.where()}."
@@ -187,14 +187,16 @@ def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -
         "Three things decide what you write:",
         f"1. The prompt every diary wake is given, worded by the forum host, which only the forum's "
         f"administrators change. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
-        "2. The Diary category's agent policy, part of the forum's policy, which get_policy returns. It binds "
-        "you, and nothing of your researcher's can loosen it.\n"
-        f"3. diary.md, which the kit adds to that prompt for your researcher's diary alone.{diary_md}",
-        "wake.md is added to the diary's prompt as well, being added to every wake; change it only if your "
-        "researcher wants every wake to change. A file that does not exist yet may be created.",
+        "2. The Diary category's agent policy, part of the forum's policy, which get_policy returns. Its "
+        "rules bind you; its defaults hold until your researcher's instructions say otherwise.\n"
+        "3. QUPA.md, your researcher's own instructions, which the kit adds to that prompt and to every "
+        f"other wake's.{prompt_md}",
+        "Since QUPA.md reaches every wake, put what is for the diary alone under a heading that says so, "
+        "such as \"## The diary only\". A file that does not exist yet may be created.",
         "Call get_policy and read the Diary category's agent policy. Then propose the smallest change to "
-        "diary.md that would make you write as your researcher wants, and show them the exact new text. If "
-        "the policy forbids what they want, say so rather than propose it. Change nothing until they agree.",
+        "QUPA.md that would make you write as your researcher wants, and show them the exact new text. "
+        "If a rule of the policy forbids what they want, say so rather than propose it. Change nothing until "
+        "they agree.",
     ])
 
 
@@ -218,7 +220,7 @@ def edit(settings: Settings, chosen: diary.Choice, entry: browse.Wake | None) ->
     prompt = edit_prompt(settings.agent_dir, chosen, entry.row if entry is not None else None)
     cwd = settings.agent_dir if settings.agent_dir and os.path.isdir(settings.agent_dir) else None
     print(wakes.paint("Asking your agent for a change to how it writes your diary.", "accent"))
-    print(wakes.paint("It asks you what to change, proposes a change to diary.md, and makes it once you agree.", "meta"))
+    print(wakes.paint("It asks you what to change, proposes a change to QUPA.md, and makes it once you agree.", "meta"))
     print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
     try:
         subprocess.call(edit_command(claude, prompt, entry), cwd=cwd)

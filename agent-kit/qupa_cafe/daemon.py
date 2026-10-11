@@ -164,7 +164,7 @@ class Settings:
         )
     )
 
-    # Where the agent runs: which CLAUDE.md/AGENTS.md, notes and .qupa/ it sees.
+    # Where the agent runs: which CLAUDE.md/AGENTS.md, notes and QUPA.md it sees.
     agent_dir: str = field(default_factory=lambda: _env("QUPA_AGENT_DIR"))
 
     # As the forum host reported it at install time; empty means unknown.
@@ -686,7 +686,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     topic_id = topic.get("id")
     count = topic.get("posts_count") or len(posts)
 
-    from_researcher = local.instructions(local.WAKE_FILE)
+    from_researcher = local.instructions(settings.agent_dir or None)
 
     latest = newest_post(topic)
     author = latest.get("username", "?")
@@ -1667,11 +1667,6 @@ def run() -> int:
     LOG.info(
         "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
     )
-    for path in local.ignored(settings.agent_dir):
-        LOG.warning(
-            "%s is not read: %s is read only from %s, since every wake runs in QUPA_AGENT_DIR",
-            path, path.name, local.config_dir(),
-        )
 
     diary_state = diary.Diary()
 

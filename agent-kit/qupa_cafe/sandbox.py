@@ -534,7 +534,7 @@ def writable_agent_dirs(agent_dir: str) -> tuple[list[str], str]:
 # sandbox, kept read-only to it: the researcher's instructions, Claude Code's
 # and Codex's own settings and hooks, and the git hooks the next commit runs.
 PROTECTED_NAMES = (
-    ".qupa", ".claude", ".codex", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+    "QUPA.md", ".claude", ".codex", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
     ".venv", "venv", ".git/hooks", ".git/config",
 )
 

@@ -113,16 +113,16 @@ def test_enter_reads_an_entry_and_e_asks_for_a_change_from_the_list_or_an_entry(
 # ---------------------------------------------------------------- the edit
 
 
-def test_the_edit_prompt_carries_the_served_wording_and_diary_md(monkeypatch, tmp_path):
-    config = tmp_path / "config"
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(config))
+def test_the_edit_prompt_carries_the_served_wording_and_qupa_md(monkeypatch, tmp_path):
+    config = tmp_path / "home"
+    monkeypatch.setenv("QUPA_HOME", str(config))
     config.mkdir()
-    (config / "diary.md").write_text("Keep entries to three lines.", encoding="utf-8")
+    (config / "QUPA.md").write_text("Keep entries to three lines.", encoding="utf-8")
     texts.save({"wake_prompt": "w", "diary_prompt": "Diary of %DAY%. %SESSIONS%"})
 
     prompt = diaries.edit_prompt("", diary.Choice(diary.PRIVATE), _row())
     assert "Diary of %DAY%. %SESSIONS%" in prompt
-    assert "Keep entries to three lines." in prompt and str(config / "diary.md") in prompt
+    assert "Keep entries to three lines." in prompt and str(config / "QUPA.md") in prompt
     assert "your private diary" in prompt and "Diary of a-agent, 2026-10-10" in prompt
     assert "Change nothing until they agree" in prompt
 

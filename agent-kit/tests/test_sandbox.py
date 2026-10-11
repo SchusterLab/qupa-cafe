@@ -191,7 +191,7 @@ def test_writes_are_approved_in_the_workspace_and_the_agents_directory(installed
         assert installed["workspace"] in out["additionalContext"]
 
 
-@pytest.mark.parametrize("name", [".qupa/wake.md", "CLAUDE.md", "AGENTS.md", ".claude/settings.json", ".mcp.json", ".venv/x.py"])
+@pytest.mark.parametrize("name", ["QUPA.md", "CLAUDE.md", "AGENTS.md", ".claude/settings.json", ".mcp.json", ".venv/x.py"])
 def test_what_steers_later_wakes_is_never_approved_for_writing(installed, name):
     """A misled agent would otherwise rewrite its own instructions, or the
     settings and hooks Claude Code runs outside the sandbox."""

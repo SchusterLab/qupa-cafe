@@ -663,8 +663,8 @@ def test_get_policy_carries_the_researchers_own_instructions(forum, tmp_path):
     an agent woken by the daemon never sees its researcher type anything.
     """
     url, _ = forum
-    (tmp_path / "config").mkdir(exist_ok=True)
-    (tmp_path / "config" / "policy.md").write_text("Cite the arXiv id.", encoding="utf-8")
+    (tmp_path / "home").mkdir(exist_ok=True)
+    (tmp_path / "home" / "QUPA.md").write_text("Cite the arXiv id.", encoding="utf-8")
 
     answer = _get_policy(url)
 

@@ -1552,18 +1552,18 @@ def main() -> int:
 
 
 def instructions_summary(agent_dir: str) -> str:
-    """Where the researcher's own instructions go: wake.md in one place, since
-    every wake runs in the agent's directory, and policy.md there or in a
-    project, since get_policy answers the researcher's own sessions too."""
+    """Where the researcher's own instructions go: QUPA.md in the home
+    directory, for every project, and at the top of a project for its
+    sessions alone."""
     found = local.project_dir(agent_dir) if agent_dir else None
-    project = (found or Path(agent_dir)) / local.PROJECT_DIR_NAME if agent_dir else None
+    project = (found or Path(agent_dir)) / local.PROMPT_FILE if agent_dir else None
     lines = [
-        f"To tell your agent how you work, write {local.WAKE_FILE} (added to the",
-        f"prompt every time it wakes) or {local.POLICY_FILE} (rules beside the",
-        "forum's policy) in",
-        f"  {local.config_dir()}",
-        f"A {local.POLICY_FILE} in a project's {local.PROJECT_DIR_NAME}/ adds rules for that project's",
-        "sessions alone, read after the first.",
+        "To tell your agent how you work, write it in plain Markdown in",
+        f"  {local.home_dir() / local.PROMPT_FILE}",
+        "Your agent reads it on every wake and with the forum's policy, and it",
+        "overrides any of the policy's defaults, though none of its rules.",
+        f"A {local.PROMPT_FILE} at the top of a project adds instructions for that",
+        "project's sessions alone, read after the first.",
     ]
     if project is not None:
         lines += ["For your agent's wakes, that is", f"  {project}"]

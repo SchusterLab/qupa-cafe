@@ -228,10 +228,10 @@ def test_tuning_approves_the_forum_tools_and_nothing_else():
 
 
 def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypatch, tmp_path):
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "project" / "agent"
     agent_dir.mkdir(parents=True)
-    (tmp_path / "project" / ".qupa").mkdir()
+    (tmp_path / "project" / "QUPA.md").write_text("Stay out of Sam's threads.", encoding="utf-8")
     row = _row(42, score=0.81)
     row.agent_dir = str(agent_dir)
     subject = browse.subject_of_wake(browse.Wake(row, SAID), "/elsewhere")
@@ -242,36 +242,44 @@ def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypa
     assert "You were woken for it because you were mentioned, with a relevance score of 0.81." in prompt
     assert 'shows that wake as "wrote nothing"' in prompt
     assert browse.INTERESTS_TOPIC_TITLE in prompt and "edit_post" in prompt
-    # wake.md has one place; policy.md is the project's too.
-    for name in ("wake.md", "policy.md"):
-        assert str(tmp_path / "config" / name) in prompt
-    assert str(tmp_path / "project" / ".qupa" / "policy.md") in prompt
-    assert str(tmp_path / "project" / ".qupa" / "wake.md") not in prompt
+    # Every project's file, then the one of the project the wake runs in.
+    everywhere = str(tmp_path / "home" / "QUPA.md")
+    here = str(tmp_path / "project" / "QUPA.md")
+    assert everywhere in prompt and here in prompt and prompt.index(everywhere) < prompt.index(here)
+    assert "override the policy's defaults, never its rules" in prompt
     assert "Change nothing until they agree." in prompt
     assert "reply to posts like" in browse.tune_prompt(subject, "reply")
 
 
-def test_the_tuning_prompt_carries_the_two_files_as_they_stand(monkeypatch, tmp_path):
-    """Read by the browser, so the agent need not read the directory that
-    also holds the kit's key."""
-    config = tmp_path / "config"
-    config.mkdir()
-    (config / "wake.md").write_text("Leave arXiv preprints on finance alone.\n", encoding="utf-8")
-    monkeypatch.setenv("QUPA_CONFIG_DIR", str(config))
+def test_the_tuning_prompt_carries_the_file_as_it_stands(monkeypatch, tmp_path):
+    """Read by the browser, so the agent need not go looking for it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "QUPA.md").write_text("Leave arXiv preprints on finance alone.\n", encoding="utf-8")
+    monkeypatch.setenv("QUPA_HOME", str(home))
 
     prompt = browse.tune_prompt(browse.subject_of_wake(browse.Wake(_row(42), SAID), str(tmp_path)), "how")
 
     assert "Leave arXiv preprints on finance alone." in prompt
-    assert f"{config / 'policy.md'}, for every project: does not exist yet" in prompt
-    assert "no need to read them" in prompt
+    assert "no need to read it" in prompt
 
 
-def test_tuning_how_the_agent_replies_asks_what_to_change_and_points_at_the_two_files():
+def test_the_tuning_prompt_says_a_missing_file_may_be_created(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setenv("QUPA_HOME", str(home))
+
+    prompt = browse.tune_prompt(browse.subject_of_wake(browse.Wake(_row(42), SAID), str(tmp_path)), "how")
+
+    assert f"{home / 'QUPA.md'}, for all your projects: does not exist yet" in prompt
+    assert "may be created" in prompt
+
+
+def test_tuning_how_the_agent_replies_asks_what_to_change_and_points_at_the_file():
     """The interests post decides only what wakes the agent, not what it writes."""
     prompt = browse.tune_prompt(browse.subject_of_wake(browse.Wake(_row(42), SAID), "/agent"), "how")
     assert "wants to change how you reply to posts like the one on topic 42" in prompt
     assert "Ask them first what to change" in prompt
-    assert "How you reply is set by wake.md and policy.md alone." in prompt
+    assert "how you reply is set by QUPA.md alone" in prompt
     assert "Change nothing until they agree." in prompt
 
 
@@ -323,7 +331,7 @@ def test_waking_for_posts_like_one_points_at_the_interests_post_and_the_floor_on
     assert "It did not wake you: it scored 0.61 against your similarity floor of 0.70." in prompt
     assert browse.INTERESTS_TOPIC_TITLE in prompt and "similarity floor, 0.70," in prompt
     assert "Only your researcher sets it, with + and - in the wake browser" in prompt
-    assert "wake.md and policy.md cannot make a post wake you" in prompt
+    assert "QUPA.md cannot make a post wake you" in prompt
     assert "Change nothing until they agree." in prompt
 
 
