@@ -134,3 +134,10 @@ def test_the_edit_resumes_an_ended_entry_s_session_and_names_a_new_one_as_the_ki
     assert command[:4] == ["claude", "P", "--resume", entry.row.session] and allowed in command
     fresh = diaries.edit_command("claude", "P", None)
     assert fresh[:4] == ["claude", "P", "--name", f"{TUNE_NAME} diary"]
+
+
+def test_each_entry_shows_the_tokens_its_wake_took():
+    usage = wakes.Usage(fresh=12, cache_written=50_400, cache_read=357_000, output=2_200)
+    written = browse.Wake(_row(session="s-1"), wakes.Transcript("p", [], ["reply"], usage))
+    frame = _browser([written], diary.PUBLIC).frame(160, 20)
+    assert any("409k tok" in line and "Diary of a-agent" in line for line in frame)

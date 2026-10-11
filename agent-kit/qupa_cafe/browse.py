@@ -389,7 +389,7 @@ class Browser:
         # The relevance score, blank for a mention.
         score = f"{row.score:.2f}" if row.score is not None else "    "
         title = row.title if row.topic_id is None else f"{row.title}  (topic {row.topic_id})"
-        return self._line(chosen, cols, f"{when}  {score}  ", mark, f"{said:<16} ", style, title)
+        return self._line(chosen, cols, f"{when}  {score}  {tokens_column(item)}  ", mark, f"{said:<16} ", style, title)
 
     def _miss_row(self, miss: wakes.NearMiss, chosen: bool, cols: int) -> str:
         try:
@@ -428,6 +428,13 @@ class Browser:
         keys += ["t to tune replies", "Esc to go back"]
         out.append(hints(keys))
         return out
+
+
+def tokens_column(item: Wake) -> str:
+    """A wake's tokens for its row in a list, as wide whether known or not."""
+    transcript = item.transcript
+    total = transcript.usage.total if transcript is not None else 0
+    return f"{wakes.count(total) + ' tok' if total else '':>9}"
 
 
 def box(cols: int, title: str, lines: list[str]) -> list[str]:

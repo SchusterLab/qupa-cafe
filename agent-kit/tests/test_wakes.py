@@ -95,6 +95,61 @@ def test_a_wake_shows_its_prompt_its_calls_and_what_it_wrote(tmp_path, claude_ho
     assert "ToolSearch" not in text
 
 
+def _response(message_id, model, fresh, written, read, out, *blocks):
+    usage = {"input_tokens": fresh, "cache_creation_input_tokens": written,
+             "cache_read_input_tokens": read, "output_tokens": out}
+    return {"type": "assistant",
+            "message": {"id": message_id, "model": model, "usage": usage, "content": list(blocks)}}
+
+
+def test_a_wake_shows_the_tokens_it_took_counting_each_response_once(tmp_path, claude_home):
+    """Claude Code writes a record for each block of a response, each with the
+    response's whole usage, so counting records would count it twice."""
+    thought = {"type": "thinking", "thinking": "hmm", "signature": "x"}
+    said = {"type": "text", "text": "Nothing to add."}
+    records = [
+        WAKE[1],
+        _response("msg_1", "claude-sonnet-5-5", 2, 18000, 30000, 140, thought),
+        _response("msg_1", "claude-sonnet-5-5", 2, 18000, 30000, 140, said),
+        _response("msg_2", "claude-sonnet-5-5", 3, 1000, 48000, 60, said),
+    ]
+    _transcript(claude_home, SESSION, records)
+    [row] = wakes.recent(_journal(tmp_path), 20)
+
+    usage = wakes.transcript_for(row).usage
+    assert (usage.fresh, usage.cache_written, usage.cache_read, usage.output) == (5, 19000, 78000, 200)
+    assert usage.total == 97205 and usage.models == ["claude-sonnet-5-5"]
+    assert ("tokens: 97.0k in (78.0k read from the cache, 19.0k written to it, 5 uncached), 200 out; "
+            "claude-sonnet-5-5") in "\n".join(wakes.render(row))
+    assert browse.tokens_column(browse.Wake(row)).strip() == "97.2k tok"
+
+
+def test_a_subagent_s_tokens_are_the_wake_s(tmp_path, claude_home):
+    """Claude Code keeps each subagent's transcript in its own file beside the session's."""
+    said = {"type": "text", "text": "Done."}
+    path = _transcript(claude_home, SESSION, [WAKE[1], _response("msg_1", "claude-opus-5-5", 1, 100, 1000, 10, said)])
+    subagents = path.with_suffix("") / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a1.jsonl").write_text(
+        json.dumps(_response("msg_9", "claude-haiku-5-5", 2, 200, 2000, 20, said)), encoding="utf-8")
+    [row] = wakes.recent(_journal(tmp_path), 20)
+
+    usage = wakes.transcript_for(row).usage
+    assert usage.total == 1111 + 2222 and usage.models == ["claude-opus-5-5", "claude-haiku-5-5"]
+
+
+def test_a_wake_with_no_usage_recorded_shows_no_tokens(tmp_path, claude_home):
+    _transcript(claude_home, SESSION, WAKE)
+    [row] = wakes.recent(_journal(tmp_path), 20)
+    assert "tokens:" not in "\n".join(wakes.render(row))
+    # As wide as a count, so the rows stay aligned.
+    assert browse.tokens_column(browse.Wake(row)) == " " * 9
+
+
+def test_token_counts_are_short():
+    assert [wakes.count(n) for n in (940, 12_345, 345_678, 1_234_567)] == ["940", "12.3k", "345k", "1.2M"]
+
+
 def test_a_wake_that_wrote_nothing_says_so(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:6])
     [row] = wakes.recent(_journal(tmp_path), 20)

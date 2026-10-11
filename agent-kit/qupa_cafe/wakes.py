@@ -17,7 +17,7 @@ import sqlite3
 import sys
 import textwrap
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -520,10 +520,64 @@ def policy_lines(text: str) -> list[str]:
 
 
 @dataclass
+class Usage:
+    """The tokens a wake's model calls took, as Claude Code's transcript
+    records them on each response: what was sent fresh, written to the
+    prompt cache and read from it, and what the model wrote."""
+
+    fresh: int = 0
+    cache_written: int = 0
+    cache_read: int = 0
+    output: int = 0
+    models: list[str] = field(default_factory=list)
+
+    @property
+    def sent(self) -> int:
+        return self.fresh + self.cache_written + self.cache_read
+
+    @property
+    def total(self) -> int:
+        return self.sent + self.output
+
+    def line(self) -> str:
+        """The usage in one line, for a wake's view."""
+        models = f"; {', '.join(self.models)}" if self.models else ""
+        return (
+            f"tokens: {count(self.sent)} in ({count(self.cache_read)} read from the cache, "
+            f"{count(self.cache_written)} written to it, {count(self.fresh)} uncached), "
+            f"{count(self.output)} out{models}"
+        )
+
+
+def count(tokens: int) -> str:
+    """A token count in a few characters: 940, 12.3k, 1.2M."""
+    if tokens < 1000:
+        return str(tokens)
+    if tokens < 1_000_000:
+        return f"{tokens / 1000:.1f}k" if tokens < 100_000 else f"{tokens // 1000}k"
+    return f"{tokens / 1_000_000:.1f}M"
+
+
+def usage_of(responses: dict[str, tuple[dict, str]]) -> Usage:
+    """The sum over each response, counted once although Claude Code writes
+    one record per block of it, each repeating the response's usage."""
+    usage = Usage()
+    for numbers, model in responses.values():
+        usage.fresh += int(numbers.get("input_tokens") or 0)
+        usage.cache_written += int(numbers.get("cache_creation_input_tokens") or 0)
+        usage.cache_read += int(numbers.get("cache_read_input_tokens") or 0)
+        usage.output += int(numbers.get("output_tokens") or 0)
+        if model and model not in usage.models:
+            usage.models.append(model)
+    return usage
+
+
+@dataclass
 class Transcript:
     prompt: str
     lines: list[str]
     wrote: list[str]
+    usage: Usage = field(default_factory=Usage)
 
 
 def read_transcript(path: Path) -> Transcript:
@@ -534,6 +588,8 @@ def read_transcript(path: Path) -> Transcript:
     names: dict[str, str] = {}
     # Each call's line, so its dot can be coloured once its answer arrives.
     calls: dict[str, tuple[int, str]] = {}
+    # Each model response's usage and model, by the response's id.
+    responses: dict[str, tuple[dict, str]] = {}
 
     try:
         records = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -546,9 +602,13 @@ def read_transcript(path: Path) -> Transcript:
         except json.JSONDecodeError:
             continue
         kind = record.get("type")
+        message = record.get("message") or {}
+        if kind == "assistant" and isinstance(message.get("usage"), dict):
+            key = message.get("id") or f"record {len(responses)}"
+            responses[key] = (message["usage"], str(message.get("model") or ""))
         if kind not in ("user", "assistant") or record.get("isSidechain"):
             continue
-        content = (record.get("message") or {}).get("content")
+        content = message.get("content")
 
         if kind == "user" and isinstance(content, str):
             if not prompt:
@@ -603,7 +663,31 @@ def read_transcript(path: Path) -> Transcript:
 
     while lines and not lines[-1]:
         lines.pop()
-    return Transcript(prompt, lines, wrote)
+    # A subagent's responses are the wake's too, and Claude Code keeps them
+    # beside the session's transcript, one file for each subagent.
+    for subagent in sorted((path.with_suffix("") / "subagents").glob("*.jsonl")):
+        responses.update(subagent_responses(subagent))
+    return Transcript(prompt, lines, wrote, usage_of(responses))
+
+
+def subagent_responses(path: Path) -> dict[str, tuple[dict, str]]:
+    """Each model response in a subagent's transcript, as read_transcript
+    keeps the session's."""
+    responses: dict[str, tuple[dict, str]] = {}
+    try:
+        records = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return responses
+    for raw in records:
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        message = record.get("message") or {}
+        if record.get("type") == "assistant" and isinstance(message.get("usage"), dict):
+            key = message.get("id") or f"{path.name} record {len(responses)}"
+            responses[key] = (message["usage"], str(message.get("model") or ""))
+    return responses
 
 
 # ----------------------------------------------------------------- render
@@ -653,6 +737,8 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
     if row.score is not None:
         out.append(paint(f"relevance {row.score:.2f}", "meta"))
 
+    if transcript is not None and transcript.usage.total:
+        out.append(paint(transcript.usage.line(), "meta"))
     if row.session:
         where_run = row.agent_dir or "the daemon's directory"
         out.append(paint(f"session {row.session}, in {where_run}", "meta"))

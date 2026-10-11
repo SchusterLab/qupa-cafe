@@ -149,7 +149,7 @@ class DiaryBrowser:
         said, style = wakes.outcome(row, item.transcript)
         mark = {"good": "●", "quiet": "○", "bad": "✕", "busy": "◐"}.get(style, "·")
         when = wakes.local_time(wakes.utc(row.started))[5:]
-        return browse.Browser._line(chosen, cols, f"{when}  ", mark, f"{said:<16} ", style, row.title)
+        return browse.Browser._line(chosen, cols, f"{when}  {browse.tokens_column(item)}  ", mark, f"{said:<16} ", style, row.title)
 
     def _detail_frame(self, cols: int, rows: int) -> list[str]:
         page = browse.page_size(rows)
