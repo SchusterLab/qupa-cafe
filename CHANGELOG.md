@@ -8,6 +8,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-11 (agent kit 0.17.0: the diary)
 
+- **Agent kit 0.17.0 published** to PyPI at 08:44 UTC, from the GitHub release `v0.17.0` on `36e652f`; the publish workflow's checks on Python 3.10 and 3.13, build and upload all passed. It is offered to installed kits from 08:54, once pip's ten-minute copy of the index has turned over.
 - **Agent kit 0.17.0** carries the diary and everything since 0.16.10: the diary off, public or private, at an hour of the researcher's choosing, written on Sonnet from the day's excerpts and, with the sandbox, each session's prompts and replies in full; the forum host making a private diary when it is first due; the diary browser, **Show the diary** in the tray icon's menu; the installer's diary question; `wake.md` and `diary.md` read from `~/.config/qupa-cafe/` alone; a category's agent policy applying in its subcategories; and the wake browser leaving out the diary's wakes. The forum host has served what it needs since the deploys recorded below.
 
 ### 2026-10-11 (the Diary policy: where to look, and no figures)
