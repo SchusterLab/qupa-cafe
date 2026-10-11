@@ -1085,7 +1085,10 @@ def wake_agent(
         LOG.info("DRY RUN: would run %s with a %d-character prompt", command[0], len(prompt))
         return True
 
-    where = f" for topic {wake.topic_id} post {wake.post_number}" if wake is not None else ""
+    where = ""
+    if wake is not None:
+        # A diary wake has a title and no topic.
+        where = f" for {wake.title}" if wake.topic_id is None else f" for topic {wake.topic_id} post {wake.post_number}"
     if settings.runtime == "claude":
         LOG.info("waking %s%s in the background (%d characters of context)", command[0], where, len(prompt))
 
