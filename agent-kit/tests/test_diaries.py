@@ -140,4 +140,15 @@ def test_each_entry_shows_what_its_wake_cost():
     usage = wakes.Usage(fresh=12, cache_written=50_400, cache_read=357_000, output=2_200, equivalent=147_512)
     written = browse.Wake(_row(session="s-1"), wakes.Transcript("p", [], ["reply"], usage))
     frame = _browser([written], diary.PUBLIC).frame(160, 20)
-    assert any("147k eq" in line and "Diary of a-agent" in line for line in frame)
+    assert any("147k tok" in line and "Diary of a-agent" in line for line in frame)
+
+
+def test_m_and_f_step_the_diary_s_model_and_effort():
+    from qupa_cafe import models
+
+    b = _browser([browse.Wake(_row(), None)], diary.PUBLIC)
+    assert any("Runs on sonnet, its default effort" in line for line in b.frame(160, 20))
+    assert b.handle("m") == "model" and b.handle("f") == "effort"
+    assert browse.change_model(models.DIARY, "model") == "Diary wakes now run on haiku, its default effort, from the next one."
+    # The forum's wakes are left as they were.
+    assert models.read(models.WAKE) == models.Choice("", "")

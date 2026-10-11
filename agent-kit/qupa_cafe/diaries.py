@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import browse, diary, texts, wakes
+from . import browse, diary, models, texts, wakes
 from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Settings, claim_lock, load_env_file
 
 TITLE = "Qupa Cafe: diary"
@@ -73,6 +73,8 @@ class DiaryBrowser:
             return "mode"
         if key in HOUR_KEYS and not self.viewing:
             return f"hour:{HOUR_KEYS[key]}"
+        if key in browse.MODEL_KEYS and not self.viewing:
+            return browse.MODEL_KEYS[key]
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
                 return "ask"
@@ -123,7 +125,7 @@ class DiaryBrowser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  diary of {self.agent}" if self.agent else "  diary", "meta"
         )
-        out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line(), browse.day_line(self.items)])
+        out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line(), browse.model_line(models.DIARY)])
         out.append("")
         if not self.items:
             out.append(wakes.paint("  No diary entries yet. The first is written at the next hour it is posted at, with it on.", "meta"))
@@ -140,7 +142,7 @@ class DiaryBrowser:
         following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
         mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
         keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), mode,
-                "+/- for the hour", "e to change how it is written", "Esc to quit"]
+                "+/- for the hour", browse.MODEL_HINT, "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
         return out
 
@@ -291,6 +293,8 @@ def run(settings: Settings) -> int:
                 return 0
             if action == "mode":
                 browser.message = next_mode(browser)
+            elif action in browse.MODEL_KEYS.values():
+                browser.message = browse.change_model(models.DIARY, action)
             elif (action or "").startswith("hour:"):
                 browser.message = move_hour(browser, int(action.removeprefix("hour:")))
             elif action in ("ask", "edit"):

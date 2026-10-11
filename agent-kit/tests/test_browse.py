@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from qupa_cafe import browse, daemon, wakes
@@ -57,7 +57,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · t to tune replies · n for near misses · Esc to quit"
+        "↑↓ to select · Enter to read · t to tune replies · n for near misses · m/f for model, effort · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -308,7 +308,7 @@ def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_f
     frame = b.frame(120, 20)
     assert any("under 0.70" in line and "Missed 7" in line for line in frame)
     assert any("skipped" in line and "Missed 8" in line for line in frame)
-    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · Esc to quit"
+    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · m/f for model, effort · Esc to quit"
 
     b.handle("down")
     b.handle("t")
@@ -437,16 +437,10 @@ def test_a_list_that_fits_shows_no_position():
     assert "wakes 1-" not in frame[-2]
 
 
-def _old_row(topic: int) -> wakes.Row:
-    then = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
-    return wakes.Row(then, then, "finished", "s-1", "/agent", topic, 1, f"Topic {topic}", "you were mentioned")
-
-
 def test_transcripts_are_read_only_for_the_wakes_drawn(monkeypatch):
-    """And for those of the last 24 hours, which the box above the list adds up."""
     read = []
     monkeypatch.setattr(wakes, "transcript_for", lambda row: read.append(row.topic_id) or SAID)
-    b = _browser(*(browse.Wake(_old_row(i)) for i in range(1, 101)))
+    b = _browser(*(browse.Wake(_row(i)) for i in range(1, 101)))
     b.frame(100, 20)
     assert 0 < len(read) < 100 and read[0] == 1
     b.handle("end")
@@ -454,10 +448,17 @@ def test_transcripts_are_read_only_for_the_wakes_drawn(monkeypatch):
     assert 100 in read and 50 not in read
 
 
-def test_the_box_adds_up_the_last_24_hours():
-    usage = wakes.Usage(fresh=10, cache_written=1000, cache_read=20_000, output=500, equivalent=6_000.4)
-    recent = [browse.Wake(_row(n), wakes.Transcript("p", [], [], usage)) for n in (1, 2)]
-    old = browse.Wake(_old_row(3), wakes.Transcript("p", [], [], usage))
-    line = browse.day_line([old, *recent])
-    assert "12.0k input-token equivalents, 43.0k tokens, 2 wakes" in line
-    assert any("last 24 hours" in row for row in _browser(*recent).frame(120, 20))
+def test_m_and_f_step_the_model_and_effort_wakes_run_on(tmp_path):
+    """Written to env, where the daemon reads them again at the next wake."""
+    from qupa_cafe import models
+
+    b = _browser(browse.Wake(_row(1), SAID))
+    assert any("Runs on your Claude Code default model, its default effort" in line for line in b.frame(160, 20))
+    assert b.handle("m") == "model" and b.handle("f") == "effort"
+    assert browse.change_model(models.WAKE, "model") == "Forum wakes now run on fable, its default effort, from the next one."
+    browse.change_model(models.WAKE, "effort")
+    assert models.read(models.WAKE) == models.Choice("fable", "low")
+    assert any("Runs on fable, effort low" in line for line in b.frame(160, 20))
+    # Reading a wake, they are not the browser's to take.
+    b.handle("enter")
+    assert b.handle("m") is None

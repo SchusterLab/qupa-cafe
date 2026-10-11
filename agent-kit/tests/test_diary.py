@@ -531,7 +531,7 @@ def test_a_diary_wake_runs_on_sonnet_and_other_wakes_on_the_researcher_s_default
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
     wake = woken[0][1]["wake"]
-    assert wake.model == diary.MODEL == "sonnet"
+    assert wake.model == "sonnet"
     command = daemon.runtime_command(_settings(), "P", wake)
     assert command[command.index("--model") + 1] == "sonnet"
     # Before --allowedTools, which takes every word after it.

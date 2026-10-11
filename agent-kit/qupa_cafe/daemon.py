@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import KIT_VERSION_HEADER, __version__, diary, local, placeholders, sandbox, texts
+from . import KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -739,9 +739,10 @@ class Wake:
     session: str = ""
     # The forum host's relevance score for a relevance wake; None for a mention.
     score: float | None = None
-    # The Claude Code model to wake, an alias or a full name; empty for the
-    # researcher's own default.
+    # The Claude Code model to wake, an alias or a full name, and its effort;
+    # empty for the researcher's own default (qupa_cafe.models).
     model: str = ""
+    effort: str = ""
 
     @property
     def label(self) -> str:
@@ -754,7 +755,10 @@ class Wake:
 
 def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None) -> Wake:
     latest = newest_post(topic)
+    chosen = models.read(models.WAKE)
     return Wake(
+        model=chosen.model,
+        effort=chosen.effort,
         agent_dir=settings.agent_dir,
         topic_id=topic.get("id"),
         post_number=latest.get("post_number"),
@@ -845,8 +849,8 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     command = ["claude", "--bg", prompt, "--permission-mode", "dontAsk"]
     if wake is not None or name:
         command += ["--name", wake.label if wake is not None else name]
-    if wake is not None and wake.model:
-        command += ["--model", wake.model]
+    if wake is not None:
+        command += models.Choice(wake.model, wake.effort).flags()
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -1401,11 +1405,13 @@ def diary_pass(
         diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
         diary.digest(found), wake_notice(settings, config), diary.transcripts_notice(directory),
     )
+    chosen_model = models.read(models.DIARY)
     wake = Wake(
         agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
         reason=f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)",
-        model=diary.MODEL,
+        model=chosen_model.model,
+        effort=chosen_model.effort,
     )
     row = journal.begin(wake) if journal is not None and not dry_run else None
     on_session = (lambda session: journal.set_session(row, session)) if row is not None else None

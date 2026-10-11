@@ -21,10 +21,10 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
-from . import local, wakes
+from . import local, models, wakes
 from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
@@ -54,6 +54,24 @@ WAKE_QUESTION = ("Tune your agent on posts like this one, which do not wake it:"
 # In the list: the posts that came close to waking the agent, in place of its
 # wakes, and back.
 MISSED_KEY = "n"
+
+# In either browser's list: step the model its wakes run on, and the effort.
+MODEL_KEYS = {"m": "model", "f": "effort"}
+MODEL_HINT = "m/f for model, effort"
+
+
+def model_line(kind: str) -> str:
+    """The model and effort ``kind`` of wake runs on, for the box above a list."""
+    return wakes.paint("◆ ", "meta") + f"Runs on {models.read(kind).describe()}" + wakes.paint(
+        "  (m steps the model, f the effort)", "meta"
+    )
+
+
+def change_model(kind: str, action: str) -> str:
+    """Step ``kind``'s model or effort, and say what it is now."""
+    chosen = models.next_model(kind) if action == "model" else models.next_effort(kind)
+    which = "Forum wakes" if kind == models.WAKE else "Diary wakes"
+    return f"{which} now run on {chosen.describe()}, from the next one."
 
 # Windows sends a prefix and a letter; other terminals an escape sequence.
 WINDOWS_KEYS = {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end", "K": "left", "M": "right"}
@@ -272,6 +290,8 @@ class Browser:
             return None
         if key in self.actions and not self.viewing:
             return self.actions[key][0]
+        if key in MODEL_KEYS and not self.viewing:
+            return MODEL_KEYS[key]
         # Enter in a wake opens it in Claude Code; in the list it reads one.
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
@@ -343,7 +363,7 @@ class Browser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
-        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), day_line(self.items)])
+        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE)])
         out.append("")
 
         if not count:
@@ -362,7 +382,7 @@ class Browser:
         out.append(self.status_line() or where)
         other = "n for wakes" if self.showing_missed else "n for near misses"
         named = [hint for _, hint in self.actions.values() if hint]
-        out.append(hints([*keys, other, *named, "Esc to quit"]))
+        out.append(hints([*keys, other, *named, MODEL_HINT, "Esc to quit"]))
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
@@ -430,28 +450,12 @@ class Browser:
         return out
 
 
-def day_line(items: list[Wake], now: datetime | None = None) -> str:
-    """What the wakes listed that started in the last 24 hours cost, in
-    input-token equivalents and in tokens, for the box above the list."""
-    since = (now or datetime.now(timezone.utc)) - timedelta(hours=24)
-    recent = [item for item in items if (wakes.utc(item.row.started) or since) > since]
-    usages = [item.transcript.usage for item in recent if item.transcript is not None]
-    cost = round(sum(usage.equivalent for usage in usages))
-    tokens = sum(usage.total for usage in usages)
-    plural = "" if len(recent) == 1 else "s"
-    return wakes.paint(
-        f"last 24 hours: {wakes.count(cost)} input-token equivalents, {wakes.count(tokens)} tokens, "
-        f"{len(recent)} wake{plural}",
-        "meta",
-    )
-
-
 def tokens_column(item: Wake) -> str:
     """A wake's cost for its row in a list, in input-token equivalents, as
     wide whether known or not."""
     transcript = item.transcript
     cost = round(transcript.usage.equivalent) if transcript is not None else 0
-    return f"{wakes.count(cost) + ' eq' if cost else '':>8}"
+    return f"{wakes.count(cost) + ' tok' if cost else '':>9}"
 
 
 def box(cols: int, title: str, lines: list[str]) -> list[str]:
@@ -822,6 +826,8 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 return 0
             if action in ("raise", "lower"):
                 browser.message = set_floor(settings, browser, action)
+            if action in MODEL_KEYS.values():
+                browser.message = change_model(models.WAKE, action)
             if action == "ask" or (action or "").startswith("tune-"):
                 chosen = browser.selected.row.session if browser.selected else ""
                 terminal.suspend()

@@ -123,7 +123,7 @@ def test_a_wake_shows_the_tokens_it_took_counting_each_response_once(tmp_path, c
     assert round(usage.equivalent) == 5 + 19000 * 1.25 + 78000 * 0.1 + 200 * 5
     assert ("cost: 32.6k input-token equivalents, from 97.0k in (78.0k read from the cache, 19.0k written "
             "to it, 5 uncached) and 200 out; claude-sonnet-5-5") in "\n".join(wakes.render(row))
-    assert browse.tokens_column(browse.Wake(row)).strip() == "32.6k eq"
+    assert browse.tokens_column(browse.Wake(row)).strip() == "32.6k tok"
 
 
 def test_a_subagent_s_tokens_are_the_wake_s(tmp_path, claude_home):
@@ -145,7 +145,7 @@ def test_a_wake_with_no_usage_recorded_shows_no_tokens(tmp_path, claude_home):
     [row] = wakes.recent(_journal(tmp_path), 20)
     assert "cost:" not in "\n".join(wakes.render(row))
     # As wide as a count, so the rows stay aligned.
-    assert browse.tokens_column(browse.Wake(row)) == " " * 8
+    assert browse.tokens_column(browse.Wake(row)) == " " * 9
 
 
 def test_each_token_is_weighed_at_its_model_s_prices():

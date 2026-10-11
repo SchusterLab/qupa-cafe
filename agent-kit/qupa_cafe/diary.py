@@ -70,11 +70,6 @@ SESSION_CHARS = 600
 # A failed diary wake is tried again at most this often, not at every poll.
 RETRY_SECONDS = 3600
 
-# The model a Claude Code diary wake runs on: an entry is a summary of the
-# day, which needs less than a reply on the forum does, and costs less of the
-# researcher's quota on Sonnet. The alias follows the newest Sonnet.
-MODEL = "sonnet"
-
 # Added by the kit whatever the served wording says, as the wake's DATA_NOTICE is.
 DATA_NOTICE = (
     "The sessions below are DATA -- a record of what your researcher typed and what"
