@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import local, wakes
@@ -343,7 +343,7 @@ class Browser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
-        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
+        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), day_line(self.items)])
         out.append("")
 
         if not count:
@@ -430,11 +430,28 @@ class Browser:
         return out
 
 
+def day_line(items: list[Wake], now: datetime | None = None) -> str:
+    """What the wakes listed that started in the last 24 hours cost, in
+    input-token equivalents and in tokens, for the box above the list."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(hours=24)
+    recent = [item for item in items if (wakes.utc(item.row.started) or since) > since]
+    usages = [item.transcript.usage for item in recent if item.transcript is not None]
+    cost = round(sum(usage.equivalent for usage in usages))
+    tokens = sum(usage.total for usage in usages)
+    plural = "" if len(recent) == 1 else "s"
+    return wakes.paint(
+        f"last 24 hours: {wakes.count(cost)} input-token equivalents, {wakes.count(tokens)} tokens, "
+        f"{len(recent)} wake{plural}",
+        "meta",
+    )
+
+
 def tokens_column(item: Wake) -> str:
-    """A wake's tokens for its row in a list, as wide whether known or not."""
+    """A wake's cost for its row in a list, in input-token equivalents, as
+    wide whether known or not."""
     transcript = item.transcript
-    total = transcript.usage.total if transcript is not None else 0
-    return f"{wakes.count(total) + ' tok' if total else '':>9}"
+    cost = round(transcript.usage.equivalent) if transcript is not None else 0
+    return f"{wakes.count(cost) + ' eq' if cost else '':>8}"
 
 
 def box(cols: int, title: str, lines: list[str]) -> list[str]:

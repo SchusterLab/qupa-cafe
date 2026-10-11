@@ -119,9 +119,11 @@ def test_a_wake_shows_the_tokens_it_took_counting_each_response_once(tmp_path, c
     usage = wakes.transcript_for(row).usage
     assert (usage.fresh, usage.cache_written, usage.cache_read, usage.output) == (5, 19000, 78000, 200)
     assert usage.total == 97205 and usage.models == ["claude-sonnet-5-5"]
-    assert ("tokens: 97.0k in (78.0k read from the cache, 19.0k written to it, 5 uncached), 200 out; "
-            "claude-sonnet-5-5") in "\n".join(wakes.render(row))
-    assert browse.tokens_column(browse.Wake(row)).strip() == "97.2k tok"
+    # No TTL split here, so the writes are priced as the five-minute cache's.
+    assert round(usage.equivalent) == 5 + 19000 * 1.25 + 78000 * 0.1 + 200 * 5
+    assert ("cost: 32.6k input-token equivalents, from 97.0k in (78.0k read from the cache, 19.0k written "
+            "to it, 5 uncached) and 200 out; claude-sonnet-5-5") in "\n".join(wakes.render(row))
+    assert browse.tokens_column(browse.Wake(row)).strip() == "32.6k eq"
 
 
 def test_a_subagent_s_tokens_are_the_wake_s(tmp_path, claude_home):
@@ -141,9 +143,24 @@ def test_a_subagent_s_tokens_are_the_wake_s(tmp_path, claude_home):
 def test_a_wake_with_no_usage_recorded_shows_no_tokens(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE)
     [row] = wakes.recent(_journal(tmp_path), 20)
-    assert "tokens:" not in "\n".join(wakes.render(row))
+    assert "cost:" not in "\n".join(wakes.render(row))
     # As wide as a count, so the rows stay aligned.
-    assert browse.tokens_column(browse.Wake(row)) == " " * 9
+    assert browse.tokens_column(browse.Wake(row)) == " " * 8
+
+
+def test_each_token_is_weighed_at_its_model_s_prices():
+    """Output at five times input, an hour's cache write at twice and five
+    minutes' at 1.25 times, a cache read at a tenth, a twentieth on Opus 5.5
+    and a fortieth on Fable 5.1, and fast mode at double."""
+    split = {"ephemeral_1h_input_tokens": 1000, "ephemeral_5m_input_tokens": 400}
+    numbers = {"input_tokens": 10, "cache_creation_input_tokens": 1400, "cache_creation": split,
+               "cache_read_input_tokens": 10000, "output_tokens": 100}
+    written = 1000 * 2 + 400 * 1.25
+    assert wakes.equivalent(numbers, "claude-sonnet-5-5") == 10 + written + 1000 + 500
+    assert wakes.equivalent(numbers, "claude-opus-5-5") == 10 + written + 500 + 500
+    assert wakes.equivalent(numbers, "claude-fable-5-1") == 10 + written + 250 + 500
+    fast = {**numbers, "speed": "fast"}
+    assert wakes.equivalent(fast, "claude-opus-5-5") == 2 * (10 + written + 500 + 500)
 
 
 def test_token_counts_are_short():

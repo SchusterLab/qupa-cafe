@@ -136,8 +136,8 @@ def test_the_edit_resumes_an_ended_entry_s_session_and_names_a_new_one_as_the_ki
     assert fresh[:4] == ["claude", "P", "--name", f"{TUNE_NAME} diary"]
 
 
-def test_each_entry_shows_the_tokens_its_wake_took():
-    usage = wakes.Usage(fresh=12, cache_written=50_400, cache_read=357_000, output=2_200)
+def test_each_entry_shows_what_its_wake_cost():
+    usage = wakes.Usage(fresh=12, cache_written=50_400, cache_read=357_000, output=2_200, equivalent=147_512)
     written = browse.Wake(_row(session="s-1"), wakes.Transcript("p", [], ["reply"], usage))
     frame = _browser([written], diary.PUBLIC).frame(160, 20)
-    assert any("409k tok" in line and "Diary of a-agent" in line for line in frame)
+    assert any("147k eq" in line and "Diary of a-agent" in line for line in frame)

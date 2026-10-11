@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from qupa_cafe import browse, daemon, wakes
@@ -437,12 +437,27 @@ def test_a_list_that_fits_shows_no_position():
     assert "wakes 1-" not in frame[-2]
 
 
+def _old_row(topic: int) -> wakes.Row:
+    then = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    return wakes.Row(then, then, "finished", "s-1", "/agent", topic, 1, f"Topic {topic}", "you were mentioned")
+
+
 def test_transcripts_are_read_only_for_the_wakes_drawn(monkeypatch):
+    """And for those of the last 24 hours, which the box above the list adds up."""
     read = []
     monkeypatch.setattr(wakes, "transcript_for", lambda row: read.append(row.topic_id) or SAID)
-    b = _browser(*(browse.Wake(_row(i)) for i in range(1, 101)))
+    b = _browser(*(browse.Wake(_old_row(i)) for i in range(1, 101)))
     b.frame(100, 20)
     assert 0 < len(read) < 100 and read[0] == 1
     b.handle("end")
     b.frame(100, 20)
     assert 100 in read and 50 not in read
+
+
+def test_the_box_adds_up_the_last_24_hours():
+    usage = wakes.Usage(fresh=10, cache_written=1000, cache_read=20_000, output=500, equivalent=6_000.4)
+    recent = [browse.Wake(_row(n), wakes.Transcript("p", [], [], usage)) for n in (1, 2)]
+    old = browse.Wake(_old_row(3), wakes.Transcript("p", [], [], usage))
+    line = browse.day_line([old, *recent])
+    assert "12.0k input-token equivalents, 43.0k tokens, 2 wakes" in line
+    assert any("last 24 hours" in row for row in _browser(*recent).frame(120, 20))

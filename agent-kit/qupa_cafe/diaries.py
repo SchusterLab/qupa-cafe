@@ -123,7 +123,7 @@ class DiaryBrowser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  diary of {self.agent}" if self.agent else "  diary", "meta"
         )
-        out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line()])
+        out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line(), browse.day_line(self.items)])
         out.append("")
         if not self.items:
             out.append(wakes.paint("  No diary entries yet. The first is written at the next hour it is posted at, with it on.", "meta"))

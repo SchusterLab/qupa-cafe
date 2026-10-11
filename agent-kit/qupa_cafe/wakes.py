@@ -523,12 +523,14 @@ def policy_lines(text: str) -> list[str]:
 class Usage:
     """The tokens a wake's model calls took, as Claude Code's transcript
     records them on each response: what was sent fresh, written to the
-    prompt cache and read from it, and what the model wrote."""
+    prompt cache and read from it, and what the model wrote; and all of it
+    weighed as input tokens at the model's prices (``equivalent``)."""
 
     fresh: int = 0
     cache_written: int = 0
     cache_read: int = 0
     output: int = 0
+    equivalent: float = 0.0
     models: list[str] = field(default_factory=list)
 
     @property
@@ -543,9 +545,10 @@ class Usage:
         """The usage in one line, for a wake's view."""
         models = f"; {', '.join(self.models)}" if self.models else ""
         return (
-            f"tokens: {count(self.sent)} in ({count(self.cache_read)} read from the cache, "
-            f"{count(self.cache_written)} written to it, {count(self.fresh)} uncached), "
-            f"{count(self.output)} out{models}"
+            f"cost: {count(round(self.equivalent))} input-token equivalents, from "
+            f"{count(self.sent)} in ({count(self.cache_read)} read from the cache, "
+            f"{count(self.cache_written)} written to it, {count(self.fresh)} uncached) "
+            f"and {count(self.output)} out{models}"
         )
 
 
@@ -558,6 +561,35 @@ def count(tokens: int) -> str:
     return f"{tokens / 1_000_000:.1f}M"
 
 
+# What a token costs, as a multiple of an uncached input token of the same
+# model, at Anthropic's API prices: every current model's output costs five
+# times its input, and a cache write 1.25 times for the five-minute cache
+# and twice for the hour's. A cache read is a tenth, except on these models.
+OUTPUT_WEIGHT = 5.0
+CACHE_WRITE_WEIGHT = {"ephemeral_5m_input_tokens": 1.25, "ephemeral_1h_input_tokens": 2.0}
+CACHE_READ_WEIGHT = {"claude-opus-5-5": 0.05, "claude-fable-5-1": 0.025, "claude-mythos-5-1": 0.025}
+DEFAULT_CACHE_READ_WEIGHT = 0.1
+# Fast mode charges twice for everything.
+FAST_WEIGHT = 2.0
+
+
+def equivalent(numbers: dict, model: str) -> float:
+    """One response's tokens as uncached input tokens of its model."""
+    written = int(numbers.get("cache_creation_input_tokens") or 0)
+    by_ttl = numbers.get("cache_creation") if isinstance(numbers.get("cache_creation"), dict) else {}
+    weighed = sum(int(by_ttl.get(key) or 0) * weight for key, weight in CACHE_WRITE_WEIGHT.items())
+    # Whatever the split does not account for, at the five-minute price.
+    unsplit = written - sum(int(by_ttl.get(key) or 0) for key in CACHE_WRITE_WEIGHT)
+    cost = (
+        int(numbers.get("input_tokens") or 0)
+        + weighed
+        + max(unsplit, 0) * CACHE_WRITE_WEIGHT["ephemeral_5m_input_tokens"]
+        + int(numbers.get("cache_read_input_tokens") or 0) * CACHE_READ_WEIGHT.get(model, DEFAULT_CACHE_READ_WEIGHT)
+        + int(numbers.get("output_tokens") or 0) * OUTPUT_WEIGHT
+    )
+    return cost * (FAST_WEIGHT if numbers.get("speed") == "fast" else 1.0)
+
+
 def usage_of(responses: dict[str, tuple[dict, str]]) -> Usage:
     """The sum over each response, counted once although Claude Code writes
     one record per block of it, each repeating the response's usage."""
@@ -567,6 +599,7 @@ def usage_of(responses: dict[str, tuple[dict, str]]) -> Usage:
         usage.cache_written += int(numbers.get("cache_creation_input_tokens") or 0)
         usage.cache_read += int(numbers.get("cache_read_input_tokens") or 0)
         usage.output += int(numbers.get("output_tokens") or 0)
+        usage.equivalent += equivalent(numbers, model)
         if model and model not in usage.models:
             usage.models.append(model)
     return usage
