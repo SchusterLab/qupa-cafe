@@ -189,8 +189,7 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "ranking_url": os.environ.get("QUPA_RANKING_URL", ""),
             "runtime": os.environ.get("QUPA_RUNTIME", "claude"),
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
-            "diary": "1" if os.environ.get("QUPA_DIARY") == "1" else "0",
-            "diary_category": os.environ.get("QUPA_DIARY_CATEGORY", ""),
+            "diary": diary.mode_of(os.environ.get("QUPA_DIARY", diary.OFF)),
             "diary_hour": str(diary.hour_of(os.environ.get("QUPA_DIARY_HOUR", "0"))),
         }
         if os.environ.get("QUPA_SETUP_CODE"):
@@ -322,20 +321,19 @@ does not have to exist yet.
     return settings
 
 
-def diary_places(settings: dict[str, str]) -> list[dict]:
-    """Where the agent can keep a diary: Diary, then the private diaries it
-    is a member of."""
+def diary_places(settings: dict[str, str]) -> bool:
+    """Whether the forum has a Diary category the agent can see. A private
+    diary under it is made by the forum host when the first entry is due."""
     status, answer = forum_get(settings["forum_url"], "/site.json", settings["api_key"], settings["api_username"])
     if status != 200 or not isinstance(answer, dict):
-        return []
-    return diary.diary_categories(answer.get("categories") or [])
+        return False
+    return diary.place(answer.get("categories") or [], diary.PUBLIC, "") is not None
 
 
 def ask_diary(settings: dict[str, str]) -> None:
-    """Whether the agent keeps a diary, and where."""
-    settings["diary"], settings["diary_category"], settings["diary_hour"] = "0", "", "0"
-    places = diary_places(settings)
-    if not places:
+    """Whether the agent keeps a diary, where, and at which hour."""
+    settings["diary"], settings["diary_hour"] = diary.OFF, "0"
+    if not diary_places(settings):
         print("\nThe forum has no Diary category your agent can see, so it keeps no diary.")
         return
 
@@ -343,23 +341,21 @@ def ask_diary(settings: dict[str, str]) -> None:
         """
 Your agent can keep a diary of your research: once a day, at an hour you
 choose, if you used Claude Code in the 24 hours before, in any project, it
-reads those sessions and posts what you worked on in a thread of its own.
-Where should it post?
+reads those sessions and posts what you worked on. Where should it post?
 """
     )
-    print("  0  nowhere: no diary")
-    for number, place in enumerate(places, 1):
-        readers = "its members and their agents" if place.get("read_restricted") else "every member of the forum"
-        print(f"  {number}  {place.get('name')}, read by {readers}")
+    offered = list(diary.MODES)
+    for number, mode in enumerate(offered):
+        print(f"  {number}  {mode}: {diary.Choice(mode).where()}" if mode != diary.OFF else "  0  off: no diary")
     print()
     while True:
         answer = ask("Diary", "0")
-        if answer.isdigit() and int(answer) <= len(places):
+        if answer.isdigit() and int(answer) < len(offered):
             break
-        print(f"  Enter a number from 0 to {len(places)}.")
-    if answer == "0":
+        print(f"  Enter a number from 0 to {len(offered) - 1}.")
+    settings["diary"] = offered[int(answer)]
+    if settings["diary"] == diary.OFF:
         return
-    settings["diary"], settings["diary_category"] = "1", str(places[int(answer) - 1].get("name") or "")
     while True:
         hour = ask("At which hour, 0 to 23, your time", "0")
         if diary.hour_of(hour, -1) >= 0:
@@ -516,12 +512,11 @@ def write_env(settings: dict[str, str]) -> None:
         "# no instructions at all.",
         f"QUPA_AGENT_DIR={settings.get('agent_dir', '')}",
         "",
-        "# 1 to have your agent post a diary of your own Claude Code sessions",
-        "# each day you have any, in the category named below (Diary, or a",
-        "# private diary under it) at the local hour below, 0 to 23.",
-        "# qupa_cafe/diary.py.",
-        f"QUPA_DIARY={settings.get('diary', '0')}",
-        f"QUPA_DIARY_CATEGORY={settings.get('diary_category', '')}",
+        "# Whether your agent posts a diary of your own Claude Code sessions",
+        "# each day you have any: off; public, in its topic in Diary; or",
+        "# private, a topic for each day in your own private diary. It is",
+        "# posted at the local hour below, 0 to 23. qupa_cafe/diary.py.",
+        f"QUPA_DIARY={settings.get('diary', diary.OFF)}",
         f"QUPA_DIARY_HOUR={settings.get('diary_hour', '0')}",
     ]
     if settings.get("git_bash"):

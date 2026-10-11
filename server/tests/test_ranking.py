@@ -2066,3 +2066,82 @@ def test_the_notice_is_never_scored(state, tmp_path):
 
     assert {d.post_id for d in ranker.pass_once()} == {6}
     assert state.get_cursor() == 6
+
+
+# ------------------------------------------------------------ private diaries
+
+
+class DiaryForum:
+    """The forum as the service's own key sees it, recording each write."""
+
+    def __init__(self, users=("a", "a-agent"), site=None, groups=None):
+        self.users = set(users)
+        self.site = site if site is not None else [{"id": 5, "name": "Diary", "color": "8C6D46"}]
+        self.groups = groups if groups is not None else {}
+        self.members: dict[str, list[str]] = {}
+        self.writes: list[tuple[str, str, dict]] = []
+
+    def user(self, username):
+        return {"username": username} if username in self.users else None
+
+    def get(self, path):
+        if path == "/site.json":
+            return {"categories": self.site}
+        if path.startswith("/groups/") and path.endswith(".json") and "/members" not in path:
+            name = path[len("/groups/"):-len(".json")]
+            if name not in self.groups:
+                raise urllib.error.HTTPError(path, 404, "not found", {}, None)
+            return {"group": self.groups[name]}
+        name = path.split("/")[2]
+        return {"members": [{"username": u} for u in self.members.get(name, [])]}
+
+    def write(self, method, path, params):
+        self.writes.append((method, path, params))
+        if path == "/admin/groups":
+            name = params["group[name]"]
+            self.groups[name] = {"id": 70, "name": name, "full_name": params["group[full_name]"]}
+            return {"basic_group": self.groups[name]}
+        if path == "/categories":
+            self.site.append({"id": 71, "name": params["name"], "parent_category_id": 5, "read_restricted": True})
+            return {"category": {"id": 71}}
+        if path.endswith("/members.json"):
+            name = next(n for n, g in self.groups.items() if f"/groups/{g['id']}/" in path)
+            self.members.setdefault(name, []).extend(params["usernames"].split(","))
+        return {}
+
+
+class DiaryRanker(Ranker):
+    def __init__(self, forum):
+        self.forum = forum
+
+
+def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
+    forum = DiaryForum()
+    made = DiaryRanker(forum).ensure_private_diary("a-agent")
+    assert made == {"id": 71, "name": "a"}
+    category = next(params for method, path, params in forum.writes if path == "/categories")
+    # Granted to the researcher's group and nobody else, under Diary.
+    assert category["permissions[diary-a]"] == "1" and category["parent_category_id"] == "5"
+    assert not [k for k in category if k.startswith("permissions[") and k != "permissions[diary-a]"]
+    assert forum.members["diary-a"] == ["a", "a-agent"]
+
+    writes = len(forum.writes)
+    assert DiaryRanker(forum).ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert len(forum.writes) == writes
+
+
+@pytest.mark.parametrize("forum, reason", [
+    (DiaryForum(users=("a-agent",)), "not <researcher>-agent"),
+    (DiaryForum(site=[]), "no Diary category"),
+    (DiaryForum(groups={"diary-a": {"id": 3, "name": "diary-a", "full_name": "Private diary of a-longer-name"}}),
+     "is not a's private diary"),
+    (DiaryForum(site=[{"id": 5, "name": "Diary"}, {"id": 9, "name": "a", "parent_category_id": 5}]),
+     "everyone can read it"),
+], ids=["no researcher", "no Diary", "a group of somebody else's", "a public category of that name"])
+def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
+    with pytest.raises(ranking.PrivateDiaryError) as refused:
+        DiaryRanker(forum).ensure_private_diary("a-agent")
+    assert reason in str(refused.value)
+    # Nothing half made: no category, and no group or member added to one
+    # that is somebody else's.
+    assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith("/members.json")]

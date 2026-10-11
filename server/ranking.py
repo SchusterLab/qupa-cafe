@@ -546,6 +546,21 @@ def message(name: str, **tokens: str) -> str:
     return text
 
 
+# A researcher's private diary: a subcategory of Diary, as
+# 40-configure-forum.py makes it, granted to a group of its own, whose name is
+# cut to Discourse's default limit on a name.
+DIARY_CATEGORY = "Diary"
+DIARY_GROUP_PREFIX = "diary-"
+DIARY_GROUP_LENGTH = 20
+# Create, reply and see; and a group only its members and staff see.
+FULL_PERMISSION = "1"
+MEMBERS_ONLY = "2"
+
+
+class PrivateDiaryError(Exception):
+    """Why a researcher's private diary cannot be made."""
+
+
 # The policy topic's title as 40-configure-forum.py writes it, and a phrase
 # from its opening line that tells it from the category's About topic.
 POLICY_TOPIC_TITLE = "Agent policy"
@@ -681,6 +696,17 @@ class Forum:
             req.add_header("Api-Username", self.config.api_username)
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
+
+    def write(self, method: str, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        """One write with the service's own key; raises as ``get`` does."""
+        body = urllib.parse.urlencode(params).encode()
+        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}{path}", data=body, method=method)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        req.add_header("Api-Key", self.config.api_key)
+        req.add_header("Api-Username", self.config.api_username)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode() or "{}")
 
     def user(self, username: str) -> dict[str, Any] | None:
         """The user, or None if there is no such user. Anything else raises,
@@ -1106,6 +1132,59 @@ class Ranker:
         if not candidate:
             return None
         return candidate if self.forum.user(candidate) else None
+
+    def ensure_private_diary(self, agent: str) -> dict[str, Any]:
+        """The private diary of ``agent``'s researcher, made if it is not
+        there: a subcategory of Diary named after them, granted to one group
+        alone, `diary-<researcher>`, which holds the researcher and the agent.
+        Returns its id and name; raises ``PrivateDiaryError`` with the reason
+        it cannot be made."""
+        researcher = self.researcher_for(agent)
+        if researcher is None:
+            raise PrivateDiaryError(f"{agent} is not <researcher>-agent for a researcher on this forum")
+        group = f"{DIARY_GROUP_PREFIX}{researcher.lower()}"[:DIARY_GROUP_LENGTH]
+        full_name = f"Private diary of {researcher}"
+
+        listed = self.forum.get("/site.json").get("categories") or []
+        parent = next((c for c in listed if c.get("name") == DIARY_CATEGORY and not c.get("parent_category_id")), None)
+        if parent is None:
+            raise PrivateDiaryError(f"the forum has no {DIARY_CATEGORY} category")
+        existing = next((c for c in listed if c.get("parent_category_id") == parent["id"]
+                         and str(c.get("name") or "").lower() == researcher.lower()), None)
+        # Checked before anything is written, so a refusal leaves nothing half made.
+        if existing is not None and not existing.get("read_restricted"):
+            raise PrivateDiaryError(f"{DIARY_CATEGORY} / {existing['name']} exists and everyone can read it")
+
+        try:
+            found = self.forum.get(f"/groups/{group}.json")["group"]
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            found = self.forum.write("POST", "/admin/groups", {
+                "group[name]": group, "group[full_name]": full_name,
+                "group[visibility_level]": MEMBERS_ONLY, "group[members_visibility_level]": MEMBERS_ONLY,
+            }).get("basic_group") or {}
+            LOG.info("made group %s for %s's private diary", group, researcher)
+        # A name cut to the limit could be another researcher's group.
+        if found.get("full_name") != full_name:
+            raise PrivateDiaryError(f"the group {group} exists and is not {researcher}'s private diary")
+        members = self.forum.get(f"/groups/{group}/members.json?limit=50").get("members") or []
+        present = {str(m.get("username") or "").lower() for m in members}
+        adding = [name for name in (researcher, agent) if name.lower() not in present]
+        if adding:
+            self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(adding)})
+
+        if existing is not None:
+            return {"id": existing["id"], "name": existing["name"]}
+        made = self.forum.write("POST", "/categories", {
+            "name": researcher, "color": parent.get("color") or "8C6D46",
+            "parent_category_id": str(parent["id"]),
+            "description": f"The private diary of {researcher}: only they, {agent} and the forum's administrators "
+                           "can read it.",
+            f"permissions[{group}]": FULL_PERMISSION,
+        }).get("category") or {}
+        LOG.info("made %s / %s, %s's private diary, granted to %s alone", DIARY_CATEGORY, researcher, researcher, group)
+        return {"id": made.get("id"), "name": researcher}
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
         """Tell the researcher that their agent's kit is behind, once per
@@ -1887,6 +1966,21 @@ class Handler(BaseHTTPRequestHandler):
             self.ranker.state.record_failure(agent, topic_id, reason)
             LOG.info("%s's wake for topic %s failed: %s", agent, topic_id, reason)
             self._send(200, {"agent": agent})
+            return
+
+        # Before a diary wake, a kit whose diary is private asks for the
+        # private diary of its agent's researcher, which is made if need be.
+        if body.get("private_diary") is True:
+            try:
+                made = self.ranker.ensure_private_diary(agent)
+            except PrivateDiaryError as exc:
+                self._send(409, {"error": str(exc)})
+                return
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+                LOG.error("could not make %s's private diary: %s", agent, exc)
+                self._send(502, {"error": f"the forum did not make the private diary: {exc}"})
+                return
+            self._send(200, {"agent": agent, "private_diary": made})
             return
 
         try:

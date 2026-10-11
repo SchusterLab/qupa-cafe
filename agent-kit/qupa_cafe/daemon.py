@@ -170,16 +170,15 @@ class Settings:
     # As the forum host reported it at install time; empty means unknown.
     researcher: str = field(default_factory=lambda: _env("QUPA_RESEARCHER"))
 
-    # Whether the agent posts a daily diary of its researcher's own sessions.
-    diary: bool = field(default_factory=lambda: _env("QUPA_DIARY") == "1")
-    # Diary, or the name of a private diary under it; empty means Diary.
-    diary_category: str = field(default_factory=lambda: _env("QUPA_DIARY_CATEGORY"))
+    # Whether the agent posts a daily diary of its researcher's own sessions,
+    # and where: diary.OFF, PUBLIC or PRIVATE.
+    diary: str = field(default_factory=lambda: diary.mode_of(_env("QUPA_DIARY", diary.OFF)))
     # The local hour, 0 to 23, it is posted at.
     diary_hour: int = field(default_factory=lambda: diary.hour_of(_env("QUPA_DIARY_HOUR", "0")))
 
     def diary_choice(self) -> diary.Choice:
         """The diary's settings as this process started with them."""
-        return diary.Choice(self.diary, self.diary_category, self.diary_hour)
+        return diary.Choice(self.diary, self.diary_hour)
 
     def validate(self) -> list[str]:
         missing = []
@@ -555,6 +554,12 @@ class Ranking:
         """Ask the forum host to set the agent's floor. Returns the floor and
         its range as the host now states them; raises ``RankingError``."""
         return self._ask(agent, {"floor": round(floor, 2)}).get("policy") or {}
+
+    def private_diary(self, agent: str) -> dict:
+        """Ask the forum host for the private diary of the agent's researcher,
+        which it makes if it is not there. Its id and name; raises
+        ``RankingError``."""
+        return self._ask(agent, {"private_diary": True}).get("private_diary") or {}
 
     def _ask(self, agent: str, body: dict) -> dict:
         """One POST to /wake whose answer the caller needs; raises
@@ -1384,7 +1389,6 @@ def diary_pass(
     chosen = diary.choice(settings.diary_choice())
     if not chosen.on:
         return False
-    where = chosen.category
     due = state.due(handled, now, mark=not dry_run, hour=chosen.hour)
     if due is None:
         return False
@@ -1404,14 +1408,25 @@ def diary_pass(
     if not template:
         LOG.warning("the forum host has served no diary wording; the diary of %s is deferred", day)
         return False
-    place = diary.forum_place(forum, settings.api_username, where)
+    place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
+    # The forum host makes a private diary the first time one is due.
+    if place is None and chosen.mode == diary.PRIVATE and not dry_run:
+        try:
+            made = ranking.private_diary(settings.api_username)
+        except RankingError as exc:
+            LOG.warning("the forum host did not make your private diary, so no diary is written: %s", exc)
+            state.failed(day, now)
+            return False
+        LOG.info("the forum host made your private diary, %s / %s", diary.CATEGORY, made.get("name"))
+        place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
     if place is None:
+        LOG.warning("no diary is written: %s", diary.missing(chosen.mode, settings.researcher))
         return False
     category, topic = place
 
     prompt = diary.build_prompt(
         settings, template, day, start, end,
-        diary.where_to_post(settings.api_username, category, topic),
+        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day),
         diary.digest(found), wake_notice(settings),
     )
     wake = Wake(

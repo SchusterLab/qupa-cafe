@@ -108,42 +108,41 @@ def test_something_else_at_the_prompt_is_asked_for_again(monkeypatch, onboarding
     assert "not a setup code" in capsys.readouterr().out
 
 
-DIARIES = [{"id": 5, "name": "Diary"}, {"id": 6, "name": "Schuster lab", "parent_category_id": 5, "read_restricted": True}]
+DIARIES = [{"id": 5, "name": "Diary"}]
 
 
-@pytest.mark.parametrize("answer, diary, category", [("", "0", ""), ("1", "1", "Diary"), ("2", "1", "Schuster lab")],
-                         ids=["none by default", "public", "private"])
-def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, capsys, answer, diary, category):
+@pytest.mark.parametrize("answer, mode", [("", "off"), ("1", "public"), ("2", "private")],
+                         ids=["off by default", "public", "private"])
+def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, capsys, answer, mode):
+    """Private is offered whether the private diary is there yet or not: the
+    forum host makes it when the first private entry is due."""
     code = onboarding.setup_code("https://forum.example.org", KEY)
     hour = "At which hour, 0 to 23, your time"
     answers = {"Setup code": [code], **({"Diary": [answer], hour: ["24", "18"]} if answer else {})}
     settings, asked = interactive(monkeypatch, answers, DIARIES)
-    assert "Diary" in asked
-    assert (settings["diary"], settings["diary_category"]) == (diary, category)
+    assert "Diary" in asked and settings["diary"] == mode
     # Asked again for an hour out of range, and not asked with no diary.
     assert settings["diary_hour"] == ("18" if answer else "0")
     assert asked.count(hour) == (2 if answer else 0)
     out = capsys.readouterr().out
-    assert "Schuster lab, read by its members and their agents" in out and "Diary, read by every member" in out
+    assert "1  public: in your agent's topic in Diary" in out and "2  private: in a topic for each day" in out
 
 
 def test_a_forum_with_no_diary_asks_nothing(monkeypatch, onboarding):
     code = onboarding.setup_code("https://forum.example.org", KEY)
     settings, asked = interactive(monkeypatch, {"Setup code": [code]})
-    assert "Diary" not in asked and settings["diary"] == "0"
+    assert "Diary" not in asked and settings["diary"] == "off"
 
 
 def test_an_update_keeps_the_diary_as_it_was(monkeypatch, tmp_path):
     """qupa-update re-runs the installer non-interactively from env."""
     code = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGVm"
     for name, value in (("QUPA_SETUP_CODE", code), ("QUPA_API_USERNAME", "sunada-agent"), ("QUPA_RESEARCHER", "sunada"),
-                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "1"), ("QUPA_DIARY_CATEGORY", "Schuster lab"),
-                        ("QUPA_DIARY_HOUR", "18")):
+                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "private"), ("QUPA_DIARY_HOUR", "18")):
         monkeypatch.setenv(name, value)
     settings = install.collect(non_interactive=True)
     monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
     install.write_env(settings)
     written = (tmp_path / "env").read_text(encoding="utf-8").splitlines()
-    assert "QUPA_DIARY=1" in written and "QUPA_DIARY_CATEGORY=Schuster lab" in written
-    assert "QUPA_DIARY_HOUR=18" in written
+    assert "QUPA_DIARY=private" in written and "QUPA_DIARY_HOUR=18" in written

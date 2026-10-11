@@ -144,29 +144,36 @@ def test_sessions_past_the_limit_are_named_rather_than_shown(tmp_path):
 SITE = [
     {"id": 1, "name": "Research"},
     {"id": 5, "name": "Diary", "color": "8C6D46"},
-    {"id": 6, "name": "Schuster lab", "parent_category_id": 5, "read_restricted": True},
-    {"id": 7, "name": "Open notes", "parent_category_id": 5},
-    {"id": 8, "name": "Lab", "parent_category_id": 1, "read_restricted": True},
+    {"id": 6, "name": "a", "parent_category_id": 5, "read_restricted": True},
+    {"id": 7, "name": "b", "parent_category_id": 5},
+    {"id": 8, "name": "a", "parent_category_id": 1, "read_restricted": True},
 ]
 
 
-def test_a_diary_goes_in_diary_or_a_private_diary_under_it():
-    assert [c["id"] for c in diary.diary_categories(SITE)] == [5, 6]
-    assert diary.find_category(SITE, "")["id"] == 5
-    assert diary.find_category(SITE, "schuster LAB")["id"] == 6
-    assert diary.find_category(SITE, "Lab") is None
-    assert diary.diary_categories([{"id": 1, "name": "Research"}]) == []
+def test_a_diary_goes_in_diary_or_in_the_researcher_s_own_private_diary():
+    assert diary.place(SITE, diary.PUBLIC, "a")["id"] == 5
+    assert diary.place(SITE, diary.PRIVATE, "A")["id"] == 6
+    # Not one anybody can read, nor one elsewhere, nor somebody else's.
+    assert diary.place(SITE, diary.PRIVATE, "b") is None
+    assert diary.place(SITE, diary.PRIVATE, "c") is None
+    assert diary.place(SITE, diary.PRIVATE, "") is None
+    assert diary.place(SITE, diary.OFF, "a") is None
+    assert diary.place([{"id": 1, "name": "Research"}], diary.PUBLIC, "a") is None
 
 
 def test_the_agent_is_told_who_reads_its_diary_and_how_to_post_in_it():
-    public, private = diary.diary_categories(SITE)
-    first = diary.where_to_post("a-agent", public, None)
+    public, private = SITE[1], SITE[2]
+    first = diary.where_to_post("a-agent", diary.PUBLIC, public, None, DAY)
     assert "create_topic" in first and "category=5" in first and '"Diary of a-agent"' in first
     assert "every member" in first
 
-    later = diary.where_to_post("a-agent", private, {"id": 90, "title": "Diary of a-agent"})
+    later = diary.where_to_post("a-agent", diary.PUBLIC, public, {"id": 90, "title": "Diary of a-agent"}, DAY)
     assert "`reply`, topic_id=90" in later and "create_topic" not in later
-    assert "Schuster lab" in later and "only its members and their agents" in later
+
+    own = diary.where_to_post("a-agent", diary.PRIVATE, private, None, DAY)
+    assert "create_topic" in own and "category=6" in own and '"a-agent, 2026-10-10"' in own
+    assert "a topic of its own" in own and "only your researcher" in own
+    assert '"diary-a-agent-2026-10-10"' in own
 
 
 class SiteForum:
@@ -180,14 +187,16 @@ class SiteForum:
         return {"topic_list": {"topics": self.created}}
 
 
-def test_the_diary_is_the_first_open_topic_the_agent_made_in_its_category():
+def test_the_public_diary_is_the_first_open_topic_the_agent_made_there():
     forum = SiteForum(SITE, [
-        {"id": 30, "category_id": 1}, {"id": 41, "category_id": 6}, {"id": 40, "category_id": 6, "archived": True},
-        {"id": 44, "category_id": 6}, {"id": 50, "category_id": 5},
+        {"id": 30, "category_id": 1}, {"id": 41, "category_id": 5}, {"id": 40, "category_id": 5, "archived": True},
+        {"id": 44, "category_id": 5}, {"id": 50, "category_id": 6},
     ])
-    category, topic = diary.forum_place(forum, "a-agent", "Schuster lab")
-    assert (category["id"], topic["id"]) == (6, 41)
-    assert diary.forum_place(forum, "a-agent", "Elsewhere") is None
+    category, topic = diary.forum_place(forum, "a-agent", diary.PUBLIC, "a")
+    assert (category["id"], topic["id"]) == (5, 41)
+    # A private diary has a topic for each day, so none is looked for.
+    assert diary.forum_place(forum, "a-agent", diary.PRIVATE, "a") == (SITE[2], None)
+    assert diary.forum_place(forum, "a-agent", diary.PRIVATE, "c") is None
 
 
 # --------------------------------------------------------------- the prompt
@@ -253,26 +262,39 @@ def projects(tmp_path, monkeypatch):
 
 
 class FakeRanking:
+    """The forum host, which makes the private diary when asked, adding it
+    to what the forum shows the agent."""
+
+    def __init__(self, site=None, refuse=""):
+        self.site, self.refuse, self.asked = site, refuse, []
+
     def alive(self, agent):
         pass
 
+    def private_diary(self, agent):
+        self.asked.append(agent)
+        if self.refuse:
+            raise daemon.RankingError(self.refuse)
+        self.site.append({"id": 9, "name": "a", "parent_category_id": 5, "read_restricted": True})
+        return {"id": 9, "name": "a"}
 
-def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=()):
+
+def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=(), ranking=None):
     woken = []
     monkeypatch.setattr(daemon, "wake_agent", lambda s, p, **k: woken.append((p, k)) or ok)
     handled.mark(diary.HANDLED_KIND, 20000101)
-    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), FakeRanking(), handled,
+    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), ranking or FakeRanking(site), handled,
                              diary.Diary(), False, journal, now=NOW)
     return woke, woken
 
 
-def _settings(**overrides):
-    return Settings(api_username="a-agent", researcher="a", agent_dir="", diary=True, **overrides)
+def _settings(mode=diary.PUBLIC, **overrides):
+    return Settings(api_username="a-agent", researcher="a", agent_dir="", diary=mode, **overrides)
 
 
 def test_without_the_opt_in_nothing_is_read_or_woken(handled, projects, monkeypatch):
     write_session(projects, "mine", [prompt("work", at(9))])
-    woke, woken = _pass(Settings(api_username="a-agent", diary=False), handled, None, monkeypatch)
+    woke, woken = _pass(_settings(diary.OFF), handled, None, monkeypatch)
     assert not woke and not woken
 
 
@@ -292,16 +314,42 @@ def test_a_day_with_sessions_wakes_the_agent_once_and_journals_it(handled, proje
                        " VALUES ('x', 'finished', 'claude', 'earlier-wake', '', 't', 'r')")
     journal.db.commit()
 
-    woke, woken = _pass(_settings(diary_category="Schuster lab"), handled, journal, monkeypatch,
-                        created=[{"id": 41, "category_id": 6}])
+    woke, woken = _pass(_settings(), handled, journal, monkeypatch, created=[{"id": 41, "category_id": 5}])
     assert woke
     [(text, kwargs)] = woken
     assert "Fit the T1 data" in text and "T1 is 42 us." in text and "a wake's prompt" not in text
-    assert "topic_id=41" in text and "Schuster lab" in text
+    assert "topic_id=41" in text
     assert kwargs["wake"].label == f"{daemon.WAKE_NAME} Diary of a-agent, 2026-10-10"
     assert handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
     titles = [row[0] for row in journal.db.execute("SELECT title FROM wakes WHERE session != 'earlier-wake'")]
     assert titles == ["Diary of a-agent, 2026-10-10"]
+
+
+def test_a_private_diary_not_there_yet_is_made_by_the_forum_host_before_the_wake(handled, projects, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    site = [c for c in SITE if c["id"] != 6]
+    ranking = FakeRanking(site)
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site, ranking=ranking)
+    assert woke and ranking.asked == ["a-agent"]
+    assert "category=9" in woken[0][0] and "a-agent, 2026-10-10" in woken[0][0]
+
+
+def test_one_there_already_is_not_asked_for(handled, projects, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    ranking = FakeRanking(list(SITE))
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=list(SITE), ranking=ranking)
+    assert woke and not ranking.asked and "category=6" in woken[0][0]
+
+
+def test_a_private_diary_the_host_will_not_make_leaves_the_day_to_do(handled, projects, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    site = [c for c in SITE if c["id"] != 6]
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site,
+                        ranking=FakeRanking(site, refuse="no Diary category"))
+    assert not woke and not woken and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
 def test_a_failed_diary_wake_leaves_the_day_to_do(handled, projects, monkeypatch):
@@ -325,10 +373,9 @@ def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects,
     """The diary browser writes env; the daemon started with the diary off."""
     texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
     write_session(projects, "mine", [prompt("work", at(9))])
-    diary.set_choice(diary.Choice(True, "Schuster lab"))
-    woke, woken = _pass(Settings(api_username="a-agent", diary=False), handled, None, monkeypatch,
-                        created=[{"id": 41, "category_id": 6}])
-    assert woke and "Schuster lab" in woken[0][0]
+    diary.set_choice(diary.Choice(diary.PRIVATE))
+    woke, woken = _pass(_settings(diary.OFF), handled, None, monkeypatch, site=list(SITE))
+    assert woke and "category=6" in woken[0][0]
 
 
 def test_the_diary_prompt_carries_wake_md_and_diary_md(monkeypatch, tmp_path):

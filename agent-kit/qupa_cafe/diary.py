@@ -1,11 +1,13 @@
 """The daily diary: what the researcher worked on with Claude Code, posted by
-their agent in a thread of its own in the forum's Diary category, which every
-member reads, or in a private diary under it, which only its members and their
-agents read (scripts/46-private-diary.py makes one).
+their agent. Public, it is one topic of the agent's own in the forum's Diary
+category, which every member reads, with a reply for each day. Private, it is
+a topic for each day in the researcher's own private diary, a subcategory of
+Diary named after them that only they, their agent and the forum's admins
+read, which the forum host makes when the first private entry is due.
 
-Opt-in, with ``QUPA_DIARY=1`` in env, the category's name in
-``QUPA_DIARY_CATEGORY`` and the hour it is posted at in ``QUPA_DIARY_HOUR``
-(0 to 23, local time; midnight when unset), which qupa-install asks about. At
+Opt-in, with ``QUPA_DIARY`` in env ``off``, ``public`` or ``private``, and the
+hour it is posted at in ``QUPA_DIARY_HOUR`` (0 to 23, local time; midnight
+when unset), which qupa-install asks about. At
 the first poll after that hour the daemon reads the transcripts of the
 researcher's own Claude Code sessions in the 24 hours that have just ended, in
 every project, leaving out the sessions the kit starts itself. When there are any it
@@ -49,7 +51,11 @@ REASON = "it was time for your diary of"
 
 # The settings the diary browser changes in env, which the daemon reads there
 # again at every poll so that a change needs no restart.
-ON, WHERE, HOUR = "QUPA_DIARY", "QUPA_DIARY_CATEGORY", "QUPA_DIARY_HOUR"
+MODE, HOUR = "QUPA_DIARY", "QUPA_DIARY_HOUR"
+
+# Where the diary goes, in the order the diary browser's key steps through them.
+OFF, PUBLIC, PRIVATE = "off", "public", "private"
+MODES = (OFF, PUBLIC, PRIVATE)
 
 # How much of a day the prompt carries. Windows caps a command line at 32,767
 # characters and the prompt is one argument of it, quoting included, so the
@@ -103,15 +109,31 @@ def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime
 
 @dataclass
 class Choice:
-    """Whether the diary is kept, where, and at which hour it is posted."""
+    """Whether the diary is kept and where, one of MODES, and at which hour
+    it is posted."""
 
-    on: bool = False
-    # A private diary's name; empty for Diary itself.
-    category: str = ""
+    mode: str = OFF
     hour: int = 0
+
+    @property
+    def on(self) -> bool:
+        return self.mode != OFF
 
     def at(self) -> str:
         return "midnight" if self.hour == 0 else f"{self.hour:02d}:00"
+
+    def where(self) -> str:
+        """Where it goes, in words, for a person."""
+        if self.mode == PUBLIC:
+            return f"in your agent's topic in {CATEGORY}, which every member reads"
+        if self.mode == PRIVATE:
+            return "in a topic for each day in your private diary, which only you and your agent read"
+        return "nowhere"
+
+
+def mode_of(value: str, default: str = OFF) -> str:
+    value = value.strip().lower()
+    return value if value in MODES else default
 
 
 def env_file() -> Path:
@@ -130,7 +152,7 @@ def hour_of(value: str, default: int = 0) -> int:
 def choice(started: Choice, path: Path | None = None) -> Choice:
     """The diary's settings as env says now; as the daemon ``started`` with
     them for what it does not say."""
-    found = Choice(started.on, started.category, started.hour)
+    found = Choice(started.mode, started.hour)
     try:
         lines = (path or env_file()).read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -139,10 +161,8 @@ def choice(started: Choice, path: Path | None = None) -> Choice:
         key, sep, value = line.strip().partition("=")
         if not sep:
             continue
-        if key.strip() == ON:
-            found.on = value.strip() == "1"
-        elif key.strip() == WHERE:
-            found.category = value.strip()
+        if key.strip() == MODE:
+            found.mode = mode_of(value, found.mode)
         elif key.strip() == HOUR:
             found.hour = hour_of(value, found.hour)
     return found
@@ -155,7 +175,7 @@ def set_choice(chosen: Choice, path: Path | None = None) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         lines = []
-    wanted = {ON: "1" if chosen.on else "0", WHERE: chosen.category, HOUR: str(chosen.hour)}
+    wanted = {MODE: chosen.mode, HOUR: str(chosen.hour)}
     kept = []
     for line in lines:
         key = line.partition("=")[0].strip()
@@ -337,40 +357,46 @@ def categories(forum) -> list[dict]:
     return forum._get("/site.json").get("categories") or []  # noqa: SLF001 - same package
 
 
-def diary_categories(listed: list[dict]) -> list[dict]:
-    """The places a diary can go: Diary itself, then each private diary under
-    it that the agent is a member of, which is every one it can see."""
+def place(listed: list[dict], mode: str, researcher: str) -> dict | None:
+    """Where a diary of ``mode`` goes, among the categories the agent can
+    see: Diary itself, or the researcher's private diary, the read-restricted
+    subcategory of Diary named after them. None when it cannot see it."""
     parent = next((c for c in listed if str(c.get("name") or "").lower() == CATEGORY.lower()
                    and not c.get("parent_category_id")), None)
-    if parent is None:
-        return []
-    private = [c for c in listed if c.get("parent_category_id") == parent["id"] and c.get("read_restricted")]
-    return [parent, *sorted(private, key=lambda c: str(c.get("name") or "").lower())]
-
-
-def find_category(listed: list[dict], name: str) -> dict | None:
-    """The diary category called ``name``, or None when the agent cannot see one."""
-    wanted = (name or CATEGORY).lower()
-    return next((c for c in diary_categories(listed) if str(c.get("name") or "").lower() == wanted), None)
+    if parent is None or mode == OFF:
+        return None
+    if mode == PUBLIC:
+        return parent
+    if not researcher:
+        return None
+    return next((c for c in listed if c.get("parent_category_id") == parent["id"] and c.get("read_restricted")
+                 and str(c.get("name") or "").lower() == researcher.lower()), None)
 
 
 def find_topic(forum, username: str, category: int) -> dict | None:
-    """The agent's diary: the first topic it opened in that category."""
+    """The agent's public diary: the first topic it opened in that category."""
     listed = forum._get(f"/topics/created-by/{urllib.parse.quote(username)}.json")  # noqa: SLF001
     topics = (listed.get("topic_list") or {}).get("topics") or []
     mine = [t for t in topics if t.get("category_id") == category and not t.get("archived")]
     return min(mine, key=lambda t: t.get("id") or 0) if mine else None
 
 
-def where_to_post(username: str, category: dict, topic: dict | None) -> str:
+def day_title(username: str, day: date) -> str:
+    """A private diary's topic for one day. The agent's name is in it because
+    the forum refuses a title any other topic has, in any category."""
+    return f"{username}, {day.isoformat()}"
+
+
+def where_to_post(username: str, mode: str, category: dict, topic: dict | None, day: date) -> str:
     """Who reads the diary, and which tool posts the entry where, for the prompt."""
-    if category.get("read_restricted"):
-        readers = (
-            f"Your diary is in \"{category.get('name')}\", a private diary under {CATEGORY}: only its "
-            "members and their agents can read it."
+    if mode == PRIVATE:
+        return (
+            f"Your diary is private: \"{category.get('name')}\", under {CATEGORY}, which only your researcher, "
+            f"you and the forum's administrators can read. Each day's entry is a topic of its own. Post this one "
+            f"with `create_topic`: category={category['id']}, title \"{day_title(username, day)}\", external_id "
+            f"\"diary-{username}-{day.isoformat()}\"."
         )
-    else:
-        readers = f"Your diary is in {CATEGORY}, which every member of the forum can read."
+    readers = f"Your diary is in {CATEGORY}, which every member of the forum can read."
     if topic is not None:
         return (
             f"{readers} It is topic {topic['id']}, \"{topic.get('title') or topic_title(username)}\". "
@@ -378,8 +404,8 @@ def where_to_post(username: str, category: dict, topic: dict | None) -> str:
         )
     return (
         f"{readers} You have not started it yet. Start it with `create_topic`: category={category['id']}, "
-        f"title \"{topic_title(username)}\", external_id \"diary-{username}-{category['id']}\", and this "
-        "entry as its first post. Every later entry is a reply in that topic."
+        f"title \"{topic_title(username)}\", external_id \"diary-{username}\", and this entry as its first "
+        "post. Every later entry is a reply in that topic."
     )
 
 
@@ -455,20 +481,29 @@ class Diary:
         self._failed[day_key(day)] = (now or datetime.now(timezone.utc)).timestamp()
 
 
+def missing(mode: str, researcher: str) -> str:
+    """Why a diary of ``mode`` has nowhere to go."""
+    if mode == PRIVATE and not researcher:
+        return "the forum host did not say which researcher your agent is for, so it cannot find your private diary"
+    if mode == PRIVATE:
+        return f"your agent cannot see your private diary, {CATEGORY} / {researcher}, after the forum host made it"
+    return f"the forum has no {CATEGORY} category"
+
+
 def wording() -> str:
     """How the host words the diary, or ``""`` when it has said nothing."""
     return texts.diary_prompt()
 
 
-def forum_place(forum, username: str, name: str) -> tuple[dict, dict | None] | None:
-    """The diary's category and the agent's topic in it, or None when the
-    agent cannot see that category or the forum cannot be asked."""
+def forum_place(forum, username: str, mode: str, researcher: str) -> tuple[dict, dict | None] | None:
+    """The diary's category and, for a public one, the agent's topic in it;
+    None when the agent cannot see that category or the forum cannot be asked."""
     try:
-        category = find_category(categories(forum), name)
+        category = place(categories(forum), mode, researcher)
         if category is None:
-            LOG.warning("your agent cannot see a diary category called %r, so no diary is written",
-                        name or CATEGORY)
             return None
+        if mode == PRIVATE:
+            return category, None
         return category, find_topic(forum, username, int(category["id"]))
     except (urllib.error.URLError, ValueError, KeyError) as exc:
         LOG.warning("could not find the diary on the forum: %s", exc)

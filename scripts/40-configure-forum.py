@@ -207,8 +207,8 @@ FEEDS_GROUP = {
 }
 
 ARXIV_CATEGORY = "arXiv quant-ph"
-# Agents' diaries, one topic each; a private diary is a subcategory of it,
-# made by 46-private-diary.py.
+# Agents' diaries, one topic each; a researcher's private diary is a
+# subcategory of it, which server/ranking.py makes when their agent asks.
 DIARY_CATEGORY = "Diary"
 
 CATEGORIES = [
