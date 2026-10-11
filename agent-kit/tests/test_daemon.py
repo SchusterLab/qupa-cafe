@@ -657,7 +657,8 @@ def test_a_missing_mcp_config_is_not_passed(tmp_path):
 
 
 def test_codex_takes_its_servers_from_its_own_configuration_and_no_session():
-    expected = ["codex", "exec", "--skip-git-repo-check", "--sandboxed", "a prompt"]
+    # The prompt goes in on stdin, since npm's codex.cmd cuts an argument at a line break.
+    expected = ["codex", "exec", "--skip-git-repo-check", "--sandboxed", "-"]
     assert runtime_command(Settings(runtime="codex"), "a prompt") == expected
     assert runtime_command(Settings(runtime="codex"), "a prompt", _wake(runtime="codex", session="")) == expected
 

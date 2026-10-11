@@ -295,7 +295,7 @@ def codex_installed(installed, tmp_path):
 def test_a_codex_wake_runs_under_the_kit_s_permission_profile(codex_installed, monkeypatch):
     monkeypatch.setattr(sandbox, "pixi_environment", lambda config: {"PATH": "/env/bin"})
     command = runtime_command(Settings(runtime="codex", agent_dir=codex_installed["agent_dirs"][0]), "p")
-    assert command[:3] == ["codex", "exec", "--skip-git-repo-check"] and command[-1] == "p"
+    assert command[:3] == ["codex", "exec", "--skip-git-repo-check"] and command[-1] == "-"
     assert command[command.index("-p") + 1] == "qupa-cafe"
     assert command[command.index("-C") + 1] == codex_installed["agent_dirs"][0]
     # In a profile file, since the environment's PATH alone can pass Windows'

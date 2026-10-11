@@ -20,8 +20,11 @@ researcher's own Claude Code settings.
 A Codex wake's commands go through Codex's own sandbox, the one ``codex
 sandbox`` runs a command in, under a permission profile the daemon passes to
 ``codex exec`` (``codex_args``). It denies the home directory's secrets by
-name; on Windows the rest of the home directory stays readable, since a
-profile there narrows reads only by denying them. Its hook only refuses pip
+name. On Windows a command reads what Windows lets Codex's sandbox users
+read, which includes every directory an earlier Codex session used as a
+workspace, since Codex grants them those and leaves the grants. Its commands reach the
+internet through Codex's network proxy, an experimental feature, which
+refuses this machine's own and private addresses. Its hook only refuses pip
 and conda installs. A protected name that does not exist yet can be created
 inside Codex's sandbox, so setup creates each missing protected file empty.
 
@@ -296,7 +299,9 @@ def codex_profile(config: dict) -> dict:
     return {
         "workspace_roots": {config["workspace"]: True},
         "filesystem": filesystem,
-        "network": {"enabled": True},
+        # Through Codex's network proxy, which refuses this machine's own and
+        # private addresses, as sandbox-runtime does for Claude Code.
+        "network": {"enabled": True, "mode": "full", "domains": {"*": "allow"}, "allow_local_binding": False},
     }
 
 
@@ -354,6 +359,7 @@ def write_codex_profile(config: dict) -> Path:
     lines = [
         "# Written by the qupa-cafe agent kit for each wake; changes here are lost.",
         f"default_permissions = {toml(CODEX_PROFILE)}",
+        'features = {network_proxy = true}',
         'approval_policy = "never"',
         f"permissions = {toml({CODEX_PROFILE: codex_profile(config)})}",
         f"shell_environment_policy = {toml(codex_environment(config))}",
@@ -463,7 +469,9 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
             "URL; fetch it with Python."
         ) if WINDOWS else ""
         return (
-            f"Each command you run goes through Codex's sandbox, with open internet access. {where} "
+            "Each command you run goes through Codex's sandbox, with open internet access through a proxy, "
+            "though not to this machine's or its network's own addresses: a command that tries is stopped. "
+            f"{where} "
             f"{python}{windows} matplotlib draws without a display: save a figure with savefig, look at it "
             "with view_image, and attach it to a post with attach_file's path. The whole wake is stopped "
             "after fifteen minutes."

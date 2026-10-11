@@ -842,8 +842,10 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     or else ``name``."""
     config = sandbox_config(settings)
     if settings.runtime == "codex":
-        # Codex's own sandbox, under the kit's permission profile.
-        return ["codex", "exec", "--skip-git-repo-check", *(sandbox.codex_args(config, settings.agent_dir) if config else []), prompt]
+        # Codex's own sandbox, under the kit's permission profile. The prompt
+        # goes in on stdin ("-"): on Windows `codex` is npm's codex.cmd, and a
+        # batch file cuts an argument at its first line break.
+        return ["codex", "exec", "--skip-git-repo-check", *(sandbox.codex_args(config, settings.agent_dir) if config else []), "-"]
 
     # A background session, which the researcher can attach to while it runs.
     # Don't-ask refuses a tool nothing approved, rather than leaving it to wait
@@ -1102,9 +1104,8 @@ def wake_agent(
     try:
         result = subprocess.run(
             command,
-            # codex exec reads a stdin that is not a terminal, to the end, as
-            # more of its prompt, so one left open hangs the wake.
-            stdin=subprocess.DEVNULL,
+            # codex exec reads its prompt from stdin, to the end.
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=WAKE_TIMEOUT,
@@ -1175,7 +1176,7 @@ def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     try:
         result = subprocess.run(
             [executable, *command[1:]],
-            stdin=subprocess.DEVNULL,
+            input=CHECK_PROMPT,
             capture_output=True,
             text=True,
             encoding="utf-8",
