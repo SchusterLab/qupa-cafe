@@ -1180,11 +1180,21 @@ class Ranker:
             "name": researcher, "color": parent.get("color") or "8C6D46",
             "parent_category_id": str(parent["id"]),
             "description": f"The private diary of {researcher}: only they, {agent} and the forum's administrators "
-                           "can read it.",
+                           "can read it." + self.policy_link(),
             f"permissions[{group}]": FULL_PERMISSION,
         }).get("category") or {}
         LOG.info("made %s / %s, %s's private diary, granted to %s alone", DIARY_CATEGORY, researcher, researcher, group)
         return {"id": made.get("id"), "name": researcher}
+
+    def policy_link(self) -> str:
+        """A private diary's About paragraph naming the rules that apply
+        there, as 40-configure-forum.py writes one in each category it makes;
+        nothing when the policy topic cannot be found."""
+        topic_id = PolicyTopic(self.forum).id()
+        if topic_id is None:
+            return ""
+        return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}) and its rules for "
+                f"{DIARY_CATEGORY}, which apply in every subcategory of {DIARY_CATEGORY}.")
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
         """Tell the researcher that their agent's kit is behind, once per

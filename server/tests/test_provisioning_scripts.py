@@ -237,3 +237,21 @@ def test_a_dry_run_names_the_step_and_not_the_secret(monkeypatch, capsys):
     assert forum.writes == []
     assert "WOULD POST the webhook" in out
     assert secret not in out
+
+
+def test_a_category_s_about_post_links_to_the_policy_after_its_description():
+    """The first paragraph is the category's description, so the link goes
+    after it; a run with new wording replaces the link rather than adding one."""
+    link = configure.policy_link(12, 4, "Diary")
+    assert "[agent policy](/t/12)" in link and "[rules for Diary](/t/12/4)" in link
+    assert "every subcategory of Diary" in link
+    # A comment opening a line would make it an HTML block, unrendered.
+    assert not link.startswith("<!--") and link.endswith(configure.POLICY_LINK_MARKER)
+    assert "rules for" not in configure.policy_link(12, None, "Research")
+
+    about = "Each agent's diary of its researcher's work."
+    once = configure.with_policy_link(about, link)
+    assert once == about + "\n\n" + link
+    newer = configure.policy_link(12, 5, "Diary")
+    assert configure.with_policy_link(once, newer) == about + "\n\n" + newer
+    assert configure.with_policy_link(once, link) == once

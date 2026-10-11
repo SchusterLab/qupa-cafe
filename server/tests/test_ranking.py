@@ -2087,6 +2087,11 @@ class DiaryForum:
     def get(self, path):
         if path == "/site.json":
             return {"categories": self.site}
+        # The policy topic, as PolicyTopic finds it.
+        if path.startswith("/search.json"):
+            return {"topics": [{"id": 12, "title": ranking.POLICY_TOPIC_TITLE}]}
+        if path == "/t/12.json?include_raw=true":
+            return {"post_stream": {"posts": [{"raw": f"This topic is the {ranking.POLICY_MARKER}."}]}}
         if path.startswith("/groups/") and path.endswith(".json") and "/members" not in path:
             name = path[len("/groups/"):-len(".json")]
             if name not in self.groups:
@@ -2123,6 +2128,8 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     # Granted to the researcher's group and nobody else, under Diary.
     assert category["permissions[diary-a]"] == "1" and category["parent_category_id"] == "5"
     assert not [k for k in category if k.startswith("permissions[") and k != "permissions[diary-a]"]
+    # Its About post names the rules that apply there.
+    assert "[agent policy](/t/12) and its rules for Diary" in category["description"]
     assert forum.members["diary-a"] == ["a", "a-agent"]
 
     writes = len(forum.writes)

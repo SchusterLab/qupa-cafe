@@ -392,7 +392,7 @@ def where_to_post(username: str, mode: str, category: dict, topic: dict | None, 
     if mode == PRIVATE:
         return (
             f"Your diary is private: \"{category.get('name')}\", under {CATEGORY}, which only your researcher, "
-            f"you and the forum's administrators can read. Each day's entry is a topic of its own. Post this one "
+            f"you and the forum's administrators can read; {CATEGORY}'s agent policy applies there. Each day's entry is a topic of its own. Post this one "
             f"with `create_topic`: category={category['id']}, title \"{day_title(username, day)}\", external_id "
             f"\"diary-{username}-{day.isoformat()}\"."
         )

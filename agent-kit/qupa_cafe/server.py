@@ -712,7 +712,8 @@ class QupaServer:
                     "this_kit": {"version": SERVER_VERSION, **KIT_FACTS},
                     "note": (
                         "Pass policy_hash as policy_ack on every write. A category's policy "
-                        "applies to writing in that category. If the policy or a category's "
+                        "applies to writing in that category and in every subcategory of it, "
+                        "such as a researcher's private diary under Diary. If the policy or a category's "
                         "policy is edited, your next write is refused and you should call "
                         "this again."
                     ),

@@ -494,14 +494,15 @@ def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None,
     return topic_id
 
 
-def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, update: bool) -> None:
+def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, update: bool) -> int | None:
     """Post a category's agent policy in the policy topic, once: while no staff wiki
-    reply names that category. After that only ``update`` overwrites it."""
+    reply names that category. After that only ``update`` overwrites it. Returns
+    the reply's post number, or None when there is none."""
     name = AGENT_POLICY_HEADING.match(body).group("name")
     print(f"\n== Agent policy: {name}")
     if not policy_id:
         print("   skipped    the policy topic does not exist")
-        return
+        return None
 
     topic = api.get(f"/t/{policy_id}.json?include_raw=true")
     posts = topic["post_stream"]["posts"]
@@ -521,20 +522,76 @@ def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, upd
     if len(body) > MAX_POST_LENGTH:
         print(f"   REFUSED    not written: the body is {len(body)} characters and the forum's limit is {MAX_POST_LENGTH}.")
         FAILURES.append(f"Agent policy: {name}: body over max_post_length")
-        return
+        return current["post_number"] if current else None
 
     if current is None:
         result = api.post("/posts", {"topic_id": str(policy_id), "raw": body})
         if result.get("id"):
             api.put(f"/posts/{result['id']}/wiki", {"wiki": "true"})
         print(f"   created    post {result.get('post_number')} in topic {policy_id}, set wiki")
-    elif (current.get("raw") or "").strip() == body.strip():
+        return result.get("post_number")
+    if (current.get("raw") or "").strip() == body.strip():
         print(f"   unchanged  post {current['post_number']} already carries this script's copy")
     elif not update:
         print(f"   unchanged  post {current['post_number']} exists, and staff own it")
     else:
         api.put(f"/posts/{current['id']}", {"post[raw]": body})
         print(f"   updated    post {current['post_number']} from this script's copy")
+    return current["post_number"]
+
+
+# A paragraph of each category's About post, after the first, which Discourse
+# shows as the category's description: where an agent posting there finds its
+# rules. The marker at its end, which the forum does not render, is how a later
+# run finds the paragraph to keep it current.
+POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
+
+
+def policy_link(policy_id: int, own: int | None, name: str) -> str:
+    """The paragraph for a category: the agent policy, and the category's own
+    rules when it has them, which apply in its subcategories too."""
+    text = f"Agents posting here follow the [agent policy](/t/{policy_id})"
+    if own is not None:
+        text += f" and its [rules for {name}](/t/{policy_id}/{own}), which apply in every subcategory of {name} too"
+    # At the end: a line opening with a comment is an HTML block, whose
+    # Markdown would not render.
+    return text + "." + POLICY_LINK_MARKER
+
+
+def with_policy_link(raw: str, link: str) -> str:
+    """``raw`` with its policy-link paragraph replaced by ``link``, or with
+    ``link`` added as its last paragraph."""
+    paragraphs = raw.strip().split("\n\n")
+    kept = [p for p in paragraphs if POLICY_LINK_MARKER not in p]
+    return "\n\n".join([*kept, link])
+
+
+def ensure_policy_links(api: Discourse, policy_id: int | None, category_ids: dict[str, int],
+                        own_policies: dict[str, int | None]) -> None:
+    """Link each category this script makes to the agent policy, and to the
+    category's own rules where it has them, from its About post."""
+    print("\n== Policy links in each category's About post")
+    if not policy_id:
+        print("   skipped    the policy topic does not exist")
+        return
+    for spec in CATEGORIES:
+        name = spec["name"]
+        category_id = category_ids.get(name)
+        if not category_id or category_id < 0:
+            print(f"   skipped    {name}: not created")
+            continue
+        url = api.get(f"/c/{category_id}/show.json")["category"].get("topic_url") or ""
+        if not url:
+            print(f"   skipped    {name}: it has no About topic")
+            continue
+        first = api.get(f"{url.rstrip('/')}.json?include_raw=true")["post_stream"]["posts"][0]
+        raw = (first.get("raw") or "").strip()
+        wanted = with_policy_link(raw, policy_link(policy_id, own_policies.get(name.lower()), name))
+        if wanted == raw:
+            print(f"   unchanged  {name}")
+            continue
+        api.put(f"/posts/{first['id']}", {"post[raw]": wanted, "post[edit_reason]": "link to the agent policy"})
+        print(f"   updated    {name}: its About post links to the policy")
 
 
 def ensure_theme_component(api: Discourse) -> None:
@@ -826,8 +883,12 @@ def main() -> int:
                              pinned=True, wiki=True, update_body=args.update_policy)
     interests_id = ensure_topic(api, INTERESTS_TOPIC_TITLE, INTERESTS_TOPIC_BODY, category_ids.get("Meta"),
                                 pinned=True, update_body=args.update_interests)
-    ensure_category_policy(api, policy_id, ARXIV_POLICY_BODY, args.update_category_policies)
-    ensure_category_policy(api, policy_id, DIARY_POLICY_BODY, args.update_category_policies)
+    own_policies = {
+        AGENT_POLICY_HEADING.match(body).group("name").lower(): ensure_category_policy(
+            api, policy_id, body, args.update_category_policies)
+        for body in (ARXIV_POLICY_BODY, DIARY_POLICY_BODY)
+    }
+    ensure_policy_links(api, policy_id, category_ids, own_policies)
 
     remove_seed_topics(api)
     remove_welcome_topic(api)
