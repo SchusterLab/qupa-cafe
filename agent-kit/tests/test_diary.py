@@ -387,3 +387,151 @@ def test_the_diary_prompt_carries_wake_md_and_diary_md(monkeypatch, tmp_path):
     _, start, end = window()
     filled = diary.build_prompt(Settings(api_username="a-agent"), "%FROM_YOUR_RESEARCHER%", DAY, start, end, "", "", "")
     assert filled.index("Be brief.") < filled.index("Use a list.")
+
+
+# ------------------------------------------------------- the sessions in full
+
+
+def tool_call(name, arguments, when) -> dict:
+    return {"type": "assistant", "timestamp": when,
+            "message": {"content": [{"type": "tool_use", "id": "t1", "name": name, "input": arguments}]}}
+
+
+def tool_answer(text, when) -> dict:
+    return {"type": "user", "timestamp": when,
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": text}]}}
+
+
+def compacted(summary, when) -> dict:
+    return {"type": "user", "timestamp": when, "isCompactSummary": True, "isVisibleInTranscriptOnly": True,
+            "message": {"role": "user", "content": summary}}
+
+
+def test_a_session_in_full_is_its_prompts_and_final_replies_unclipped(tmp_path):
+    _, start, end = window()
+    long_prompt = "Fit the T1 data " + "with care " * 100
+    path = write_session(tmp_path / "projects", "s1", [
+        prompt("from the day before", at(23, day=DAY - timedelta(days=1))),
+        prompt(long_prompt + "<system-reminder>secret context</system-reminder>", at(9)),
+        answer("Reading the data first.", at(9, 1)),
+        tool_call("Read", {"file_path": "/data/t1.csv"}, at(9, 1)),
+        tool_answer("the file's contents", at(9, 2)),
+        answer("T1 is 42 us. " * 60, at(9, 3)),
+    ])
+    session = diary.read_session(path, start, end, ())
+    diary.write_transcripts([session], tmp_path / "out")
+    text = session.written.read_text(encoding="utf-8")
+    assert long_prompt.strip() in text and ("T1 is 42 us. " * 60).strip() in text
+    # Nothing between the prompt and the reply that ended it, and nothing
+    # from outside the window or added by the client.
+    for left_out in ("Reading the data first.", "/data/t1.csv", "the file's contents", "secret context",
+                     "from the day before"):
+        assert left_out not in text
+    # The digest clips the same turn, and names the file under its session.
+    digest = diary.digest([session])
+    assert f"In full: {session.written}" in digest and long_prompt.strip() not in digest
+
+
+def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
+    import tempfile
+
+    _, start, end = window()
+    scratch = str(Path(tempfile.gettempdir()) / "scratch.py")
+    path = write_session(tmp_path / "projects", "s1", [
+        {"type": "ai-title", "aiTitle": "HFSS simulation"},
+        {"type": "custom-title", "customTitle": "Split mergemon coupling"},
+        {"type": "pr-link", "prUrl": "https://example.org/pull/3", "timestamp": at(10)},
+        {"type": "pr-link", "prUrl": "https://example.org/pull/1", "timestamp": at(10, day=DAY - timedelta(days=2))},
+        {"type": "file-history-delta", "trackingPath": "scripts/fit.py", "backup": {"backupTime": at(10)}},
+        {"type": "file-history-delta", "trackingPath": scratch, "backup": {"backupTime": at(10)}},
+        prompt("Fit the T1 data", at(9)),
+    ])
+    session = diary.read_session(path, start, end, ())
+    # The researcher's name for it over Claude Code's; only the window's
+    # pull requests and edits; no scratch files.
+    assert diary.meta_lines(session) == [
+        "Title: Split mergemon coupling", "Pull requests: https://example.org/pull/3", "Files edited: scripts/fit.py"]
+    diary.write_transcripts([session], tmp_path / "out")
+    assert "Title: Split mergemon coupling" in session.written.read_text(encoding="utf-8")
+    assert "Files edited: scripts/fit.py" in diary.digest([session])
+
+
+def test_a_compaction_summary_is_claude_code_s_not_the_researcher_s(tmp_path):
+    """Claude Code records it as the researcher's message."""
+    _, start, end = window()
+    path = write_session(tmp_path / "projects", "s1", [
+        prompt("Fit the T1 data", at(9)),
+        compacted("This session is being continued from a previous conversation. Summary: T1 fitted.", at(12)),
+        prompt("Now the T2 echo", at(13)),
+    ])
+    session = diary.read_session(path, start, end, ())
+    assert [t.prompt for t in session.turns] == ["Fit the T1 data", "Now the T2 echo"]
+    diary.write_transcripts([session], tmp_path / "out")
+    text = session.written.read_text(encoding="utf-8")
+    assert "summary of the session so far" in text and "Summary: T1 fitted." in text
+    assert text.index("Fit the T1 data") < text.index("Summary: T1 fitted.") < text.index("Now the T2 echo")
+
+
+def test_the_prompt_says_where_the_sessions_are_in_full_or_that_they_are_not(tmp_path):
+    settings = Settings(api_username="a-agent", researcher="a", agent_dir="")
+    _, start, end = window()
+    there = diary.transcripts_notice(tmp_path / "t")
+    filled = diary.build_prompt(settings, "%SESSIONS%", DAY, start, end, "", "", "", there)
+    # Appended when the served wording has no place for it.
+    assert str(tmp_path / "t") in filled and "DATA" in there and "deleted when this wake ends" in there
+    assert "excerpts above alone" in diary.transcripts_notice(None)
+
+
+def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends(handled, projects, tmp_path, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%\n%TRANSCRIPTS%"})
+    write_session(projects, "mine", [prompt("Fit the T1 data", at(9)), answer("T1 is 42 us.", at(9, 1))])
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
+    monkeypatch.setattr(daemon, "wake_notice", lambda settings: "NOTICE")
+    root = workspace / diary.TRANSCRIPTS_DIR
+    # Left by a wake that never finished, which the next one clears.
+    (root / "2026-10-01").mkdir(parents=True)
+    seen = []
+
+    def wake(settings, prompt, **kwargs):
+        seen.append(sorted(p.relative_to(root).as_posix() for p in root.rglob("*.md")))
+        assert str(root / "2026-10-10") in prompt and "In full:" in prompt
+        return True
+
+    monkeypatch.setattr(daemon, "wake_agent", wake)
+    handled.mark(diary.HANDLED_KIND, 20000101)
+    assert daemon.diary_pass(_settings(), SiteForum(SITE, []), FakeRanking(SITE), handled, diary.Diary(), False,
+                             None, now=NOW)
+    assert seen == [["2026-10-10/01-home-r-thesis.md"]]
+    assert not root.exists()
+
+
+def test_the_sessions_go_even_when_the_wake_fails_and_none_are_written_without_a_sandbox(
+        handled, projects, tmp_path, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%\n%TRANSCRIPTS%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
+    monkeypatch.setattr(daemon, "wake_notice", lambda settings: "NOTICE")
+    woke, _ = _pass(_settings(), handled, None, monkeypatch, ok=False)
+    assert not woke and not (workspace / diary.TRANSCRIPTS_DIR).exists()
+
+    monkeypatch.setattr(daemon, "sandbox_config", lambda settings: None)
+    woke, woken = _pass(_settings(), handled, None, monkeypatch)
+    assert woke and "excerpts above alone" in woken[0][0] and not (workspace / diary.TRANSCRIPTS_DIR).exists()
+
+
+def test_a_diary_wake_runs_on_sonnet_and_other_wakes_on_the_researcher_s_default(handled, projects, monkeypatch):
+    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    woke, woken = _pass(_settings(), handled, None, monkeypatch)
+    wake = woken[0][1]["wake"]
+    assert wake.model == diary.MODEL == "sonnet"
+    command = daemon.runtime_command(_settings(), "P", wake)
+    assert command[command.index("--model") + 1] == "sonnet"
+    # Before --allowedTools, which takes every word after it.
+    assert command.index("--model") < command.index("--allowedTools")
+    forum_wake = daemon.Wake("claude", "", 10, 1, "Topic", "you were mentioned")
+    assert "--model" not in daemon.runtime_command(_settings(), "P", forum_wake)
+    codex = Settings(runtime="codex")
+    assert "--model" not in daemon.runtime_command(codex, "P", wake)

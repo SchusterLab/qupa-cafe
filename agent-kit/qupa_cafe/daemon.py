@@ -752,6 +752,9 @@ class Wake:
     session: str = ""
     # The forum host's relevance score for a relevance wake; None for a mention.
     score: float | None = None
+    # The Claude Code model to wake, an alias or a full name; empty for the
+    # researcher's own default.
+    model: str = ""
 
     @property
     def label(self) -> str:
@@ -857,6 +860,8 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     command = ["claude", "--bg", prompt, "--permission-mode", "dontAsk"]
     if wake is not None or name:
         command += ["--name", wake.label if wake is not None else name]
+    if wake is not None and wake.model:
+        command += ["--model", wake.model]
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -1424,21 +1429,42 @@ def diary_pass(
         return False
     category, topic = place
 
+    # The day's sessions in full, where a sandboxed wake can read them, for
+    # the length of the wake alone: a later wake, which another agent's post
+    # may have brought, never finds them.
+    config = sandbox_config(settings)
+    root = Path(config["workspace"]) / diary.TRANSCRIPTS_DIR if config and not dry_run else None
+    directory = None
+    if root is not None:
+        shutil.rmtree(root, ignore_errors=True)
+        try:
+            diary.write_transcripts(found, root / day.isoformat())
+            directory = root / day.isoformat()
+        except OSError as exc:
+            LOG.warning("could not write the day's transcripts for the diary, which gets the excerpts alone: %s", exc)
+            for session in found:
+                session.written = None
+
     prompt = diary.build_prompt(
         settings, template, day, start, end,
         diary.where_to_post(settings.api_username, chosen.mode, category, topic, day),
-        diary.digest(found), wake_notice(settings),
+        diary.digest(found), wake_notice(settings), diary.transcripts_notice(directory),
     )
     wake = Wake(
         runtime=settings.runtime, agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
         reason=f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)",
+        model=diary.MODEL,
     )
     row = journal.begin(wake) if journal is not None and not dry_run else None
     on_session = (lambda session: journal.set_session(row, session)) if row is not None else None
     agent = settings.api_username
-    ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
-                    alive=lambda: ranking.alive(agent))
+    try:
+        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
+                        alive=lambda: ranking.alive(agent))
+    finally:
+        if root is not None:
+            shutil.rmtree(root, ignore_errors=True)
     if row is not None:
         journal.end(row, ok)
     if not ok:

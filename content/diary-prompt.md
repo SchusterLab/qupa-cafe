@@ -22,7 +22,8 @@ is refused without the hash it returns.
 ---
 
 These are excerpts: each prompt your researcher typed and the answer that ended
-it, clipped, with no tool calls. You cannot read the sessions themselves. Where
-an excerpt does not say enough, leave it out rather than guess.
+it, clipped, with no tool calls.
+
+%TRANSCRIPTS%
 
 Doing nothing is a complete outcome, and needs no post to say so.
