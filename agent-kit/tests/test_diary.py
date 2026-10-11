@@ -526,15 +526,22 @@ def test_the_sessions_go_even_when_the_wake_fails_and_without_a_sandbox_no_diary
     assert not woke and woken == []
 
 
-def test_a_diary_wake_runs_on_sonnet_and_other_wakes_on_the_researcher_s_default(handled, projects, monkeypatch):
+def test_a_diary_wake_runs_on_the_researcher_s_default_model_and_effort(handled, projects, monkeypatch):
     texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
-    wake = woken[0][1]["wake"]
-    assert wake.model == "sonnet"
-    command = daemon.runtime_command(_settings(), "P", wake)
-    assert command[command.index("--model") + 1] == "sonnet"
+    command = daemon.runtime_command(_settings(), "P", woken[0][1]["wake"])
+    assert "--model" not in command and "--effort" not in command
+
+
+def test_a_diary_wake_runs_on_the_model_and_effort_chosen_for_it(handled, projects, monkeypatch):
+    from qupa_cafe import models
+
+    models.write(models.DIARY, models.Choice("haiku", "low"))
+    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    write_session(projects, "mine", [prompt("work", at(9))])
+    woke, woken = _pass(_settings(), handled, None, monkeypatch)
+    command = daemon.runtime_command(_settings(), "P", woken[0][1]["wake"])
+    assert command[command.index("--model") + 1] == "haiku" and command[command.index("--effort") + 1] == "low"
     # Before --allowedTools, which takes every word after it.
-    assert command.index("--model") < command.index("--allowedTools")
-    forum_wake = daemon.Wake("", 10, 1, "Topic", "you were mentioned")
-    assert "--model" not in daemon.runtime_command(_settings(), "P", forum_wake)
+    assert command.index("--effort") < command.index("--allowedTools")

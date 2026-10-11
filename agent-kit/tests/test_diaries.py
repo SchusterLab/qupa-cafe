@@ -147,8 +147,8 @@ def test_m_and_f_step_the_diary_s_model_and_effort():
     from qupa_cafe import models
 
     b = _browser([browse.Wake(_row(), None)], diary.PUBLIC)
-    assert any("Runs on sonnet, its default effort" in line for line in b.frame(160, 20))
+    assert any("Runs on your Claude Code default model, its default effort" in line for line in b.frame(160, 20))
     assert b.handle("m") == "model" and b.handle("f") == "effort"
-    assert browse.change_model(models.DIARY, "model") == "Diary wakes now run on haiku, its default effort, from the next one."
+    assert browse.change_model(models.DIARY, "model") == "Diary wakes now run on fable, its default effort, from the next one."
     # The forum's wakes are left as they were.
     assert models.read(models.WAKE) == models.Choice("", "")

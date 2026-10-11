@@ -8,10 +8,9 @@ every wake, so a change needs no restart:
     QUPA_DIARY_MODEL, QUPA_DIARY_EFFORT    diary wakes
 
 A model is anything ``claude --model`` takes, an alias such as ``sonnet`` or
-a full name; empty is the researcher's own Claude Code default. An effort is
-one of ``claude --effort``'s levels; empty is the model's default. A diary
-wake runs on Sonnet unless the researcher says otherwise: an entry is a
-summary of the day, which needs less than a reply on the forum does.
+a full name; empty, the default, is the researcher's own Claude Code model.
+An effort is one of ``claude --effort``'s levels; empty, the default, is the
+model's own.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ KEYS = {
     WAKE: ("QUPA_WAKE_MODEL", "QUPA_WAKE_EFFORT"),
     DIARY: ("QUPA_DIARY_MODEL", "QUPA_DIARY_EFFORT"),
 }
-DEFAULT_MODEL = {WAKE: "", DIARY: "sonnet"}
 
 # What the browsers' keys step through, in order; empty is the default.
 MODELS = ("", "fable", "opus", "sonnet", "haiku")
@@ -57,7 +55,7 @@ def effort_of(value: str) -> str:
 
 def read(kind: str, path: Path | None = None) -> Choice:
     """The setting for ``kind`` as env says now, else as this process's
-    environment does, else the default."""
+    environment does, else the default, which is empty."""
     model_key, effort_key = KEYS[kind]
     values = {model_key: os.environ.get(model_key), effort_key: os.environ.get(effort_key)}
     try:
@@ -68,11 +66,7 @@ def read(kind: str, path: Path | None = None) -> Choice:
         key, sep, value = line.strip().partition("=")
         if sep and key.strip() in values:
             values[key.strip()] = value
-    model = values[model_key]
-    return Choice(
-        DEFAULT_MODEL[kind] if model is None else model.strip(),
-        effort_of(values[effort_key] or ""),
-    )
+    return Choice((values[model_key] or "").strip(), effort_of(values[effort_key] or ""))
 
 
 def write(kind: str, chosen: Choice, path: Path | None = None) -> None:

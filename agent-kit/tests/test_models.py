@@ -6,9 +6,9 @@ from qupa_cafe import daemon, models
 from qupa_cafe.daemon import Settings
 
 
-def test_a_forum_wake_runs_on_the_researcher_s_default_and_a_diary_wake_on_sonnet():
+def test_every_wake_runs_on_the_researcher_s_default_model_and_effort():
     assert models.read(models.WAKE) == models.Choice("", "")
-    assert models.read(models.DIARY) == models.Choice("sonnet", "")
+    assert models.read(models.DIARY) == models.Choice("", "")
     assert models.Choice("", "").flags() == []
 
 
@@ -20,7 +20,7 @@ def test_a_setting_is_written_into_env_in_place(tmp_path):
     assert models.read(models.DIARY, env) == models.Choice("opus", "high")
 
 
-def test_an_empty_diary_model_is_the_researcher_s_default_and_a_bad_effort_none(tmp_path):
+def test_an_empty_model_is_the_researcher_s_default_and_a_bad_effort_none(tmp_path):
     env = tmp_path / "env"
     env.write_text("QUPA_DIARY_MODEL=\nQUPA_DIARY_EFFORT=extreme\n", encoding="utf-8")
     assert models.read(models.DIARY, env) == models.Choice("", "")
