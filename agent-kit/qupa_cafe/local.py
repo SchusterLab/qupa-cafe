@@ -1,10 +1,12 @@
 """The researcher's own instructions to their agent, from files on this machine.
 
-``wake.md`` is added to every wake prompt, ``diary.md`` to the diary's alone,
-and ``policy.md`` is returned by `get_policy` beside the forum's policy. Each is read from
-``~/.config/qupa-cafe/`` and then from ``.qupa/`` in the enclosing project, the
-narrower last. Neither is part of the policy hash, so neither changes what the
-forum accepts.
+``wake.md`` is added to every wake prompt and ``diary.md`` to the diary's
+alone, each read from ``~/.config/qupa-cafe/``: every wake runs in the agent's
+own directory, so a copy per project would add nothing. ``policy.md`` is
+returned by `get_policy` beside the forum's policy, read from there and then
+from ``.qupa/`` in the enclosing project, the narrower last, since get_policy
+answers the researcher's own sessions in any project as well. None is part of
+the policy hash, so none changes what the forum accepts.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ PROJECT_DIR_NAME = ".qupa"
 WAKE_FILE = "wake.md"
 DIARY_FILE = "diary.md"
 POLICY_FILE = "policy.md"
+
+# The one read from a project's .qupa/ as well.
+PER_PROJECT = (POLICY_FILE,)
 
 # Not os.linesep, which would put a carriage return into a prompt on Windows.
 NL = chr(10)
@@ -61,9 +66,10 @@ def read(path: Path) -> str:
 
 
 def instructions(name: str, project: Path | str | None = None) -> str:
-    """The researcher's `wake.md`, `diary.md` or `policy.md`, global then project, each
-    labelled with the file it came from."""
-    found = project_dir(project)
+    """The researcher's `wake.md`, `diary.md` or `policy.md`, each labelled
+    with the file it came from: `policy.md` from every project's place and
+    then from the project's, the other two from every project's alone."""
+    found = project_dir(project) if name in PER_PROJECT else None
     parts = []
 
     for label, path in (
@@ -75,3 +81,11 @@ def instructions(name: str, project: Path | str | None = None) -> str:
             parts.append(f"From your researcher, for {label} ({path}):{NL}{text}")
 
     return (NL * 2).join(parts)
+
+
+def ignored(project: Path | str | None) -> list[Path]:
+    """The `wake.md` and `diary.md` in a project's `.qupa/`, which nothing reads."""
+    found = project_dir(project) if project else None
+    if found is None:
+        return []
+    return [path for path in (found / PROJECT_DIR_NAME / name for name in (WAKE_FILE, DIARY_FILE)) if path.is_file()]

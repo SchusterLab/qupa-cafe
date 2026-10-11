@@ -547,9 +547,10 @@ def did_not_wake(reason: str, similarity: float | None, floor: float | None, cat
 
 
 def instruction_files(agent_dir: str) -> list[tuple[str, Path]]:
-    """Where the researcher's ``wake.md`` and ``policy.md`` are read from for
-    a wake run in ``agent_dir``, as (scope, path): every project's, then this
-    project's when it has a ``.qupa/`` directory."""
+    """Where the researcher's ``policy.md`` is read from for a wake run in
+    ``agent_dir``, as (scope, directory): every project's, then this
+    project's when it has a ``.qupa/`` directory. ``wake.md`` and
+    ``diary.md`` are in the first alone."""
     places = [("every project", local.config_dir())]
     project = local.project_dir(agent_dir) if agent_dir else None
     if project is not None:
@@ -605,7 +606,7 @@ def tune_prompt(subject: Subject, want: str) -> str:
         return "\n\n".join(parts)
 
     places = instruction_files(subject.agent_dir)
-    wake_md = "".join(as_it_stands(place / local.WAKE_FILE, scope) for scope, place in places)
+    wake_md = as_it_stands(local.config_dir() / local.WAKE_FILE, "every wake")
     policy_md = "".join(as_it_stands(place / local.POLICY_FILE, scope) for scope, place in places)
     if want == "how":
         parts.append(

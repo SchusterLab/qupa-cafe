@@ -194,8 +194,7 @@ def edit_prompt(agent_dir: str, category: str, entry: wakes.Row | None) -> str:
     """The first message of the session that changes how the diary is
     written: the served wording, diary.md as it stands, and what neither of
     them can change."""
-    places = browse.instruction_files(agent_dir)
-    diary_md = "".join(browse.as_it_stands(place / local.DIARY_FILE, scope) for scope, place in places)
+    diary_md = browse.as_it_stands(local.config_dir() / local.DIARY_FILE, "the diary")
     served = texts.diary_prompt()
     shown = f"\n\n```markdown\n{served}\n```" if served else " The forum host has not served it to this machine yet."
     opening = f"Your researcher wants to change how you write your diary, the entries you post in {place_name(category)}."

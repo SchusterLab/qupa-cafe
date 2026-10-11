@@ -675,7 +675,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
     topic_id = topic.get("id")
     count = topic.get("posts_count") or len(posts)
 
-    from_researcher = local.instructions(local.WAKE_FILE, settings.agent_dir or None)
+    from_researcher = local.instructions(local.WAKE_FILE)
 
     latest = newest_post(topic)
     author = latest.get("username", "?")
@@ -1615,6 +1615,11 @@ def run() -> int:
     LOG.info(
         "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
     )
+    for path in local.ignored(settings.agent_dir):
+        LOG.warning(
+            "%s is not read: %s is read only from %s, since every wake runs in QUPA_AGENT_DIR",
+            path, path.name, local.config_dir(),
+        )
 
     diary_state = diary.Diary()
 

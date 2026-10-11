@@ -242,9 +242,11 @@ def test_the_tuning_prompt_names_the_wake_the_wish_and_all_three_places(monkeypa
     assert "You were woken for it because you were mentioned, with a relevance score of 0.81." in prompt
     assert 'shows that wake as "wrote nothing"' in prompt
     assert browse.INTERESTS_TOPIC_TITLE in prompt and "edit_post" in prompt
+    # wake.md has one place; policy.md is the project's too.
     for name in ("wake.md", "policy.md"):
         assert str(tmp_path / "config" / name) in prompt
-        assert str(tmp_path / "project" / ".qupa" / name) in prompt
+    assert str(tmp_path / "project" / ".qupa" / "policy.md") in prompt
+    assert str(tmp_path / "project" / ".qupa" / "wake.md") not in prompt
     assert "Change nothing until they agree." in prompt
     assert "reply to posts like" in browse.tune_prompt(subject, "reply")
 

@@ -363,8 +363,7 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
         whoami = f"You are `{settings.api_username}` here."
     # wake.md, as for every wake, then diary.md, for the diary alone.
     from_researcher = "\n\n".join(
-        text for text in (local.instructions(name, settings.agent_dir or None)
-                          for name in (local.WAKE_FILE, local.DIARY_FILE)) if text
+        text for text in (local.instructions(name) for name in (local.WAKE_FILE, local.DIARY_FILE)) if text
     )
 
     filled = template
