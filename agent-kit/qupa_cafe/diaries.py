@@ -35,10 +35,9 @@ EDIT_KEY = "e"
 # threshold; "=" and "_" are the unshifted keys.
 HOUR_KEYS = {"-": -1, "_": -1, "+": 1, "=": 1}
 
-
-def is_entry(row: wakes.Row) -> bool:
-    """Whether a journalled wake is one the diary started."""
-    return row.topic_id is None and row.reason.startswith(diary.REASON)
+# Where the diary goes, as short as the row above the list allows; who reads
+# it is said when d switches to it.
+ROW_PLACES = {diary.PUBLIC: "in your agent's topic in Diary", diary.PRIVATE: "a topic a day in your private diary"}
 
 
 @dataclass
@@ -104,11 +103,14 @@ class DiaryBrowser:
     # ------------------------------------------------------------ frames
 
     def diary_line(self) -> str:
+        """The diary's mode, then its hour and the keys that move it, as the
+        wake browser follows the threshold with its keys."""
+        keys = wakes.paint("  (+ makes it later, - earlier)", "meta")
         if not self.chosen.on:
-            return wakes.paint("○ ", "meta") + f"The diary is off: d turns it on, posted at {self.chosen.at()}."
+            return wakes.paint("○ ", "meta") + f"The diary is off: d turns it on. Posted at {self.chosen.at()}" + keys
         return (
-            wakes.paint("● ", "good") + f"The diary is {self.chosen.mode}, posted at {self.chosen.at()} "
-            + self.chosen.where()
+            wakes.paint("● ", "good")
+            + f"The diary is {self.chosen.mode}, {ROW_PLACES[self.chosen.mode]}; posted at {self.chosen.at()}" + keys
         )
 
     def status_line(self) -> str:
@@ -136,7 +138,7 @@ class DiaryBrowser:
             where = wakes.paint(f"  entries {top + 1}-{min(top + room, len(self.items))} of {len(self.items)}", "meta")
         out.append(self.status_line() or where)
         following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
-        mode = "d to turn it off" if following == diary.OFF else f"d to make it {following}"
+        mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
         keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), mode,
                 "+/- for the hour", "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
@@ -230,7 +232,7 @@ def edit(settings: Settings, chosen: diary.Choice, entry: browse.Wake | None) ->
 
 def load(settings: Settings) -> list[browse.Wake]:
     """Every diary entry, newest first."""
-    return [browse.Wake(row) for row in reversed(wakes.recent(settings.state_path, None)) if is_entry(row)]
+    return [browse.Wake(row) for row in reversed(wakes.recent(settings.state_path, None, wakes.DIARY))]
 
 
 def next_mode(browser: DiaryBrowser) -> str:

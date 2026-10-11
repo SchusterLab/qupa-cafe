@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import daemon
+from . import daemon, diary
 from .daemon import Settings, load_env_file
 
 # A wake is stopped at this age, so one still marked running after it was
@@ -209,16 +209,35 @@ def connect(state_path: str) -> sqlite3.Connection | None:
         return None
 
 
-def recent(state_path: str, limit: int | None) -> list[Row]:
-    """The last ``limit`` wakes, or all of them for None, oldest first."""
+# Which wakes ``recent`` returns: all of them, those for the forum, which the
+# wake browser shows, or those for the diary, which the diary browser shows.
+ALL, FORUM, DIARY = "all", "forum", "diary"
+
+# How the journal tells a diary wake: no topic, and the diary's reason.
+DIARY_WAKE = "(topic_id IS NULL AND reason LIKE ?)"
+
+
+def is_diary(row: Row) -> bool:
+    """Whether a journalled wake is one the diary started."""
+    return row.topic_id is None and row.reason.startswith(diary.REASON)
+
+
+def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
+    """The last ``limit`` wakes of ``which`` kind, or all of them for None,
+    oldest first."""
     db = connect(state_path)
     if db is None:
         return []
+    where, params = {
+        ALL: ("", ()),
+        FORUM: (f" WHERE NOT {DIARY_WAKE}", (diary.REASON + "%",)),
+        DIARY: (f" WHERE {DIARY_WAKE}", (diary.REASON + "%",)),
+    }[which]
     try:
         rows = db.execute(
             "SELECT started, finished, status, runtime, session, agent_dir, topic_id,"
-            " post_number, title, reason, score FROM wakes ORDER BY id DESC LIMIT ?",
-            (-1 if limit is None else limit,),
+            f" post_number, title, reason, score FROM wakes{where} ORDER BY id DESC LIMIT ?",
+            (*params, -1 if limit is None else limit),
         ).fetchall()
     except sqlite3.Error:
         # A state file written by a daemon that journals nothing.
@@ -676,7 +695,7 @@ def footer(state: Status) -> list[str]:
 
 
 def print_wakes(settings: Settings, limit: int, full_prompt: bool) -> None:
-    rows = recent(settings.state_path, max(limit, 1))
+    rows = recent(settings.state_path, max(limit, 1), FORUM)
     lines: list[str] = []
     if not rows:
         lines.append("No wakes recorded yet. The daemon records each one from kit 0.9.0 on.")

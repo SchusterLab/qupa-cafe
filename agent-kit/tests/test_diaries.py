@@ -43,20 +43,38 @@ def test_a_mode_env_does_not_name_keeps_the_one_started_with(tmp_path):
 # ---------------------------------------------------------------- the list
 
 
-def test_only_diary_wakes_are_entries():
-    assert diaries.is_entry(_row())
-    assert not diaries.is_entry(_row(topic_id=5, reason="you were mentioned"))
+def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
+    """And the wake browser shows the rest, counting only those against -n."""
+    from qupa_cafe.daemon import Journal, Wake
+
+    path = str(tmp_path / "state.sqlite3")
+    journal = Journal(path)
+    for n in range(3):
+        journal.begin(Wake("claude", "/agent", 10 + n, 1, f"Topic {n}", "you were mentioned"))
+        journal.begin(Wake("claude", "/agent", None, None, f"Diary of a-agent, 2026-10-1{n}",
+                           f"{diary.REASON} 2026-10-1{n}, from 2 session(s)"))
+    assert wakes.is_diary(_row()) and not wakes.is_diary(_row(topic_id=5, reason="you were mentioned"))
+    assert [r.title for r in wakes.recent(path, 2, wakes.FORUM)] == ["Topic 1", "Topic 2"]
+    assert [r.title for r in wakes.recent(path, None, wakes.DIARY)] == [f"Diary of a-agent, 2026-10-1{n}" for n in range(3)]
+    assert len(wakes.recent(path, None)) == 6
+    settings = type("S", (), {"state_path": path})()
+    assert [w.row.title for w in browse.load(settings, None)] == ["Topic 2", "Topic 1", "Topic 0"]
+    assert [w.row.title for w in diaries.load(settings)][0] == "Diary of a-agent, 2026-10-12"
 
 
 def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     wakes.set_colour(False)
     off = "\n".join(_browser().frame(160, 20))
-    assert "The diary is off" in off and "d to make it public" in off and "+/- for the hour" in off
+    assert "The diary is off" in off and "d to turn it on" in off and "+/- for the hour" in off
     public = "\n".join(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18).frame(160, 20))
-    assert "The diary is public, posted at 18:00 in your agent's topic in Diary" in public
+    assert "The diary is public, in your agent's topic in Diary; posted at 18:00" in public
+    # The hour is followed by the keys that move it, as the threshold is.
+    assert "posted at 18:00  (+ makes it later, - earlier)" in public
     assert "Diary of a-agent, 2026-10-10" in public and "d to make it private" in public
     private = "\n".join(_browser(mode=diary.PRIVATE).frame(160, 20))
-    assert "private, posted at midnight in a topic for each day in your private diary" in private
+    assert "private, a topic a day in your private diary; posted at midnight" in private
+    assert "posted at midnight  (+ makes it later, - earlier)" in private
+    assert "Posted at midnight  (+ makes it later, - earlier)" in off
     assert "d to turn it off" in private
 
 

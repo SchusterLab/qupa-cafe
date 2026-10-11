@@ -774,7 +774,8 @@ def set_floor(settings: Settings, browser: Browser, action: str) -> str:
 
 def load(settings: Settings, limit: int | None) -> list[Wake]:
     """The last ``limit`` wakes, or all of them, newest first."""
-    return [Wake(row) for row in reversed(wakes.recent(settings.state_path, limit))]
+    # The diary's wakes are the diary browser's.
+    return [Wake(row) for row in reversed(wakes.recent(settings.state_path, limit, wakes.FORUM))]
 
 
 def run(settings: Settings, limit: int | None = None) -> int:
