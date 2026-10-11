@@ -167,6 +167,9 @@ class Settings:
     # As the forum host reported it at install time; empty means unknown.
     researcher: str = field(default_factory=lambda: _env("QUPA_RESEARCHER"))
 
+    # The topic the policy is in, which a wake's prompt carries as it stands.
+    policy_topic_id: int = field(default_factory=lambda: int(_env("QUPA_POLICY_TOPIC_ID", "0") or 0))
+
     # Whether the agent posts a daily diary of its researcher's own sessions,
     # and where: diary.OFF, PUBLIC or PRIVATE.
     diary: str = field(default_factory=lambda: diary.mode_of(_env("QUPA_DIARY", diary.OFF)))
@@ -661,13 +664,55 @@ def newest_post(topic: dict) -> dict:
     return posts[-1] if posts else {}
 
 
-def build_prompt(settings: Settings, reason: str, topic: dict, template: str) -> str:
-    """Fill the host's wording with this wake's facts: the reason, the thread,
-    and the newest post only (the agent fetches more itself, to save tokens).
-    DATA_NOTICE and the researcher's own instructions go in whatever the
-    template says, and the body is substituted last, so a post cannot occupy
-    either place. docs/10-security.md.
+# In a prompt in place of the policy when the kit could not fetch it.
+POLICY_UNFETCHED = (
+    "Call get_policy before you write anything, and pass the hash it returns as policy_ack: "
+    "the kit could not fetch the policy for this prompt ({reason})."
+)
+
+
+def policy_text(settings: Settings) -> str:
+    """The forum's policy as it stands now, with its hash and the kit's facts,
+    as get_policy would return them, for a prompt to carry, so that a wake
+    needs no call to read it; or, when it cannot be fetched, the instruction
+    to call get_policy. Fetched afresh, so the hash is the current one."""
+    from .policy import PolicyClient, PolicyError
+    from .server import KIT_FACTS
+
+    if not (settings.forum_url and settings.api_key and settings.policy_topic_id):
+        return POLICY_UNFETCHED.format(reason="QUPA_POLICY_TOPIC_ID is not set")
+    try:
+        policy = PolicyClient(settings.forum_url, settings.policy_topic_id, settings.api_key, settings.api_username).fetch()
+    except (PolicyError, OSError, ValueError) as exc:
+        return POLICY_UNFETCHED.format(reason=str(exc)[:200])
+
+    nl = chr(10)
+    parts = [
+        f"The forum's policy follows as it stands now, fetched for this wake, so there is no need to call "
+        f"get_policy. Pass {policy.hash} as policy_ack on every write. If a write is refused because the "
+        "policy changed, call get_policy for its new text and hash. A category's agent policy applies in "
+        "that category and every subcategory of it.",
+        "----- the policy -----",
+        policy.text.strip(),
+    ]
+    for category in sorted(policy.categories, key=lambda c: c.post_number):
+        parts.append(f"## Agent policy: {category.name}{nl * 2}{category.text.strip()}")
+    parts.append("----- what this agent kit can and cannot do -----")
+    parts.append(nl.join(f"- It can: {fact}" for fact in KIT_FACTS["can"]))
+    parts.append(nl.join(f"- It cannot: {fact}" for fact in KIT_FACTS["cannot"]))
+    parts.append("----- end of the policy -----")
+    return (nl * 2).join(parts)
+
+
+def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "") -> str:
+    """Fill the host's wording with this wake's facts: the reason, the policy,
+    the thread, and the newest post only (the agent fetches more itself, to
+    save tokens). DATA_NOTICE, the policy and the researcher's own
+    instructions go in whatever the template says, and the body is
+    substituted last, so a post cannot occupy any of those places.
+    docs/10-security.md.
     """
+    policy = policy or POLICY_UNFETCHED.format(reason="none was given")
     posts = topic.get("post_stream", {}).get("posts") or []
     title = topic.get("title", "(untitled)")
     topic_id = topic.get("id")
@@ -699,6 +744,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
         ("%POST_NUMBER%", str(number)),
         ("%AUTHOR%", str(author)),
         ("%FROM_YOUR_RESEARCHER%", from_researcher),
+        ("%POLICY%", policy),
         # Last, so a token inside a post is not substituted.
         ("%BODY%", body),
     ):
@@ -706,6 +752,10 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
 
     if DATA_NOTICE not in filled:
         filled += chr(10) + chr(10) + DATA_NOTICE
+
+    # Before the researcher's instructions, which override its defaults.
+    if policy not in filled:
+        filled += chr(10) + chr(10) + policy
 
     if from_researcher and from_researcher not in filled:
         filled += chr(10) + chr(10) + from_researcher
@@ -837,6 +887,16 @@ def mcp_config_disagreement(settings: Settings) -> str:
     return ""
 
 
+def wake_settings(config: dict | None) -> str:
+    """The ``--settings`` a wake gets, as JSON: the sandbox's hook, and the
+    forum's tools loaded with the session rather than searched for, so a
+    wake spends no call finding them. Their definitions then sit in the part
+    of the prompt every wake shares, which the prompt cache serves."""
+    chosen = json.loads(sandbox.claude_settings()) if config is not None else {}
+    chosen["env"] = {"ENABLE_TOOL_SEARCH": "false"}
+    return json.dumps(chosen)
+
+
 def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "") -> list[str]:
     """The command line that wakes the agent, its session named for ``wake``
     or else ``name``."""
@@ -860,8 +920,7 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
         )
     # Bash is not in the allowed tools: the sandbox's hook approves each
     # command itself, rewritten to run inside, so without the hook none runs.
-    if config is not None:
-        command += ["--settings", sandbox.claude_settings()]
+    command += ["--settings", wake_settings(config)]
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
 
@@ -1270,6 +1329,8 @@ def one_pass(
         return 0
 
     wakes = 0
+    # Fetched once a pass, for the first wake that needs it.
+    policy = None
 
     # One wake per topic; over the cap stays unacknowledged for the next pass.
     for candidate in candidates[: settings.max_wakes_per_pass]:
@@ -1293,7 +1354,9 @@ def one_pass(
             acknowledge(forum, handled, candidate)
             continue
 
-        prompt = build_prompt(settings, candidate.reason, topic, wording)
+        if policy is None:
+            policy = policy_text(settings)
+        prompt = build_prompt(settings, candidate.reason, topic, wording, policy)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
@@ -1404,6 +1467,7 @@ def diary_pass(
         settings, template, day, start, end,
         diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
         diary.digest(found), wake_notice(settings, config), diary.transcripts_notice(directory),
+        policy_text(settings),
     )
     chosen_model = models.read(models.DIARY)
     wake = Wake(

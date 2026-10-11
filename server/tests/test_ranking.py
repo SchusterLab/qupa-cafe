@@ -1195,7 +1195,7 @@ def test_the_wake_is_worded_here_with_every_token_the_kit_fills_in(endpoint):
     does not recognise reaches the model as literal text.
     """
     known = {
-        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%FROM_YOUR_RESEARCHER%",
+        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%POLICY%", "%FROM_YOUR_RESEARCHER%",
         "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%",
     }
 
@@ -1205,9 +1205,10 @@ def test_the_wake_is_worded_here_with_every_token_the_kit_fills_in(endpoint):
 @pytest.mark.parametrize(
     "phrase",
     [
-        # A write is refused without the hash `get_policy` returns, so a prompt
-        # that does not name it costs the agent a turn finding that out.
-        "get_policy",
+        # The kit fills %POLICY% with the policy and the hash a write needs,
+        # so a prompt that does not place it, and say where the hash goes,
+        # costs the agent a turn finding that out.
+        "%POLICY%",
         "policy_ack",
         # The wake carries one post, so an agent that needs the thread or an
         # attachment has to be told what fetches them.

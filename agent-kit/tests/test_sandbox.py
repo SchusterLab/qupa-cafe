@@ -271,7 +271,16 @@ def test_a_claude_wake_with_the_sandbox_gets_its_hook(installed, tmp_path):
 
 def test_a_wake_without_the_sandbox_gets_no_hook(tmp_path):
     command = runtime_command(Settings(mcp_config=str(tmp_path / "absent.json")), "p")
-    assert "--settings" not in command
+    chosen = json.loads(command[command.index("--settings") + 1])
+    assert "hooks" not in chosen
+
+
+def test_a_wake_loads_the_forum_s_tools_rather_than_searching_for_them(installed, tmp_path):
+    """So it spends no call finding get_policy and the rest."""
+    for config in (None, installed):
+        chosen = json.loads(daemon.wake_settings(config))
+        assert chosen["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+    assert "hooks" in json.loads(daemon.wake_settings(installed))
 
 
 def test_a_sandboxed_wake_is_told_where_it_can_work(installed):

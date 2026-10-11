@@ -572,7 +572,7 @@ def where_to_post(username: str, mode: str, category: dict, topic: dict | None, 
 
 
 def build_prompt(settings, template: str, day: date, start: datetime, end: datetime,
-                 where: str, sessions_text: str, notice: str, transcripts: str = "") -> str:
+                 where: str, sessions_text: str, notice: str, transcripts: str = "", policy: str = "") -> str:
     """Fill the host's wording with the day's facts. DATA_NOTICE and the
     researcher's own instructions go in whatever the template says, and the
     sessions are substituted last, so nothing they hold is substituted."""
@@ -591,6 +591,7 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
         ("%WHERE%", where),
         ("%DATA_NOTICE%", DATA_NOTICE),
         ("%FROM_YOUR_RESEARCHER%", from_researcher),
+        ("%POLICY%", policy),
         ("%TRANSCRIPTS%", transcripts),
         ("%SESSIONS%", sessions_text),
     ):
@@ -598,6 +599,9 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
 
     if DATA_NOTICE not in filled:
         filled += "\n\n" + DATA_NOTICE
+    # Before the researcher's instructions, which override its defaults.
+    if policy and policy not in filled:
+        filled += "\n\n" + policy
     if from_researcher and from_researcher not in filled:
         filled += "\n\n" + from_researcher
     if transcripts and transcripts not in filled:

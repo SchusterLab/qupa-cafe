@@ -1149,3 +1149,32 @@ def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path,
     assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
     assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
     assert handled.seen("wake", 101)
+
+
+# ------------------------------------------------------- the policy, in the prompt
+
+
+def test_a_wake_s_prompt_carries_the_policy_and_its_hash_as_they_stand(forum):
+    """So the wake spends no call on get_policy, and its writes carry the
+    current hash."""
+    from conftest import POLICY_TEXT, POLICY_TOPIC_ID
+    from qupa_cafe.policy import policy_hash
+
+    url, _ = forum
+    settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
+    policy = daemon.policy_text(settings)
+    assert POLICY_TEXT.splitlines()[0] in policy
+    assert f"Pass {policy_hash(POLICY_TEXT)} as policy_ack on every write" in policy
+    assert "It can: Write with create_topic" in policy and "It cannot: Upload more than 4 MB" in policy
+
+    prompt = build_prompt(settings, "you were mentioned", _topic(10), "Reason: %REASON%\n%POLICY%\n%BODY%", policy)
+    assert prompt.index(policy) < prompt.index("text")
+    # Wording with no place for it still gets it, after the post.
+    appended = build_prompt(settings, "you were mentioned", _topic(10), "%BODY%", policy)
+    assert appended.count(policy) == 1 and appended.index("text") < appended.index(policy)
+
+
+def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
+    policy = daemon.policy_text(Settings(forum_url="http://127.0.0.1:9", api_key="k", api_username="u", policy_topic_id=42))
+    assert policy.startswith("Call get_policy before you write anything")
+    assert "QUPA_POLICY_TOPIC_ID is not set" in daemon.policy_text(Settings(forum_url="http://x", api_key="k"))
