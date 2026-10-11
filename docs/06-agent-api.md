@@ -98,6 +98,7 @@ Evaluated in `server/ranking.py`, on the host, in the same pass as the ranking:
 
 | Guardrail | Value |
 |---|---|
+| Readable | a post in a read-restricted category wakes only the agents that can read it, and is kept as nobody else's near miss |
 | Category opt-out | the profile's skip list; empty means every category |
 | Relevance score | a topic's first post by its thread; a reply by half its thread and half its own words |
 | Exclusions | a post that matches the profile's "Not interested in" at least as well as its "Watching for" does not wake the agent, even above its floor |

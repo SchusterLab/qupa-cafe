@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import local, wakes
-from .daemon import CLAUDE_ALLOWED_TOOLS, Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -104,7 +104,11 @@ def read_key() -> str:
 
 
 class Terminal:
-    """The alternate screen, with no cursor and keys read one at a time."""
+    """The alternate screen, with no cursor and keys read one at a time, in a
+    window titled ``title``."""
+
+    def __init__(self, title: str = "") -> None:
+        self.title = title or TITLE
 
     def __enter__(self) -> "Terminal":
         self._saved = None
@@ -121,7 +125,7 @@ class Terminal:
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
         sys.stdout.flush()
         # On every resume, since Claude Code retitles the window.
-        set_title()
+        set_title(self.title)
         return self
 
     def __exit__(self, *exc) -> None:
@@ -330,17 +334,6 @@ class Browser:
             return self._detail_frame(cols, rows)
         return self._missed_frame(cols, rows) if self.showing_missed else self._list_frame(cols, rows)
 
-    def _box(self, cols: int, title: str, lines: list[str]) -> list[str]:
-        """Claude Code's rounded box: a grey border round an orange title."""
-        inner = cols - 4
-        out = [wakes.paint("╭" + "─" * (cols - 2) + "╮", "rule")]
-        for text, plain in [(title, visible(title))] + [(line, visible(line)) for line in lines]:
-            # Measured in columns: the cup in the title is two wide.
-            pad = max(inner - wakes.columns(plain), 0)
-            out.append(wakes.paint("│ ", "rule") + text + " " * pad + wakes.paint(" │", "rule"))
-        out.append(wakes.paint("╰" + "─" * (cols - 2) + "╯", "rule"))
-        return out
-
     def _listing(
         self, cols: int, rows: int, what: str, count: int, line, index: int, empty: str, keys: list[str]
     ) -> list[str]:
@@ -350,7 +343,7 @@ class Browser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
-        out = self._box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
+        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state)])
         out.append("")
 
         if not count:
@@ -395,7 +388,7 @@ class Browser:
         when = wakes.local_time(wakes.utc(row.started))[5:]  # MM-DD HH:MM
         # The relevance score, blank for a mention.
         score = f"{row.score:.2f}" if row.score is not None else "    "
-        title = f"{row.title}  (topic {row.topic_id})"
+        title = row.title if row.topic_id is None else f"{row.title}  (topic {row.topic_id})"
         return self._line(chosen, cols, f"{when}  {score}  ", mark, f"{said:<16} ", style, title)
 
     def _miss_row(self, miss: wakes.NearMiss, chosen: bool, cols: int) -> str:
@@ -435,6 +428,18 @@ class Browser:
         keys += ["t to tune replies", "Esc to go back"]
         out.append(hints(keys))
         return out
+
+
+def box(cols: int, title: str, lines: list[str]) -> list[str]:
+    """Claude Code's rounded box: a grey border round an orange title."""
+    inner = cols - 4
+    out = [wakes.paint("╭" + "─" * (cols - 2) + "╮", "rule")]
+    for text, plain in [(title, visible(title))] + [(line, visible(line)) for line in lines]:
+        # Measured in columns: the cup in the title is two wide.
+        pad = max(inner - wakes.columns(plain), 0)
+        out.append(wakes.paint("│ ", "rule") + text + " " * pad + wakes.paint(" │", "rule"))
+    out.append(wakes.paint("╰" + "─" * (cols - 2) + "╯", "rule"))
+    return out
 
 
 def page_size(rows: int) -> int:
@@ -636,13 +641,16 @@ def as_it_stands(path: Path, scope: str) -> str:
 def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     """Claude Code with ``prompt`` as its first message: in the wake's own
     session, which holds what the agent made of the post, when it has one
-    that has ended, and in a new one otherwise. The forum's tools, the agent
-    kit's and the read-only discourse server's, are approved as for a wake,
-    so reading the forum and editing the agent's post ask nothing; a file
-    edit still asks. The prompt goes first, since --allowedTools takes every
-    word after it."""
-    resume = ["--resume", subject.session, *RESUME_MODE] if subject.session else []
-    return [claude, prompt, *resume, "--allowedTools", ",".join(CLAUDE_ALLOWED_TOOLS)]
+    that has ended, and in a new one otherwise, named as the kit's so that
+    the diary leaves it out. The forum's tools, the agent kit's and the
+    read-only discourse server's, are approved as for a wake, so reading the
+    forum and editing the agent's post ask nothing; a file edit still asks.
+    The prompt goes first, since --allowedTools takes every word after it."""
+    if subject.session:
+        where = ["--resume", subject.session, *RESUME_MODE]
+    else:
+        where = ["--name", f"{TUNE_NAME} topic {subject.topic_id} post {subject.post_number}"]
+    return [claude, prompt, *where, "--allowedTools", ",".join(CLAUDE_ALLOWED_TOOLS)]
 
 
 def tune(subject: Subject, want: str) -> str:
@@ -688,29 +696,29 @@ def already_open(settings: Settings) -> bool:
     return lock is False
 
 
-def set_title() -> None:
-    sys.stdout.write(f"\x1b]0;{TITLE}\x07")
+def set_title(title: str = TITLE) -> None:
+    sys.stdout.write(f"\x1b]0;{title}\x07")
     sys.stdout.flush()
     if os.name == "nt":
         try:
             import ctypes
 
-            ctypes.windll.kernel32.SetConsoleTitleW(TITLE)
+            ctypes.windll.kernel32.SetConsoleTitleW(title)
         except Exception:  # noqa: BLE001 - a title is a convenience
             pass
 
 
-def bring_to_front() -> bool:
+def bring_to_front(title: str = TITLE) -> bool:
     """Raise the open browser's window. False when it cannot be found, which
     includes macOS, where nothing here can raise another app's window."""
     if os.name == "nt":
-        return _raise_on_windows()
+        return _raise_on_windows(title)
     if sys.platform != "darwin" and shutil.which("wmctrl"):
-        return subprocess.run(["wmctrl", "-a", TITLE], capture_output=True).returncode == 0
+        return subprocess.run(["wmctrl", "-a", title], capture_output=True).returncode == 0
     return False
 
 
-def _raise_on_windows() -> bool:
+def _raise_on_windows(title: str) -> bool:
     import ctypes
     from ctypes import wintypes
 
@@ -724,7 +732,7 @@ def _raise_on_windows() -> bool:
             text = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, text, length + 1)
             # Contained rather than equal: a terminal may add to its tab's title.
-            if TITLE in text.value:
+            if title in text.value:
                 found.append(hwnd)
                 return False
         return True

@@ -1,7 +1,7 @@
 """Wording the forum host serves, kept on this machine.
 
-`/wake` answers with the wake prompt, the MCP server's connect-time
-instructions and tool descriptions; the daemon writes them here and the server
+`/wake` answers with the wake prompt, the diary prompt, the MCP server's
+connect-time instructions and tool descriptions; the daemon writes them here and the server
 and wake path read them back. The wake prompt has no copy in the package: a
 pass that finds none defers its wakes. Only prose can be served -- tool names
 and schemas stay in the package -- and none of it is a security boundary.
@@ -30,7 +30,7 @@ def _clean(served: object) -> dict:
 
     cleaned: dict = {}
 
-    for key in ("wake_prompt", "instructions"):
+    for key in ("wake_prompt", "diary_prompt", "instructions"):
         value = served.get(key)
         if isinstance(value, str) and value.strip():
             cleaned[key] = value[:MAX_LENGTH]
@@ -82,6 +82,11 @@ def instructions(default: str) -> str:
 def wake_prompt() -> str:
     """How the host words a wake, or an empty string if it has said nothing."""
     return load().get("wake_prompt") or ""
+
+
+def diary_prompt() -> str:
+    """How the host words the diary, or an empty string if it has said nothing."""
+    return load().get("diary_prompt") or ""
 
 
 def describe(tools: list[dict]) -> list[dict]:

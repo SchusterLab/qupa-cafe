@@ -38,6 +38,8 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
+    # And its env, where the diary's settings are read again at every poll.
+    monkeypatch.setenv("QUPA_ENV_FILE", str(tmp_path / "env"))
 
 
 POLICY_TEXT = (

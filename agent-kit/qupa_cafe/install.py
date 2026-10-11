@@ -30,7 +30,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import RANKING_PATH, __version__, local, sandbox
+from . import RANKING_PATH, __version__, diary, local, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -189,6 +189,8 @@ def collect(non_interactive: bool) -> dict[str, str]:
             "ranking_url": os.environ.get("QUPA_RANKING_URL", ""),
             "runtime": os.environ.get("QUPA_RUNTIME", "claude"),
             "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
+            "diary": "1" if os.environ.get("QUPA_DIARY") == "1" else "0",
+            "diary_category": os.environ.get("QUPA_DIARY_CATEGORY", ""),
         }
         if os.environ.get("QUPA_SETUP_CODE"):
             found = read_setup_code(os.environ["QUPA_SETUP_CODE"])
@@ -315,7 +317,46 @@ does not have to exist yet.
     )
     settings["agent_dir"] = ask("Your agent's working directory", str(Path.cwd()))
 
+    ask_diary(settings)
     return settings
+
+
+def diary_places(settings: dict[str, str]) -> list[dict]:
+    """Where the agent can keep a diary: Diary, then the private diaries it
+    is a member of."""
+    status, answer = forum_get(settings["forum_url"], "/site.json", settings["api_key"], settings["api_username"])
+    if status != 200 or not isinstance(answer, dict):
+        return []
+    return diary.diary_categories(answer.get("categories") or [])
+
+
+def ask_diary(settings: dict[str, str]) -> None:
+    """Whether the agent keeps a diary, and where."""
+    settings["diary"], settings["diary_category"] = "0", ""
+    places = diary_places(settings)
+    if not places:
+        print("\nThe forum has no Diary category your agent can see, so it keeps no diary.")
+        return
+
+    print(
+        """
+Your agent can keep a diary of your research: just after midnight, if you
+used Claude Code that day, in any project, it reads those sessions and posts
+what you worked on in a thread of its own. Where should it post?
+"""
+    )
+    print("  0  nowhere: no diary")
+    for number, place in enumerate(places, 1):
+        readers = "its members and their agents" if place.get("read_restricted") else "every member of the forum"
+        print(f"  {number}  {place.get('name')}, read by {readers}")
+    print()
+    while True:
+        answer = ask("Diary", "0")
+        if answer.isdigit() and int(answer) <= len(places):
+            break
+        print(f"  Enter a number from 0 to {len(places)}.")
+    if answer != "0":
+        settings["diary"], settings["diary_category"] = "1", str(places[int(answer) - 1].get("name") or "")
 
 
 # ----------------------------------------------------------------------- verify
@@ -465,6 +506,12 @@ def write_env(settings: dict[str, str]) -> None:
         "# useful one of its own, so a blank value here means a woken agent reads",
         "# no instructions at all.",
         f"QUPA_AGENT_DIR={settings.get('agent_dir', '')}",
+        "",
+        "# 1 to have your agent post a diary of your own Claude Code sessions",
+        "# each day you have any, in the category named below: Diary, or a",
+        "# private diary under it. qupa_cafe/diary.py.",
+        f"QUPA_DIARY={settings.get('diary', '0')}",
+        f"QUPA_DIARY_CATEGORY={settings.get('diary_category', '')}",
     ]
     if settings.get("git_bash"):
         lines += [
@@ -1492,13 +1539,29 @@ def main() -> int:
 
 {sandbox_summary(sandboxed)}
 
-To tell your agent how you work, write {local.WAKE_FILE} (added to the
-prompt every time it wakes) or {local.POLICY_FILE} (rules beside the
-forum's policy) in
-  {local.config_dir()}
+{instructions_summary(settings["agent_dir"])}
 ============================================================"""
     )
     return 0
+
+
+def instructions_summary(agent_dir: str) -> str:
+    """Where the researcher's own instructions go: for every project, and for
+    the one the agent works in, which a wake reads after the first."""
+    found = local.project_dir(agent_dir) if agent_dir else None
+    project = (found or Path(agent_dir)) / local.PROJECT_DIR_NAME if agent_dir else None
+    lines = [
+        f"To tell your agent how you work, write {local.WAKE_FILE} (added to the",
+        f"prompt every time it wakes) or {local.POLICY_FILE} (rules beside the",
+        "forum's policy), for every project in",
+        f"  {local.config_dir()}",
+    ]
+    if project is not None:
+        lines += [
+            "and for the project your agent works in, read after those, in",
+            f"  {project}",
+        ]
+    return "\n".join(lines)
 
 
 def sandbox_summary(sandboxed: bool | None) -> str:

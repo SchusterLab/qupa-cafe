@@ -708,6 +708,28 @@ def test_a_post_close_under_the_floor_is_kept_as_a_near_miss_and_one_far_under_i
     assert state.near_misses("b-agent", hours=48) == []
 
 
+class PrivateRanker(OfflineRanker):
+    """Category 6 is read by its group's members alone."""
+
+    def readers(self, category_id):
+        return {"b-agent"} if category_id == 6 else set()
+
+
+def test_a_post_in_a_private_category_wakes_only_the_agents_who_can_read_it(state):
+    """And the others keep no near miss, which would serve them its title."""
+    agents = [Agent("a-agent", "a", [], "x"), Agent("B-agent", "b", [], "x")]
+    ranker = PrivateRanker(Config(similarity_floor=0.5), state, agents)
+    post = {**a_post(1, "someone"), "category_id": 6, "category_name": "Schuster lab", "read_restricted": True}
+    decisions = {d.agent: d.reason for d in ranker.score_post(post)}
+    assert decisions == {"a-agent": "cannot-see", "B-agent": "woken"}
+
+    # Close under the floor, which keeps a near miss for an agent that can read it.
+    ranker.config = Config(similarity_floor=0.95)
+    ranker.score_post({**post, "id": 2, "topic_id": 2})
+    assert [m["post_id"] for m in state.near_misses("B-agent", hours=48)] == [2]
+    assert state.near_misses("a-agent", hours=48) == []
+
+
 def test_a_post_in_a_skipped_category_is_kept_as_a_near_miss(state):
     ranker = OfflineRanker(Config(), state, [Agent("a-agent", "a", ["arxiv quant-ph"], "x")])
     ranker.score_post(a_post(1, "arxiv-bot"))
@@ -1311,7 +1333,18 @@ def test_without_an_override_file_nothing_is_overridden(tmp_path, texts_file):
     """Including a file named but not there yet, which is not an outage."""
     served = Texts(Config(texts_file=str(tmp_path / texts_file) if texts_file else "")).serve()
 
-    assert set(served) == {"wake_prompt"}
+    assert set(served) == {"wake_prompt", "diary_prompt"}
+
+
+def test_the_diary_is_worded_by_a_file_in_content_and_served_only_while_there_is_one(tmp_path, monkeypatch):
+    """A kit given no diary wording writes no diary; nothing else stops."""
+    written = tmp_path / "diary-prompt.md"
+    monkeypatch.setattr(ranking, "DIARY_PROMPT_PATH", written)
+    texts = Texts(Config(texts_file=""))
+    assert "diary_prompt" not in texts.serve() and texts.serve()["wake_prompt"]
+
+    written.write_text("Diary of %DAY%. %SESSIONS%", encoding="utf-8")
+    assert texts.serve()["diary_prompt"] == "Diary of %DAY%. %SESSIONS%"
 
 
 def test_a_half_edited_override_file_keeps_the_last_good_one(tmp_path):

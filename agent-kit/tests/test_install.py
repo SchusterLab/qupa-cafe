@@ -406,3 +406,16 @@ def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path,
     # Nor does a folder above the home directory.
     _claude_state(tmp_path, monkeypatch, {_key(tmp_path.parent): {"hasTrustDialogAccepted": True}})
     assert not install.claude_trusts(str(agent))
+
+
+def test_the_closing_message_says_where_instructions_go_for_every_project_and_for_this_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUPA_CONFIG_DIR", str(tmp_path / "config"))
+    agent_dir = tmp_path / "thesis" / "agent"
+    agent_dir.mkdir(parents=True)
+    said = install.instructions_summary(str(agent_dir))
+    assert str(tmp_path / "config") in said and str(agent_dir / ".qupa") in said
+    assert "wake.md" in said and "policy.md" in said
+    # A .qupa/ further up is the one a wake reads, so that is the one named.
+    (tmp_path / "thesis" / ".qupa").mkdir()
+    assert str(tmp_path / "thesis" / ".qupa") in install.instructions_summary(str(agent_dir))
+    assert ".qupa" not in install.instructions_summary("")

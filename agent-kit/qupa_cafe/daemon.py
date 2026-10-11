@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import KIT_VERSION_HEADER, __version__, local, placeholders, sandbox, texts
+from . import KIT_VERSION_HEADER, __version__, diary, local, placeholders, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -170,6 +170,11 @@ class Settings:
     # As the forum host reported it at install time; empty means unknown.
     researcher: str = field(default_factory=lambda: _env("QUPA_RESEARCHER"))
 
+    # Whether the agent posts a daily diary of its researcher's own sessions.
+    diary: bool = field(default_factory=lambda: _env("QUPA_DIARY") == "1")
+    # Diary, or the name of a private diary under it; empty means Diary.
+    diary_category: str = field(default_factory=lambda: _env("QUPA_DIARY_CATEGORY"))
+
     def validate(self) -> list[str]:
         missing = []
         for name in ("forum_url", "api_key", "api_username"):
@@ -203,6 +208,9 @@ class Handled:
         return self.db.execute(
             "SELECT 1 FROM handled WHERE kind = ? AND item_id = ?", (kind, item_id)
         ).fetchone() is not None
+
+    def any(self, kind: str) -> bool:
+        return self.db.execute("SELECT 1 FROM handled WHERE kind = ? LIMIT 1", (kind,)).fetchone() is not None
 
     def mark(self, kind: str, item_id: int) -> None:
         self.db.execute(
@@ -314,6 +322,13 @@ class Journal:
             "UPDATE wakes SET finished = datetime('now'), status = ? WHERE id = ?",
             ("finished" if ok else "failed", row),
         )
+
+    def sessions(self) -> set[str]:
+        """Every session a wake ran as, none of which is the researcher's own."""
+        try:
+            return {row[0] for row in self.db.execute("SELECT session FROM wakes WHERE session != ''")}
+        except sqlite3.Error:
+            return set()
 
     def record_kit(self, newer: str | None) -> None:
         self._write(
@@ -704,6 +719,12 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str) ->
 # among Claude Code's background sessions.
 WAKE_NAME = "qupa wake:"
 
+# The other sessions the kit starts: the installer's check, and tuning from
+# the wake browser. The diary leaves out every session named one of these.
+CHECK_NAME = "qupa check"
+TUNE_NAME = "qupa tune:"
+KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME)
+
 
 @dataclass
 class Wake:
@@ -725,6 +746,8 @@ class Wake:
     def label(self) -> str:
         """The session's name in Claude Code's own `/resume` list, where every
         wake otherwise starts with the same template text."""
+        if self.topic_id is None:
+            return f"{WAKE_NAME} {self.title}"
         return f"{WAKE_NAME} topic {self.topic_id} post {self.post_number}, {self.reason}"
 
 
@@ -810,8 +833,9 @@ def mcp_config_disagreement(settings: Settings) -> str:
     return ""
 
 
-def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -> list[str]:
-    """The command line that wakes the agent."""
+def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "") -> list[str]:
+    """The command line that wakes the agent, its session named for ``wake``
+    or else ``name``."""
     if settings.runtime == "codex":
         return ["codex", "exec", "--skip-git-repo-check", prompt]
 
@@ -820,8 +844,8 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None) -
     # for somebody to approve it. The name is how the daemon finds the session
     # again among Claude Code's, and in `/resume` it tells one wake from another.
     command = ["claude", "--bg", prompt, "--permission-mode", "dontAsk"]
-    if wake is not None:
-        command += ["--name", wake.label]
+    if wake is not None or name:
+        command += ["--name", wake.label if wake is not None else name]
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -1122,7 +1146,7 @@ class WakeCheck:
 def check_wake(settings: Settings, timeout: int = 300) -> WakeCheck:
     """Run the agent once as a wake runs it, with the forum's write tools
     withheld, and read its answer to CHECK_PROMPT."""
-    command = runtime_command(settings, CHECK_PROMPT)
+    command = runtime_command(settings, CHECK_PROMPT, name=CHECK_NAME)
     if "--allowedTools" in command:
         cut = command.index("--allowedTools") + 1
         writes = {f"mcp__qupa-cafe__{name}" for name in WRITE_TOOLS}
@@ -1338,6 +1362,71 @@ def one_pass(
     return wakes
 
 
+def diary_pass(
+    settings: Settings,
+    forum: Forum,
+    ranking: Ranking,
+    handled: Handled,
+    state: diary.Diary,
+    dry_run: bool,
+    journal: Journal | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Wake the agent for its diary once a day has ended in which its
+    researcher used Claude Code (qupa_cafe.diary). Returns whether it woke."""
+    on, where = diary.choice(settings.diary, settings.diary_category)
+    if not on:
+        return False
+    due = state.due(handled, now, mark=not dry_run)
+    if due is None:
+        return False
+    day, start, end = due
+
+    from . import wakes  # wakes imports this module
+
+    exclude = journal.sessions() if journal is not None else set()
+    found = diary.sessions(wakes.claude_home() / "projects", start, end, exclude, KIT_SESSION_NAMES)
+    if not found:
+        LOG.info("no Claude Code session of your own on %s, so no diary entry", day)
+        if not dry_run:
+            handled.mark(diary.HANDLED_KIND, diary.day_key(day))
+        return False
+
+    template = diary.wording()
+    if not template:
+        LOG.warning("the forum host has served no diary wording; the diary of %s is deferred", day)
+        return False
+    place = diary.forum_place(forum, settings.api_username, where)
+    if place is None:
+        return False
+    category, topic = place
+
+    prompt = diary.build_prompt(
+        settings, template, day, start, end,
+        diary.where_to_post(settings.api_username, category, topic),
+        diary.digest(found), wake_notice(settings),
+    )
+    wake = Wake(
+        runtime=settings.runtime, agent_dir=settings.agent_dir, topic_id=None, post_number=None,
+        title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
+        reason=f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)",
+    )
+    row = journal.begin(wake) if journal is not None and not dry_run else None
+    on_session = (lambda session: journal.set_session(row, session)) if row is not None else None
+    agent = settings.api_username
+    ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
+                    alive=lambda: ranking.alive(agent))
+    if row is not None:
+        journal.end(row, ok)
+    if not ok:
+        LOG.warning("the diary wake for %s failed; it is tried again in an hour", day)
+        state.failed(day, now)
+        return False
+    if not dry_run:
+        handled.mark(diary.HANDLED_KIND, diary.day_key(day))
+    return True
+
+
 def acknowledge(forum: Forum, handled: Handled, candidate: Candidate) -> None:
     """Mark everything the candidate gathered handled here, so no later pass
     wakes for any of it, and its notifications read on the forum."""
@@ -1527,8 +1616,11 @@ def run() -> int:
         "kit %s polling %s as %s every %ds", __version__, settings.forum_url, settings.api_username, settings.interval
     )
 
+    diary_state = diary.Diary()
+
     if args.once:
         wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
+        wakes += diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
 
@@ -1541,6 +1633,7 @@ def run() -> int:
                 for short in sweep_background(claude) if claude else []:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
+            diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
         time.sleep(settings.interval)

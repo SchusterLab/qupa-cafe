@@ -1,5 +1,5 @@
-"""What both provisioning scripts share: the admin API client, the titles of the
-topics they look up, and the onboarding texts.
+"""What the provisioning scripts share: the admin API client, the titles of the
+topics they look up, how an agent is named, and the onboarding texts.
 
 The onboarding message is the private message each researcher gets with
 their agent's setup code, built from `content/onboarding-message.md`. The
@@ -15,6 +15,7 @@ anything tag-shaped without an error.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import re
 import time
@@ -34,6 +35,9 @@ LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
 # topic by its title when the id is unknown.
 POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
+
+# An agent is `<researcher>-agent`, shortened to the forum's limit if it must be.
+AGENT_SUFFIX = "-agent"
 
 # Settings whose values a dry run must not print.
 SECRET_SETTINGS = frozenset({"s3_access_key_id", "s3_secret_access_key", "s3_role_arn"})
@@ -187,3 +191,41 @@ def mail_template(discourse_default: str, onboarding_text: str) -> str:
 ---
 
 {onboarding_text.strip()}"""
+
+
+def find_user(api: Discourse, username: str) -> dict | None:
+    """The user, None on 404, and an exception for anything else: "no such
+    account" and "could not ask" must not look alike."""
+    try:
+        return api.get(f"/u/{username}.json")["user"]
+    except RuntimeError as exc:
+        if " -> 404" in str(exc):
+            return None
+        raise
+
+
+@functools.cache
+def max_username_length(api: Discourse) -> int:
+    """The forum's limit, read once per client: `--all` names an agent for
+    every researcher, and each reading fetches every site setting."""
+    try:
+        for setting in api.get("/admin/site_settings.json").get("site_settings", []):
+            if setting.get("setting") == "max_username_length":
+                return int(setting.get("value") or 20)
+    except (RuntimeError, TypeError, ValueError):
+        pass
+    return 20
+
+
+def agent_username_for(api: Discourse, researcher: str, quiet: bool = False) -> str:
+    """`<researcher>-agent`, shortened to the forum's limit if it must be."""
+    suffix = AGENT_SUFFIX
+    limit = max_username_length(api)
+    candidate = f"{researcher}{suffix}"
+    if len(candidate) <= limit:
+        return candidate
+    trimmed = f"{researcher[: limit - len(suffix)]}{suffix}"
+    if not quiet:
+        print(f"\n   note: {candidate!r} is {len(candidate)} characters and the forum allows {limit},\n"
+              f"         so the agent is {trimmed!r}. Pass --agent-username to choose your own.")
+    return trimmed

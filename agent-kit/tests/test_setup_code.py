@@ -68,9 +68,10 @@ def test_the_installer_takes_a_setup_code_from_the_environment(monkeypatch):
     assert settings["forum_url"] == "https://forum.example.org" and settings["api_key"] == "0123456789abcdef"
 
 
-def interactive(monkeypatch, answers):
+def interactive(monkeypatch, answers, places=()):
     """Run the installer's questions with ``answers`` by prompt; anything not
-    given takes its default."""
+    given takes its default. ``places`` are where the forum lets the agent
+    keep a diary."""
     asked = []
 
     def ask(prompt, default=""):
@@ -81,6 +82,7 @@ def interactive(monkeypatch, answers):
     monkeypatch.setattr(install, "ask", ask)
     monkeypatch.setattr(install, "whoami", lambda url, key: ("sunada-agent", "") if key == KEY else (None, "The key was refused"))
     monkeypatch.setattr(install, "ask_the_forum_host", lambda s: {"researcher": "sunada", "policy_topic_id": "11"})
+    monkeypatch.setattr(install, "diary_places", lambda s: list(places))
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
     return install.collect(non_interactive=False), asked
 
@@ -104,3 +106,38 @@ def test_something_else_at_the_prompt_is_asked_for_again(monkeypatch, onboarding
     settings, asked = interactive(monkeypatch, {"Setup code": [KEY, code]})
     assert asked.count("Setup code") == 2 and settings["api_key"] == KEY
     assert "not a setup code" in capsys.readouterr().out
+
+
+DIARIES = [{"id": 5, "name": "Diary"}, {"id": 6, "name": "Schuster lab", "parent_category_id": 5, "read_restricted": True}]
+
+
+@pytest.mark.parametrize("answer, diary, category", [("", "0", ""), ("1", "1", "Diary"), ("2", "1", "Schuster lab")],
+                         ids=["none by default", "public", "private"])
+def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, capsys, answer, diary, category):
+    code = onboarding.setup_code("https://forum.example.org", KEY)
+    answers = {"Setup code": [code], **({"Diary": [answer]} if answer else {})}
+    settings, asked = interactive(monkeypatch, answers, DIARIES)
+    assert "Diary" in asked
+    assert (settings["diary"], settings["diary_category"]) == (diary, category)
+    out = capsys.readouterr().out
+    assert "Schuster lab, read by its members and their agents" in out and "Diary, read by every member" in out
+
+
+def test_a_forum_with_no_diary_asks_nothing(monkeypatch, onboarding):
+    code = onboarding.setup_code("https://forum.example.org", KEY)
+    settings, asked = interactive(monkeypatch, {"Setup code": [code]})
+    assert "Diary" not in asked and settings["diary"] == "0"
+
+
+def test_an_update_keeps_the_diary_as_it_was(monkeypatch, tmp_path):
+    """qupa-update re-runs the installer non-interactively from env."""
+    code = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGVm"
+    for name, value in (("QUPA_SETUP_CODE", code), ("QUPA_API_USERNAME", "sunada-agent"), ("QUPA_RESEARCHER", "sunada"),
+                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "1"), ("QUPA_DIARY_CATEGORY", "Schuster lab")):
+        monkeypatch.setenv(name, value)
+    settings = install.collect(non_interactive=True)
+    monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
+    install.write_env(settings)
+    written = (tmp_path / "env").read_text(encoding="utf-8").splitlines()
+    assert "QUPA_DIARY=1" in written and "QUPA_DIARY_CATEGORY=Schuster lab" in written

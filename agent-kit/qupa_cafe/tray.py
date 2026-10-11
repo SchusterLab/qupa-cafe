@@ -1,7 +1,8 @@
 """The daemon's state as an icon in the task tray or menu bar.
 
 Clicking it opens its menu: the forum in the default browser, the wake
-browser (``qupa_cafe.browse``) in a terminal, the daemon's log, a restart of
+browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``)
+in a terminal, the daemon's log, a restart of
 the daemon, an update of the kit (greyed while it is the newest), and Quit.
 It reads the daemon's state file and holds its own lock so a second copy
 exits; restarting is the one thing it does to the daemon.
@@ -58,13 +59,18 @@ def describe(settings: Settings) -> tuple[str, str]:
     elif state.stopped:
         key, text = "stopped", f"stopped? last poll {wakes.local_time(state.polled)}"
     elif last is not None and last.status == "running" and not stale(last):
-        key, text = "waking", f"waking for topic {last.topic_id}"
+        key, text = "waking", f"waking for {where(last)}"
     else:
         key, text = "polling", "polling"
 
     if last is not None and key != "waking":
-        text += f"; last wake {wakes.local_time(wakes.utc(last.started))}, topic {last.topic_id}"
+        text += f"; last wake {wakes.local_time(wakes.utc(last.started))}, {where(last)}"
     return key, wakes.clip(f"Qupa Cafe: {text}", TOOLTIP_CHARS)
+
+
+def where(row: wakes.Row) -> str:
+    """What a wake was for: its topic, or the diary, which has none."""
+    return "the diary" if row.topic_id is None else f"topic {row.topic_id}"
 
 
 def stale(row: wakes.Row) -> bool:
@@ -116,8 +122,9 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def open_terminal(argv: list[str], settings: Settings) -> bool:
-    """Run ``argv`` in a new terminal window. False when there is none to open."""
+def open_terminal(argv: list[str], settings: Settings, name: str = "show-wakes") -> bool:
+    """Run ``argv`` in a new terminal window, which on macOS is a ``.command``
+    file called ``name``. False when there is none to open."""
     env = child_env()
     system = platform.system()
 
@@ -127,7 +134,7 @@ def open_terminal(argv: list[str], settings: Settings) -> bool:
 
     if system == "Darwin":
         # Opening a `.command` file needs no permission to automate Terminal.
-        script = Path(settings.state_path).with_name("show-wakes.command")
+        script = Path(settings.state_path).with_name(f"{name}.command")
         script.write_text(
             "#!/bin/sh\n"
             f"export PYTHONPATH={shlex.quote(env['PYTHONPATH'])}\n"
@@ -220,6 +227,17 @@ def main() -> int:
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 
+    def show_diary(icon, item) -> None:
+        from . import browse, diaries
+
+        if diaries.already_open(settings):
+            if not browse.bring_to_front(diaries.TITLE):
+                icon.notify("The diary browser is already open.", "Qupa Cafe")
+            return
+        argv = [console_python(), "-m", "qupa_cafe.diaries"]
+        if not open_terminal(argv, settings, "show-diary"):
+            icon.notify("No terminal to open. Run: python -m qupa_cafe.diaries", "Qupa Cafe")
+
     def open_forum(icon, item) -> None:
         if not settings.forum_url or not webbrowser.open(settings.forum_url):
             icon.notify(f"Could not open a browser. The forum is {settings.forum_url or 'not configured'}.", "Qupa Cafe")
@@ -281,6 +299,7 @@ def main() -> int:
     menu = pystray.Menu(
         pystray.MenuItem("Open Qupa Cafe", open_forum),
         pystray.MenuItem("Show wakes", show_wakes),
+        pystray.MenuItem("Show the diary", show_diary),
         pystray.MenuItem("Open the daemon's log", open_log),
         pystray.MenuItem("Restart the daemon", restart),
         pystray.MenuItem(update_text, run_update, enabled=update_enabled),

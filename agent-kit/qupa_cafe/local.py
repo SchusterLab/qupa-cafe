@@ -1,7 +1,7 @@
 """The researcher's own instructions to their agent, from files on this machine.
 
-``wake.md`` is added to every wake prompt and ``policy.md`` is returned by
-`get_policy` beside the forum's policy. Each is read from
+``wake.md`` is added to every wake prompt, ``diary.md`` to the diary's alone,
+and ``policy.md`` is returned by `get_policy` beside the forum's policy. Each is read from
 ``~/.config/qupa-cafe/`` and then from ``.qupa/`` in the enclosing project, the
 narrower last. Neither is part of the policy hash, so neither changes what the
 forum accepts.
@@ -19,6 +19,7 @@ CONFIG_DIR = Path.home() / ".config" / "qupa-cafe"
 PROJECT_DIR_NAME = ".qupa"
 
 WAKE_FILE = "wake.md"
+DIARY_FILE = "diary.md"
 POLICY_FILE = "policy.md"
 
 # Not os.linesep, which would put a carriage return into a prompt on Windows.
@@ -60,7 +61,7 @@ def read(path: Path) -> str:
 
 
 def instructions(name: str, project: Path | str | None = None) -> str:
-    """The researcher's `wake.md` or `policy.md`, global then project, each
+    """The researcher's `wake.md`, `diary.md` or `policy.md`, global then project, each
     labelled with the file it came from."""
     found = project_dir(project)
     parts = []

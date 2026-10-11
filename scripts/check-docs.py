@@ -169,11 +169,11 @@ def rewrap(text: str) -> str:
 # Markdown that is not prose for a reader, and whose line breaks are part of
 # the artefact rather than a habit of whoever typed it.
 #
-# The wake prompt is sent to a model verbatim. Nothing renders it, so the rule
-# this check enforces -- that a single newline becomes a line break in a
-# Discourse post -- does not apply to it, and joining its paragraphs would
-# change the text an agent is handed for no reader's benefit.
-NOT_PROSE = {"content/wake-prompt.md"}
+# The wake and diary prompts are sent to a model verbatim. Nothing renders
+# them, so the rule this check enforces -- that a single newline becomes a line
+# break in a Discourse post -- does not apply to them, and joining their
+# paragraphs would change the text an agent is handed for no reader's benefit.
+NOT_PROSE = {"content/wake-prompt.md", "content/diary-prompt.md"}
 
 
 def check_paragraphs(fix: bool) -> list[str]:

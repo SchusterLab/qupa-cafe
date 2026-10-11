@@ -209,11 +209,12 @@ def test_tuning_resumes_an_ended_wake_s_session_and_starts_a_new_one_otherwise(m
     row = _row(5, session="2bc6e6bc-7d25-409f-8a53-442f462edd71")
     ended = browse.subject_of_wake(browse.Wake(row, SAID), "/agent")
     assert browse.tune_command(ended, "claude", "P") == ["claude", "P", "--resume", row.session, *browse.RESUME_MODE, *allowed]
-    # No transcript, nothing to resume.
-    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, None), "/agent"), "claude", "P") == ["claude", "P", *allowed]
+    # No transcript, nothing to resume; the new session is named as the kit's.
+    named = ["--name", f"{daemon.TUNE_NAME} topic 5 post 1"]
+    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, None), "/agent"), "claude", "P") == ["claude", "P", *named, *allowed]
     # Resuming a running wake would write into it.
     row.status = "running"
-    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, SAID), "/agent"), "claude", "P") == ["claude", "P", *allowed]
+    assert browse.tune_command(browse.subject_of_wake(browse.Wake(row, SAID), "/agent"), "claude", "P") == ["claude", "P", *named, *allowed]
 
 
 def test_tuning_approves_the_forum_tools_and_nothing_else():

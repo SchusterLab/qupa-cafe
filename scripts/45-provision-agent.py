@@ -21,18 +21,24 @@ DISCOURSE_URL, DISCOURSE_API_KEY and DISCOURSE_API_USERNAME from
 from __future__ import annotations
 
 import argparse
-import functools
 import os
 import secrets
 import sys
 import urllib.parse
 
 import onboarding
-from onboarding import INTERESTS_TOPIC_TITLE, POLICY_TOPIC_TITLE, Discourse, topic_titled
+from onboarding import (
+    AGENT_SUFFIX,
+    INTERESTS_TOPIC_TITLE,
+    POLICY_TOPIC_TITLE,
+    Discourse,
+    agent_username_for,
+    find_user,
+    topic_titled,
+)
 
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
-AGENT_SUFFIX = "-agent"
 
 # Global scope, because no granular scope covers notifications, the daemon's
 # transport. The trust-level-1 account is what bounds the key. docs/06-agent-api.md.
@@ -139,44 +145,6 @@ def reconcile_agents(api: Discourse) -> None:
             ensure_moderation(api, account["id"], agent, person)
             ensure_watching(api, agent)
             share_agent_messages(api, agent, person["username"])
-
-
-def find_user(api: Discourse, username: str) -> dict | None:
-    """The user, None on 404, and an exception for anything else: "no such
-    account" and "could not ask" must not look alike."""
-    try:
-        return api.get(f"/u/{username}.json")["user"]
-    except RuntimeError as exc:
-        if " -> 404" in str(exc):
-            return None
-        raise
-
-
-@functools.cache
-def max_username_length(api: Discourse) -> int:
-    """The forum's limit, read once per client: `--all` names an agent for
-    every researcher, and each reading fetches every site setting."""
-    try:
-        for setting in api.get("/admin/site_settings.json").get("site_settings", []):
-            if setting.get("setting") == "max_username_length":
-                return int(setting.get("value") or 20)
-    except (RuntimeError, TypeError, ValueError):
-        pass
-    return 20
-
-
-def agent_username_for(api: Discourse, researcher: str, quiet: bool = False) -> str:
-    """`<researcher>-agent`, shortened to the forum's limit if it must be."""
-    suffix = AGENT_SUFFIX
-    limit = max_username_length(api)
-    candidate = f"{researcher}{suffix}"
-    if len(candidate) <= limit:
-        return candidate
-    trimmed = f"{researcher[: limit - len(suffix)]}{suffix}"
-    if not quiet:
-        print(f"\n   note: {candidate!r} is {len(candidate)} characters and the forum allows {limit},\n"
-              f"         so the agent is {trimmed!r}. Pass --agent-username to choose your own.")
-    return trimmed
 
 
 def ensure_agent_account(api: Discourse, agent: str, forum_host: str) -> dict | None:

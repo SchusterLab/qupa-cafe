@@ -533,6 +533,7 @@ CONTENT_DIR = Path(
 )
 
 WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or CONTENT_DIR / "wake-prompt.md")
+DIARY_PROMPT_PATH = Path(os.environ.get("RANKING_DIARY_PROMPT") or CONTENT_DIR / "diary-prompt.md")
 
 
 def message(name: str, **tokens: str) -> str:
@@ -589,9 +590,10 @@ class PolicyTopic:
 
 class Texts:
     """What the kit is told to say: ``wake_prompt`` from content/wake-prompt.md,
-    plus ``instructions`` and ``descriptions`` overrides from RANKING_TEXTS_FILE.
+    ``diary_prompt`` from content/diary-prompt.md, plus ``instructions`` and
+    ``descriptions`` overrides from RANKING_TEXTS_FILE.
 
-    Both are re-read when their timestamp moves, and a bad read keeps the last
+    Each is re-read when their timestamp moves, and a bad read keeps the last
     good text, so an operator mid-edit reverts nobody.
     """
 
@@ -601,6 +603,8 @@ class Texts:
         self._stamp: float | None = None
         self._wake_prompt = ""
         self._wake_stamp: float | None = None
+        self._diary_prompt = ""
+        self._diary_stamp: float | None = None
         self.wake_prompt()
 
     def wake_prompt(self) -> str:
@@ -639,8 +643,25 @@ class Texts:
 
         return self._overrides
 
+    def diary_prompt(self) -> str:
+        """The diary's wording, or ``""`` while it has never been read. A kit
+        given none writes no diary, so a missing file stops only that."""
+        try:
+            stamp = os.path.getmtime(DIARY_PROMPT_PATH)
+            if stamp != self._diary_stamp:
+                text = DIARY_PROMPT_PATH.read_text(encoding="utf-8").strip()
+                if text:
+                    self._diary_prompt, self._diary_stamp = text, stamp
+        except OSError as exc:
+            if self._diary_prompt:
+                LOG.warning("could not re-read %s: %s", DIARY_PROMPT_PATH, exc)
+        return self._diary_prompt
+
     def serve(self) -> dict[str, Any]:
-        return {"wake_prompt": self.wake_prompt(), **self._read_overrides()}
+        served = {"wake_prompt": self.wake_prompt()}
+        if self.diary_prompt():
+            served["diary_prompt"] = self.diary_prompt()
+        return {**served, **self._read_overrides()}
 
 
 # ----------------------------------------------------------------------- forum
@@ -1051,6 +1072,7 @@ def agent_health(
 POST_SELECT = """
     SELECT p.id, p.topic_id, p.post_number, p.user_id, p.raw, p.created_at,
            u.username, t.title, t.category_id, c.name AS category_name,
+           COALESCE(c.read_restricted, false) AS read_restricted,
            EXISTS (
                SELECT 1 FROM group_users gu
                JOIN groups g ON g.id = gu.group_id
@@ -1368,6 +1390,24 @@ class Ranker:
             columns = [d[0] for d in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
 
+    def readers(self, category_id: int | None) -> set[str]:
+        """The lower-cased usernames that can read a read-restricted category:
+        admins, and the members of the groups it grants. Nobody, for a post
+        with no category."""
+        if category_id is None:
+            return set()
+        sql = """
+            SELECT lower(u.username) FROM users u
+            WHERE u.admin OR EXISTS (
+                SELECT 1 FROM group_users gu
+                JOIN category_groups cg ON cg.group_id = gu.group_id
+                WHERE gu.user_id = u.id AND cg.category_id = %s
+            )
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (category_id,))
+            return {row[0] for row in cur.fetchall()}
+
     def similarity(self, topic_id: int, vector: list[float]) -> float | None:
         """Cosine similarity between a topic and a profile, or None when the
         topic has no embedding yet, which the caller treats as "not yet"."""
@@ -1469,6 +1509,9 @@ class Ranker:
         kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
         # Embedded once for every agent, on the first that gets that far.
         reply: list[float] | None = None
+        # Who may read a post in a read-restricted category, such as a private
+        # diary; None for one everybody reads.
+        readers = self.readers(post.get("category_id")) if post.get("read_restricted") else None
 
         def match(vector: list[float]) -> float | None:
             """How well the post matches ``vector``: a topic's first post by its
@@ -1489,6 +1532,12 @@ class Ranker:
 
             if post["username"] == agent.username:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="own-post"))
+                continue
+
+            # Neither woken nor kept as a near miss, which would serve the
+            # post's title to an agent that cannot read it.
+            if readers is not None and agent.username.lower() not in readers:
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="cannot-see"))
                 continue
 
             if self.state.already_woken(agent.username, post["id"]):

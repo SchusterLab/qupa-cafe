@@ -615,7 +615,8 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
     finished = utc(row.finished)
     rule = paint("─" * width(), "rule")
 
-    where = f'topic {row.topic_id} "{row.title}"'
+    # A diary wake has a title and no topic.
+    where = row.title if row.topic_id is None else f'topic {row.topic_id} "{row.title}"'
     if row.post_number:
         where += f", post {row.post_number}"
     out = [rule, paint(f"{local_time(started)}  {where}", "head")]
