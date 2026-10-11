@@ -51,7 +51,7 @@ def test_only_diary_wakes_are_entries():
 def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     wakes.set_colour(False)
     off = "\n".join(_browser().frame(160, 20))
-    assert "The diary is off" in off and "d to make it public" in off and "[ ] for the hour" in off
+    assert "The diary is off" in off and "d to make it public" in off and "←→ for the hour" in off
     public = "\n".join(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18).frame(160, 20))
     assert "The diary is public, posted at 18:00 in your agent's topic in Diary" in public
     assert "Diary of a-agent, 2026-10-10" in public and "d to make it private" in public
@@ -73,13 +73,17 @@ def test_d_steps_from_off_to_public_to_private_and_back_writing_env():
 
 def test_the_bracket_keys_move_the_hour_round_the_clock():
     b = _browser()
-    assert b.handle("[") == "hour:-1" and b.handle("]") == "hour:1"
+    assert b.handle("left") == "hour:-1" and b.handle("right") == "hour:1"
     assert "23:00" in diaries.move_hour(b, -1) and diary.choice(diary.Choice()).hour == 23
     assert "midnight" in diaries.move_hour(b, 1) and diary.choice(diary.Choice(hour=5)).hour == 0
 
 
 def test_enter_reads_an_entry_and_e_asks_for_a_change_from_the_list_or_an_entry():
     b = _browser([browse.Wake(_row(), None)])
+    # In the list → moves the hour rather than reading; reading, ← goes back.
+    assert b.handle("right") == "hour:1" and not b.viewing
+    assert b.handle("enter") is None and b.viewing
+    assert b.handle("left") is None and not b.viewing
     assert b.handle("enter") is None and b.viewing
     assert b.handle("e") == "edit"
     assert b.handle("esc") is None and not b.viewing

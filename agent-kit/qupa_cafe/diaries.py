@@ -3,7 +3,7 @@ first, one entry's view, and the diary's settings.
 
 In the list ``↑``/``↓`` choose, Enter reads, ``d`` steps the diary from off to
 public (your agent's topic in Diary) to private (a topic for each day in your
-own private diary) and back to off, ``[`` and ``]`` move the hour it is posted
+own private diary) and back to off, ``←`` and ``→`` move the hour it is posted
 at earlier and later, ``e`` asks your agent, in Claude Code, to
 change ``diary.md``, your own instructions for the diary, and Esc leaves.
 Reading an entry ``↑``/``↓`` scroll, Enter opens its session in Claude Code,
@@ -32,7 +32,7 @@ TITLE = "Qupa Cafe: diary"
 MODE_KEY = "d"
 EDIT_KEY = "e"
 # An hour earlier and later, round the clock.
-HOUR_KEYS = {"[": -1, "]": 1}
+HOUR_KEYS = {"left": -1, "right": 1}
 
 
 def is_entry(row: wakes.Row) -> bool:
@@ -94,7 +94,7 @@ class DiaryBrowser:
         moves = {"up": -1, "down": 1, "pgup": -self._room, "pgdn": self._room, "home": -len(self.items), "end": len(self.items)}
         if key in moves:
             self.index = min(max(self.index + moves[key], 0), len(self.items) - 1)
-        elif key in ("enter", "right"):
+        elif key == "enter":
             self.viewing = True
             self.scroll = 0
             self._detail = wakes.render(self.selected.row, transcript=self.selected.transcript)
@@ -137,7 +137,7 @@ class DiaryBrowser:
         following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
         mode = "d to turn it off" if following == diary.OFF else f"d to make it {following}"
         keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), mode,
-                "[ ] for the hour", "e to change how it is written", "Esc to quit"]
+                "←→ for the hour", "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
         return out
 
