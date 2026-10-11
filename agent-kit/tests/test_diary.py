@@ -61,15 +61,21 @@ def test_the_day_is_the_one_that_ended_at_the_last_local_midnight():
     assert diary.last_day(end + timedelta(minutes=1))[0] == DAY
 
 
-def test_at_another_hour_the_day_is_the_one_the_last_hour_is_in():
-    """At 15:00 the entry covers 15:00 the day before to 15:00, and is the
-    diary of the day in progress; before 16:00 the 16:00 one is still the
-    day before's."""
+def test_at_another_hour_the_day_is_the_one_the_middle_of_its_hours_is_in():
+    """Posted at 15:00, the entry covers 15:00 the day before to 15:00 and is
+    the diary of the day it is posted; posted at 4:00, as a night owl would
+    have it, the diary of the day before."""
     day, start, end = diary.last_day(NOW, hour=15)
     assert day == DAY + timedelta(days=1)
     assert (start.date(), start.hour, end.date(), end.hour) == (DAY, 15, DAY + timedelta(days=1), 15)
+    day, start, end = diary.last_day(NOW, hour=4)
+    assert day == DAY and (start.date(), start.hour, end.date(), end.hour) == (DAY, 4, DAY + timedelta(days=1), 4)
+    # Not yet 16:00, so the 16:00 entry due is the one that ended the day
+    # before, whose middle, 4:00, is on that day.
     day, start, end = diary.last_day(NOW, hour=16)
-    assert day == DAY and (start.hour, end.hour) == (16, 16)
+    assert day == DAY and end.date() == DAY
+    # Noon is the first hour that dates the entry by the day it is posted.
+    assert diary.last_day(NOW, hour=11)[0] == DAY and diary.last_day(NOW, hour=12)[0] == DAY + timedelta(days=1)
 
 
 # ------------------------------------------------------------ the sessions

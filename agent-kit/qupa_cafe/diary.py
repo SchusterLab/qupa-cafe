@@ -17,8 +17,9 @@ decides.
 A daemon not running at that hour posts at its first poll afterwards, for the
 24 hours that ended last; the ones before that are not caught up. The first
 poll with the diary on starts it from the hours in progress, so opting in does
-not post about the day before. Each entry is the diary of the day its last
-hour is in, and a day is written once, whatever the hour is changed to.
+not post about the day before. Each entry is the diary of the day the middle
+of its 24 hours is in, the day before for any hour before noon, and a day is
+written once, whatever the hour is changed to.
 """
 
 from __future__ import annotations
@@ -85,16 +86,16 @@ def day_key(day: date) -> int:
 
 def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime, datetime]:
     """The 24 hours that ended at the last ``hour``:00 local time, their start
-    and end, and the day they are the diary of: the day the last of them is
-    in, so that at midnight it is the day just ended and in the evening the
-    day in progress."""
+    and end, and the day they are the diary of: the day their middle is in.
+    So posted at any hour before noon, it is the day before, as a researcher
+    working past midnight would date it; from noon, the day it is posted."""
     now = (now or datetime.now(timezone.utc)).astimezone()
     # A naive time given astimezone() is local, so a day across a change of
     # clocks is 23 or 25 hours long, as it was lived.
     ends = now.date() if now.hour >= hour else now.date() - timedelta(days=1)
     start = datetime.combine(ends - timedelta(days=1), time(hour)).astimezone()
     end = datetime.combine(ends, time(hour)).astimezone()
-    return (end - timedelta(seconds=1)).date(), start, end
+    return (start + (end - start) / 2).date(), start, end
 
 
 # ------------------------------------------------------------- the setting
