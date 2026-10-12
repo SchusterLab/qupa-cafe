@@ -255,3 +255,23 @@ def test_a_category_s_about_post_links_to_the_policy_after_its_description():
     newer = configure.policy_link(12, 5, "Diary")
     assert configure.with_policy_link(once, newer) == about + "\n\n" + newer
     assert configure.with_policy_link(once, link) == once
+
+
+def test_the_edit_webhook_goes_to_the_bridge_beside_the_provisioning_one(monkeypatch, capsys):
+    monkeypatch.setenv("HOOK_SECRET", SECRET)
+    monkeypatch.setenv("BRIDGE_HOOK_SECRET", "the-bridge-s-own-secret")
+    forum = Forum()
+    configure.ensure_provision_hook(forum)
+    configure.ensure_edit_hook(forum)
+    assert len(forum.hooks) == 2
+    sent = [body["web_hook"] for method, path, body in forum.writes if path == "/admin/api/web_hooks.json"][1]
+    assert sent["payload_url"] == "http://172.17.0.1:8092/"
+    assert sent["web_hook_event_type_ids"] == [103, 202] and sent["secret"] == "the-bridge-s-own-secret"
+
+    forum.writes.clear()
+    configure.ensure_edit_hook(forum)
+    assert hook_writes(forum) == [("POST", "/admin/api/web_hooks/12/ping.json")]
+
+    monkeypatch.delenv("BRIDGE_HOOK_SECRET")
+    configure.ensure_edit_hook(forum)
+    assert "skipped    BRIDGE_HOOK_SECRET not set" in capsys.readouterr().out

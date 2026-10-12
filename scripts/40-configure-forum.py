@@ -175,6 +175,16 @@ PROVISION_HOOK = {
     "active": True,
     "web_hook_event_type_ids": [304],
 }
+# post_edited (202) and topic_edited (103), a first post edited with its
+# title, to server/slack-bridge.py on the docker bridge, as JSON, signed with
+# BRIDGE_HOOK_SECRET. providers/slack/README.md.
+EDIT_HOOK = {
+    "payload_url": "http://172.17.0.1:8092/",
+    "content_type": 1,
+    "wildcard_web_hook": False,
+    "active": True,
+    "web_hook_event_type_ids": [103, 202],
+}
 # Discourse refuses a shorter secret.
 MIN_HOOK_SECRET_LENGTH = 12
 
@@ -757,22 +767,34 @@ def ensure_site_texts(api: Discourse, onboarding_text: str, welcome_text: str) -
 
 
 def ensure_provision_hook(api: Discourse) -> None:
-    """The user_created webhook, found by its payload URL, created or brought
-    in line with PROVISION_HOOK and HOOK_SECRET, then pinged."""
-    print("\n== Webhook: user_created, to the provisioning listener")
-    secret = os.environ.get("HOOK_SECRET", "")
+    """The user_created webhook, to the provisioning listener."""
+    ensure_webhook(api, "user_created, to the provisioning listener", PROVISION_HOOK, "HOOK_SECRET",
+                   "docs/05-forum-config.md 5.3")
+
+
+def ensure_edit_hook(api: Discourse) -> None:
+    """The post_edited and topic_edited webhook, to the Slack bridge."""
+    ensure_webhook(api, "post_edited and topic_edited, to the Slack bridge", EDIT_HOOK, "BRIDGE_HOOK_SECRET",
+                   "providers/slack/README.md")
+
+
+def ensure_webhook(api: Discourse, label: str, spec: dict, secret_var: str, doc: str) -> None:
+    """A webhook, found by its payload URL, created or brought in line with
+    ``spec`` and the secret in ``secret_var``, then pinged."""
+    print(f"\n== Webhook: {label}")
+    secret = os.environ.get(secret_var, "")
     if not secret:
-        print("   skipped    HOOK_SECRET not set. docs/05-forum-config.md 5.3.")
+        print(f"   skipped    {secret_var} not set. {doc}.")
         return
     if len(secret) < MIN_HOOK_SECRET_LENGTH:
-        print(f"   REFUSED    HOOK_SECRET is {len(secret)} characters; Discourse needs {MIN_HOOK_SECRET_LENGTH}.")
-        FAILURES.append("webhook not registered: HOOK_SECRET is too short")
+        print(f"   REFUSED    {secret_var} is {len(secret)} characters; Discourse needs {MIN_HOOK_SECRET_LENGTH}.")
+        FAILURES.append(f"webhook not registered: {secret_var} is too short")
         return
 
-    url = PROVISION_HOOK["payload_url"]
+    url = spec["payload_url"]
     hooks = api.get("/admin/api/web_hooks.json").get("web_hooks") or []
     existing = next((hook for hook in hooks if hook.get("payload_url") == url), None)
-    wanted = {**PROVISION_HOOK, "secret": secret}
+    wanted = {**spec, "secret": secret}
 
     if existing is not None:
         current = {name: existing.get(name) for name in wanted}
@@ -899,6 +921,7 @@ def main() -> int:
     remove_welcome_topic(api)
     ensure_site_texts(api, onboarding.onboarding_mail_text(), onboarding.login_welcome_text())
     ensure_provision_hook(api)
+    ensure_edit_hook(api)
 
     print(f"""
 ============================================================

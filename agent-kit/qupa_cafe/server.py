@@ -106,8 +106,8 @@ KIT_FACTS = {
     "cannot": [
         "Upload more than 4 MB, or a type outside the forum's extension list; the refusal "
         "names the list. Attachments are read at most 4 MB too.",
-        "Change what Slack shows by editing: a post's copy there keeps the text it was "
-        "posted with, except a *Thinking…* post, whose copy becomes the reply.",
+        "Take back from Slack by editing what it was sent: an edit updates a post's copy "
+        "there, but a file already copied stays, and so does what anyone has read.",
         "Show an image hosted elsewhere in Slack: an image linked from another site appears "
         "there only as a link. Attach it with attach_file's url instead.",
         "Send your key anywhere but the forum: read_attachment and attach_file fetch other "
@@ -628,8 +628,8 @@ TOOLS = [
             "get_policy. An edit is not visible as a new contribution: it does not notify "
             "the thread, does not appear to anyone who has already read it, and is not "
             "counted as a post -- reply is the tool that does those things. Where the "
-            "forum is mirrored into Slack, the copy there keeps the text as first posted, "
-            "so a correction anyone must see belongs in a reply. The forum "
+            "forum is mirrored into Slack, the copy there is updated as quietly, and files "
+            "already copied stay, so a correction anyone must see belongs in a reply. The forum "
             "decides what you may edit. It usually refuses somebody else's post; if yours "
             "is not refused, that reach is your researcher's staff status rather than "
             "yours, so say in edit_reason that you acted on their behalf. When to edit "

@@ -3,7 +3,8 @@
 
 One channel per category, one thread per topic; a thread reply is posted to the
 topic as the Slack user's own forum account, matched by email, and an edit to
-it there edits the post. A DM with the bot is a private message with the
+it there edits the post. A forum edit, which the forum's webhook reports,
+updates the post's copy. A DM with the bot is a private message with the
 writer's agent. The policy and interests topics are linked, not copied.
 providers/slack/README.md describes the behaviour and the credential.
 
@@ -16,6 +17,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import html
 import json
 import logging
@@ -32,6 +35,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
@@ -59,6 +63,15 @@ INVITED = ("no account, invited", "no account, invited already")
 # holding only a link to it.
 POLICY_TOPIC_ID = int(os.environ.get("POLICY_TOPIC_ID", "0") or 0)
 INTERESTS_TOPIC_ID = int(os.environ.get("INTERESTS_TOPIC_ID", "0") or 0)
+# The forum's post_edited and topic_edited webhook, on the docker bridge,
+# signed with BRIDGE_HOOK_SECRET; without a secret no listener starts and
+# forum edits stay on the forum.
+HOOK_HOST = os.environ.get("BRIDGE_HOOK_HOST", "172.17.0.1")
+HOOK_PORT = int(os.environ.get("BRIDGE_HOOK_PORT", "8092"))
+HOOK_SECRET = os.environ.get("BRIDGE_HOOK_SECRET", "")
+# A post's edit, and a first post's edited with its topic's title, which the
+# forum reports as the topic's.
+EDIT_EVENTS = {"post_edited": "post", "topic_edited": "topic"}
 
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
@@ -68,8 +81,9 @@ UPLOAD_SCHEME = "upload://"
 
 # An agent's *Thinking…* post, which its reply replaces by an edit: the marker
 # is the agent kit's (agent-kit/qupa_cafe/placeholders.py). Its copy in Slack is
-# updated to the answer, the one forum edit the bridge carries. One not filled
-# in a day is given up on; the kit deletes it long before.
+# updated to the answer by watching it, with or without the edit webhook, and
+# deleted with it. One not filled in a day is given up on; the kit deletes it
+# long before.
 PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 PLACEHOLDER_SLACK_TEXT = "_Thinking…_"
 PLACEHOLDER_WATCH_SECONDS = 86400
@@ -105,6 +119,19 @@ SLACK_FILES_URL = "https://files.slack.com/"
 # ---------------------------------------------------------------------- state
 
 
+@dataclass
+class Copy:
+    """Where a post's copy is in Slack, and how it was written."""
+
+    channel_id: str
+    ts: str
+    thread_ts: str
+    parent: bool
+    mention: bool
+    codes: bool
+    files: list[str] = field(default_factory=list)
+
+
 class State:
     """What survives a restart. Locked: Slack events arrive on another thread."""
 
@@ -135,6 +162,13 @@ class State:
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
                     thread_ts TEXT NOT NULL, topic_id INTEGER NOT NULL, title TEXT NOT NULL,
                     slug TEXT NOT NULL, mention INTEGER NOT NULL, codes INTEGER NOT NULL, at REAL NOT NULL);
+                -- Where each post's copy is, so a forum edit can update it: a
+                -- thread's parent or a reply, how it was written, and the
+                -- files already sent after it, one upload:// reference a line.
+                CREATE TABLE IF NOT EXISTS copies (
+                    post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
+                    thread_ts TEXT NOT NULL, parent INTEGER NOT NULL, mention INTEGER NOT NULL,
+                    codes INTEGER NOT NULL, files TEXT NOT NULL);
                 """
             )
 
@@ -227,6 +261,30 @@ class State:
 
     def drop_placeholder(self, post_id: int) -> None:
         self._run("DELETE FROM placeholders WHERE post_id = ?", post_id)
+
+    def watching(self, post_id: int) -> bool:
+        return self._one("SELECT 1 FROM placeholders WHERE post_id = ?", post_id) is not None
+
+    def record_copy(
+        self, post_id: int, channel_id: str, ts: str, thread_ts: str, parent: bool, mention: bool, codes: bool,
+        files: list[str],
+    ) -> None:
+        self._run(
+            "INSERT OR REPLACE INTO copies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            post_id, channel_id, ts, thread_ts, int(parent), int(mention), int(codes), "\n".join(files),
+        )
+
+    def copy_of(self, post_id: int) -> Copy | None:
+        row = self._one(
+            "SELECT channel_id, ts, thread_ts, parent, mention, codes, files FROM copies WHERE post_id = ?", post_id,
+        )
+        if not row:
+            return None
+        files = [f for f in row[6].split("\n") if f]
+        return Copy(row[0], row[1], row[2], bool(row[3]), bool(row[4]), bool(row[5]), files)
+
+    def drop_copy(self, post_id: int) -> None:
+        self._run("DELETE FROM copies WHERE post_id = ?", post_id)
 
     def invite_for(self, email: str, now: float) -> tuple[str, float] | None:
         """(link, expires_at) of an invitation with time left on it."""
@@ -627,6 +685,10 @@ class Bridge:
         self._conversations: dict[str, Cached] = {}
         self._last_category_sync = 0.0
         self.bot_user_id: str | None = None
+        # Forum edits the webhook reported, as ("post" or "topic", id), in
+        # the order they came, carried at the next poll.
+        self._edits: dict[tuple[str, int], None] = {}
+        self._edits_lock = threading.Lock()
 
     # -------------------------------------------------------- lookups
 
@@ -854,6 +916,7 @@ class Bridge:
             channel=channel_id, **self.opening(topic, first), unfurl_links=False, unfurl_media=False,
         )
         self.state.set_thread(topic["id"], channel_id, result["ts"])
+        self.record_copy(first, channel_id, result["ts"], result["ts"], parent=True, mention=True, codes=False)
         self.send_files(first, channel_id, result["ts"])
         return result["ts"]
 
@@ -954,6 +1017,7 @@ class Bridge:
         if PLACEHOLDER.search(post.get("raw") or ""):
             self.state.watch_placeholder(post["id"], channel_id, result["ts"], thread_ts, topic, mention, codes)
             return
+        self.record_copy(post, channel_id, result["ts"], thread_ts, parent=False, mention=mention, codes=codes)
         self.send_files(post, channel_id, thread_ts)
 
     def fill_placeholders(self) -> int:
@@ -984,21 +1048,33 @@ class Bridge:
             self.slack.chat_update(
                 channel=channel_id, ts=ts, text=self.post_text(post, topic, mention=bool(mention), codes=bool(codes)),
             )
+            self.record_copy(post, channel_id, ts, thread_ts, parent=False, mention=bool(mention), codes=bool(codes))
             self.send_files(post, channel_id, thread_ts)
             self.state.drop_placeholder(post_id)
             filled += 1
             LOG.info("placeholder %d is now its answer in %s", post_id, channel_id)
         return filled
 
-    def send_files(self, post: dict | None, channel_id: str, thread_ts: str) -> None:
-        """A post's uploaded files, images and attachments, into its thread
-        after it. Slack cannot fetch them from a forum that requires a login,
-        so the bytes go. A failure costs only the files: the text is already
-        in Slack, and relaying the post again would repeat it."""
+    def record_copy(
+        self, post: dict | None, channel_id: str, ts: str, thread_ts: str, parent: bool, mention: bool, codes: bool,
+    ) -> None:
+        """Where ``post``'s copy went, with the files ``send_files`` sends after it."""
         if gone(post):
             return
         raw = post["raw"] if "raw" in post else self.forum.post(post["id"]).get("raw", "")
-        found = files_in(raw or "")
+        files = [short_url for _, short_url in files_in(raw or "")]
+        self.state.record_copy(post["id"], channel_id, ts, thread_ts, parent, mention, codes, files)
+
+    def send_files(self, post: dict | None, channel_id: str, thread_ts: str, sent: tuple[str, ...] = ()) -> None:
+        """A post's uploaded files, images and attachments, into its thread
+        after it, leaving out those ``sent`` already. Slack cannot fetch them
+        from a forum that requires a login, so the bytes go. A failure costs
+        only the files: the text is already in Slack, and relaying the post
+        again would repeat it."""
+        if gone(post):
+            return
+        raw = post["raw"] if "raw" in post else self.forum.post(post["id"]).get("raw", "")
+        found = [(name, short_url) for name, short_url in files_in(raw or "") if short_url not in sent]
         if not found:
             return
         try:
@@ -1045,6 +1121,106 @@ class Bridge:
                 lead = f"_<@{slack_id}>, your agent posted:_\n"
         # The bridge's own words are in italics, apart from what the author wrote.
         return f"{lead}{heading}{body}\n_<{url}|View this post>_" if link else f"{lead}{heading}{body}"
+
+    # -------------------------------------------------------- forum edits
+
+    def edited(self, kind: str, item_id: int) -> None:
+        """A forum edit the webhook reported, for the next poll to carry."""
+        with self._edits_lock:
+            self._edits[(kind, item_id)] = None
+
+    def carry_edits(self) -> int:
+        """Each reported edit's copy brought up to date. While the forum
+        cannot answer, the rest wait for the next poll."""
+        with self._edits_lock:
+            pending = list(self._edits)
+        carried = 0
+        for kind, item_id in pending:
+            try:
+                with self.lock:
+                    outcome = self.carry_edit(item_id) if kind == "post" else self.carry_topic_edit(item_id)
+            except Transient as exc:
+                LOG.warning("edits wait for the next poll: %s", exc)
+                return carried
+            except Exception as exc:
+                # Dropped rather than retried forever.
+                LOG.error("could not carry the edit of %s %d: %s", kind, item_id, exc)
+                outcome = "failed"
+            with self._edits_lock:
+                self._edits.pop((kind, item_id), None)
+            if outcome.startswith("updated"):
+                carried += 1
+            LOG.info("edit of %s %d: %s", kind, item_id, outcome)
+        return carried
+
+    def carry_topic_edit(self, topic_id: int) -> str:
+        """A first post edited with its topic's title: the thread's parent."""
+        self._topics.pop(topic_id, None)
+        first = self.topic_meta({"topic_id": topic_id}).get("first_post_id")
+        return self.carry_edit(first) if first else "a topic with no first post"
+
+    def carry_edit(self, post_id: int) -> str:
+        """A post edited on the forum: its copy in Slack updated to it, and any
+        file the edit added sent into the thread. A post written in Slack keeps
+        its writer's message there, which only they can edit."""
+        if self.state.watching(post_id):
+            return "a *Thinking…* post, filled in once it is the answer"
+        try:
+            post = self.forum.post(post_id)
+        except Refused as exc:
+            if exc.status not in (403, 404):
+                raise
+            return "gone from the forum"
+        if gone(post):
+            return "hidden or deleted"
+        if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
+            return "not a regular post"
+        if self.state.origin_of(post_id) is not None:
+            return "came from Slack, where the message is its writer's"
+        copy = self.state.copy_of(post_id) or self.find_copy(post)
+        if copy is None:
+            return "no copy in Slack"
+        # Read again, for a title changed with the post.
+        self._topics.pop(post["topic_id"], None)
+        topic = self.topic_meta(post)
+        if topic["id"] in self.link_only:
+            return "a topic read on the forum: linked, not copied"
+        if copy.parent:
+            hint = TOPIC_HINT if copy.mention else PRIVATE_HINT
+            text = self.opening(topic, post, hint=hint, mention=copy.mention, codes=copy.codes)["text"]
+        else:
+            text = self.post_text(post, topic, mention=copy.mention, codes=copy.codes)
+        try:
+            self.slack.chat_update(channel=copy.channel_id, ts=copy.ts, text=text)
+        except Exception as exc:
+            if "message_not_found" not in str(exc):
+                raise
+            self.state.drop_copy(post_id)
+            return "its copy is gone from Slack"
+        self.send_files(post, copy.channel_id, copy.thread_ts, sent=tuple(copy.files))
+        self.record_copy(post, copy.channel_id, copy.ts, copy.thread_ts, copy.parent, copy.mention, copy.codes)
+        return f"updated its copy in {copy.channel_id}"
+
+    def find_copy(self, post: dict) -> Copy | None:
+        """The copy of a post the state file does not place: its thread's
+        parent, or the bridge's reply in its thread that links to it. Taken as
+        written with no setup code, and with the researcher's mention outside
+        a DM."""
+        threaded = self.state.thread_for(post["topic_id"])
+        if not threaded:
+            return None
+        channel_id, thread_ts = threaded
+        mention = not channel_id.startswith("D")
+        # Its files are taken as sent, as the post holds them now.
+        files = [short_url for _, short_url in files_in(post.get("raw") or "")]
+        if (post.get("post_number") or 1) == 1:
+            return Copy(channel_id, thread_ts, thread_ts, True, mention, False, files)
+        link = f"/{post['topic_id']}/{post.get('post_number')}|View this post>"
+        for message in self.thread_messages(channel_id, thread_ts):
+            ours = message.get("bot_id") or message.get("user") == self.bot_user_id
+            if ours and link in (message.get("text") or ""):
+                return Copy(channel_id, message["ts"], thread_ts, False, mention, False, files)
+        return None
 
     def agent_of(self, username: str) -> str | None:
         """``<username>-agent``, if it is an agent."""
@@ -1119,6 +1295,7 @@ class Bridge:
         opening = self.opening(meta, first, hint=PRIVATE_HINT, mention=False, codes=codes)
         result = self.slack.chat_postMessage(channel=channel_id, **opening, unfurl_links=False, unfurl_media=False)
         self.state.set_thread(meta["id"], channel_id, result["ts"])
+        self.record_copy(first, channel_id, result["ts"], result["ts"], parent=True, mention=False, codes=codes)
         self.send_files(first, channel_id, result["ts"])
         return channel_id, result["ts"]
 
@@ -1212,6 +1389,7 @@ class Bridge:
                 self.fill_placeholders()
             except Transient as exc:
                 LOG.warning("placeholders wait for the next poll: %s", exc)
+        self.carry_edits()
         return relayed
 
     def poll_stream(self, private: bool) -> int:
@@ -1289,8 +1467,8 @@ class Bridge:
 
     def handle_edit(self, event: dict) -> str:
         """A message written in Slack, edited there: its post is edited as its
-        writer. Nobody but the bot can edit the bot's own messages, and forum
-        edits are not carried back."""
+        writer. Nobody but the bot can edit the bot's own messages, so a forum
+        edit to a post written in Slack is not carried back."""
         message = event.get("message") or {}
         user = message.get("user")
         if message.get("bot_id") or user in (None, self.bot_user_id):
@@ -1585,6 +1763,64 @@ def forum_error(exc: Refused) -> str:
 # ---------------------------------------------------------------------- running it
 
 
+def hook_handler(bridge: Bridge, secret: str) -> type[BaseHTTPRequestHandler]:
+    """The forum's edit webhook: the signature checked before anything else,
+    answered at once, and the edit left for the next poll."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: str = "") -> None:
+            payload = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            presented = self.headers.get("X-Discourse-Event-Signature", "")
+            expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(presented, expected):
+                LOG.warning("webhook refused: signature did not verify")
+                self._send(403, "bad signature")
+                return
+            event = self.headers.get("X-Discourse-Event", "")
+            if event == "ping":
+                LOG.info("webhook ping accepted")
+                self._send(200, "pong")
+                return
+            kind = EDIT_EVENTS.get(event)
+            item_id = None
+            if kind:
+                try:
+                    item_id = int((json.loads(raw).get(kind) or {}).get("id"))
+                except (ValueError, TypeError, AttributeError):
+                    item_id = None
+            if item_id is None:
+                self._send(200, "ignored")
+                return
+            bridge.edited(kind, item_id)
+            self._send(200, "accepted")
+
+        def log_message(self, fmt: str, *args) -> None:
+            LOG.debug("%s - %s", self.address_string(), fmt % args)
+
+    return Handler
+
+
+def listen_for_edits(bridge: Bridge, host: str = HOOK_HOST, port: int = HOOK_PORT,
+                     secret: str = HOOK_SECRET) -> ThreadingHTTPServer | None:
+    """The edit webhook's listener, in a thread of its own; None without a secret."""
+    if not secret:
+        LOG.info("BRIDGE_HOOK_SECRET is not set, so forum edits are not carried to Slack")
+        return None
+    httpd = ThreadingHTTPServer((host, port), hook_handler(bridge, secret))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    LOG.info("listening for forum edits on %s:%d", host, httpd.server_address[1])
+    return httpd
+
+
 def connect_slack(bridge: Bridge) -> Any:
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.request import SocketModeRequest
@@ -1674,6 +1910,7 @@ def main(argv: list[str] | None = None) -> int:
     bridge = Bridge(forum, slack, State(STATE_PATH))
     bridge.bot_user_id = slack.auth_test().get("user_id")
     bridge.sync_categories(force=True)
+    listen_for_edits(bridge)
     connect_slack(bridge)
     LOG.info("bridging %s to Slack, polling every %ss", FORUM_URL, POLL_SECONDS)
 

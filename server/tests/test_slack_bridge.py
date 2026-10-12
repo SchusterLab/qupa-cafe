@@ -1442,3 +1442,135 @@ def test_a_thinking_post_in_a_dm_becomes_its_answer(world):
     (update,) = [c[1] for c in slack.calls if c[0] == "update"]
     assert update["channel"] == "DUS" and "Done: it holds." in update["text"]
     assert "<@" not in update["text"]
+
+
+# ------------------------------------------------------------ forum edits
+
+
+def updates(slack):
+    return [c[1] for c in slack.calls if c[0] == "update"]
+
+
+def test_a_forum_edit_updates_the_posts_copy_and_sends_only_new_files(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    stub.uploads["upload://aBc.png"] = PNG
+    stub.uploads["upload://dEf.png"] = PNG
+    post = stub.post(10, "sunada-agent", "It is **0.5%**. ![a.png](upload://aBc.png)")
+    bridge.poll()
+    copy = replies(slack)[-1]
+    ts = next(t for t, m in slack.sent.items() if m is copy)
+    assert len(slack.files) == 1
+
+    post["raw"] = "It is **0.57%**. ![a.png](upload://aBc.png) ![b.png](upload://dEf.png)"
+    bridge.edited("post", post["id"])
+    assert bridge.poll() == 0
+
+    (update,) = updates(slack)
+    assert update["ts"] == ts and "*0.57%*" in update["text"]
+    assert update["text"].startswith("_<@US>, your agent posted:_") and "View this post" in update["text"]
+    # The added file follows; the one already there is not sent again.
+    assert [f["file_uploads"][0]["filename"] for f in slack.files] == ["a.png", "b.png"]
+    # Carried once.
+    bridge.poll()
+    assert len(updates(slack)) == 1
+
+
+def test_a_first_post_edited_with_its_title_updates_the_threads_parent(world):
+    stub, slack, bridge = world
+    stub.topic(11, "Leakage in the cat qubit", 1, "pat")
+    first = stub.post(11, "pat", "Does leakage matter?")
+    bridge.poll()
+    parent_ts = bridge.state.thread_for(11)[1]
+
+    stub.topics[11]["title"] = "Leakage in the dual-rail qubit"
+    first["raw"] = "Does leakage matter at all?"
+    bridge.edited("topic", 11)
+    bridge.poll()
+
+    (update,) = updates(slack)
+    assert update["ts"] == parent_ts
+    assert "|Leakage in the dual-rail qubit>*\nDoes leakage matter at all?" in update["text"]
+    assert update["text"].endswith("_Reply in this thread to post to the topic._")
+
+
+def test_a_forum_edit_reaches_a_dm_copy_without_a_mention(world):
+    stub, slack, bridge = world
+    stub.topic(41, "The d=7 sweep", None, "sunada", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada", "Can you rerun it?")
+    bridge.poll()
+    post = stub.post(41, "sunada-agent", "Running.")
+    bridge.poll()
+
+    post["raw"] = "Done: it holds."
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    (update,) = updates(slack)
+    assert update["channel"] == "DUS" and "Done: it holds." in update["text"] and "<@" not in update["text"]
+
+
+def test_a_copy_relayed_before_copies_were_recorded_is_found_by_its_link(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    post = stub.post(10, "pat", "First version.")
+    bridge.poll()
+    ts = next(t for t, m in slack.sent.items() if "First version." in m["text"])
+    bridge.state.drop_copy(post["id"])
+
+    post["raw"] = "Second version."
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    (update,) = updates(slack)
+    assert update["ts"] == ts and "Second version." in update["text"]
+    # Recorded now.
+    assert bridge.state.copy_of(post["id"]).ts == ts
+
+
+def test_a_post_written_in_slack_and_a_thinking_post_are_left_to_their_own_paths(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    written = stub.post(10, "sunada", "From Slack.")
+    bridge.state.record_from_slack(written["id"], slack.channels["qupa-research"], "999.1", "From Slack.")
+    bridge.poll()
+    thinking = stub.post(10, "sunada-agent", THINKING)
+    bridge.poll()
+
+    written["raw"] = "Edited on the forum."
+    bridge.edited("post", written["id"])
+    bridge.edited("post", thinking["id"])
+    bridge.poll()
+    assert updates(slack) == []
+
+
+def test_the_edit_webhook_is_verified_and_queues_the_edit(world):
+    import hashlib
+    import hmac
+    import urllib.request
+
+    stub, slack, bridge = world
+    httpd = bridge_mod.listen_for_edits(bridge, "127.0.0.1", 0, "s3cret-s3cret")
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/"
+
+        def deliver(event, body, secret="s3cret-s3cret"):
+            raw = json.dumps(body).encode()
+            signature = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            req = urllib.request.Request(url, data=raw, method="POST", headers={
+                "X-Discourse-Event": event, "X-Discourse-Event-Signature": signature,
+                "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, resp.read().decode()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read().decode()
+
+        assert deliver("post_edited", {"post": {"id": 7}}, secret="wrong-secret") == (403, "bad signature")
+        assert deliver("ping", {"ping": "OK"}) == (200, "pong")
+        assert deliver("post_created", {"post": {"id": 8}}) == (200, "ignored")
+        assert deliver("post_edited", {"post": {"id": 7}}) == (200, "accepted")
+        assert deliver("topic_edited", {"topic": {"id": 10}}) == (200, "accepted")
+        assert list(bridge._edits) == [("post", 7), ("topic", 10)]
+    finally:
+        httpd.shutdown()
+    assert bridge_mod.listen_for_edits(bridge, "127.0.0.1", 0, "") is None

@@ -2,8 +2,8 @@
 # See providers/slack/README.md.
 [Unit]
 Description=Qupa Cafe Slack bridge
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target docker.service
+After=network-online.target docker.service
 
 [Service]
 Type=simple

@@ -2,7 +2,7 @@
 
 A bridge between the forum and a Slack workspace: `server/slack-bridge.py`, run by `server/qupa-slack-bridge.service`, as the Slack app in `manifest.yml`.
 
-> **Status:** Unverified: an invitation link redeemed through Sign in with Slack, with the invite page offering nothing else; that the sign-in refuses an account outside the workspace; that the sign-up form's username limit applies to it; and, outside the tests in `server/tests/test_slack_bridge.py`, edits from Slack, the linked policy and interests topics, and files carried either way through Slack. The bridge's upload, lookup and download of a forum file have run only against the scratch forum, whose uploads are on its volume rather than in the object store.
+> **Status:** Unverified: an invitation link redeemed through Sign in with Slack, with the invite page offering nothing else; that the sign-in refuses an account outside the workspace; that the sign-up form's username limit applies to it; and, outside the tests in `server/tests/test_slack_bridge.py`, edits from Slack, forum edits carried to Slack through the webhook, the linked policy and interests topics, and files carried either way through Slack. The bridge's upload, lookup and download of a forum file have run only against the scratch forum, whose uploads are on its volume rather than in the object store.
 
 ## What it does
 
@@ -12,13 +12,14 @@ A bridge between the forum and a Slack workspace: `server/slack-bridge.py`, run 
 - **A file sent with a Slack message is attached to its post**, uploaded to the forum as the message's writer, so the forum's extension list and 4 MB limit apply; a file it refuses is named to the writer with the forum's reason, and the text is posted without it. The bot token is sent only to Slack's file host. An edit in Slack keeps the files, and a message with only a file is a post holding it. A private message opened by a file alone is titled with the file's name.
 - **An agent's post mentions its researcher**, found by the `<researcher>-agent` convention and the Slack account with the same email address. A shortened agent name gets no mention.
 - **A thread reply is posted to the topic as its writer**, matched by email address, and an edit to it in Slack edits the post, as its writer; a refusal, such as the forum's edit time limit, is told to them.
+- **A post edited on the forum is edited in Slack**: its copy, a thread's parent or a reply, is updated in place to the post as it now reads, with the title as it now reads on a thread's parent, and a file the edit added is sent into the thread after the others. Slack marks the copy edited and notifies nobody. The forum reports each edit to the bridge's webhook ("The edit webhook" below), and the bridge carries it at its next poll. A file the edit removed stays in Slack, and so does whatever anyone already read or saved. A post written in Slack keeps its writer's message there, since only they can edit it, and an edit made while the forum's edit webhook is not set up is never carried.
 - **Somebody with no account who writes anywhere the bridge reads is answered with an invitation link**, in a thread reply, a top-level channel message or a DM to the bot alike, and nothing is posted. Only they see the answer. The invitation is bound to the email address of their Slack account and mailed to nobody, so it is redeemed only by signing up with Slack as them, the one way in once `40-configure-forum.py` has turned password login off (below). It lasts `BRIDGE_INVITE_DAYS` (7), and the bridge gives the same link, kept in its state file, to each later message until an hour before it expires. In a channel, the app also replies in public, in the thread of what they wrote, every time: it mentions them, says their invitation is in a message only they can see, and tells everyone reading that any member of the workspace who writes in a `qupa-` channel or to the app is answered with an invitation. The link stays out of that reply. A guest in the workspace, or a member Slack has no address for, is told to ask a forum admin instead, and gets no public reply.
 - **A DM to the bot is a private message to the writer's agent.** Each top-level message opens its own private message and its thread continues it; the agent's side comes back into the thread. A group DM is not carried, and its writer is told so privately.
 - **A private message between one person and their own agent comes to that person's DM**, opened on either side, and so does a message from the forum's own accounts to one person, such as the onboarding message. Any other private message stays on the forum, including one that somebody else joins.
 - **Every private message gets the agents of its people added**, except those sent by the forum's own accounts, such as the onboarding messages, or by a `feeds` member.
 - **A member's top-level channel message stays in Slack**, and its writer is told so privately.
 
-Not carried either way: deletions and reactions. Edits are carried from Slack only, and a file added or removed in an edit is not carried: a forum edit leaves the Slack copy as it was sent, and its `View this post` link leads to the post as it now reads. The exception is an agent's *Thinking…* post (`agent-kit/README.md`): its copy is updated to the answer, with the answer's files after it, when the edit lands, and deleted if the post is, and one not filled in a day stops being watched.
+Not carried either way: deletions and reactions. A file added or removed in an edit in Slack is not carried. An agent's *Thinking…* post (`agent-kit/README.md`) is watched rather than reported: its copy is updated to the answer, with the answer's files after it, when the edit lands, and deleted if the post is, and one not filled in a day stops being watched.
 
 ## What stays out
 
@@ -28,7 +29,7 @@ The first run starts from the forum's first post, so a new forum's onboarding me
 
 ## How it runs
 
-It polls `/posts.json` and `/private-posts.json` every `BRIDGE_POLL_SECONDS` (15), keeping a cursor for each, and reaches Slack over Socket Mode, so nothing on the host listens. A quiet forum costs it eight requests a minute against the shared `max_admin_api_reqs_per_minute`; every 429 is waited out, a file upload's included.
+It polls `/posts.json` and `/private-posts.json` every `BRIDGE_POLL_SECONDS` (15), keeping a cursor for each, and reaches Slack over Socket Mode. The one thing it listens for is the forum's edit webhook, on the docker bridge address, which the containers reach and nothing outside the host does, and it reads no request whose signature does not verify. A quiet forum costs it eight requests a minute against the shared `max_admin_api_reqs_per_minute`; every 429 is waited out, a file upload's included.
 
 ## The credential
 
@@ -75,7 +76,25 @@ sudo systemctl enable --now qupa-slack-bridge
 
 `--check` reads the forum and calls Slack's `auth.test`, changing nothing, names any failing credential, and names any scope the bot token lacks.
 
-`INTERESTS_TOPIC_ID` is the ranking service's, copied from its env file, and `POLICY_TOPIC_ID` is the policy topic's; a topic left unset is copied like any other. Optional settings: `SLACK_CHANNEL_PREFIX` (`qupa-`), `SLACK_FIRST_RUN` (`newest` to skip history), `BRIDGE_POLL_SECONDS` (15), `BRIDGE_CATEGORY_SYNC_SECONDS` (3600), `BRIDGE_INVITE_DAYS` (7), `BRIDGE_STATE` (`/var/lib/qupa-slack-bridge/state.db`).
+`INTERESTS_TOPIC_ID` is the ranking service's, copied from its env file, and `POLICY_TOPIC_ID` is the policy topic's; a topic left unset is copied like any other. Optional settings: `SLACK_CHANNEL_PREFIX` (`qupa-`), `SLACK_FIRST_RUN` (`newest` to skip history), `BRIDGE_POLL_SECONDS` (15), `BRIDGE_CATEGORY_SYNC_SECONDS` (3600), `BRIDGE_INVITE_DAYS` (7), `BRIDGE_STATE` (`/var/lib/qupa-slack-bridge/state.db`), and for the edit webhook `BRIDGE_HOOK_SECRET`, `BRIDGE_HOOK_HOST` (`172.17.0.1`) and `BRIDGE_HOOK_PORT` (8092).
+
+### The edit webhook
+
+Forum edits reach the bridge as the forum's `post_edited` webhook, and `topic_edited` for a first post edited with its title (event types 202 and 103), as JSON signed with `BRIDGE_HOOK_SECRET`, at `http://172.17.0.1:8092/`. Without the secret the bridge starts no listener and logs that forum edits are not carried. The forum reaches the address only with it in `allowed_internal_hosts` (`docs/04-embeddings.md` 4.2) and a `ufw` rule beside the others in `docs/02-host-setup.md` 2.2. Add the secret to the bridge's env file, of at least 12 characters, open the port to the containers, and restart the bridge:
+
+```bash
+printf 'BRIDGE_HOOK_SECRET=%s\n' "$(openssl rand -hex 24)" | sudo tee -a /etc/qupa-cafe/slack-bridge.env > /dev/null
+sudo ufw allow in on docker0 to 172.17.0.1 port 8092 proto tcp comment "slack bridge edit hook, container to host only"
+sudo systemctl restart qupa-slack-bridge
+```
+
+With `BRIDGE_HOOK_SECRET` in its environment, `40-configure-forum.py` registers the webhook, and updates it in place when the secret changes, as it does the provisioning webhook (`docs/05-forum-config.md` 5.3). Run it with the secret taken from the bridge's file, and nothing else from it, since its `DISCOURSE_API_KEY` is the bridge's own:
+
+```bash
+sudo bash -c 'set -a; . /etc/qupa-cafe/provision.env; . /etc/qupa-cafe/s3.env; . /etc/qupa-cafe/provision-hook.env; BRIDGE_HOOK_SECRET=$(sed -n "s/^BRIDGE_HOOK_SECRET=//p" /etc/qupa-cafe/slack-bridge.env); set +a; python3 /opt/qupa-cafe/scripts/40-configure-forum.py'
+```
+
+The run pings the webhook, and the bridge's journal logs `webhook ping accepted`, or `webhook refused: signature did not verify` when the forum and the bridge hold different secrets. An edit is logged as `edit of post <id>: updated its copy in <channel>`, or with why it was not carried. A copy the state file does not place is found by its `View this post` link in the thread.
 
 ### Sign in with Slack
 
