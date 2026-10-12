@@ -45,6 +45,11 @@ def no_local_text(tmp_path, monkeypatch):
 
     monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
+    # And Claude Code, which would otherwise be started to make a parent
+    # session for the first wake a test runs; a test of the parent fakes its own.
+    from qupa_cafe import daemon
+
+    monkeypatch.setattr(daemon, "make_parent", lambda *args, **kwargs: "")
 
 
 @pytest.fixture(autouse=True)

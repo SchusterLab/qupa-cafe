@@ -725,7 +725,7 @@ def forked_from(records: list[str]) -> int:
             prompts.append((index, content))
             if len(prompts) == 2:
                 break
-    if len(prompts) == 2 and prompts[0][1].startswith(daemon.PARENT_MARK):
+    if len(prompts) == 2 and daemon.PARENT_MARK in prompts[0][1]:
         return prompts[1][0]
     return 0
 

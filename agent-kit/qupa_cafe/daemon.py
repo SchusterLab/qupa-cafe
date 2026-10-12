@@ -758,8 +758,9 @@ def policy_text(settings: Settings) -> str:
 
     nl = chr(10)
     parts = [
-        f"The forum's policy follows as it stands now, fetched for this wake, so there is no need to call "
-        f"get_policy. Pass {policy.hash} as policy_ack on every write. If a write is refused because the "
+        f"The forum's policy follows as it stands now: the kit fetched it for this prompt, and a change to it "
+        f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.hash} as policy_ack "
+        f"on every write. If a write is refused because the "
         "policy changed, call get_policy for its new text and hash. A category's agent policy applies in "
         "that category and every subcategory of it.",
         "----- the policy -----",
@@ -1255,14 +1256,10 @@ def wake_agent(
 # about the price of a fresh wake; every later fork within the hour reads
 # it, at a tenth of the price, and writes only its own task. Measured on
 # Opus 5.5: a fresh wake or a first fork about 30k input-token equivalents,
-# a later fork about 4k, the parent itself about 29k. So an existing parent
-# is always forked, warm or cold, and a new one made when wakes are due
-# together.
+# a later fork about 4k, the parent itself about 29k. So every wake forks
+# the parent, warm or cold, and one is made whenever none fits.
 PARENT_MARK = "This session is the shared start of your forum wakes and diary entries."
 PARENT_READY = "READY"
-# How many wakes must be due at once to make a parent, which pays for
-# itself by the third.
-PARENT_BURST = 2
 # In a forked prompt where the template places the policy.
 IN_PARENT = (
     "The forum's policy, the hash a write needs, what this agent kit can do, your researcher's "
@@ -1272,37 +1269,98 @@ IN_PARENT = (
 
 
 def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
-    """What every fork shares, ending in the request to answer READY."""
+    """What every fork shares, opening with what the forum is and ending in
+    the request to answer READY."""
+    from .server import FORUM_DESCRIPTION
+
     if settings.researcher:
         whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
     else:
         whoami = f"You are `{settings.api_username}` here."
     nl = chr(10)
+    from_researcher = local.instructions(settings.agent_dir or None) or (
+        f"Your researcher has written no instructions of their own: there is no {local.PROMPT_FILE}."
+    )
     parts = [
+        FORUM_DESCRIPTION,
         PARENT_MARK + " Each wake and each diary entry continues from here with its own task, in a session "
         "of its own, so nothing one of them reads reaches another.",
         whoami,
         policy,
-        local.instructions(settings.agent_dir or None),
+        from_researcher,
+        memory_notes(settings),
         wake_notice(settings, config),
         f"There is no task yet. Call no tools and answer with just {PARENT_READY}.",
     ]
     return (nl * 2).join(part for part in parts if part)
 
 
+# Larger notes stay in their files, for a wake to read when it needs them.
+MEMORY_NOTES_CHARS = 20000
+
+
+def claude_project_dir(directory: str) -> Path:
+    """Where Claude Code keeps a working directory's sessions and memory:
+    the path with every character but a letter or digit made a hyphen."""
+    from . import wakes  # wakes imports this module
+
+    return wakes.claude_home() / "projects" / re.sub(r"[^A-Za-z0-9]", "-", directory)
+
+
+def memory_notes(settings: Settings) -> str:
+    """The notes the agent kept in Claude Code's memory for its working
+    directory, which nearly every wake would otherwise spend a request
+    reading; "" when there are none, or too many to carry."""
+    if not settings.agent_dir:
+        return ""
+    folder = claude_project_dir(settings.agent_dir) / "memory"
+    files = sorted(folder.glob("*.md"), key=lambda p: (p.name != "MEMORY.md", p.name))
+    notes = []
+    for path in files:
+        try:
+            notes.append(f"### {path.name}" + chr(10) + path.read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+    text = (chr(10) * 2).join(notes)
+    if not text or len(text) > MEMORY_NOTES_CHARS:
+        return ""
+    return (
+        f"Your notes from earlier sessions, in Claude Code's memory for your working directory ({folder}), "
+        "as they stand now. There is no need to read these files again; a note you write or change there "
+        "reaches later tasks once the kit starts a new session from here." + chr(10) * 2 + text
+    )
+
+
+def steering_files(settings: Settings) -> list[str]:
+    """The CLAUDE.md files Claude Code loads into a session, whose text a
+    fork inherits from the parent as it was when the parent was made."""
+    from . import wakes  # wakes imports this module
+
+    paths = [wakes.claude_home() / "CLAUDE.md"]
+    if settings.agent_dir:
+        paths += [Path(settings.agent_dir) / "CLAUDE.md", Path(settings.agent_dir) / "CLAUDE.local.md"]
+    found = []
+    for path in paths:
+        try:
+            found.append(f"{path}{chr(10)}{path.read_text(encoding='utf-8')}")
+        except OSError:
+            continue
+    return found
+
+
 def parent_key(settings: Settings, prompt: str, choice: models.Choice, config: dict) -> str:
     """What a parent was made from: a fork of one made from anything else
     would act on an old policy or old instructions, or miss the cache."""
     made_from = [prompt, choice.model, choice.effort, wake_settings(config), settings.mcp_config,
-                 settings.agent_dir, list(CLAUDE_ALLOWED_TOOLS), __version__]
+                 settings.agent_dir, list(CLAUDE_ALLOWED_TOOLS), __version__, steering_files(settings)]
     return hashlib.sha256(json.dumps(made_from).encode("utf-8")).hexdigest()
 
 
 def parent_for(settings: Settings, journal: Journal | None, policy: str, choice: models.Choice,
-               due: int, dry_run: bool = False) -> str:
-    """The session for a wake on ``choice`` to fork from, or "" to wake
-    afresh: the parent made from what this wake would share, and with
-    ``due`` wakes waiting and none made yet, a new one, made here."""
+               dry_run: bool = False) -> str:
+    """The session for a wake on ``choice`` to fork from: the parent made
+    from what this wake would share, made here when there is none; or "" to
+    wake afresh, when none can be made."""
     config = sandbox_config(settings)
     if journal is None or dry_run or config is None:
         return ""
@@ -1313,8 +1371,6 @@ def parent_for(settings: Settings, journal: Journal | None, policy: str, choice:
     stored = journal.parent()
     if stored is not None and stored[1] == key and wakes.transcript_path(stored[0]) is not None:
         return stored[0]
-    if due < PARENT_BURST:
-        return ""
     session = make_parent(settings, prompt, choice, journal)
     if session:
         journal.record_parent(session, key)
@@ -1557,8 +1613,7 @@ def one_pass(
             policy = policy_text(settings)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
         fresh = build_prompt(settings, candidate.reason, topic, wording, policy)
-        parent = parent_for(settings, journal, policy, models.Choice(wake.model, wake.effort),
-                            len(candidates), dry_run)
+        parent = parent_for(settings, journal, policy, models.Choice(wake.model, wake.effort), dry_run)
         prompt = build_prompt(settings, candidate.reason, topic, wording, policy, forked=True) if parent else fresh
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
@@ -1668,8 +1723,7 @@ def diary_pass(
 
     policy = policy_text(settings)
     chosen_model = models.read(models.DIARY)
-    # One diary entry a day, so it forks a parent the wakes made, and makes none.
-    parent = parent_for(settings, journal, policy, chosen_model, 1, dry_run)
+    parent = parent_for(settings, journal, policy, chosen_model, dry_run)
     where = diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher)
 
     def diary_prompt(forked: bool) -> str:

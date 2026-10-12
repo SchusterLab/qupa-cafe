@@ -1258,7 +1258,9 @@ def test_the_parent_holds_what_every_fork_shares(monkeypatch):
     monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
     settings = Settings(api_username="a-agent", researcher="a")
     prompt = daemon.parent_prompt(settings, "THE POLICY", daemon.sandbox_config(settings))
-    assert prompt.startswith(daemon.PARENT_MARK)
+    from qupa_cafe.server import FORUM_DESCRIPTION
+
+    assert prompt.startswith(FORUM_DESCRIPTION) and daemon.PARENT_MARK in prompt
     for part in ("`a-agent`", "THE POLICY", "RESEARCHER SAYS", daemon.OLD_NOTES, daemon.PARENT_READY):
         assert part in prompt
 
@@ -1286,37 +1288,37 @@ def parents(tmp_path, monkeypatch):
     return journal, made
 
 
-def test_a_single_wake_makes_no_parent(parents):
-    journal, made = parents
-    assert daemon.parent_for(Settings(), journal, "P", daemon.models.Choice(), daemon.PARENT_BURST - 1) == ""
-    assert made == []
-
-
-def test_wakes_due_together_make_a_parent_that_every_later_wake_forks(parents):
-    """A first fork costs about what a fresh wake does, so an existing parent
-    is forked whether its cache is warm or not, and by a lone wake too."""
+def test_a_wake_makes_the_parent_and_every_later_wake_forks_it(parents):
+    """A first fork costs about what a fresh wake does, so a lone wake makes
+    a parent too, and an existing one is forked whether its cache is warm."""
     journal, made = parents
     choice = daemon.models.Choice()
-    assert daemon.parent_for(Settings(), journal, "P", choice, daemon.PARENT_BURST) == "parent-1"
-    assert daemon.parent_for(Settings(), journal, "P", choice, 1) == "parent-1"
+    assert daemon.parent_for(Settings(), journal, "P", choice) == "parent-1"
+    assert daemon.parent_for(Settings(), journal, "P", choice) == "parent-1"
     assert len(made) == 1
 
 
 def test_a_changed_policy_or_model_makes_a_new_parent(parents):
     journal, made = parents
     choice = daemon.models.Choice()
-    daemon.parent_for(Settings(), journal, "P", choice, daemon.PARENT_BURST)
-    # A parent made from another policy is not forked, and a lone wake makes no new one.
-    assert daemon.parent_for(Settings(), journal, "NEW POLICY", choice, 1) == ""
-    assert daemon.parent_for(Settings(), journal, "P", daemon.models.Choice("haiku"), daemon.PARENT_BURST) == "parent-2"
+    daemon.parent_for(Settings(), journal, "P", choice)
+    assert daemon.parent_for(Settings(), journal, "NEW POLICY", choice) == "parent-2"
+    assert daemon.parent_for(Settings(), journal, "NEW POLICY", daemon.models.Choice("haiku")) == "parent-3"
 
 
 def test_a_dry_run_or_no_journal_never_forks(parents):
     journal, made = parents
     choice = daemon.models.Choice()
-    assert daemon.parent_for(Settings(), None, "P", choice, 99) == ""
-    assert daemon.parent_for(Settings(), journal, "P", choice, 99, dry_run=True) == ""
+    assert daemon.parent_for(Settings(), None, "P", choice) == ""
+    assert daemon.parent_for(Settings(), journal, "P", choice, dry_run=True) == ""
     assert made == []
+
+
+def test_a_parent_that_cannot_be_made_leaves_the_wake_fresh(parents, monkeypatch):
+    journal, made = parents
+    monkeypatch.setattr(daemon, "make_parent", lambda *a: "")
+    assert daemon.parent_for(Settings(), journal, "P", daemon.models.Choice()) == ""
+    assert journal.parent() is None
 
 
 def test_a_fork_that_does_not_start_wakes_afresh(monkeypatch, tmp_path):
@@ -1341,3 +1343,39 @@ def test_a_background_session_can_be_ended_by_what_it_said(monkeypatch):
     monkeypatch.setattr(daemon, "attached_ids", lambda: set())
     state, session = daemon.run_in_background("claude", ["claude", "--bg", "p"], None, ended=lambda s: s == "s-1")
     assert (state, session) == ("done", "s-1")
+
+
+def test_the_parent_says_when_the_researcher_has_written_nothing(monkeypatch):
+    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "")
+    settings = Settings(api_username="a-agent")
+    assert "there is no QUPA.md" in daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
+
+
+def test_the_parent_carries_the_agent_s_memory_notes(tmp_path, monkeypatch):
+    """So that a wake does not spend a request reading them."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    agent_dir = tmp_path / "agent"
+    folder = daemon.claude_project_dir(str(agent_dir)) / "memory"
+    folder.mkdir(parents=True)
+    (folder / "MEMORY.md").write_text("- [Who](who.md)", encoding="utf-8")
+    (folder / "who.md").write_text("The researcher builds qubits.", encoding="utf-8")
+    settings = Settings(api_username="a-agent", agent_dir=str(agent_dir))
+    prompt = daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
+    assert "The researcher builds qubits." in prompt and prompt.index("### MEMORY.md") < prompt.index("### who.md")
+    (folder / "big.md").write_text("x" * daemon.MEMORY_NOTES_CHARS, encoding="utf-8")
+    assert daemon.memory_notes(settings) == ""
+
+
+def test_an_edited_claude_md_makes_a_new_parent(tmp_path, monkeypatch):
+    """A fork inherits the parent's copy of it."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    settings = Settings(agent_dir=str(tmp_path))
+    config, choice = daemon.sandbox_config(settings), daemon.models.Choice()
+    before = daemon.parent_key(settings, "P", choice, config)
+    (tmp_path / "CLAUDE.md").write_text("Be brief.", encoding="utf-8")
+    assert daemon.parent_key(settings, "P", choice, config) != before
+
+
+def test_claude_code_s_folder_for_a_directory():
+    assert daemon.claude_project_dir(r"C:\Users\slab\qupa-cafe-agent").name == "C--Users-slab-qupa-cafe-agent"
+

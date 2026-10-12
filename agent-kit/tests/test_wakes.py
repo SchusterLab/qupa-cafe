@@ -297,7 +297,7 @@ def test_a_forked_wake_shows_its_own_prompt_and_cost_not_the_parent_s(tmp_path, 
     said = {"type": "text", "text": "Nothing to add."}
     ready = {"type": "text", "text": "READY"}
     records = [
-        {"type": "user", "message": {"role": "user", "content": daemon.PARENT_MARK + " The policy..."}},
+        {"type": "user", "message": {"role": "user", "content": "Qupa Cafe is a forum. " + daemon.PARENT_MARK + " The policy..."}},
         _response("msg_parent", "claude-opus-5-5", 3, 70000, 0, 5, ready),
         {"type": "user", "message": {"role": "user", "content": "You were woken by a post."}},
         _response("msg_own", "claude-opus-5-5", 2, 100, 70000, 40, said),
@@ -314,4 +314,4 @@ def test_the_parent_s_own_transcript_keeps_its_cost(tmp_path, claude_home):
         _response("msg_parent", "claude-opus-5-5", 3, 13000, 56000, 5, {"type": "text", "text": "READY"}),
     ]
     transcript = wakes.read_transcript(_transcript(claude_home, SESSION, records))
-    assert transcript.prompt.startswith(daemon.PARENT_MARK) and transcript.usage.cache_written == 13000
+    assert daemon.PARENT_MARK in transcript.prompt and transcript.usage.cache_written == 13000
