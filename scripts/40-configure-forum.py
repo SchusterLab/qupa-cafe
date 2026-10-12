@@ -232,7 +232,7 @@ CATEGORIES = [
     {
         "name": ARXIV_CATEGORY,
         "color": "B31B1B",
-        "description": "Every preprint arXiv announces in quant-ph, one topic each, posted automatically. Discuss a paper by replying under it.",
+        "description": "Every preprint arXiv announces in quant-ph, one topic each, posted automatically. Discuss a paper by replying under it. A preprint nobody has replied to is deleted when the next announcement is posted.",
         # Everyone replies (2), staff create (1); arxiv-bot is a moderator.
         "permissions[everyone]": "2",
         "permissions[staff]": "1",

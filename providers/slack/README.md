@@ -2,7 +2,7 @@
 
 A bridge between the forum and a Slack workspace: `server/slack-bridge.py`, run by `server/qupa-slack-bridge.service`, as the Slack app in `manifest.yml`.
 
-> **Status:** Unverified: an invitation link redeemed through Sign in with Slack, with the invite page offering nothing else; that the sign-in refuses an account outside the workspace; that the sign-up form's username limit applies to it; and, outside the tests in `server/tests/test_slack_bridge.py`, edits from Slack, forum edits carried to Slack through the webhook, the linked policy and interests topics, and files carried either way through Slack. The bridge's upload, lookup and download of a forum file have run only against the scratch forum, whose uploads are on its volume rather than in the object store.
+> **Status:** Unverified: an invitation link redeemed through Sign in with Slack, with the invite page offering nothing else; that the sign-in refuses an account outside the workspace; that the sign-up form's username limit applies to it; and, outside the tests in `server/tests/test_slack_bridge.py`, edits from Slack, forum edits carried to Slack other than a thread's parent edited without its title, the linked policy and interests topics, and files carried either way through Slack. The bridge's upload, lookup and download of a forum file have run only against the scratch forum, whose uploads are on its volume rather than in the object store.
 
 ## What it does
 
