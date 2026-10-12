@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import local, models, wakes
-from .daemon import CLAUDE_ALLOWED_TOOLS, TUNE_NAME, Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import CLAUDE_ALLOWED_TOOLS, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Settings, background_sessions, claim_lock
 
 # -------------------------------------------------------------------- keys
 
@@ -571,8 +571,9 @@ def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
         if live is not None and live.get("state") not in ("done", "failed"):
             return [claude, "attach", str(live.get("id") or row.session[:8])], True
     # The parent opens as a fork of its own: a turn typed into the parent
-    # itself would reach every later wake.
-    fork = ["--fork-session"] if wakes.is_parent(row) else []
+    # itself would reach every later wake. Named as the parent is, so that
+    # the diary does not take it for its researcher's own work.
+    fork = ["--fork-session", "--name", f"{PARENT_NAME} copy"] if wakes.is_parent(row) else []
     return [claude, "--resume", row.session, *fork, *RESUME_MODE], False
 
 

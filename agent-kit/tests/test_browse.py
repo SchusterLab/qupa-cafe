@@ -494,6 +494,8 @@ def test_the_parent_stands_out_and_opens_as_a_copy():
     assert wakes.outcome(row, None) == ("parent", "accent") and browse.row_mark("accent") == "◈"
     command, attached = browse.ask_command(row, "claude")
     assert "--fork-session" in command and not attached
+    # Named so that the diary leaves it out, as it does the parent.
+    assert command[command.index("--name") + 1].startswith(daemon.PARENT_NAME)
     wake = _parent_row(reason="you were mentioned", topic_id=5)
     assert "--fork-session" not in browse.ask_command(wake, "claude")[0]
 
