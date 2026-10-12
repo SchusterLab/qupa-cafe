@@ -1178,3 +1178,76 @@ def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
     policy = daemon.policy_text(Settings(forum_url="http://127.0.0.1:9", api_key="k", api_username="u", policy_topic_id=42))
     assert policy.startswith("Call get_policy before you write anything")
     assert "QUPA_POLICY_TOPIC_ID is not set" in daemon.policy_text(Settings(forum_url="http://x", api_key="k"))
+
+
+def test_a_resident_daemon_names_its_run_once_it_has_claimed_the_agent(monkeypatch):
+    sent = []
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, **k: sent.append(request) or _answering({"previous": {"where": "laptop (Linux)"}}))
+    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
+    assert ranking.claim("agent", "aaa", "desk (Windows)") == "laptop (Linux)"
+    assert json.loads(sent[0].data) == {"claim": {"instance": "aaa", "where": "desk (Windows)"}}
+    assert ranking._wake_request("agent").get_header(daemon.DAEMON_HEADER.capitalize()) == "aaa"
+
+
+def test_a_host_that_cannot_take_a_claim_costs_nothing_but_the_claim(monkeypatch):
+    """A host from before claims answers 400, which is no reason not to poll."""
+    def refuse(*args, **kwargs):
+        raise urllib.error.HTTPError("http://ranking.invalid/wake", 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", refuse)
+    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
+    assert ranking.claim("agent", "aaa", "desk") is None and ranking.instance == "aaa"
+
+
+def test_a_superseded_daemon_learns_where_the_agent_went(monkeypatch):
+    import io
+
+    def superseded(*args, **kwargs):
+        body = io.BytesIO(json.dumps({"error": "superseded", "superseded_by": "desk (Windows)"}).encode())
+        raise urllib.error.HTTPError("http://ranking.invalid/wake", 409, "Conflict", {}, body)
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", superseded)
+    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
+    assert ranking.pending("agent") == [] and ranking.superseded_by == "desk (Windows)"
+
+
+def test_one_superseded_from_another_machine_retires_and_says_where(tmp_path, monkeypatch):
+    retired = []
+    monkeypatch.setattr(daemon, "retire", lambda: retired.append(True))
+    state = str(tmp_path / "state.sqlite3")
+    journal = daemon.Journal(state)
+    settings = Settings(state_path=state, api_username="agent")
+    assert daemon.superseded("desk (Windows)", settings, journal) == 0
+    assert retired == [True]
+    from qupa_cafe import tray, wakes
+
+    assert wakes.status(state).replaced_by == "desk (Windows)"
+    assert "desk (Windows)" in tray.describe(settings)[1]
+    assert "qupa-install" in wakes.daemon_line(wakes.status(state))
+
+
+def test_one_superseded_on_this_machine_keeps_its_autostart(tmp_path, monkeypatch):
+    """The newer daemon here relies on the same entry."""
+    monkeypatch.setattr(daemon, "retire", lambda: pytest.fail("retired"))
+    state = str(tmp_path / "state.sqlite3")
+    assert daemon.superseded(daemon.where_this_runs(), Settings(state_path=state), daemon.Journal(state)) == 0
+
+
+def test_a_daemon_on_this_machine_holding_the_lock_is_stopped(tmp_path, monkeypatch):
+    """By the process id it wrote there, and the lock is then taken."""
+    settings = Settings(state_path=str(tmp_path / "state.sqlite3"))
+    held = daemon.claim_single_instance(settings)
+    held.write(b"424242")
+    held.flush()
+    stopped = []
+
+    def terminate(pid):
+        stopped.append(pid)
+        held.close()
+
+    monkeypatch.setattr(daemon, "terminate", terminate)
+    monkeypatch.setattr(daemon.time, "sleep", lambda seconds: None)
+    lock = daemon.take_over_lock(settings, wait=5)
+    assert stopped == [424242] and lock not in (False, None)
+    lock.close()
+

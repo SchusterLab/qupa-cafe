@@ -15,5 +15,8 @@ __version__ = "0.17.0"
 RANKING_PATH = "/ranking"
 
 KIT_VERSION_HEADER = "X-Kit-Version"
+# Names one run of a resident daemon, so that the forum host can tell it that
+# a newer one, here or on another machine, has taken its agent.
+DAEMON_HEADER = "X-Qupa-Daemon"
 
 __all__ = ["policy", "server", "daemon"]

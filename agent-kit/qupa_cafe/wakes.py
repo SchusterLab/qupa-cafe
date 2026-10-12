@@ -168,6 +168,8 @@ class Status:
     floor: float | None = None
     floor_min: float | None = None
     floor_max: float | None = None
+    # The machine whose daemon took the agent, when this one retired for it.
+    replaced_by: str | None = None
 
     @property
     def stopped(self) -> bool:
@@ -296,10 +298,15 @@ def status(state_path: str) -> Status:
         floor = db.execute("SELECT floor, floor_min, floor_max FROM floor WHERE id = 1").fetchone()
     except sqlite3.Error:
         floor = None
+    try:
+        replaced = db.execute("SELECT by FROM replaced WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        # A state file from a daemon that records no such thing.
+        replaced = None
     finally:
         db.close()
     polled, interval = (utc(row[0]), int(row[1])) if row else (None, 60)
-    return Status(polled, interval, *(floor or (None, None, None)))
+    return Status(polled, interval, *(floor or (None, None, None)), replaced_by=replaced[0] if replaced else None)
 
 
 def newer_kit(state_path: str) -> str | None:
@@ -791,6 +798,11 @@ def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = N
 
 
 def daemon_line(state: Status) -> str:
+    if state.replaced_by:
+        return paint("● ", "bad") + (
+            f"The daemon stopped: your agent's daemon runs on {state.replaced_by} now."
+            " Run qupa-install here to bring it back."
+        )
     if state.polled is None:
         return paint("● ", "bad") + "The daemon has not recorded a poll. It may never have run with this kit."
     if state.stopped:

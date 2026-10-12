@@ -861,7 +861,7 @@ After=network-online.target
 Type=simple
 EnvironmentFile={ENV_PATH}
 {pythonpath}ExecStart={exec_start}
-Restart=always
+Restart=on-failure
 RestartSec=30
 
 [Install]
@@ -907,7 +907,10 @@ WantedBy=default.target
 {program_arguments}
   </array>
 {environment}  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
 </dict>
 </plist>
 """,

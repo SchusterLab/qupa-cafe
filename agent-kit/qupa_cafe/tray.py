@@ -58,7 +58,9 @@ def describe(settings: Settings) -> tuple[str, str]:
     rows = wakes.recent(settings.state_path, 1)
     last = rows[-1] if rows else None
 
-    if state.polled is None:
+    if state.replaced_by:
+        key, text = "stopped", f"your agent's daemon runs on {state.replaced_by} now"
+    elif state.polled is None:
         key, text = "stopped", "no poll recorded yet"
     elif state.stopped:
         key, text = "stopped", f"stopped? last poll {wakes.local_time(state.polled)}"

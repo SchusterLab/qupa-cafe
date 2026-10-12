@@ -47,8 +47,10 @@ import json
 import logging
 import logging.handlers
 import os
+import platform
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -56,11 +58,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, sandbox, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -262,6 +265,13 @@ class Journal:
                 floor_max REAL NOT NULL,
                 at        TEXT NOT NULL
             );
+            -- Where the daemon that took this one's agent runs, written as
+            -- this one retires, for the tray icon and the wake browser.
+            CREATE TABLE IF NOT EXISTS replaced (
+                id  INTEGER PRIMARY KEY CHECK (id = 1),
+                by  TEXT NOT NULL,
+                at  TEXT NOT NULL
+            );
             -- The newest kit an update can install when newer than this one,
             -- or NULL, asked at each poll, for the tray icon's menu.
             CREATE TABLE IF NOT EXISTS kit (
@@ -343,6 +353,14 @@ class Journal:
             " ON CONFLICT(id) DO UPDATE SET newer = excluded.newer, at = excluded.at",
             (newer,),
         )
+
+    def record_replaced(self, by: str | None) -> None:
+        """Where the daemon that took the agent runs, or None to clear it."""
+        if by is None:
+            self._write("the daemon's start", "DELETE FROM replaced", ())
+        else:
+            self._write("the daemon that replaced this one",
+                        "INSERT OR REPLACE INTO replaced (id, by, at) VALUES (1, ?, datetime('now'))", (by,))
 
     def beat(self, interval: int) -> None:
         """Record a poll and the interval, so a viewer can tell quiet from stopped."""
@@ -454,6 +472,10 @@ class Ranking:
         # The posts that did not wake the agent, from the last poll; None from
         # a host that does not serve them.
         self.near_misses: list[dict] | None = None
+        # This run's name, set by a resident daemon once it has claimed the
+        # agent, and where the daemon that has since taken it runs.
+        self.instance = ""
+        self.superseded_by: str | None = None
 
     def _wake_request(self, agent: str) -> urllib.request.Request:
         """The /wake request every call to the host starts from."""
@@ -465,6 +487,8 @@ class Ranking:
         # The agent's own key, which the endpoint verifies against the forum.
         if self.settings.api_key:
             req.add_header("Authorization", f"Bearer {self.settings.api_key}")
+        if self.instance:
+            req.add_header(DAEMON_HEADER, self.instance)
         return req
 
     def _post_request(self, agent: str, body: dict) -> urllib.request.Request:
@@ -527,6 +551,15 @@ class Ranking:
             self.near_misses = near if isinstance(near, list) else None
             return payload.get("pending") or []
         except urllib.error.HTTPError as exc:
+            # 409: a newer daemon for this agent, here or elsewhere, has it now.
+            if exc.code == 409:
+                try:
+                    said = json.loads(exc.read().decode())
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    said = {}
+                if said.get("error") == "superseded":
+                    self.superseded_by = str(said.get("superseded_by") or "another machine")
+                    return []
             # 426: refused as too old, which is not the endpoint being down.
             if exc.code == 426:
                 self.available = False
@@ -550,6 +583,19 @@ class Ranking:
             LOG.warning("ranking endpoint unavailable (%s). Degraded: mentions only.", exc)
             self._warned = True
         return []
+
+    def claim(self, agent: str, instance: str, where: str) -> str | None:
+        """Make this daemon the agent's, so that the forum host tells any
+        other daemon for it to stop at its next poll. Where the one it
+        replaced runs, or None; a host that cannot be asked costs only that."""
+        self.instance = instance
+        try:
+            answer = self._ask(agent, {"claim": {"instance": instance, "where": where}})
+        except RankingError as exc:
+            LOG.info("could not tell the forum host this daemon is the agent's: %s", exc)
+            return None
+        previous = answer.get("previous") or {}
+        return str(previous.get("where") or "") or None
 
     def set_floor(self, agent: str, floor: float) -> dict:
         """Ask the forum host to set the agent's floor. Returns the floor and
@@ -1567,6 +1613,88 @@ def claim_single_instance(settings: Settings):
     return claim_lock(lock_path(settings))
 
 
+def lock_holder(path: Path) -> int | None:
+    """The process id a resident daemon wrote into its lock, or None."""
+    try:
+        return int(path.read_text(encoding="ascii").strip() or "x")
+    except (OSError, ValueError):
+        return None
+
+
+def write_holder(handle) -> None:
+    """Put this process's id in the lock it holds, for a later daemon to stop."""
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()).encode("ascii"))
+        handle.flush()
+    except OSError:
+        pass
+
+
+def terminate(pid: int) -> None:
+    """End the daemon ``pid`` so that its service manager does not start it
+    again: with exit status 0 on Windows, which the Startup loop stops at,
+    and SIGTERM elsewhere, which the daemon answers by exiting 0."""
+    if os.name == "nt":
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+        if handle:
+            kernel.TerminateProcess(handle, 0)
+            kernel.CloseHandle(handle)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def take_over_lock(settings: Settings, wait: float = 30.0):
+    """Stop the daemon on this machine that holds the lock, and take it: the
+    handle, or False when it could not be had in ``wait`` seconds."""
+    path = lock_path(settings)
+    pid = lock_holder(path)
+    if pid is None or pid == os.getpid():
+        return False
+    LOG.info("another daemon on this machine, process %d, holds %s; stopping it", pid, path)
+    terminate(pid)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        lock = claim_single_instance(settings)
+        if lock is not False:
+            return lock
+    return False
+
+
+def where_this_runs() -> str:
+    """This machine, as a researcher would recognise it in a log."""
+    return f"{platform.node() or 'unnamed machine'} ({platform.system() or 'unknown system'})"
+
+
+def retire() -> None:
+    """Stop this daemon starting again by itself, as the one a newer daemon
+    on another machine replaced: its autostart entry goes, and its service
+    manager stops it rather than starting it again."""
+    from . import install
+
+    system = platform.system()
+    if system == "Windows":
+        (install.startup_dir() / install.DAEMON_VBS).unlink(missing_ok=True)
+    elif system == "Darwin":
+        install.DAEMON_PLIST.unlink(missing_ok=True)
+        # Last: launchd ends this process as it removes the job.
+        subprocess.run(["launchctl", "remove", "cafe.qupa.daemon"], capture_output=True)
+    elif shutil.which("systemctl"):
+        subprocess.run(["systemctl", "--user", "disable", install.DAEMON_UNIT], capture_output=True)
+        subprocess.run(["systemctl", "--user", "stop", "--no-block", install.DAEMON_UNIT], capture_output=True)
+
+
+LOCK_BYTE = 64
+
+
 def claim_lock(path: Path):
     """Hold the advisory lock at ``path`` for the life of this process: the
     open handle, ``False`` when another process holds it, or ``None`` when
@@ -1581,6 +1709,9 @@ def claim_lock(path: Path):
         if os.name == "nt":
             import msvcrt
 
+            # A byte past the process id written at the start, which a locked
+            # byte would keep anyone else from reading.
+            handle.seek(LOCK_BYTE)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
@@ -1623,6 +1754,11 @@ def main() -> int:
     except KeyboardInterrupt:
         LOG.info("stopped by an interrupt")
         return 130
+    except SystemExit as stop:
+        # SIGTERM's handler: a newer daemon, or the service manager, ended it.
+        if not stop.code:
+            LOG.info("stopped by SIGTERM")
+        raise
     except BaseException:
         LOG.exception("the daemon is exiting on an uncaught exception")
         raise
@@ -1662,13 +1798,15 @@ def run() -> int:
     lock = None
     if not args.once:
         lock = claim_single_instance(settings)
+        if lock is False and not args.dry_run:
+            # Two of them would wake the agent twice for every notification,
+            # so the newer one stops the older.
+            lock = take_over_lock(settings)
         if lock is False:
-            LOG.info(
-                "Another daemon already holds %s. Not starting a second:"
-                " two of them wake the agent twice for every notification.",
-                lock_path(settings),
-            )
+            LOG.info("Another daemon holds %s. Not starting a second.", lock_path(settings))
             return 0
+        if lock is not None and not args.dry_run:
+            write_holder(lock)
 
     forum = Forum(settings)
     ranking = Ranking(settings)
@@ -1690,6 +1828,15 @@ def run() -> int:
 
     diary_state = diary.Diary()
 
+    if not (args.once or args.dry_run):
+        # SIGTERM, from a newer daemon or the service manager, is a clean end.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        journal.record_replaced(None)
+        here = where_this_runs()
+        replaced = ranking.claim(settings.api_username, uuid.uuid4().hex, here)
+        if replaced:
+            LOG.info("this daemon now has %s; the one on %s stops at its next poll", settings.api_username, replaced)
+
     if args.once:
         wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
@@ -1708,7 +1855,25 @@ def run() -> int:
             diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
+        if ranking.superseded_by:
+            return superseded(ranking.superseded_by, settings, journal)
         time.sleep(settings.interval)
+
+
+def superseded(by: str, settings: Settings, journal: Journal) -> int:
+    """End this daemon, which a newer one for its agent has replaced, and
+    keep it from starting again by itself unless that one is on this machine."""
+    if by == where_this_runs():
+        LOG.info("a newer daemon for %s on this machine has it now; this one stops", settings.api_username)
+        return 0
+    LOG.warning(
+        "a newer daemon for %s started on %s, so this one stops and no longer starts by itself."
+        " Run qupa-install here to make this machine's daemon the agent's again.",
+        settings.api_username, by,
+    )
+    journal.record_replaced(by)
+    retire()
+    return 0
 
 
 if __name__ == "__main__":

@@ -270,6 +270,16 @@ class State:
                 kit       TEXT NOT NULL DEFAULT ''
             );
 
+            -- The one resident daemon each agent has: the run that claimed it
+            -- last, and the machine it named. Any other run that polls is told
+            -- it has been superseded.
+            CREATE TABLE IF NOT EXISTS daemon_owner (
+                agent      TEXT PRIMARY KEY,
+                instance   TEXT NOT NULL,
+                machine    TEXT NOT NULL,
+                claimed_at TEXT NOT NULL
+            );
+
             -- The last wake a daemon reported failing in each topic, and why.
             CREATE TABLE IF NOT EXISTS wake_failures (
                 agent    TEXT NOT NULL,
@@ -401,6 +411,24 @@ class State:
         """(last poll, kit it reported) for an agent's daemon, or None."""
         row = self.db.execute("SELECT last_poll, kit FROM daemons WHERE agent = ?", (agent,)).fetchone()
         return (row[0], row[1]) if row else None
+
+    def owner(self, agent: str) -> tuple[str, str] | None:
+        """(instance, machine) of the daemon that claimed the agent, or None."""
+        row = self.db.execute("SELECT instance, machine FROM daemon_owner WHERE agent = ?", (agent,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def claim(self, agent: str, instance: str, machine: str) -> tuple[str, str] | None:
+        """Make ``instance`` the agent's daemon; the one it replaces, as
+        (instance, machine), or None when there was none or it was itself."""
+        before = self.owner(agent)
+        self.db.execute(
+            "INSERT INTO daemon_owner (agent, instance, machine, claimed_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(agent) DO UPDATE SET instance = excluded.instance, machine = excluded.machine, "
+            "claimed_at = excluded.claimed_at",
+            (agent, instance, machine, datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+        return before if before and before[0] != instance else None
 
     def record_failure(self, agent: str, topic_id: int, reason: str) -> None:
         self.db.execute(
@@ -1767,6 +1795,8 @@ class KeyChecker:
 
 
 KIT_VERSION_HEADER = "X-Kit-Version"
+# A resident daemon's name for its run, as agent-kit/qupa_cafe/__init__.py sends it.
+DAEMON_HEADER = "X-Qupa-Daemon"
 
 
 RELEASE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
@@ -1958,6 +1988,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": 'send a JSON object, such as {"floor": <number>}'})
             return
 
+        # A resident daemon, as it starts, claims its agent: any other one
+        # polling for it is told to stop.
+        claim = body.get("claim")
+        if isinstance(claim, dict):
+            instance = str(claim.get("instance") or "")[:64]
+            machine = str(claim.get("machine") or claim.get("where") or "another machine")[:200]
+            if not instance:
+                self._send(400, {"error": 'send {"claim": {"instance": <id>, "where": <machine>}}'})
+                return
+            replaced = self.ranker.state.claim(agent, instance, machine)
+            if replaced:
+                LOG.info("%s's daemon on %s replaces the one on %s", agent, machine, replaced[1])
+            self._send(200, {"agent": agent, "previous": {"where": replaced[1]} if replaced else None})
+            return
+
         # A daemon in a wake, which keeps it from polling, says it is still here.
         if body.get("alive") is True:
             self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
@@ -2027,6 +2072,17 @@ class Handler(BaseHTTPRequestHandler):
             agent = self._agent(query)
             if agent is None:
                 return
+
+            # A resident daemon names its run; one another run has replaced
+            # is told so, and stops. A kit that names none is not asked.
+            instance = (self.headers.get(DAEMON_HEADER) or "")[:64]
+            if instance:
+                owner = self.ranker.state.owner(agent)
+                if owner is None:
+                    self.ranker.state.claim(agent, instance, "an unnamed machine")
+                elif owner[0] != instance:
+                    self._send(409, {"error": "superseded", "superseded_by": owner[1]})
+                    return
 
             reported = self.headers.get(KIT_VERSION_HEADER) or ""
             self.ranker.state.record_poll(agent, reported)

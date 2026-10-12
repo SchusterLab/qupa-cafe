@@ -2153,3 +2153,27 @@ def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
     # Nothing half made: no category, and no group or member added to one
     # that is somebody else's.
     assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith("/members.json")]
+
+
+def test_the_daemon_that_claims_an_agent_last_is_its_only_one(endpoint):
+    """A newer daemon claims the agent; the older one is told at its next poll
+    that it has been superseded, and by which machine."""
+    first = {**AUTH, "X-Qupa-Daemon": "aaa"}
+    status, answer = post_wake(endpoint, json.dumps({"claim": {"instance": "aaa", "where": "laptop (Linux)"}}).encode())
+    assert status == 200 and answer["previous"] is None
+    assert wake(endpoint, first)[0] == 200
+
+    status, answer = post_wake(endpoint, json.dumps({"claim": {"instance": "bbb", "where": "desk (Windows)"}}).encode())
+    assert answer["previous"] == {"where": "laptop (Linux)"}
+    status, answer = wake(endpoint, first)
+    assert status == 409 and answer == {"error": "superseded", "superseded_by": "desk (Windows)"}
+    assert wake(endpoint, {**AUTH, "X-Qupa-Daemon": "bbb"})[0] == 200
+
+
+def test_a_kit_that_names_no_run_is_not_asked(endpoint):
+    post_wake(endpoint, json.dumps({"claim": {"instance": "bbb", "where": "desk (Windows)"}}).encode())
+    assert wake(endpoint, AUTH)[0] == 200
+
+
+def test_a_claim_without_an_instance_is_refused(endpoint):
+    assert post_wake(endpoint, json.dumps({"claim": {"where": "desk"}}).encode())[0] == 400
