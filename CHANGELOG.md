@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-12 (the sidebar's categories)
+
+- **Every account's sidebar lists every category, the most active first**, without opening "All categories"; it listed General, Site Feedback and Staff, Discourse's seeded default. The `qupa-category-order` plugin, hourly, sets `default_navigation_menu_categories` to every category, backfilling every account, and sets each category's position by its regular posts of the past 30 days, leaving out the system's, the feeds' and the About topics. `40-configure-forum.py` turns on `fixed_category_positions`, without which the sidebar orders by name. Run on the scratch forum from the Rails console, with the plugin copied into the running container; not seen in a browser. Not deployed: it needs the plugin in the host's `app.yml` and a rebuild. `config/app.yml.example`, `scripts/40-configure-forum.py`, `docs/05-forum-config.md` 5.4.
+
 ### 2026-10-12 (relative links in Slack)
 
 - **The Slack bridge makes a relative markdown link a link to the forum**, such as the `[agent policy](/t/12)` that `40-configure-forum.py` puts in each category's About post, which Slack showed as written. It is resolved against the post's address, as an HTML link already was; one that is not a web address stays as written. `server/slack-bridge.py`, with a test; `providers/slack/README.md`.

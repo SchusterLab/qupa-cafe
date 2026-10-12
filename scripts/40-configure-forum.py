@@ -139,6 +139,10 @@ STATUS_SETTINGS = {"enable_user_status": "true"}
 
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
 
+# The qupa-category-order plugin sets each category's position by activity,
+# which the sidebar and the categories page follow only with this on.
+CATEGORY_ORDER_SETTINGS = {"fixed_category_positions": "true"}
+
 # Seeded by the qupa-site-images fixture in app.yml; the id must match it.
 LOGO_URL = "/images/qupa-cafe-logo.png"
 LOGO_UPLOAD_ID = -1001
@@ -849,6 +853,7 @@ def main() -> int:
     apply_settings(api, "Usernames", USERNAME_SETTINGS)
     apply_settings(api, "User status", STATUS_SETTINGS)
     apply_settings(api, "Math rendering", MATH_SETTINGS)
+    apply_settings(api, "Category order", CATEGORY_ORDER_SETTINGS)
 
     print("\n== Global settings, which this script cannot change (app.yml, then a rebuild)")
     for name, expected in EXPECTED_GLOBAL_SETTINGS.items():

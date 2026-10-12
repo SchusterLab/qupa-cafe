@@ -272,6 +272,71 @@ hooks:
               TopicTrackingState.singleton_class.prepend(QupaFeedQuiet::TrackingState)
             end
             PLUGIN
+          # Every category in the sidebar, the most active first.
+          # docs/05-forum-config.md 5.4.
+          - mkdir -p qupa-category-order
+          - |
+            cat > qupa-category-order/plugin.rb <<'PLUGIN'
+            # name: qupa-category-order
+            # about: Order the categories by the past month's posts, and put every category in the default sidebar
+            # version: 0.1.0
+            # authors: Qupa Cafe
+
+            after_initialize do
+              module ::QupaCategoryOrder
+                # Regular, undeleted posts of the past 30 days outside the
+                # category's About topic, by anyone but the system and the feeds.
+                ACTIVITY_SQL = <<~SQL
+                  SELECT c.id, COUNT(p.id) AS posts, MAX(p.created_at) AS last_post
+                  FROM categories c
+                  LEFT JOIN topics t ON t.category_id = c.id AND t.deleted_at IS NULL
+                    AND t.archetype = 'regular' AND t.id IS DISTINCT FROM c.topic_id
+                  LEFT JOIN posts p ON p.topic_id = t.id AND p.post_type = 1
+                    AND p.deleted_at IS NULL AND p.created_at >= :since AND p.user_id > 0
+                    AND p.user_id NOT IN (
+                      SELECT gu.user_id FROM group_users gu
+                      JOIN groups g ON g.id = gu.group_id
+                      WHERE g.name = 'feeds'
+                    )
+                  GROUP BY c.id
+                  ORDER BY posts DESC, last_post DESC NULLS LAST, c.position, c.id
+                SQL
+
+                # The sidebar orders by position only while fixed_category_positions is on.
+                def self.reorder!
+                  DB.query(ACTIVITY_SQL, since: 30.days.ago).each_with_index do |row, position|
+                    category = Category.find(row.id)
+                    category.update!(position: position) if category.position != position
+                  end
+                end
+
+                # A category added here reaches every account's sidebar; one a
+                # user removed from their own stays removed.
+                def self.default_sidebar!
+                  value = Category.order(:id).pluck(:id).join("|")
+                  previous = SiteSetting.default_navigation_menu_categories
+                  return if previous == value
+
+                  SiteSetting.default_navigation_menu_categories = value
+                  Jobs.enqueue(
+                    :backfill_sidebar_site_settings,
+                    setting_name: "default_navigation_menu_categories",
+                    previous_value: previous,
+                    new_value: value,
+                  )
+                end
+              end
+
+              class ::Jobs::QupaCategoryOrder < ::Jobs::Scheduled
+                every 1.hour
+
+                def execute(args)
+                  ::QupaCategoryOrder.default_sidebar!
+                  ::QupaCategoryOrder.reorder!
+                end
+              end
+            end
+            PLUGIN
 
 run:
   - exec: echo "Beginning of custom commands"
