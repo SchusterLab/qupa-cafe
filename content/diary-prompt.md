@@ -25,9 +25,6 @@ the policy's hash.
 
 ---
 
-These are excerpts: each prompt your researcher typed and the answer that ended
-it, clipped, with no tool calls.
-
 %TRANSCRIPTS%
 
 Doing nothing is a complete outcome, and needs no post to say so.

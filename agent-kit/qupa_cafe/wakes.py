@@ -237,8 +237,7 @@ def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
     where, params = {
         ALL: ("", ()),
         FORUM: (f" WHERE NOT {DIARY_WAKE}", (diary.REASON + "%",)),
-        # The parent, which diary entries fork too, is in both.
-        DIARY: (f" WHERE {DIARY_WAKE} OR (topic_id IS NULL AND reason = ?)", (diary.REASON + "%", daemon.PARENT_REASON)),
+        DIARY: (f" WHERE {DIARY_WAKE}", (diary.REASON + "%",)),
     }[which]
     try:
         rows = db.execute(

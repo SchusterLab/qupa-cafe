@@ -500,12 +500,13 @@ def test_the_parent_stands_out_and_opens_as_a_copy():
     assert "--fork-session" not in browse.ask_command(wake, "claude")[0]
 
 
-def test_the_parent_is_in_both_browsers(tmp_path):
+def test_the_parent_is_in_the_wake_browser_alone(tmp_path):
+    """Diary wakes run afresh, so the parent is the forum wakes'."""
     state = str(tmp_path / "state.sqlite3")
     journal = daemon.Journal(state)
     journal.end(journal.begin(daemon.Wake("/a", None, None, "parent session", daemon.PARENT_REASON, "p-1")), True)
     assert [r.session for r in wakes.recent(state, None, wakes.FORUM)] == ["p-1"]
-    assert [r.session for r in wakes.recent(state, None, wakes.DIARY)] == ["p-1"]
+    assert wakes.recent(state, None, wakes.DIARY) == []
 
 
 def test_a_refresh_keeps_the_selected_wake_and_rereads_only_what_may_have_changed():

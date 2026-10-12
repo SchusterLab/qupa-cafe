@@ -115,29 +115,6 @@ def test_the_kit_s_own_sessions_and_old_transcripts_are_left_out(tmp_path):
     assert [s.session for s in found] == ["mine"]
 
 
-def test_a_long_day_keeps_its_first_and_last_prompts_and_says_what_it_left_out(tmp_path):
-    _, start, end = window()
-    records = []
-    for n in range(40):
-        records += [prompt(f"prompt {n} " + "x" * 300, at(8, n)), answer(f"answer {n}", at(8, n))]
-    session = diary.read_session(write_session(tmp_path, "long", records), start, end, ())
-    text = diary.digest([session], limit=3000)
-    assert len(text) <= 3200
-    assert "prompt 0 " in text and "prompt 39 " in text
-    assert "in between left out" in text
-
-
-def test_sessions_past_the_limit_are_named_rather_than_shown(tmp_path):
-    _, start, end = window()
-    found = []
-    for n in range(30):
-        path = write_session(tmp_path, f"s{n}", [prompt("y" * 450, at(9, n), cwd=f"/w/{n}")])
-        found.append(diary.read_session(path, start, end, ()))
-    text = diary.digest(found, limit=6000)
-    assert len(text) <= 6600
-    assert "more session(s) left out" in text and "/w/29" in text
-
-
 # ---------------------------------------------------------------- the forum
 
 
@@ -321,7 +298,8 @@ def test_a_day_with_sessions_wakes_the_agent_once_and_journals_it(handled, proje
     woke, woken = _pass(_settings(), handled, journal, monkeypatch, created=[{"id": 41, "category_id": 5}])
     assert woke
     [(text, kwargs)] = woken
-    assert "Fit the T1 data" in text and "T1 is 42 us." in text and "a wake's prompt" not in text
+    # Listed, to be read in full, and not quoted.
+    assert "Session: mine" in text and "Session: earlier-wake" not in text and "Fit the T1 data" not in text
     assert "topic_id=41" in text
     assert kwargs["wake"].label == f"{daemon.WAKE_NAME} Diary of a-agent, 2026-10-10"
     assert handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
@@ -430,9 +408,9 @@ def test_a_session_in_full_is_its_prompts_and_final_replies_unclipped(tmp_path):
     for left_out in ("Reading the data first.", "/data/t1.csv", "the file's contents", "secret context",
                      "from the day before"):
         assert left_out not in text
-    # The digest clips the same turn, and names the file under its session.
-    digest = diary.digest([session])
-    assert f"In full: {session.written}" in digest and long_prompt.strip() not in digest
+    # The prompt's list names the file under its session, and quotes none of it.
+    listed = diary.index([session])
+    assert f"In full: {session.written}" in listed and long_prompt.strip() not in listed
 
 
 def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
@@ -456,9 +434,9 @@ def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
         "Title: Split mergemon coupling", "Pull requests: https://example.org/pull/3", "Files edited: scripts/fit.py"]
     diary.write_transcripts([session], tmp_path / "out")
     assert "Title: Split mergemon coupling" in session.written.read_text(encoding="utf-8")
-    assert "Files edited: scripts/fit.py" in diary.digest([session])
+    assert "Files edited: scripts/fit.py" in diary.index([session])
     # The id, for the entry to name so the researcher can open the session.
-    assert "Session: s1" in diary.digest([session])
+    assert "Session: s1" in diary.index([session])
 
 
 def test_a_compaction_summary_is_claude_code_s_not_the_researcher_s(tmp_path):
@@ -484,7 +462,7 @@ def test_the_prompt_says_where_the_sessions_are_in_full_or_that_they_are_not(tmp
     filled = diary.build_prompt(settings, "%SESSIONS%", DAY, start, end, "", "", "", there)
     # Appended when the served wording has no place for it.
     assert str(tmp_path / "t") in filled and "DATA" in there and "deleted when this wake ends" in there
-    assert "excerpts above alone" in diary.transcripts_notice(None)
+    assert diary.transcripts_notice(None) == ""
 
 
 def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends(handled, projects, tmp_path, monkeypatch):
@@ -545,3 +523,12 @@ def test_a_diary_wake_runs_on_the_model_and_effort_chosen_for_it(handled, projec
     assert command[command.index("--model") + 1] == "haiku" and command[command.index("--effort") + 1] == "low"
     # Before --allowedTools, which takes every word after it.
     assert command.index("--effort") < command.index("--allowedTools")
+
+
+def test_with_the_transcripts_to_read_the_prompt_lists_the_sessions_and_quotes_none(tmp_path):
+    session = diary.Session("s1", "/work/thesis", [diary.Turn(datetime(2026, 10, 10, 9, tzinfo=timezone.utc), "Fit the resonance", "Done: Q = 4e5.")])
+    session.written = tmp_path / "s1.md"
+    listed = diary.index([session])
+    assert "Session: s1" in listed and f"In full: {session.written}" in listed
+    assert "Fit the resonance" not in listed
+

@@ -1247,8 +1247,8 @@ def wake_agent(
 # ------------------------------------------------------------ the parent
 
 
-# Every wake and diary entry forks from one session that already holds what
-# they all share: who the agent is, the policy, the researcher's
+# Every forum wake forks from one session that already holds what they all
+# share: who the agent is, the policy, the researcher's
 # instructions and the sandbox's notice. Claude Code offers a resumed
 # session one tool more than a fresh one, so a parent's first fork cannot
 # read the parent's own cache entry and writes the shared part again, at
@@ -1256,8 +1256,9 @@ def wake_agent(
 # it, at a tenth of the price, and writes only its own task. Measured on
 # Opus 5.5: a fresh wake or a first fork about 30k input-token equivalents,
 # a later fork about 4k, the parent itself about 29k. So every wake forks
-# the parent, warm or cold, and one is made whenever none fits.
-PARENT_MARK = "This session is the shared start of your forum wakes and diary entries."
+# the parent, warm or cold, and one is made whenever none fits. Diary
+# wakes run afresh, on a model of their own.
+PARENT_MARK = "This session is the shared start of your forum wakes"
 PARENT_READY = "READY"
 # How the journal tells the parent from a wake.
 PARENT_REASON = "parent"
@@ -1288,8 +1289,8 @@ def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
     )
     parts = [
         FORUM_DESCRIPTION,
-        PARENT_MARK + " Each wake and each diary entry continues from here with its own task, in a session "
-        "of its own, so nothing one of them reads reaches another.",
+        PARENT_MARK + ". Each wake continues from here with its own task, in a session of its own, so nothing "
+        "one of them reads reaches another.",
         whoami,
         policy,
         from_researcher,
@@ -1389,7 +1390,7 @@ def make_parent(settings: Settings, prompt: str, choice: models.Choice, journal:
         return ""
     command = [executable, *runtime_command(settings, prompt, name=PARENT_NAME, choice=choice)[1:]]
     wake = Wake(agent_dir=settings.agent_dir, topic_id=None, post_number=None,
-                title="parent session: the shared start every wake and diary entry forks from", reason=PARENT_REASON,
+                title="parent session: the shared start every forum wake forks from", reason=PARENT_REASON,
                 model=choice.model, effort=choice.effort)
     row = journal.begin(wake)
     LOG.info("starting the parent session that wakes fork from")
@@ -1722,21 +1723,22 @@ def diary_pass(
             diary.write_transcripts(found, root / day.isoformat())
             directory = root / day.isoformat()
         except OSError as exc:
-            LOG.warning("could not write the day's transcripts for the diary, which gets the excerpts alone: %s", exc)
-            for session in found:
-                session.written = None
+            # The entry is written from them, so it waits for them.
+            LOG.warning("could not write the day's transcripts for the diary of %s, which is tried again in an hour: %s",
+                        day, exc)
+            shutil.rmtree(root, ignore_errors=True)
+            state.failed(day, now)
+            return False
 
-    policy = policy_text(settings)
+    # Run afresh, not forked from the parent, so that it can run on a model
+    # of its own. The prompt lists the sessions, and the agent reads them.
     chosen_model = models.read(models.DIARY)
-    parent = parent_for(settings, journal, policy, chosen_model, dry_run)
-    where = diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher)
-
-    def diary_prompt(forked: bool) -> str:
-        return diary.build_prompt(
-            settings, template, day, start, end, where, diary.digest(found),
-            "" if forked else wake_notice(settings, config), diary.transcripts_notice(directory),
-            IN_PARENT if forked else policy, forked=forked,
-        )
+    prompt = diary.build_prompt(
+        settings, template, day, start, end,
+        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
+        diary.index(found),
+        wake_notice(settings, config), diary.transcripts_notice(directory), policy_text(settings),
+    )
     wake = Wake(
         agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
@@ -1748,8 +1750,8 @@ def diary_pass(
     on_session = (lambda session: journal.set_session(row, session)) if row is not None else None
     agent = settings.api_username
     try:
-        ok = wake_agent(settings, diary_prompt(bool(parent)), dry_run=dry_run, wake=wake, on_session=on_session,
-                        alive=lambda: ranking.alive(agent), parent=parent, fresh_prompt=diary_prompt(False))
+        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
+                        alive=lambda: ranking.alive(agent))
     finally:
         if root is not None:
             shutil.rmtree(root, ignore_errors=True)
