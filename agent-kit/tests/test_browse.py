@@ -480,3 +480,55 @@ def test_a_key_is_read_whole_from_the_terminal(monkeypatch, typed, key):
         assert browse.read_key() == key
     os.close(writing)
 
+
+def _parent_row(**overrides):
+    fields = dict(started="2026-10-12 06:15:30", finished="2026-10-12 06:15:39", status="finished", session="p-1",
+                  agent_dir="/a", topic_id=None, post_number=None, title="parent session", reason=daemon.PARENT_REASON)
+    fields.update(overrides)
+    return wakes.Row(**fields)
+
+
+def test_the_parent_stands_out_and_opens_as_a_copy():
+    """A turn typed into the parent itself would reach every later wake."""
+    row = _parent_row()
+    assert wakes.outcome(row, None) == ("parent", "accent") and browse.row_mark("accent") == "◈"
+    command, attached = browse.ask_command(row, "claude")
+    assert "--fork-session" in command and not attached
+    wake = _parent_row(reason="you were mentioned", topic_id=5)
+    assert "--fork-session" not in browse.ask_command(wake, "claude")[0]
+
+
+def test_the_parent_is_in_both_browsers(tmp_path):
+    state = str(tmp_path / "state.sqlite3")
+    journal = daemon.Journal(state)
+    journal.end(journal.begin(daemon.Wake("/a", None, None, "parent session", daemon.PARENT_REASON, "p-1")), True)
+    assert [r.session for r in wakes.recent(state, None, wakes.FORUM)] == ["p-1"]
+    assert [r.session for r in wakes.recent(state, None, wakes.DIARY)] == ["p-1"]
+
+
+def test_a_refresh_keeps_the_selected_wake_and_rereads_only_what_may_have_changed():
+    ended = browse.Wake(_parent_row(session="a", reason="x", topic_id=1))
+    running = browse.Wake(_parent_row(session="b", reason="x", topic_id=2, status="running", finished=None))
+    browser = browse.Browser([running, ended], wakes.Status(None, 60), index=1)
+    rows = [_parent_row(session="c", reason="x", topic_id=3), running.row, ended.row]
+    items = browse.reloaded(browser.items, rows)
+    assert items[2] is ended and items[1] is not running
+    browse.refresh(browser, items, wakes.Status(None, 60))
+    assert browser.selected.row.session == "a"
+
+
+def test_no_key_within_the_timeout_reads_as_none(monkeypatch):
+    if sys.platform == "win32":
+        import msvcrt
+
+        monkeypatch.setattr(msvcrt, "kbhit", lambda: False)
+        assert browse.read_key(0.1) == ""
+    else:
+        import os
+
+        reading, writing = os.pipe()
+        with os.fdopen(reading, "r") as stdin:
+            monkeypatch.setattr(sys, "stdin", stdin)
+            assert browse.read_key(0.1) == ""
+        os.close(writing)
+

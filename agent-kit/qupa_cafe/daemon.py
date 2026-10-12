@@ -799,13 +799,9 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     number = latest.get("post_number", "?")
     body = (latest.get("raw") or latest.get("cooked") or "").strip()
 
-    # A post addressing the agent by name is unreadable without this.
-    if settings.researcher:
-        whoami = (
-            f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
-        )
-    else:
-        whoami = f"You are `{settings.api_username}` here."
+    # A post addressing the agent by name is unreadable without this, which a
+    # fork has from its parent.
+    whoami = "" if forked else who_am_i(settings)
 
     filled = template
     for token, value in (
@@ -992,7 +988,10 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     elif choice is not None:
         command += choice.flags()
     if settings.mcp_config and Path(settings.mcp_config).is_file():
-        command += ["--mcp-config", settings.mcp_config]
+        # The forum's two servers alone: not the researcher's own, nor the
+        # connectors of their Claude account, whose instructions and tool
+        # names every wake would otherwise carry.
+        command += ["--mcp-config", settings.mcp_config, "--strict-mcp-config"]
     else:
         LOG.warning(
             "No MCP configuration at %s. The agent will wake with no forum tools.",
@@ -1260,6 +1259,8 @@ def wake_agent(
 # the parent, warm or cold, and one is made whenever none fits.
 PARENT_MARK = "This session is the shared start of your forum wakes and diary entries."
 PARENT_READY = "READY"
+# How the journal tells the parent from a wake.
+PARENT_REASON = "parent"
 # In a forked prompt where the template places the policy.
 IN_PARENT = (
     "The forum's policy, the hash a write needs, what this agent kit can do, your researcher's "
@@ -1268,15 +1269,19 @@ IN_PARENT = (
 )
 
 
+def who_am_i(settings: Settings) -> str:
+    """The agent's name here, and its researcher's."""
+    if settings.researcher:
+        return f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
+    return f"You are `{settings.api_username}` here."
+
+
 def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
     """What every fork shares, opening with what the forum is and ending in
     the request to answer READY."""
     from .server import FORUM_DESCRIPTION
 
-    if settings.researcher:
-        whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
-    else:
-        whoami = f"You are `{settings.api_username}` here."
+    whoami = who_am_i(settings)
     nl = chr(10)
     from_researcher = local.instructions(settings.agent_dir or None) or (
         f"Your researcher has written no instructions of their own: there is no {local.PROMPT_FILE}."
@@ -1351,8 +1356,8 @@ def steering_files(settings: Settings) -> list[str]:
 def parent_key(settings: Settings, prompt: str, choice: models.Choice, config: dict) -> str:
     """What a parent was made from: a fork of one made from anything else
     would act on an old policy or old instructions, or miss the cache."""
-    made_from = [prompt, choice.model, choice.effort, wake_settings(config), settings.mcp_config,
-                 settings.agent_dir, list(CLAUDE_ALLOWED_TOOLS), __version__, steering_files(settings)]
+    started = runtime_command(settings, "", name=PARENT_NAME, choice=choice)
+    made_from = [prompt, started, list(CLAUDE_ALLOWED_TOOLS), __version__, steering_files(settings)]
     return hashlib.sha256(json.dumps(made_from).encode("utf-8")).hexdigest()
 
 
@@ -1384,7 +1389,7 @@ def make_parent(settings: Settings, prompt: str, choice: models.Choice, journal:
         return ""
     command = [executable, *runtime_command(settings, prompt, name=PARENT_NAME, choice=choice)[1:]]
     wake = Wake(agent_dir=settings.agent_dir, topic_id=None, post_number=None,
-                title="the parent session every wake forks from", reason="parent",
+                title="parent session: the shared start every wake and diary entry forks from", reason=PARENT_REASON,
                 model=choice.model, effort=choice.effort)
     row = journal.begin(wake)
     LOG.info("starting the parent session that wakes fork from")

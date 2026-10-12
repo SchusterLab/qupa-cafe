@@ -98,10 +98,21 @@ def name_of(ch: str) -> str:
     return ch
 
 
-def read_key() -> str:
+# How often an open browser rereads the journal while no key is pressed.
+REFRESH_SECONDS = 5
+
+
+def read_key(timeout: float | None = None) -> str:
+    """The next key, by name, or "" when none comes in ``timeout`` seconds."""
     if os.name == "nt":
         import msvcrt
+        import time
 
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is not None and not msvcrt.kbhit():
+            if time.monotonic() >= deadline:
+                return ""
+            time.sleep(0.05)
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
             return WINDOWS_KEYS.get(msvcrt.getwch(), "")
@@ -113,6 +124,8 @@ def read_key() -> str:
     # an arrow key's sequence on the first read, leaving select nothing to
     # see, and the key would read as Escape.
     fd = sys.stdin.fileno()
+    if timeout is not None and not select.select([fd], [], [], timeout)[0]:
+        return ""
     ch = read_char(fd)
     if ch != "\x1b":
         return name_of(ch)
@@ -350,6 +363,9 @@ class Browser:
             return
         if not self.selected:
             return
+        if wakes.is_parent(self.selected.row):
+            self.message = "The parent session has no post to tune for: it is what every wake starts from."
+            return
         if self.selected.row.topic_id is None:
             self.message = "This wake has no topic to tune for."
             return
@@ -419,12 +435,13 @@ class Browser:
     def _row(self, item: Wake, chosen: bool, cols: int) -> str:
         row = item.row
         said, style = wakes.outcome(row, item.transcript)
-        mark = {"good": "●", "quiet": "○", "bad": "✕", "busy": "◐"}.get(style, "·")
+        mark = row_mark(style)
         when = wakes.local_time(wakes.utc(row.started))[5:]  # MM-DD HH:MM
         # The relevance score, blank for a mention.
         score = f"{row.score:.2f}" if row.score is not None else "    "
         title = row.title if row.topic_id is None else f"{row.title}  (topic {row.topic_id})"
-        return self._line(chosen, cols, f"{when}  {score}  {tokens_column(item)}  ", mark, f"{said:<16} ", style, title)
+        return self._line(chosen, cols, f"{when}  {score}  {tokens_column(item)}  ", mark, f"{said:<16} ", style, title,
+                          "accent" if style == "accent" else None)
 
     def _miss_row(self, miss: wakes.NearMiss, chosen: bool, cols: int) -> str:
         try:
@@ -438,11 +455,12 @@ class Browser:
         return self._line(chosen, cols, f"{when}  {score}  ", "·", f"{said:<16} ", "quiet", title)
 
     @staticmethod
-    def _line(chosen: bool, cols: int, left: str, mark: str, middle: str, style: str, title: str) -> str:
+    def _line(chosen: bool, cols: int, left: str, mark: str, middle: str, style: str, title: str,
+              title_style: str | None = None) -> str:
         room = max(cols - 4 - len(left) - 2 - len(middle), 10)
         title = wakes.clip(title, room)
         pointer = wakes.paint("❯ ", "accent") if chosen else "  "
-        text_style = "selected" if chosen else "prompt"
+        text_style = "selected" if chosen else title_style or "prompt"
         return (
             "  " + pointer + wakes.paint(left, "meta") + wakes.paint(mark + " ", style)
             + wakes.paint(middle, style) + wakes.paint(title, text_style)
@@ -463,6 +481,34 @@ class Browser:
         keys += ["t to tune replies", "Esc to go back"]
         out.append(hints(keys))
         return out
+
+
+def row_mark(style: str) -> str:
+    """The mark before a row's outcome: the parent's, or how a wake ended."""
+    return {"good": "●", "quiet": "○", "bad": "✕", "busy": "◐", "accent": "◈"}.get(style, "·")
+
+
+def reloaded(old: list[Wake], rows: list[wakes.Row]) -> list[Wake]:
+    """The journal's rows as the browser's items, keeping each ended one's
+    transcript as already read, so that a refresh rereads only what may
+    have changed."""
+    kept = {(w.row.session, w.row.status, w.row.finished): w for w in old if w.row.status != "running"}
+    return [kept.get((row.session, row.status, row.finished)) or Wake(row) for row in rows]
+
+
+def refresh(browser, items: list[Wake], state: wakes.Status) -> None:
+    """Show the journal as it stands now, keeping the selected row, and in a
+    wake still running, the place read to."""
+    chosen = browser.selected.row.session if browser.selected else ""
+    browser.items = items
+    browser.state = state
+    found = next((i for i, w in enumerate(items) if chosen and w.row.session == chosen), None)
+    browser.index = found if found is not None else min(browser.index, max(len(items) - 1, 0))
+    if browser.viewing and found is not None:
+        browser._detail = wakes.render(items[found].row, transcript=items[found].transcript)
+        browser.scroll = min(browser.scroll, max(len(browser._detail) - 1, 0))
+    elif browser.viewing:
+        browser.viewing = False
 
 
 def tokens_column(item: Wake) -> str:
@@ -524,7 +570,10 @@ def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
         live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
         if live is not None and live.get("state") not in ("done", "failed"):
             return [claude, "attach", str(live.get("id") or row.session[:8])], True
-    return [claude, "--resume", row.session, *RESUME_MODE], False
+    # The parent opens as a fork of its own: a turn typed into the parent
+    # itself would reach every later wake.
+    fork = ["--fork-session"] if wakes.is_parent(row) else []
+    return [claude, "--resume", row.session, *fork, *RESUME_MODE], False
 
 
 def ask(row: wakes.Row) -> str:
@@ -534,7 +583,10 @@ def ask(row: wakes.Row) -> str:
     if claude is None:
         return "Claude Code is not on PATH, so the session cannot be opened."
     cwd = row.agent_dir if row.agent_dir and os.path.isdir(row.agent_dir) else None
-    print(wakes.paint(f"Opening the session of the wake on topic {row.topic_id} in Claude Code.", "accent"))
+    what = f"the wake on topic {row.topic_id}" if row.topic_id is not None else row.title
+    print(wakes.paint(f"Opening the session of {what} in Claude Code.", "accent"))
+    if wakes.is_parent(row):
+        print(wakes.paint("It opens as a copy: wakes go on forking the parent as it is.", "meta"))
     command, attached = ask_command(row, claude)
     if attached:
         print(wakes.paint("The wake is still running: this is the wake itself, and what you type goes into it.", "meta"))
@@ -802,16 +854,20 @@ def set_floor(settings: Settings, browser: Browser, action: str) -> str:
     state.floor = floor
     state.floor_min = float(policy.get("floor_min", state.floor_min))
     state.floor_max = float(policy.get("floor_max", state.floor_max))
-    return f"Relevance threshold set to {floor:.2f}. It still moves with what your agent does."
+    return f"Relevance threshold set to {floor:.2f}."
 
 
 # ------------------------------------------------------------------ run
 
 
-def load(settings: Settings, limit: int | None) -> list[Wake]:
-    """The last ``limit`` wakes, or all of them, newest first."""
+def load_rows(settings: Settings, limit: int | None) -> list[wakes.Row]:
+    """The last ``limit`` wakes' rows, or all of them, newest first."""
     # The diary's wakes are the diary browser's.
-    return [Wake(row) for row in reversed(wakes.recent(settings.state_path, limit, wakes.FORUM))]
+    return list(reversed(wakes.recent(settings.state_path, limit, wakes.FORUM)))
+
+
+def load(settings: Settings, limit: int | None) -> list[Wake]:
+    return [Wake(row) for row in load_rows(settings, limit)]
 
 
 def run(settings: Settings, limit: int | None = None) -> int:
@@ -832,9 +888,16 @@ def run(settings: Settings, limit: int | None = None) -> int:
             size = shutil.get_terminal_size((100, 30))
             terminal.draw(browser.frame(size.columns - 1, size.lines))
             try:
-                key = read_key()
+                key = read_key(REFRESH_SECONDS)
             except KeyboardInterrupt:
                 return 0
+            if not key:
+                # Nothing pressed: the journal as it stands, unless a question is open.
+                if not browser.tuning:
+                    refresh(browser, reloaded(browser.items, load_rows(settings, limit)), wakes.status(settings.state_path))
+                    browser.missed = wakes.near_misses(settings.state_path)
+                    browser.missed_index = min(browser.missed_index, max(len(browser.missed) - 1, 0))
+                continue
             action = browser.handle(key, size.lines)
             if action == "quit":
                 return 0

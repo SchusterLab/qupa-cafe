@@ -149,9 +149,10 @@ class DiaryBrowser:
     def _row(self, item: browse.Wake, chosen: bool, cols: int) -> str:
         row = item.row
         said, style = wakes.outcome(row, item.transcript)
-        mark = {"good": "●", "quiet": "○", "bad": "✕", "busy": "◐"}.get(style, "·")
+        mark = browse.row_mark(style)
         when = wakes.local_time(wakes.utc(row.started))[5:]
-        return browse.Browser._line(chosen, cols, f"{when}  {browse.tokens_column(item)}  ", mark, f"{said:<16} ", style, row.title)
+        return browse.Browser._line(chosen, cols, f"{when}  {browse.tokens_column(item)}  ", mark, f"{said:<16} ", style,
+                                    row.title, "accent" if style == "accent" else None)
 
     def _detail_frame(self, cols: int, rows: int) -> list[str]:
         page = browse.page_size(rows)
@@ -285,9 +286,13 @@ def run(settings: Settings) -> int:
             size = shutil.get_terminal_size((100, 30))
             terminal.draw(browser.frame(size.columns - 1, size.lines))
             try:
-                key = browse.read_key()
+                key = browse.read_key(browse.REFRESH_SECONDS)
             except KeyboardInterrupt:
                 return 0
+            if not key:
+                rows = list(reversed(wakes.recent(settings.state_path, None, wakes.DIARY)))
+                browse.refresh(browser, browse.reloaded(browser.items, rows), wakes.status(settings.state_path))
+                continue
             action = browser.handle(key, size.lines)
             if action == "quit":
                 return 0

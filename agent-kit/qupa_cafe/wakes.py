@@ -223,6 +223,11 @@ def is_diary(row: Row) -> bool:
     return row.topic_id is None and row.reason.startswith(diary.REASON)
 
 
+def is_parent(row: Row) -> bool:
+    """Whether a journalled session is the parent that wakes fork from."""
+    return row.topic_id is None and row.reason == daemon.PARENT_REASON
+
+
 def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
     """The last ``limit`` wakes of ``which`` kind, or all of them for None,
     oldest first."""
@@ -232,7 +237,8 @@ def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
     where, params = {
         ALL: ("", ()),
         FORUM: (f" WHERE NOT {DIARY_WAKE}", (diary.REASON + "%",)),
-        DIARY: (f" WHERE {DIARY_WAKE}", (diary.REASON + "%",)),
+        # The parent, which diary entries fork too, is in both.
+        DIARY: (f" WHERE {DIARY_WAKE} OR (topic_id IS NULL AND reason = ?)", (diary.REASON + "%", daemon.PARENT_REASON)),
     }[which]
     try:
         rows = db.execute(
@@ -760,6 +766,8 @@ def outcome(row: Row, transcript: Transcript | None) -> tuple[str, str]:
         return ("still running", "busy") if started is None or young(started) else ("did not finish", "bad")
     if row.status == "failed":
         return "failed or timed out", "bad"
+    if is_parent(row):
+        return "parent", "accent"
     if transcript is None:
         return "finished", "good"
     if transcript.wrote:

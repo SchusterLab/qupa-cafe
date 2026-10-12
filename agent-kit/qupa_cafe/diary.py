@@ -579,7 +579,10 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
     sessions are substituted last, so nothing they hold is substituted. A
     wake ``forked`` from the parent session finds the researcher's
     instructions there, and gets none here."""
-    if settings.researcher:
+    if forked:
+        # The parent says who the agent is.
+        whoami = ""
+    elif settings.researcher:
         whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
     else:
         whoami = f"You are `{settings.api_username}` here."
