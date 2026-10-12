@@ -61,7 +61,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, sandbox, texts
@@ -346,6 +346,16 @@ class Journal:
             "UPDATE wakes SET finished = datetime('now'), status = ? WHERE id = ?",
             ("finished" if ok else "failed", row),
         )
+
+    def diary_wakes(self, day: date) -> list[tuple[str, str | None]]:
+        """(started, finished) of every wake that wrote the diary of ``day``,
+        rewrites included."""
+        try:
+            return [(row[0], row[1]) for row in self.db.execute(
+                "SELECT started, finished FROM wakes WHERE topic_id IS NULL AND reason LIKE ?",
+                (f"{diary.REASON} {day.isoformat()}%",))]
+        except sqlite3.Error:
+            return []
 
     def sessions(self) -> set[str]:
         """Every session a wake ran as, none of which is the researcher's own."""
@@ -1688,14 +1698,97 @@ def diary_pass(
             handled.mark(diary.HANDLED_KIND, diary.day_key(day))
         return False
 
+    ready = diary_ready(settings, day)
+    if ready is None:
+        return False
+    template, config = ready
+    where = diary_where(settings, forum, ranking, state, dry_run, now, chosen, day)
+    if where is None:
+        return False
+    ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
+                    f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)")
+    if ok and not dry_run:
+        handled.mark(diary.HANDLED_KIND, diary.day_key(day))
+    return ok
+
+
+def rewrite_pass(
+    settings: Settings,
+    forum: Forum,
+    ranking: Ranking,
+    state: diary.Diary,
+    dry_run: bool,
+    journal: Journal | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Write again the first day the diary browser asked for, from that
+    day's sessions as they are now and QUPA.md as it is now, replacing the
+    entry posted for it. Returns whether it woke."""
+    asked = diary.rewrites(settings.state_path)
+    if not asked:
+        return False
+    day = asked[0]
+    chosen = diary.choice(settings.diary_choice())
+    if not chosen.on:
+        LOG.info("the diary is off, so the diary of %s is not written again", day)
+        if not dry_run:
+            diary.drop_rewrite(settings.state_path, day)
+        return False
+    if state.waiting(day, now):
+        return False
+
+    from . import wakes  # wakes imports this module
+
+    start, end = diary.window_of(day, chosen.hour)
+    exclude = journal.sessions() if journal is not None else set()
+    found = diary.sessions(wakes.claude_home() / "projects", start, end, exclude, KIT_SESSION_NAMES)
+    if not found:
+        LOG.info("no Claude Code session of your own on %s, so the diary of it is not written again", day)
+        if not dry_run:
+            diary.drop_rewrite(settings.state_path, day)
+        return False
+    ready = diary_ready(settings, day)
+    if ready is None:
+        return False
+    template, config = ready
+    try:
+        entry = diary.find_entry(forum, settings.api_username, journal.diary_wakes(day) if journal else [])
+        raw = str(forum._get(f"/posts/{entry['post_id']}.json").get("raw") or "") if entry else ""  # noqa: SLF001
+    except (urllib.error.URLError, ValueError, KeyError) as exc:
+        LOG.warning("could not find the entry for %s on the forum, which is tried again in an hour: %s", day, exc)
+        state.failed(day, now)
+        return False
+    if entry is not None:
+        where = diary.rewrite_where(entry, raw)
+    else:
+        posted = diary_where(settings, forum, ranking, state, dry_run, now, chosen, day)
+        if posted is None:
+            return False
+        where = diary.rewrite_new(posted)
+    ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
+                    f"{diary.REASON} {day.isoformat()}, {diary.REWRITTEN}, from {len(found)} session(s)")
+    if ok and not dry_run:
+        diary.drop_rewrite(settings.state_path, day)
+    return ok
+
+
+def diary_ready(settings: Settings, day: date) -> tuple[str, dict] | None:
+    """The host's wording and the sandbox, without which no diary is written."""
     template = diary.wording()
     if not template:
         LOG.warning("the forum host has served no diary wording; the diary of %s is deferred", day)
-        return False
+        return None
     config = sandbox_config(settings)
     if config is None:
         LOG.warning(NO_SANDBOX + "; the diary of %s is deferred", day)
-        return False
+        return None
+    return template, config
+
+
+def diary_where(settings: Settings, forum: Forum, ranking: Ranking, state: diary.Diary, dry_run: bool,
+                now: datetime | None, chosen: diary.Choice, day: date) -> str | None:
+    """Where the day's entry is posted and with which tool, for the prompt;
+    None when the diary has nowhere to go."""
     place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
     # The forum host makes a private diary the first time one is due.
     if place is None and chosen.mode == diary.PRIVATE and not dry_run:
@@ -1704,14 +1797,20 @@ def diary_pass(
         except RankingError as exc:
             LOG.warning("the forum host did not make your private diary, so no diary is written: %s", exc)
             state.failed(day, now)
-            return False
+            return None
         LOG.info("the forum host made your private diary, %s / %s", diary.CATEGORY, made.get("name"))
         place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
     if place is None:
         LOG.warning("no diary is written: %s", diary.missing(chosen.mode, settings.researcher))
-        return False
+        return None
     category, topic = place
+    return diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher)
 
+
+def diary_wake(settings: Settings, ranking: Ranking, state: diary.Diary, dry_run: bool, journal: Journal | None,
+               now: datetime | None, day: date, start: datetime, end: datetime, found: list[diary.Session],
+               template: str, config: dict, where: str, reason: str) -> bool:
+    """Wake the agent to write the diary of ``day``, journalled with ``reason``."""
     # The day's sessions in full, where a sandboxed wake can read them, for
     # the length of the wake alone: a later wake, which another agent's post
     # may have brought, never finds them.
@@ -1734,15 +1833,13 @@ def diary_pass(
     # of its own. The prompt lists the sessions, and the agent reads them.
     chosen_model = models.read(models.DIARY)
     prompt = diary.build_prompt(
-        settings, template, day, start, end,
-        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
-        diary.index(found),
+        settings, template, day, start, end, where, diary.index(found),
         wake_notice(settings, config), diary.transcripts_notice(directory), policy_text(settings),
     )
     wake = Wake(
         agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
-        reason=f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)",
+        reason=reason,
         model=chosen_model.model,
         effort=chosen_model.effort,
     )
@@ -1761,8 +1858,6 @@ def diary_pass(
         LOG.warning("the diary wake for %s failed; it is tried again in an hour", day)
         state.failed(day, now)
         return False
-    if not dry_run:
-        handled.mark(diary.HANDLED_KIND, diary.day_key(day))
     return True
 
 
@@ -2063,6 +2158,7 @@ def run() -> int:
     if args.once:
         wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
+        wakes += rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
 
@@ -2076,6 +2172,7 @@ def run() -> int:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
             diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
+            rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
         if ranking.superseded_by:

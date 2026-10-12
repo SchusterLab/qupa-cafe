@@ -5,9 +5,10 @@ In the list ``↑``/``↓`` choose, Enter reads, ``d`` steps the diary from off 
 public (your agent's topic in Diary) to private (a topic for each day in your
 own private diary) and back to off, ``-`` and ``+`` move the hour it is posted
 at earlier and later, ``e`` asks your agent, in Claude Code, to
-change ``QUPA.md``, your own instructions, and Esc leaves.
+change ``QUPA.md``, your own instructions, ``r`` has it write the chosen
+entry's day again, as ``QUPA.md`` says now, and Esc leaves.
 Reading an entry ``↑``/``↓`` scroll, Enter opens its session in Claude Code,
-``e`` asks for a change there, and Esc goes back. The settings are written to
+``e`` asks for a change there, ``r`` writes it again, and Esc goes back. The settings are written to
 env, where the daemon reads them again at its next poll. The tray icon's
 **Show the diary** opens it; ``--print`` or a pipe prints the entries instead.
 
@@ -31,6 +32,7 @@ TITLE = "Qupa Cafe: diary"
 
 MODE_KEY = "d"
 EDIT_KEY = "e"
+REWRITE_KEY = "r"
 # An hour earlier and later, round the clock, as the wake browser moves the
 # threshold; "=" and "_" are the unshifted keys.
 HOUR_KEYS = {"-": -1, "_": -1, "+": 1, "=": 1}
@@ -62,13 +64,15 @@ class DiaryBrowser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"mode"``, ``"edit"``, or ``"hour:"`` and how many hours
+        ``"ask"``, ``"mode"``, ``"edit"``, ``"rewrite"``, or ``"hour:"`` and how many hours
         to move it by -- or nothing."""
         self.message = ""
         if key == "esc" and not self.viewing:
             return "quit"
         if key == EDIT_KEY:
             return "edit"
+        if key == REWRITE_KEY and self.selected:
+            return "rewrite"
         if key == MODE_KEY and not self.viewing:
             return "mode"
         if key in HOUR_KEYS and not self.viewing:
@@ -141,7 +145,7 @@ class DiaryBrowser:
         out.append(self.status_line() or where)
         following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
         mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
-        keys = ["↑↓ to select", *(["Enter to read"] if self.items else []), mode,
+        keys = ["↑↓ to select", *(["Enter to read", "r to write it again"] if self.items else []), mode,
                 "e to change how it is written", "Esc to quit"]
         out.append(browse.hints(keys))
         return out
@@ -165,7 +169,7 @@ class DiaryBrowser:
         keys = ["↑↓ to scroll"]
         if self.selected and self.selected.askable:
             keys.append("Enter to open in Claude Code")
-        keys += ["e to change how it is written", "Esc to go back"]
+        keys += ["r to write it again", "e to change how it is written", "Esc to go back"]
         out.append(browse.hints(keys))
         return out
 
@@ -229,7 +233,20 @@ def edit(settings: Settings, chosen: diary.Choice, entry: browse.Wake | None) ->
         subprocess.call(edit_command(claude, prompt, entry), cwd=cwd)
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
-    return ""
+    return "r on an entry writes its day again, as QUPA.md says now."
+
+
+def rewrite(settings: Settings, chosen: diary.Choice, entry: browse.Wake) -> str:
+    """Ask the daemon to write the entry's day again. Returns a message for the list."""
+    day = diary.entry_day(entry.row.reason)
+    if day is None:
+        return "This entry does not say which day it is the diary of, so it cannot be written again."
+    if not chosen.on:
+        return "The diary is off: d turns it on, and then r writes this day again."
+    if not diary.ask_rewrite(settings.state_path, day):
+        return f"The diary of {day.isoformat()} is already waiting to be written again."
+    return (f"Your agent writes the diary of {day.isoformat()} again at the daemon's next poll, as QUPA.md says now,"
+            " and replaces the entry it posted.")
 
 
 # ------------------------------------------------------------------ run
@@ -300,6 +317,8 @@ def run(settings: Settings) -> int:
                 browser.message = next_mode(browser)
             elif action in browse.MODEL_KEYS.values():
                 browser.message = browse.change_model(models.DIARY, action)
+            elif action == "rewrite":
+                browser.message = rewrite(settings, browser.chosen, browser.selected)
             elif (action or "").startswith("hour:"):
                 browser.message = move_hour(browser, int(action.removeprefix("hour:")))
             elif action in ("ask", "edit"):

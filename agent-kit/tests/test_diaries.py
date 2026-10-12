@@ -152,3 +152,21 @@ def test_m_and_f_step_the_diary_s_model_and_effort():
     assert browse.change_model(models.DIARY, "model") == "Diary wakes now run on fable, its default effort, from the next one."
     # The forum's wakes are left as they were.
     assert models.read(models.WAKE) == models.Choice("", "")
+
+
+# ------------------------------------------------------------ writing again
+
+
+def test_r_asks_for_the_chosen_entry_s_day_once_and_only_with_the_diary_on(tmp_path):
+    settings = diaries.Settings(state_path=str(tmp_path / "state.sqlite3"))
+    b = _browser([browse.Wake(_row(), None)], mode=diary.PUBLIC)
+    assert b.handle("r") == "rewrite"
+    assert "again at the daemon's next poll" in diaries.rewrite(settings, b.chosen, b.selected)
+    assert "already waiting" in diaries.rewrite(settings, b.chosen, b.selected)
+    assert diary.rewrites(settings.state_path) == [diary.date(2026, 10, 10)]
+
+    off = diary.Choice(diary.OFF)
+    assert "The diary is off" in diaries.rewrite(settings, off, browse.Wake(_row(reason=f"{diary.REASON} 2026-10-09"), None))
+    assert diary.rewrites(settings.state_path) == [diary.date(2026, 10, 10)]
+    # Nothing to write again in an empty list.
+    assert _browser().handle("r") is None

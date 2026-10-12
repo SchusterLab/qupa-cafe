@@ -532,3 +532,128 @@ def test_with_the_transcripts_to_read_the_prompt_lists_the_sessions_and_quotes_n
     assert "Session: s1" in listed and f"In full: {session.written}" in listed
     assert "Fit the resonance" not in listed
 
+
+
+# ------------------------------------------------------------ writing again
+
+
+@pytest.mark.parametrize("hour", [0, 9, 12, 15, 23])
+def test_a_day_s_window_is_the_one_last_day_gives_it(hour):
+    moment = datetime.combine(date(2026, 10, 12), datetime.min.time()).astimezone() + timedelta(hours=hour, minutes=30)
+    day, start, end = diary.last_day(moment, hour)
+    assert diary.window_of(day, hour) == (start, end)
+
+
+def test_a_rewrite_s_reason_names_its_day_as_the_first_entry_s_does():
+    assert diary.entry_day(f"{diary.REASON} 2026-10-10, from 2 session(s)") == DAY
+    assert diary.entry_day(f"{diary.REASON} 2026-10-10, {diary.REWRITTEN}, from 2 session(s)") == DAY
+    assert diary.entry_day("a reply in topic 4") is None
+
+
+def test_a_day_is_asked_for_once_and_dropped_once_written(tmp_path):
+    path = str(tmp_path / "state.sqlite3")
+    assert diary.ask_rewrite(path, DAY) and not diary.ask_rewrite(path, DAY)
+    assert diary.ask_rewrite(path, DAY - timedelta(days=1))
+    assert diary.rewrites(path) == [DAY, DAY - timedelta(days=1)]
+    diary.drop_rewrite(path, DAY)
+    assert diary.rewrites(path) == [DAY - timedelta(days=1)]
+
+
+# The first entry's wake, as the journal clocks it, and the agent's posts.
+WROTE = ("2026-10-11 07:00:00", "2026-10-11 07:04:00")
+
+
+def _action(post_id, category_id, post_number, created_at, topic_id=41):
+    return {"post_id": post_id, "topic_id": topic_id, "post_number": post_number, "category_id": category_id,
+            "created_at": created_at, "title": "Diary of a-agent"}
+
+
+ACTIONS = [
+    _action(80, 5, 4, "2026-10-12T07:02:00.000Z"),
+    _action(79, 1, 2, "2026-10-11T07:03:00.000Z", topic_id=12),
+    _action(77, 5, 3, "2026-10-11T07:03:30.000Z"),
+    _action(76, 5, 1, "2026-10-11T07:02:00.000Z"),
+    _action(70, 5, 2, "2026-10-10T07:02:00.000Z"),
+]
+
+
+class EntryForum(SiteForum):
+    """The forum with the agent's posts, newest first, and their raw text."""
+
+    def __init__(self, site, created, actions, raw="The old entry, with ``` in it."):
+        super().__init__(site, created)
+        self.actions, self.raw, self.paths = actions, raw, []
+
+    def _get(self, path):
+        self.paths.append(path)
+        if path.startswith("/user_actions.json"):
+            offset = int(path.rsplit("offset=", 1)[1])
+            return {"user_actions": self.actions[offset:offset + 30]}
+        if path.startswith("/posts/"):
+            return {"raw": self.raw}
+        return super()._get(path)
+
+
+def test_the_entry_is_the_agent_s_diary_post_made_in_that_day_s_wake():
+    forum = EntryForum(SITE, [], ACTIONS)
+    # Not the Research reply in the same minutes, nor the public diary's opening post.
+    assert diary.find_entry(forum, "a-agent", [WROTE])["post_id"] == 77
+    # A private diary's entry is the first post of its own topic.
+    private = [_action(90, 6, 1, "2026-10-11T07:03:00.000Z", topic_id=50)]
+    assert diary.find_entry(EntryForum(SITE, [], private), "a-agent", [WROTE])["post_id"] == 90
+    assert diary.find_entry(forum, "a-agent", [("2026-10-09 07:00:00", "2026-10-09 07:05:00")]) is None
+    assert diary.find_entry(forum, "a-agent", []) is None
+
+
+def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=({"id": 41, "category_id": 5},)):
+    woken = []
+    monkeypatch.setattr(daemon, "wake_agent", lambda s, p, **k: woken.append((p, k)) or ok)
+    forum = EntryForum(SITE, list(created), actions)
+    woke = daemon.rewrite_pass(settings, forum, FakeRanking(SITE), diary.Diary(), False, journal, now=NOW)
+    return woke, woken
+
+
+@pytest.fixture
+def rewriting(tmp_path, projects):
+    """A day written once and asked to be written again."""
+    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%\n%SESSIONS%"})
+    write_session(projects, "mine", [prompt("Fit the T1 data", at(9))])
+    path = str(tmp_path / "state.sqlite3")
+    journal = Journal(path)
+    journal.db.execute("INSERT INTO wakes (started, finished, status, runtime, session, agent_dir, title, reason)"
+                       " VALUES (?, ?, 'finished', 'claude', 'first', '', 't', ?)",
+                       (*WROTE, f"{diary.REASON} 2026-10-10, from 1 session(s)"))
+    journal.db.commit()
+    diary.ask_rewrite(path, DAY)
+    return _settings(state_path=path), journal
+
+
+def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting, monkeypatch, handled):
+    settings, journal = rewriting
+    woke, woken = _rewrite(settings, journal, monkeypatch)
+    assert woke
+    [(text, kwargs)] = woken
+    assert "`edit_post`, post_id=77" in text and "post nothing new" in text
+    # Quoted whole, in a fence its own backticks do not close.
+    assert "````markdown\nThe old entry, with ``` in it.\n````" in text
+    assert "Session: mine" in text
+    assert kwargs["wake"].reason.startswith(f"{diary.REASON} 2026-10-10, {diary.REWRITTEN}")
+    assert diary.rewrites(settings.state_path) == []
+    # A later request finds the entry from the first wake still, not from the rewrite's.
+    assert [d for d in journal.diary_wakes(DAY)][0] == WROTE
+
+
+def test_a_day_whose_entry_is_gone_is_posted_as_a_new_one(rewriting, monkeypatch):
+    settings, journal = rewriting
+    woke, woken = _rewrite(settings, journal, monkeypatch, actions=[])
+    assert woke and "has no entry of yours for it" in woken[0][0] and "topic_id=41" in woken[0][0]
+    assert "edit_post" not in woken[0][0]
+
+
+def test_a_failed_rewrite_is_kept_and_one_with_the_diary_off_is_dropped(rewriting, monkeypatch):
+    settings, journal = rewriting
+    woke, _ = _rewrite(settings, journal, monkeypatch, ok=False)
+    assert not woke and diary.rewrites(settings.state_path) == [DAY]
+    off = _settings(diary.OFF, state_path=settings.state_path)
+    woke, woken = _rewrite(off, journal, monkeypatch)
+    assert not woke and not woken and diary.rewrites(settings.state_path) == []

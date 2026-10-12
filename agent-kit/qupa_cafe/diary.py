@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import urllib.error
 import urllib.parse
@@ -82,6 +83,14 @@ def topic_title(username: str) -> str:
 
 def day_key(day: date) -> int:
     return int(day.strftime("%Y%m%d"))
+
+
+def window_of(day: date, hour: int = 0) -> tuple[datetime, datetime]:
+    """The 24 hours ending at ``hour``:00 whose middle is in ``day``, as
+    ``last_day`` dates them."""
+    ends = day + timedelta(days=1) if hour < 12 else day
+    return (datetime.combine(ends - timedelta(days=1), time(hour)).astimezone(),
+            datetime.combine(ends, time(hour)).astimezone())
 
 
 def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime, datetime]:
@@ -512,6 +521,150 @@ def where_to_post(username: str, mode: str, category: dict, topic: dict | None, 
     )
 
 
+# ------------------------------------------------------------ writing again
+
+
+# How a rewrite's reason goes on after the day, so the diary browser lists it
+# with the rest.
+REWRITTEN = "written again as your researcher asked"
+
+# The days the diary browser asked to be written again, in the state file,
+# which the daemon takes one a poll.
+REWRITES_SQL = """
+CREATE TABLE IF NOT EXISTS diary_rewrites (
+    day    INTEGER PRIMARY KEY,
+    asked  TEXT NOT NULL
+)
+"""
+
+ENTRY_DAY = re.compile(re.escape(REASON) + r" (\d{4}-\d{2}-\d{2})")
+
+
+def entry_day(reason: str) -> date | None:
+    """The day a diary wake's reason says it wrote."""
+    found = ENTRY_DAY.match(reason)
+    return date.fromisoformat(found.group(1)) if found else None
+
+
+def _state(path: str) -> sqlite3.Connection:
+    db = sqlite3.connect(path, timeout=5)
+    db.executescript(REWRITES_SQL)
+    return db
+
+
+def ask_rewrite(path: str, day: date) -> bool:
+    """Ask the daemon to write ``day`` again. False when it was asked already."""
+    db = _state(path)
+    try:
+        with db:
+            # To the millisecond, so two asked in one second keep their order.
+            cursor = db.execute("INSERT OR IGNORE INTO diary_rewrites (day, asked)"
+                                " VALUES (?, strftime('%Y-%m-%d %H:%M:%f', 'now'))", (day_key(day),))
+        return cursor.rowcount > 0
+    finally:
+        db.close()
+
+
+def rewrites(path: str) -> list[date]:
+    """The days asked to be written again, the first asked first."""
+    db = _state(path)
+    try:
+        keys = [row[0] for row in db.execute("SELECT day FROM diary_rewrites ORDER BY asked, day")]
+    finally:
+        db.close()
+    return [datetime.strptime(str(key), "%Y%m%d").date() for key in keys]
+
+
+def drop_rewrite(path: str, day: date) -> None:
+    db = _state(path)
+    try:
+        with db:
+            db.execute("DELETE FROM diary_rewrites WHERE day = ?", (day_key(day),))
+    finally:
+        db.close()
+
+
+def _moment(value: str) -> datetime | None:
+    """A forum timestamp, or the journal's UTC ``YYYY-MM-DD HH:MM:SS``."""
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+# A post is the entry of a wake it was made in, or this soon after it ended,
+# as the journal and the forum clock it.
+ENTRY_SLACK = timedelta(minutes=5)
+# How many pages of the agent's posts are read back looking for an entry.
+ENTRY_PAGES = 20
+
+
+def find_entry(forum, username: str, wakes: list[tuple[str, str | None]]) -> dict | None:
+    """The entry the agent posted in one of a day's diary ``wakes``, given as
+    (started, finished) from the journal: the latest of its posts made in
+    one, in Diary or a diary under it, leaving out a public diary's opening
+    post. None when it posted none the forum still has."""
+    spans = []
+    for started, finished in wakes:
+        begin = _moment(started)
+        if begin is None:
+            continue
+        end = _moment(finished) if finished else None
+        spans.append((begin - ENTRY_SLACK, (end or begin + timedelta(hours=1)) + ENTRY_SLACK))
+    if not spans:
+        return None
+    listed = categories(forum)
+    parent = next((c["id"] for c in listed if str(c.get("name") or "").lower() == CATEGORY.lower()
+                   and not c.get("parent_category_id")), None)
+    diaries = {parent} | {c["id"] for c in listed if parent is not None and c.get("parent_category_id") == parent}
+    earliest = min(begin for begin, _ in spans)
+    user = urllib.parse.quote(username)
+    for page in range(ENTRY_PAGES):
+        actions = forum._get(f"/user_actions.json?username={user}&filter=4,5&offset={page * 30}")  # noqa: SLF001
+        actions = actions.get("user_actions") or []
+        for action in actions:
+            made = _moment(action.get("created_at") or "")
+            if made is None or action.get("deleted") or action.get("category_id") not in diaries:
+                continue
+            if action.get("category_id") == parent and action.get("post_number") == 1:
+                continue
+            if any(begin <= made <= end for begin, end in spans):
+                return action
+        # Newest first, so a page that ends before the first wake ends the search.
+        oldest = _moment(actions[-1].get("created_at") or "") if actions else None
+        if len(actions) < 30 or (oldest is not None and oldest < earliest):
+            return None
+    return None
+
+
+def fenced(text: str) -> str:
+    """``text`` in a Markdown fence longer than any run of backticks in it."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}markdown\n{text}\n{fence}"
+
+
+def rewrite_where(entry: dict, raw: str) -> str:
+    """For the prompt: write the entry again and replace the one posted."""
+    return (
+        "Your researcher asked for this entry to be written again, as their instructions stand now; they may "
+        "have changed them since you wrote it. Write it afresh from the sessions rather than by editing the "
+        f"old text. It is post {entry.get('post_number')} of topic {entry.get('topic_id')}, "
+        f"\"{entry.get('title') or ''}\". Replace it with `edit_post`, post_id={entry.get('post_id')}, with the "
+        "edit_reason \"Written again at my researcher's request\", and post nothing new. If there is now "
+        "nothing to write, leave it as it is. It reads now:\n\n" + fenced(raw)
+    )
+
+
+def rewrite_new(where: str) -> str:
+    """For the prompt: write the entry again, where none is left to replace."""
+    return (
+        "Your researcher asked for this day's entry to be written again, as their instructions stand now. The "
+        "forum has no entry of yours for it, so post one as you would any day's. " + where
+    )
+
+
 # --------------------------------------------------------------- the prompt
 
 
@@ -578,11 +731,15 @@ class Diary:
                 handled.mark(HANDLED_KIND, day_key(day))
                 LOG.info("the diary starts now; the first entry is posted at %s", Choice(hour=hour).at())
             return None
-        failed = self._failed.get(day_key(day))
-        moment = (now or datetime.now(timezone.utc)).timestamp()
-        if failed is not None and moment - failed < RETRY_SECONDS:
+        if self.waiting(day, now):
             return None
         return day, start, end
+
+    def waiting(self, day: date, now: datetime | None = None) -> bool:
+        """Whether ``day`` failed less than RETRY_SECONDS ago."""
+        failed = self._failed.get(day_key(day))
+        moment = (now or datetime.now(timezone.utc)).timestamp()
+        return failed is not None and moment - failed < RETRY_SECONDS
 
     def failed(self, day: date, now: datetime | None = None) -> None:
         self._failed[day_key(day)] = (now or datetime.now(timezone.utc)).timestamp()
