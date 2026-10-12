@@ -445,7 +445,7 @@ class Forum:
 # ---------------------------------------------------------------------- text
 
 
-_MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+_MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^\s)]+)\)")
 _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^\s)]+)\)")
 # The files the bridge uploads after a post: the forum's own, images and
 # attachments alike.
@@ -520,6 +520,15 @@ def html_link(match: re.Match, base: str) -> str:
     return f"[{label or url}]({url})"
 
 
+def md_link(match: re.Match, base: str) -> str:
+    """A markdown link as Slack's, a relative address resolved against the
+    post's. One that is not a web address stays as written."""
+    url = urllib.parse.urljoin(base, match.group(2))
+    if not url.startswith(("http://", "https://")):
+        return match.group(0)
+    return f"<{url}|{match.group(1)}>"
+
+
 def to_slack(raw: str, link: str, codes: bool = False) -> str:
     """Forum markdown, readable in a thread: links, bold and images converted,
     and the rest as written, in full. ``link`` is the post's address, against
@@ -534,7 +543,7 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
     text = slack_escape(text)
     # Links after escaping, so their angle brackets are the only live ones.
-    text = _MD_LINK.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)
+    text = _MD_LINK.sub(lambda m: md_link(m, link), text)
     text = _MD_BOLD.sub(lambda m: f"*{m.group(1)}*", text)
     return text.strip()
 

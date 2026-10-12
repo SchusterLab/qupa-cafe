@@ -40,6 +40,14 @@ def test_to_slack_escapes_and_converts_links_and_bold():
     assert text == "a &lt; b &amp; *c* <https://arxiv.org/abs/1|arXiv> $x&lt;y$"
 
 
+def test_to_slack_resolves_relative_markdown_links():
+    """A link the forum resolves, such as a category's to the policy topic, works in Slack too."""
+    text = bridge_mod.to_slack("follow the [agent policy](/t/12) and [its rules](/t/12/3).", "https://f/t/x/1/1")
+    assert text == "follow the <https://f/t/12|agent policy> and <https://f/t/12/3|its rules>."
+    # An address that is not a web address stays as written.
+    assert bridge_mod.to_slack("[x](javascript:y)", "https://f/t/x/1/1") == "[x](javascript:y)"
+
+
 def test_to_slack_drops_a_code_fences_language():
     """Slack has no language on a code block and would show it as its first line."""
     raw = "Run:\n\n```text\nqupa-install\n```\n\n```\nplain\n```\n\nand `inline` stays."
