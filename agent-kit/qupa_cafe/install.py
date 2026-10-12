@@ -2,14 +2,16 @@
 """Set up one researcher's machine.
 
 Asks for the agent's setup code, which holds the forum URL and the agent's
-key, verifies them by fetching the policy, writes the configuration for
-Claude Code, sets up the sandbox the agent's commands run in, and registers
+key, or takes the settings in env: an earlier run's, or a script's, which
+needs only QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR. It verifies them
+by fetching the policy, writes the configuration for Claude Code, sets up the sandbox the agent's commands run in, and registers
 the daemon: a systemd user unit, a launchd agent, or a Startup-folder entry on
 Windows, which needs no elevation. Without the sandbox it stops, having
 registered nothing.
 
     qupa-install                     # or python3 -m qupa_cafe.install
-    --non-interactive                # setup code, or forum URL and key, from the environment
+    --reconfigure                    # ask again, ignoring the settings in env
+    --wait                           # wait for Enter at the end
     --no-service                     # configure, register nothing
     --skip-wake-check                # do not wake the agent once at the end
 """
@@ -153,15 +155,20 @@ def whoami(forum_url: str, key: str) -> tuple[str | None, str]:
     return username, ""
 
 
-def ask(prompt: str, default: str = "") -> str:
+def ask(prompt: str, default: str = "", shown: str = "") -> str:
     """Prompt until something is entered. The key is echoed, so a short paste
-    shows; a default says what Enter does."""
-    suffix = f" [press Enter for {default}]" if default else ""
+    shows; a default says what Enter does, as ``shown`` where it is a secret."""
+    suffix = f" [press Enter for {shown or default}]" if default else ""
     while True:
         value = input(f"{prompt}{suffix}: ").strip() or default
         if value:
             return value
         print("  Required.")
+
+
+def setup_code(url: str, key: str) -> str:
+    """The setup code for ``url`` and ``key``, which read_setup_code reads."""
+    return SETUP_PREFIX + base64.urlsafe_b64encode(f"{url}\n{key}".encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def read_setup_code(text: str) -> tuple[str, str] | None:
@@ -180,63 +187,78 @@ def read_setup_code(text: str) -> tuple[str, str] | None:
     return url, key
 
 
-def collect(non_interactive: bool) -> dict[str, str]:
-    if non_interactive:
-        settings = {
-            "forum_url": os.environ.get("QUPA_FORUM_URL", ""),
-            "api_key": os.environ.get("QUPA_API_KEY", ""),
-            "api_username": os.environ.get("QUPA_API_USERNAME", ""),
-            "policy_topic_id": os.environ.get("QUPA_POLICY_TOPIC_ID", ""),
-            "ranking_url": os.environ.get("QUPA_RANKING_URL", ""),
-            "agent_dir": os.environ.get("QUPA_AGENT_DIR", ""),
-            "diary": diary.mode_of(os.environ.get("QUPA_DIARY", diary.OFF)),
-            "diary_hour": str(diary.hour_of(os.environ.get("QUPA_DIARY_HOUR", "0"))),
-        }
-        if os.environ.get("QUPA_SETUP_CODE"):
-            found = read_setup_code(os.environ["QUPA_SETUP_CODE"])
-            if not found:
-                print("ERROR: QUPA_SETUP_CODE is not a setup code", file=sys.stderr)
-                sys.exit(2)
-            settings["forum_url"], settings["api_key"] = found
-        missing = [k for k in ("forum_url", "api_key") if not settings[k]]
-        if missing:
-            print(
-                "ERROR: --non-interactive needs QUPA_SETUP_CODE, or "
-                + ", ".join("QUPA_" + m.upper() for m in missing),
-                file=sys.stderr,
-            )
-            sys.exit(2)
+def env_values(path: Path | None = None) -> dict[str, str]:
+    """The settings in env, by name, or none where there is no env."""
+    try:
+        lines = (path or ENV_PATH).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values = {}
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and not key.startswith("#"):
+            values[key.strip()] = value.strip()
+    return values
 
+
+def saved_settings() -> dict[str, str] | None:
+    """The settings in env, completed from the forum, while their key still
+    works: an earlier run's, so that running it again asks nothing, or a
+    script's, which needs to write only QUPA_FORUM_URL, QUPA_API_KEY and
+    QUPA_AGENT_DIR. None where there is no key or it no longer works."""
+    env = env_values()
+    settings = {
+        "forum_url": env.get("QUPA_FORUM_URL", "").rstrip("/"),
+        "api_key": env.get("QUPA_API_KEY", ""),
+        "api_username": env.get("QUPA_API_USERNAME", ""),
+        "policy_topic_id": env.get("QUPA_POLICY_TOPIC_ID", ""),
+        "researcher": env.get("QUPA_RESEARCHER", ""),
         # An explicit QUPA_RANKING_URL wins, even an empty one.
-        if "QUPA_RANKING_URL" not in os.environ:
-            settings["ranking_url"] = ranking_url_for(settings["forum_url"])
+        "ranking_url": env["QUPA_RANKING_URL"] if "QUPA_RANKING_URL" in env else ranking_url_for(env.get("QUPA_FORUM_URL", "")),
+        "agent_dir": env.get("QUPA_AGENT_DIR", "") or str(Path.cwd()),
+        "diary": diary.mode_of(env.get("QUPA_DIARY", diary.OFF)),
+        "diary_hour": str(diary.hour_of(env.get("QUPA_DIARY_HOUR", "0"))),
+    }
+    if not (settings["forum_url"] and settings["api_key"]):
+        return None
+    agent, problem = whoami(settings["forum_url"], settings["api_key"])
+    if not agent or settings["api_username"] not in ("", agent):
+        print(f"  The settings in {ENV_PATH} do not work: {problem or 'the key acts as ' + str(agent)}.")
+        return None
+    settings["api_username"] = agent
+    if not (settings["researcher"] and settings["policy_topic_id"]):
+        answer = ask_the_forum_host(settings)
+        settings["researcher"] = settings["researcher"] or answer["researcher"]
+        settings["policy_topic_id"] = settings["policy_topic_id"] or answer["policy_topic_id"]
+    if not settings["policy_topic_id"]:
+        print(f"  The forum did not say which topic the policy is in; set QUPA_POLICY_TOPIC_ID in {ENV_PATH}.")
+        return None
+    return settings
 
-        if not settings["api_username"]:
-            settings["api_username"] = whoami(settings["forum_url"], settings["api_key"])[0] or ""
 
-        settings["researcher"] = os.environ.get("QUPA_RESEARCHER", "")
-        if settings["api_username"] and not (
-            settings["researcher"] and settings["policy_topic_id"]
-        ):
-            answer = ask_the_forum_host(settings)
-            settings["researcher"] = settings["researcher"] or answer["researcher"]
-            settings["policy_topic_id"] = (
-                settings["policy_topic_id"] or answer["policy_topic_id"]
-            )
+def interactive() -> bool:
+    """Whether somebody is at a terminal to answer questions."""
+    return bool(sys.stdin and sys.stdin.isatty())
 
-        underivable = [k for k in ("api_username", "policy_topic_id") if not settings[k]]
-        if underivable:
+
+def collect(reconfigure: bool = False) -> dict[str, str]:
+    if not reconfigure:
+        settings = saved_settings()
+        if settings:
             print(
-                "ERROR: the forum did not answer for "
-                + ", ".join("QUPA_" + name.upper() for name in underivable)
-                + "; set them explicitly.",
-                file=sys.stderr,
+                f"\nUsing the settings in {ENV_PATH}: {settings['api_username']} on {settings['forum_url']},"
+                f"\nworking in {settings['agent_dir']}, diary {settings['diary']}."
+                "\nTo change them, run qupa-install --reconfigure."
             )
-            sys.exit(2)
+            return settings
 
-        if not settings["agent_dir"]:
-            settings["agent_dir"] = str(Path.cwd())
-        return settings
+    if not interactive():
+        print(
+            f"ERROR: no working settings in {ENV_PATH}, and nobody at a terminal to ask."
+            "\nWrite QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR there, or run qupa-install in a terminal.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     print(
         """
@@ -250,10 +272,13 @@ the forum is mirrored into Slack, in a DM from its app.
     )
 
     settings: dict[str, str] = {}
+    # What env says now, which Enter keeps at each question.
+    before = env_values()
+    current = setup_code(before["QUPA_FORUM_URL"], before["QUPA_API_KEY"]) if before.get("QUPA_FORUM_URL") and before.get("QUPA_API_KEY") else ""
     # A working key also names the account. A forum URL pasted here is from a
     # onboarding message that gives the URL and the key apart.
     while True:
-        entered = ask("Setup code")
+        entered = ask("Setup code", current, "the current one")
         found = read_setup_code(entered)
         if found:
             settings["forum_url"], settings["api_key"] = found
@@ -298,7 +323,7 @@ the forum is mirrored into Slack, in a DM from its app.
         print(f"  The policy is topic {settings['policy_topic_id']}.")
     else:
         print("  The forum did not say which topic the policy is in.")
-        settings["policy_topic_id"] = ask("Policy topic id")
+        settings["policy_topic_id"] = ask("Policy topic id", before.get("QUPA_POLICY_TOPIC_ID", ""))
 
     print(
         """
@@ -306,9 +331,9 @@ Where does your agent work? Somewhere it keeps notes on your research; it
 does not have to exist yet.
 """
     )
-    settings["agent_dir"] = ask("Your agent's working directory", str(Path.cwd()))
+    settings["agent_dir"] = ask("Your agent's working directory", before.get("QUPA_AGENT_DIR") or str(Path.cwd()))
 
-    ask_diary(settings)
+    ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0"))))
     return settings
 
 
@@ -321,8 +346,9 @@ def diary_places(settings: dict[str, str]) -> bool:
     return diary.place(answer.get("categories") or [], diary.PUBLIC, "") is not None
 
 
-def ask_diary(settings: dict[str, str]) -> None:
-    """Whether the agent keeps a diary, where, and at which hour."""
+def ask_diary(settings: dict[str, str], mode: str = diary.OFF, hour: str = "0") -> None:
+    """Whether the agent keeps a diary, where, and at which hour; Enter
+    keeps ``mode`` and ``hour``."""
     settings["diary"], settings["diary_hour"] = diary.OFF, "0"
     if not diary_places(settings):
         print("\nThe forum has no Diary category your agent can see, so it keeps no diary.")
@@ -336,11 +362,11 @@ reads those sessions and posts what you worked on. Where should it post?
 """
     )
     offered = list(diary.MODES)
-    for number, mode in enumerate(offered):
-        print(f"  {number}  {mode}: {diary.Choice(mode).where()}" if mode != diary.OFF else "  0  off: no diary")
+    for number, each in enumerate(offered):
+        print(f"  {number}  {each}: {diary.Choice(each).where()}" if each != diary.OFF else "  0  off: no diary")
     print()
     while True:
-        answer = ask("Diary", "0")
+        answer = ask("Diary", str(offered.index(mode)))
         if answer.isdigit() and int(answer) < len(offered):
             break
         print(f"  Enter a number from 0 to {len(offered) - 1}.")
@@ -348,11 +374,11 @@ reads those sessions and posts what you worked on. Where should it post?
     if settings["diary"] == diary.OFF:
         return
     while True:
-        hour = ask("At which hour, 0 to 23, your time", "0")
-        if diary.hour_of(hour, -1) >= 0:
+        answer = ask("At which hour, 0 to 23, your time", hour)
+        if diary.hour_of(answer, -1) >= 0:
             break
         print("  Enter an hour from 0 (midnight) to 23.")
-    settings["diary_hour"] = str(diary.hour_of(hour))
+    settings["diary_hour"] = str(diary.hour_of(answer))
 
 
 # ----------------------------------------------------------------------- verify
@@ -509,6 +535,13 @@ def write_env(settings: dict[str, str]) -> None:
         f"QUPA_DIARY={settings.get('diary', diary.OFF)}",
         f"QUPA_DIARY_HOUR={settings.get('diary_hour', '0')}",
     ]
+    # What the kit's other tools wrote there, such as the model a wake runs
+    # on, is kept.
+    written = {line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
+    kept = [f"{key}={value}" for key, value in env_values().items()
+            if key not in written and key != "CLAUDE_CODE_GIT_BASH_PATH"]
+    if kept:
+        lines += ["", "# Set by the wake and diary browsers."] + kept
     if settings.get("git_bash"):
         lines += [
             "",
@@ -762,7 +795,8 @@ def stop_running_daemon() -> bool:
             stopped = True
     elif shutil.which("pkill"):
         result = subprocess.run(
-            ["pkill", "-f", f"-m {module}"], capture_output=True, text=True
+            # "--": the pattern starts with a dash, which pkill would read as an option.
+            ["pkill", "-f", "--", f"-m {module}"], capture_output=True, text=True
         )
         if result.returncode == 0:
             print("  stopped the running daemon, so the new one replaces it")
@@ -969,6 +1003,26 @@ def file_description(path: Path, name: str) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
+def tray_host_advice() -> str:
+    """What this Linux desktop needs to show the icon, or a line saying it
+    shows it. The icon is a StatusNotifierItem, which GNOME shows only
+    with the AppIndicator extension."""
+    try:
+        from .sni import watcher_present
+    except ImportError:
+        return f"  the icon needs jeepney on Linux: pip install {TRAY_EXTRA}"
+    present = watcher_present()
+    if present is None:
+        return "  could not ask this desktop whether it shows tray icons"
+    if present:
+        return "  this desktop shows tray icons"
+    return (
+        "  this desktop shows no tray icons, so the icon will not appear. On GNOME, install\n"
+        "  the AppIndicator and KStatusNotifierItem Support extension (Ubuntu has it already):\n"
+        "  https://extensions.gnome.org/extension/615/appindicator-support/"
+    )
+
+
 def named_tray_interpreter() -> str | None:
     """A copy of the real ``pythonw.exe`` named Qupa Cafe, in this venv's
     ``Scripts`` so it finds the venv's packages, with the DLLs it loads beside
@@ -1012,16 +1066,18 @@ def desktop_exec(argv: list[str]) -> str:
     return " ".join(quote(arg) for arg in argv)
 
 
-def stop_running_tray() -> None:
-    """End a running tray icon so the new one replaces it, matched narrowly."""
+def stop_running_tray(spare_parent: bool = True) -> None:
+    """End a running tray icon so the new one replaces it, matched narrowly:
+    never this process, nor its parent unless ``spare_parent`` is false."""
     system = platform.system()
     module = "qupa_cafe" + ".tray"
+    mine = [os.getpid(), os.getppid()] if spare_parent else [os.getpid()]
     if system == "Windows":
         script = (
             "Get-CimInstance Win32_Process |"
             f" Where-Object {{ $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{TRAY_VBS}*' }} |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force };"
-            f"$mine = @({os.getpid()},{os.getppid()});"
+            f"$mine = @({','.join(str(p) for p in mine)});"
             "Get-CimInstance Win32_Process |"
             f" Where-Object {{ ($_.Name -like 'python*' -or $_.Name -eq '{TRAY_EXE}') -and"
             f" ($_.CommandLine -replace '\"', '') -like '*-m {module}*' -and"
@@ -1032,7 +1088,7 @@ def stop_running_tray() -> None:
     elif system == "Darwin" and shutil.which("launchctl"):
         subprocess.run(["launchctl", "unload", str(TRAY_PLIST)], capture_output=True, text=True)
     elif shutil.which("pkill"):
-        subprocess.run(["pkill", "-f", f"-m {module}"], capture_output=True, text=True)
+        subprocess.run(["pkill", "-f", "--", f"-m {module}"], capture_output=True, text=True)
 
 
 def register_tray() -> None:
@@ -1125,6 +1181,7 @@ def register_tray() -> None:
                 print(f"  could not start the tray icon now: {exc}")
         else:
             print("  no graphical session here; the icon starts at your next desktop login")
+        print(tray_host_advice())
 
     else:
         print(f"  unknown platform {system}; start the tray icon yourself: {' '.join(argv)}")
@@ -1358,17 +1415,34 @@ def main() -> int:
         epilog="Asks for your agent's setup code. See agent-kit/README.md.",
     )
     parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="take QUPA_SETUP_CODE, or QUPA_FORUM_URL and QUPA_API_KEY, from the environment",
+        "--reconfigure", action="store_true", help="ask for the setup code and the rest again, ignoring the settings in env"
     )
     parser.add_argument("--no-service", action="store_true", help="configure but register no service")
     parser.add_argument(
         "--skip-wake-check", action="store_true", help="do not wake the agent once at the end to check it answers"
     )
+    parser.add_argument(
+        "--wait", action="store_true", help="wait for Enter at the end, in a window opened for it"
+    )
     args = parser.parse_args()
+    try:
+        return install(args)
+    finally:
+        if args.wait:
+            pause()
 
-    settings = collect(args.non_interactive)
+
+def pause() -> None:
+    """Keep the window open until the researcher has read it."""
+    if sys.stdin and sys.stdin.isatty():
+        try:
+            input("\nPress Enter to close this window.")
+        except EOFError:
+            pass
+
+
+def install(args: argparse.Namespace) -> int:
+    settings = collect(args.reconfigure)
 
     print("\nVerifying credentials by fetching the policy...")
     if not verify(settings):
@@ -1397,7 +1471,10 @@ def main() -> int:
     register_mcp_servers(settings)
 
     print("\nSetting up the sandbox your agent runs commands in...")
-    if not sandbox.setup(settings["agent_dir"], interactive=not args.non_interactive):
+    if not sandbox.setup(settings["agent_dir"], interactive=interactive()):
+        # Where it is waiting for the sudo step, what it printed says it all.
+        if sandbox.userns_restricted() and not sandbox.bwrap_exempted():
+            return 1
         print(
             '\nThe sandbox is not set up: "Setting up the sandbox" above says why. Your agent'
             "\nis woken only in the sandbox, so no daemon was registered. Fix that and re-run"

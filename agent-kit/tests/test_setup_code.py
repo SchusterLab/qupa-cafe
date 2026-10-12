@@ -56,25 +56,13 @@ def test_anything_else_is_not_a_setup_code():
     assert install.read_setup_code("qupa-setup-" + "aGVsbG8") is None  # "hello": no URL, no key
 
 
-def test_the_installer_takes_a_setup_code_from_the_environment(monkeypatch):
-    code = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGVm"
-    monkeypatch.setenv("QUPA_SETUP_CODE", code)
-    for name in ("QUPA_FORUM_URL", "QUPA_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("QUPA_API_USERNAME", "sunada-agent")
-    monkeypatch.setenv("QUPA_RESEARCHER", "sunada")
-    monkeypatch.setenv("QUPA_POLICY_TOPIC_ID", "11")
-    settings = install.collect(non_interactive=True)
-    assert settings["forum_url"] == "https://forum.example.org" and settings["api_key"] == "0123456789abcdef"
-
-
 def interactive(monkeypatch, answers, places=()):
     """Run the installer's questions with ``answers`` by prompt; anything not
     given takes its default. ``places`` are where the forum lets the agent
     keep a diary."""
     asked = []
 
-    def ask(prompt, default=""):
+    def ask(prompt, default="", shown=""):
         asked.append(prompt)
         given = answers.get(prompt)
         return given.pop(0) if isinstance(given, list) else given or default
@@ -84,7 +72,8 @@ def interactive(monkeypatch, answers, places=()):
     monkeypatch.setattr(install, "ask_the_forum_host", lambda s: {"researcher": "sunada", "policy_topic_id": "11"})
     monkeypatch.setattr(install, "diary_places", lambda s: list(places))
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
-    return install.collect(non_interactive=False), asked
+    monkeypatch.setattr(install, "interactive", lambda: True)
+    return install.collect(), asked
 
 
 def test_a_setup_code_is_the_only_credential_asked_for(monkeypatch, onboarding):
@@ -134,15 +123,38 @@ def test_a_forum_with_no_diary_asks_nothing(monkeypatch, onboarding):
     assert "Diary" not in asked and settings["diary"] == "off"
 
 
-def test_an_update_keeps_the_diary_as_it_was(monkeypatch, tmp_path):
-    """qupa-update re-runs the installer non-interactively from env."""
-    code = "qupa-setup-aHR0cHM6Ly9mb3J1bS5leGFtcGxlLm9yZwowMTIzNDU2Nzg5YWJjZGVm"
-    for name, value in (("QUPA_SETUP_CODE", code), ("QUPA_API_USERNAME", "sunada-agent"), ("QUPA_RESEARCHER", "sunada"),
-                        ("QUPA_POLICY_TOPIC_ID", "11"), ("QUPA_DIARY", "private"), ("QUPA_DIARY_HOUR", "18")):
-        monkeypatch.setenv(name, value)
-    settings = install.collect(non_interactive=True)
-    monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
+def test_an_update_keeps_the_diary_as_it_was(monkeypatch):
+    """qupa-update re-runs the installer, which takes the settings in env."""
+    install.ENV_PATH.write_text(
+        "QUPA_FORUM_URL=https://forum.example.org\nQUPA_API_KEY=k\nQUPA_API_USERNAME=sunada-agent\n"
+        "QUPA_RESEARCHER=sunada\nQUPA_POLICY_TOPIC_ID=11\nQUPA_DIARY=private\nQUPA_DIARY_HOUR=18\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install, "whoami", lambda url, key: ("sunada-agent", ""))
+    settings = install.collect()
     install.write_env(settings)
-    written = (tmp_path / "env").read_text(encoding="utf-8").splitlines()
+    written = install.ENV_PATH.read_text(encoding="utf-8").splitlines()
     assert "QUPA_DIARY=private" in written and "QUPA_DIARY_HOUR=18" in written
+
+
+def test_reconfiguring_offers_what_env_says_at_each_question(monkeypatch, capsys):
+    """Enter keeps it, the setup code included, which is not shown."""
+    install.ENV_PATH.write_text(
+        f"QUPA_FORUM_URL=https://forum.example.org\nQUPA_API_KEY={KEY}\nQUPA_AGENT_DIR=/notes\n"
+        "QUPA_DIARY=private\nQUPA_DIARY_HOUR=18\n",
+        encoding="utf-8",
+    )
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+    monkeypatch.setattr(install, "interactive", lambda: True)
+    monkeypatch.setattr(install, "whoami", lambda url, key: ("sunada-agent", "") if key == KEY else (None, "The key was refused"))
+    monkeypatch.setattr(install, "ask_the_forum_host", lambda s: {"researcher": "sunada", "policy_topic_id": "11"})
+    monkeypatch.setattr(install, "diary_places", lambda s: DIARIES)
+    settings = install.collect(reconfigure=True)
+    assert (settings["api_key"], settings["agent_dir"], settings["diary"], settings["diary_hour"]) == (KEY, "/notes", "private", "18")
+    assert "Setup code [press Enter for the current one]: " in prompts
+    assert KEY not in "".join(prompts) + capsys.readouterr().out
+
+
+def test_a_setup_code_is_what_read_setup_code_reads():
+    assert install.read_setup_code(install.setup_code("https://forum.example.org", KEY)) == ("https://forum.example.org", KEY)

@@ -397,3 +397,39 @@ def test_a_declined_uac_prompt_is_said_to_be_declined(monkeypatch, capsys):
     monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: Declined())
     assert sandbox.windows_install("node", sandbox.runtime_dir(), interactive=False) is False
     assert "declined" in capsys.readouterr().out
+
+
+# ------------------------------------------- Ubuntu's user-namespace restriction
+
+
+def test_a_restricted_linux_is_given_a_script_to_run_with_sudo(installed, monkeypatch, capsys):
+    """qupa-install runs no sudo itself: it stops, names the script, and the
+    next qupa-install, after the script has run, goes on."""
+    monkeypatch.setattr(sandbox, "missing_programs", lambda: [])
+    monkeypatch.setattr(sandbox, "userns_restricted", lambda: True)
+    monkeypatch.setattr(sandbox, "bwrap_exempted", lambda: False)
+    monkeypatch.setattr(sandbox.subprocess, "call", lambda *a, **k: pytest.fail("ran something"))
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **k: pytest.fail(f"ran {argv}"))
+    assert sandbox.setup(installed["agent_dirs"][0], interactive=True) is False
+    script = sandbox.bwrap_script_path()
+    assert f"sudo sh {script}" in capsys.readouterr().out
+    text = script.read_text(encoding="utf-8")
+    assert f"install -D -m 755 /usr/bin/bwrap {sandbox.LINUX_BWRAP}" in text
+    assert f"\nprofile qupa-cafe-bwrap {sandbox.LINUX_BWRAP} flags=(unconfined) {{\n" in text
+    assert "\nEOF\n" in text and "\r" not in text
+
+
+def test_the_restriction_is_read_from_the_sysctl_or_ubuntu_s_profile(monkeypatch, tmp_path):
+    sysctl, profile = tmp_path / "sysctl", tmp_path / "bwrap-userns-restrict"
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "USERNS_SYSCTL", sysctl)
+    monkeypatch.setattr(sandbox, "UBUNTU_BWRAP_PROFILE", profile)
+    assert not sandbox.userns_restricted()
+    sysctl.write_text("1\n", encoding="ascii")
+    assert sandbox.userns_restricted()
+    # Off, Ubuntu's profile still confines /usr/bin/bwrap.
+    sysctl.write_text("0\n", encoding="ascii")
+    profile.write_text("", encoding="ascii")
+    assert sandbox.userns_restricted()
+    monkeypatch.setattr(sandbox.sys, "platform", "darwin")
+    assert not sandbox.userns_restricted()

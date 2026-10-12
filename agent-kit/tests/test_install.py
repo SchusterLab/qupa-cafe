@@ -126,18 +126,16 @@ def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
     """Nothing here searches for it by title, since a title compiled into a
     release strands every installed agent the day somebody renames the topic.
     The forum host answers instead, and an unanswered install asks."""
-    monkeypatch.setenv("QUPA_FORUM_URL", "https://forum.example.org")
-    monkeypatch.setenv("QUPA_API_KEY", "k")
-    monkeypatch.setenv("QUPA_API_USERNAME", "rsmith-agent")
-    for name in ("QUPA_SETUP_CODE", "QUPA_POLICY_TOPIC_ID", "QUPA_RESEARCHER"):
-        monkeypatch.delenv(name, raising=False)
+    install.ENV_PATH.write_text("QUPA_FORUM_URL=https://forum.example.org\nQUPA_API_KEY=k\n", encoding="utf-8")
+    monkeypatch.setattr(install, "whoami", lambda url, key: ("rsmith-agent", ""))
     monkeypatch.setattr(
         install, "ask_the_forum_host", lambda s: {"researcher": "rsmith", "policy_topic_id": "42"}
     )
 
-    settings = install.collect(non_interactive=True)
+    settings = install.collect()
 
     assert settings["policy_topic_id"] == "42" and settings["researcher"] == "rsmith"
+    assert settings["api_username"] == "rsmith-agent"
 
 
 def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch, capsys):
@@ -419,3 +417,84 @@ def test_the_closing_message_says_where_instructions_go(tmp_path, monkeypatch):
     (tmp_path / "thesis" / "QUPA.md").write_text("x", encoding="utf-8")
     assert str(tmp_path / "thesis" / "QUPA.md") in install.instructions_summary(str(agent_dir))
     assert "For your agent's wakes" not in install.instructions_summary("")
+
+
+def _saved_env(tmp_path, monkeypatch, extra=""):
+    env = install.ENV_PATH
+    env.write_text(
+        "# Written by agent-kit/install.py.\nQUPA_FORUM_URL=https://forum.example\nQUPA_API_USERNAME=a-agent\n"
+        "QUPA_API_KEY=k\nQUPA_POLICY_TOPIC_ID=7\nQUPA_RESEARCHER=a\nQUPA_RANKING_URL=https://forum.example/r\n"
+        "QUPA_AGENT_DIR=/work\nQUPA_DIARY=public\nQUPA_DIARY_HOUR=5\n" + extra,
+        encoding="utf-8",
+    )
+    return env
+
+
+def test_running_it_again_asks_nothing_while_the_saved_key_works(tmp_path, monkeypatch, capsys):
+    _saved_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "whoami", lambda url, key: ("a-agent", ""))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail(f"asked {prompt!r}"))
+    settings = install.collect()
+    assert (settings["api_key"], settings["agent_dir"], settings["diary"], settings["diary_hour"]) == ("k", "/work", "public", "5")
+    assert "--reconfigure" in capsys.readouterr().out
+
+
+def test_a_saved_key_that_no_longer_works_is_asked_for_again(tmp_path, monkeypatch):
+    _saved_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "whoami", lambda url, key: (None, "the forum refused the key"))
+    assert install.saved_settings() is None
+
+
+def test_reconfigure_ignores_the_saved_settings(tmp_path, monkeypatch):
+    _saved_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(install, "saved_settings", lambda: pytest.fail("read the saved settings"))
+    monkeypatch.setattr(install, "interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError))
+    with pytest.raises(EOFError):
+        install.collect(reconfigure=True)
+
+
+def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(tmp_path, monkeypatch, capsys):
+    """The account, the researcher, the policy topic and the ranking URL come
+    from the forum, and the diary is off; nothing is asked."""
+    install.ENV_PATH.write_text(
+        "QUPA_FORUM_URL=https://forum.example/\nQUPA_API_KEY=k\nQUPA_AGENT_DIR=/notes\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(install, "whoami", lambda url, key: ("a-agent", ""))
+    monkeypatch.setattr(install, "ask_the_forum_host", lambda s: {"researcher": "a", "policy_topic_id": "7"})
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail(f"asked {prompt!r}"))
+    settings = install.collect()
+    assert settings["forum_url"] == "https://forum.example" and settings["api_username"] == "a-agent"
+    assert (settings["policy_topic_id"], settings["researcher"], settings["agent_dir"], settings["diary"]) == ("7", "a", "/notes", "off")
+    assert settings["ranking_url"] == install.ranking_url_for("https://forum.example")
+
+
+def test_with_no_settings_and_nobody_to_ask_it_says_what_to_write(monkeypatch, capsys):
+    monkeypatch.setattr(install, "interactive", lambda: False)
+    with pytest.raises(SystemExit) as stopped:
+        install.collect()
+    assert stopped.value.code == 2
+    assert "QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR" in capsys.readouterr().err
+
+
+def test_writing_env_keeps_what_the_browsers_set(tmp_path, monkeypatch):
+    env = _saved_env(tmp_path, monkeypatch, "QUPA_WAKE_MODEL=opus\n")
+    install.write_env({"forum_url": "https://forum.example", "api_username": "a-agent", "api_key": "k2",
+                       "policy_topic_id": "7", "agent_dir": "/work"})
+    values = install.env_values(env)
+    assert values["QUPA_WAKE_MODEL"] == "opus" and values["QUPA_API_KEY"] == "k2"
+    text = env.read_text(encoding="utf-8")
+    assert text.count("QUPA_API_KEY=") == 1 and text.count("QUPA_WAKE_MODEL=") == 1
+
+
+def test_pkill_is_given_the_pattern_after_a_double_dash(monkeypatch):
+    """The pattern starts with a dash, which pkill would otherwise read as an
+    option and match nothing."""
+    ran = []
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/pkill" if name == "pkill" else None)
+    monkeypatch.setattr(install.subprocess, "run", lambda argv, **k: ran.append(argv) or subprocess.CompletedProcess(argv, 1, "", ""))
+    install.stop_running_tray()
+    install.stop_running_daemon()
+    pkills = [argv for argv in ran if argv[0] == "pkill"]
+    assert len(pkills) == 2 and all(argv[2] == "--" and argv[3].startswith("-m qupa_cafe.") for argv in pkills)

@@ -83,11 +83,12 @@ def test_already_the_newest_runs_no_installer(ran, capsys):
 
 
 def test_an_upgrade_runs_the_installer_with_this_machines_settings(ran):
-    """--non-interactive, which reads what load_env_file filled in."""
+    """Plain, so that it reuses the settings in env and asks only where they
+    no longer work."""
     calls, outcome = ran
     outcome["after"] = "99.0.0"
     assert update.update() == 0
-    assert calls[1][-3:] == ["-m", "qupa_cafe.install", "--non-interactive"]
+    assert calls[1][-2:] == ["-m", "qupa_cafe.install"]
 
 
 def test_the_version_is_read_from_a_fresh_interpreter(monkeypatch):

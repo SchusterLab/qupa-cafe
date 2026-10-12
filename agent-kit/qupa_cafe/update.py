@@ -1,7 +1,7 @@
 """Update the kit in place: ``python -m qupa_cafe.update``, or the tray icon's Update the agent kit.
 
 ``pip install --upgrade`` into this interpreter, then the installer,
-non-interactively with this machine's settings, in a process of its own so it
+which reuses this machine's settings, in a process of its own so it
 runs the new code and restarts the daemon and icon. A checkout is refused,
 since it would shadow what pip installs.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import __version__
 from .daemon import load_env_file
-from .install import PACKAGE_NAME, interpreter_argv, tray_available
+from .install import PACKAGE_NAME, interpreter_argv, pause, tray_available
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -121,15 +121,6 @@ def installed_version() -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def pause() -> None:
-    """Keep the window open until the researcher has read it."""
-    if sys.stdin and sys.stdin.isatty():
-        try:
-            input("\nPress Enter to close this window.")
-        except EOFError:
-            pass
-
-
 def update() -> int:
     if not installed_from_index():
         print(
@@ -169,8 +160,8 @@ def update() -> int:
         return 1
 
     print(f"\nUpgraded {__version__} -> {after}. Running the installer with this machine's settings...")
-    # --non-interactive reads the settings load_env_file put in the environment.
-    return run([*interpreter_argv("qupa_cafe.install"), "--non-interactive"])
+    # Which it reads from env, asking for them only where they no longer work.
+    return run(interpreter_argv("qupa_cafe.install"))
 
 
 def main() -> int:

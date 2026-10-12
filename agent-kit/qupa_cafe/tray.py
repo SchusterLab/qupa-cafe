@@ -3,7 +3,8 @@
 Clicking it opens its menu: the forum in the default browser, the wake
 browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``)
 in a terminal, the daemon's log, a restart of
-the daemon, an update of the kit (greyed while it is the newest), and Quit.
+the daemon, an update of the kit (greyed while it is the newest), the
+installer run again to change its settings, the uninstaller, and Quit.
 It reads the daemon's state file and holds its own lock so a second copy
 exits; restarting is the one thing it does to the daemon.
 
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -27,6 +29,8 @@ from . import __version__, update, wakes
 from .daemon import Settings, claim_lock, load_env_file, log_path, outside_session_env
 
 REFRESH_SECONDS = 20
+# Seconds to wait at login for the desktop's StatusNotifierItem host.
+STATUS_NOTIFIER_WAIT = 30
 
 COLOURS = {
     "polling": (46, 160, 67),
@@ -197,7 +201,30 @@ def menu_on_click(icon_class: type) -> type:
     return MenuOnClick
 
 
+def status_notifier() -> bool:
+    """Whether to show the icon as a StatusNotifierItem, which is how the
+    Linux desktops that show tray icons at all show them. Waits a while for
+    the desktop's host, which may start after the icon at login."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        from . import sni
+    except ImportError:
+        return False
+    for _ in range(STATUS_NOTIFIER_WAIT):
+        found = sni.watcher_present()
+        if found is not False:
+            return bool(found)
+        time.sleep(1)
+    return False
+
+
 def main() -> int:
+    # pystray chooses its backend on import, and fails where it has none that
+    # works, as on a Wayland desktop with no PyGObject; its own is then unused.
+    use_sni = status_notifier()
+    if use_sni:
+        os.environ["PYSTRAY_BACKEND"] = "dummy"
     try:
         import pystray
     except ImportError:
@@ -292,6 +319,19 @@ def main() -> int:
         if not open_terminal([console_python(), "-m", "qupa_cafe.update"], settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.update", "Qupa Cafe")
 
+    def reconfigure(icon, item) -> None:
+        # The installer asks its questions in a window of its own, and
+        # restarts the daemon and this icon.
+        argv = [console_python(), "-m", "qupa_cafe.install", "--reconfigure", "--wait"]
+        if not open_terminal(argv, settings, "reconfigure"):
+            icon.notify("No terminal to open. Run: qupa-install --reconfigure", "Qupa Cafe")
+
+    def uninstall(icon, item) -> None:
+        # It asks first in its window, and stops this icon.
+        argv = [console_python(), "-m", "qupa_cafe.uninstall", "--wait"]
+        if not open_terminal(argv, settings, "uninstall"):
+            icon.notify("No terminal to open. Run: qupa-uninstall", "Qupa Cafe")
+
     def quit_tray(icon, item) -> None:
         stop.set()
         icon.stop()
@@ -303,10 +343,18 @@ def main() -> int:
         pystray.MenuItem("Open the daemon's log", open_log),
         pystray.MenuItem("Restart the daemon", restart),
         pystray.MenuItem(update_text, run_update, enabled=update_enabled),
+        pystray.MenuItem("Reconfigure the agent kit", reconfigure),
+        pystray.MenuItem("Uninstall the agent kit", uninstall),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
-    icon = menu_on_click(pystray.Icon)("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
+    if use_sni:
+        from .sni import icon_class
+
+        Icon = icon_class()
+    else:
+        Icon = menu_on_click(pystray.Icon)
+    icon = Icon("qupa-cafe", images["stopped"], "Qupa Cafe", menu)
 
     def refresh(icon) -> None:
         # In pystray's thread, the only one it lets change the icon everywhere.

@@ -36,7 +36,7 @@ import sys
 import tarfile
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 if __package__ in (None, ""):
     # Run as a script, which is how the hook is run: the package's parent, so
@@ -476,6 +476,92 @@ def ensure_programs() -> str | None:
     return unpacked
 
 
+# Ubuntu 23.10 and later restrict unprivileged user namespaces through
+# AppArmor, and confine /usr/bin/bwrap so that what it starts has no
+# capabilities: the runtime's seccomp step, run inside bubblewrap, then fails
+# to make its own namespace, whatever the sysctl says. A root-owned copy of
+# that bubblewrap at a path of its own, with a profile allowing it user
+# namespaces, works with the restriction left on, and is the only exemption.
+# Linux paths, named as POSIX paths so that they read the same wherever this runs.
+USERNS_SYSCTL = PurePosixPath("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+UBUNTU_BWRAP_PROFILE = PurePosixPath("/etc/apparmor.d/bwrap-userns-restrict")
+SYSTEM_BWRAP = PurePosixPath("/usr/bin/bwrap")
+LINUX_BWRAP = PurePosixPath("/usr/local/libexec/qupa-cafe/bwrap")
+LINUX_BWRAP_PROFILE = PurePosixPath("/etc/apparmor.d/qupa-cafe-bwrap")
+LINUX_BWRAP_PROFILE_TEXT = NL.join([
+    "abi <abi/4.0>,",
+    "include <tunables/global>",
+    "",
+    "# A root-owned copy of bubblewrap for the qupa-cafe sandbox, allowed user namespaces.",
+    f"profile qupa-cafe-bwrap {LINUX_BWRAP} flags=(unconfined) {{",
+    "  userns,",
+    "  include if exists <local/qupa-cafe-bwrap>",
+    "}",
+])
+
+
+def userns_restricted() -> bool:
+    """Whether this Linux confines user namespaces so that the system's
+    bubblewrap cannot run the sandbox."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        restricted = Path(USERNS_SYSCTL).read_text(encoding="ascii").strip() == "1"
+    except OSError:
+        restricted = False
+    return restricted or Path(UBUNTU_BWRAP_PROFILE).exists()
+
+
+def bwrap_exempted() -> bool:
+    return Path(LINUX_BWRAP).is_file() and Path(LINUX_BWRAP_PROFILE).is_file()
+
+
+def bwrap_script_path() -> Path:
+    return runtime_dir().parent / "qupa-cafe-bwrap.sh"
+
+
+def bwrap_script() -> str:
+    """The script the researcher runs with sudo, once, to give the sandbox
+    its bubblewrap. qupa-install never runs sudo itself, so the password goes
+    only to a sudo the researcher started."""
+    return NL.join([
+        "#!/bin/sh",
+        "# Gives the qupa-cafe sandbox a bubblewrap that AppArmor allows user namespaces:",
+        f"# a root-owned copy of {SYSTEM_BWRAP} at",
+        f"#   {LINUX_BWRAP}",
+        "# and a profile for that copy alone at",
+        f"#   {LINUX_BWRAP_PROFILE}",
+        "# The restriction stays on for everything else. Run it once, with sudo. To undo it:",
+        f"#   sudo apparmor_parser -R {LINUX_BWRAP_PROFILE}",
+        f"#   sudo rm -r {LINUX_BWRAP.parent} {LINUX_BWRAP_PROFILE}",
+        "set -e",
+        "umask 022",
+        f"[ -x {SYSTEM_BWRAP} ] || apt-get install -y bubblewrap",
+        f"install -D -m 755 {SYSTEM_BWRAP} {LINUX_BWRAP}",
+        f"cat > {LINUX_BWRAP_PROFILE} <<'EOF'",
+        LINUX_BWRAP_PROFILE_TEXT,
+        "EOF",
+        f"apparmor_parser -r {LINUX_BWRAP_PROFILE}",
+        "echo 'Done. Now run qupa-install again.'",
+        "",
+    ])
+
+
+def ask_for_bwrap() -> bool:
+    """Write the script, say how to run it, and return False: the sandbox
+    is set up by the next qupa-install, once the script has run."""
+    script = bwrap_script_path()
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(bwrap_script(), encoding="utf-8", newline=NL)
+    print("  One step needs sudo, once. Run this, then qupa-install again:")
+    print()
+    print(f"    sudo sh {script}")
+    print()
+    print("  It lets the sandbox use its own copy of bubblewrap under Ubuntu's AppArmor")
+    print("  rules. The script is short, and its first lines say what it does.")
+    return False
+
+
 def missing_programs() -> list[str]:
     """What the sandbox needs that this machine still lacks, each with how to get it."""
     missing = []
@@ -688,6 +774,9 @@ def setup(agent_dir: str, interactive: bool) -> bool:
             print(f"    {line}")
         return False
 
+    if userns_restricted() and not bwrap_exempted():
+        return ask_for_bwrap()
+
     node, npm, pixi = (find(name) for name in ("node", "npm", "pixi"))
     runtime, workspace = runtime_dir(), workspace_dir()
 
@@ -744,8 +833,10 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         "pixi": pixi,
         "bash": git_bash() if WINDOWS else "/bin/bash",
         # Where the runtime finds bwrap, socat and rg, which may be only in
-        # pixi's bin directory and not on the PATH a wake inherits.
-        "path": sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
+        # pixi's bin directory and not on the PATH a wake inherits; the
+        # exempted bubblewrap first, where AppArmor needs it.
+        "path": ([str(LINUX_BWRAP.parent)] if userns_restricted() else [])
+        + sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
         "programs": program_dirs(),
         "windows_ports": list(WINDOWS_PROXY_PORTS),
     }
