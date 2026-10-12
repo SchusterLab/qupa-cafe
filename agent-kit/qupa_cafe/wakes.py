@@ -636,7 +636,7 @@ def read_transcript(path: Path) -> Transcript:
     except OSError as exc:
         return Transcript("", [paint(f"could not read {path}: {exc}", "error")], [])
 
-    for raw in records:
+    for raw in records[forked_from(records):]:
         try:
             record = json.loads(raw)
         except json.JSONDecodeError:
@@ -708,6 +708,26 @@ def read_transcript(path: Path) -> Transcript:
     for subagent in sorted((path.with_suffix("") / "subagents").glob("*.jsonl")):
         responses.update(subagent_responses(subagent))
     return Transcript(prompt, lines, wrote, usage_of(responses))
+
+
+def forked_from(records: list[str]) -> int:
+    """Where a wake's own records start in its transcript: after the parent
+    session's, which a fork's transcript holds first, so that neither the
+    parent's prompt nor its cost is taken for the wake's; 0 for any other."""
+    prompts = []
+    for index, raw in enumerate(records):
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        content = (record.get("message") or {}).get("content")
+        if record.get("type") == "user" and isinstance(content, str) and not record.get("isMeta"):
+            prompts.append((index, content))
+            if len(prompts) == 2:
+                break
+    if len(prompts) == 2 and prompts[0][1].startswith(daemon.PARENT_MARK):
+        return prompts[1][0]
+    return 0
 
 
 def subagent_responses(path: Path) -> dict[str, tuple[dict, str]]:

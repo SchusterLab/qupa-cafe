@@ -1251,3 +1251,106 @@ def test_a_daemon_on_this_machine_holding_the_lock_is_stopped(tmp_path, monkeypa
     assert stopped == [424242] and lock not in (False, None)
     lock.close()
 
+
+# ------------------------------------------------------------ the parent
+
+
+def test_a_forked_prompt_points_to_the_parent_for_what_it_holds(monkeypatch):
+    """The policy, the researcher's instructions and the sandbox's notice are
+    in the parent; the post, its framing and the agent's name stay."""
+    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
+    prompt = build_prompt(Settings(), "you were mentioned", TOPIC, TEMPLATE, "THE POLICY", forked=True)
+    assert daemon.IN_PARENT in prompt and daemon.DATA_NOTICE in prompt
+    assert "THE POLICY" not in prompt and "RESEARCHER SAYS" not in prompt
+    assert daemon.OLD_NOTES not in prompt
+    fresh = build_prompt(Settings(), "you were mentioned", TOPIC, TEMPLATE, "THE POLICY")
+    assert "THE POLICY" in fresh and "RESEARCHER SAYS" in fresh and daemon.OLD_NOTES in fresh
+
+
+def test_the_parent_holds_what_every_fork_shares(monkeypatch):
+    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
+    settings = Settings(api_username="a-agent", researcher="a")
+    prompt = daemon.parent_prompt(settings, "THE POLICY", daemon.sandbox_config(settings))
+    assert prompt.startswith(daemon.PARENT_MARK)
+    for part in ("`a-agent`", "THE POLICY", "RESEARCHER SAYS", daemon.OLD_NOTES, daemon.PARENT_READY):
+        assert part in prompt
+
+
+def test_a_fork_resumes_the_parent_as_a_session_of_its_own():
+    command = daemon.runtime_command(Settings(), "task", name="n", parent="p-1", choice=daemon.models.Choice("opus", "high"))
+    assert command[:5] == ["claude", "--bg", "--resume", "p-1", "--fork-session"] and command[5] == "task"
+    assert command[command.index("--model") + 1] == "opus" and command[command.index("--effort") + 1] == "high"
+
+
+@pytest.fixture
+def parents(tmp_path, monkeypatch):
+    """A journal, transcripts that exist, and the parents made."""
+    journal = daemon.Journal(str(tmp_path / "state.sqlite3"))
+    made = []
+
+    def make(settings, prompt, choice, journal):
+        made.append(prompt)
+        return f"parent-{len(made)}"
+
+    monkeypatch.setattr(daemon, "make_parent", make)
+    from qupa_cafe import wakes
+
+    monkeypatch.setattr(wakes, "transcript_path", lambda session: tmp_path if session else None)
+    return journal, made
+
+
+def test_a_single_wake_makes_no_parent(parents):
+    journal, made = parents
+    assert daemon.parent_for(Settings(), journal, "P", daemon.models.Choice(), daemon.PARENT_BURST - 1) == ""
+    assert made == []
+
+
+def test_wakes_due_together_make_a_parent_that_every_later_wake_forks(parents):
+    """A first fork costs about what a fresh wake does, so an existing parent
+    is forked whether its cache is warm or not, and by a lone wake too."""
+    journal, made = parents
+    choice = daemon.models.Choice()
+    assert daemon.parent_for(Settings(), journal, "P", choice, daemon.PARENT_BURST) == "parent-1"
+    assert daemon.parent_for(Settings(), journal, "P", choice, 1) == "parent-1"
+    assert len(made) == 1
+
+
+def test_a_changed_policy_or_model_makes_a_new_parent(parents):
+    journal, made = parents
+    choice = daemon.models.Choice()
+    daemon.parent_for(Settings(), journal, "P", choice, daemon.PARENT_BURST)
+    # A parent made from another policy is not forked, and a lone wake makes no new one.
+    assert daemon.parent_for(Settings(), journal, "NEW POLICY", choice, 1) == ""
+    assert daemon.parent_for(Settings(), journal, "P", daemon.models.Choice("haiku"), daemon.PARENT_BURST) == "parent-2"
+
+
+def test_a_dry_run_or_no_journal_never_forks(parents):
+    journal, made = parents
+    choice = daemon.models.Choice()
+    assert daemon.parent_for(Settings(), None, "P", choice, 99) == ""
+    assert daemon.parent_for(Settings(), journal, "P", choice, 99, dry_run=True) == ""
+    assert made == []
+
+
+def test_a_fork_that_does_not_start_wakes_afresh(monkeypatch, tmp_path):
+    runs = []
+
+    def run(claude, command, cwd, **kwargs):
+        runs.append(command)
+        return ("did not start: no conversation found", "") if len(runs) == 1 else ("done", "s-2")
+
+    monkeypatch.setattr(daemon, "run_in_background", run)
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: "/bin/claude")
+    assert daemon.wake_agent(Settings(), "forked task", parent="p-1", fresh_prompt="whole prompt")
+    assert "--fork-session" in runs[0] and "forked task" in runs[0]
+    assert "--resume" not in runs[1] and "whole prompt" in runs[1]
+
+
+def test_a_background_session_can_be_ended_by_what_it_said(monkeypatch):
+    """The parent answers READY and stays listed as working."""
+    monkeypatch.setattr(daemon.subprocess, "run", _started("backgrounded · 1a2b3c4d · qupa parent"))
+    monkeypatch.setattr(daemon, "background_sessions", lambda c: [{"id": "1a2b3c4d", "sessionId": "s-1", "state": "working"}])
+    monkeypatch.setattr(daemon, "remove_background", lambda c, short: None)
+    monkeypatch.setattr(daemon, "attached_ids", lambda: set())
+    state, session = daemon.run_in_background("claude", ["claude", "--bg", "p"], None, ended=lambda s: s == "s-1")
+    assert (state, session) == ("done", "s-1")

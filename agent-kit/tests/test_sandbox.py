@@ -275,11 +275,11 @@ def test_a_wake_without_the_sandbox_gets_no_hook(tmp_path):
     assert "hooks" not in chosen
 
 
-def test_a_wake_loads_the_forum_s_tools_rather_than_searching_for_them(installed, tmp_path):
-    """So it spends no call finding get_policy and the rest."""
+def test_a_wake_keeps_claude_code_s_tool_search(installed, tmp_path):
+    """Loading every tool with the session made each request reread their
+    definitions; a wake that reads only its post needs none of them."""
     for config in (None, installed):
-        chosen = json.loads(daemon.wake_settings(config))
-        assert chosen["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+        assert "ENABLE_TOOL_SEARCH" not in json.dumps(json.loads(daemon.wake_settings(config)))
     assert "hooks" in json.loads(daemon.wake_settings(installed))
 
 

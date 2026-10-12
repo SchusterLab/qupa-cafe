@@ -572,15 +572,18 @@ def where_to_post(username: str, mode: str, category: dict, topic: dict | None, 
 
 
 def build_prompt(settings, template: str, day: date, start: datetime, end: datetime,
-                 where: str, sessions_text: str, notice: str, transcripts: str = "", policy: str = "") -> str:
+                 where: str, sessions_text: str, notice: str, transcripts: str = "", policy: str = "",
+                 forked: bool = False) -> str:
     """Fill the host's wording with the day's facts. DATA_NOTICE and the
     researcher's own instructions go in whatever the template says, and the
-    sessions are substituted last, so nothing they hold is substituted."""
+    sessions are substituted last, so nothing they hold is substituted. A
+    wake ``forked`` from the parent session finds the researcher's
+    instructions there, and gets none here."""
     if settings.researcher:
         whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
     else:
         whoami = f"You are `{settings.api_username}` here."
-    from_researcher = local.instructions(settings.agent_dir or None)
+    from_researcher = "" if forked else local.instructions(settings.agent_dir or None)
 
     filled = template
     for token, value in (
@@ -606,7 +609,7 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
         filled += "\n\n" + from_researcher
     if transcripts and transcripts not in filled:
         filled += "\n\n" + transcripts
-    return filled + "\n\n" + notice
+    return filled + "\n\n" + notice if notice else filled
 
 
 # -------------------------------------------------------------- the day

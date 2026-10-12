@@ -54,6 +54,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import hashlib
 import time
 import urllib.error
 import urllib.parse
@@ -265,6 +266,13 @@ class Journal:
                 floor_max REAL NOT NULL,
                 at        TEXT NOT NULL
             );
+            -- The session every wake and diary entry forks from: its id, and
+            -- what it was made from.
+            CREATE TABLE IF NOT EXISTS parent (
+                id       INTEGER PRIMARY KEY CHECK (id = 1),
+                session  TEXT NOT NULL,
+                key      TEXT NOT NULL
+            );
             -- Where the daemon that took this one's agent runs, written as
             -- this one retires, for the tray icon and the wake browser.
             CREATE TABLE IF NOT EXISTS replaced (
@@ -353,6 +361,22 @@ class Journal:
             " ON CONFLICT(id) DO UPDATE SET newer = excluded.newer, at = excluded.at",
             (newer,),
         )
+
+    def parent(self) -> tuple[str, str] | None:
+        """(session, key) of the parent, or None."""
+        try:
+            row = self.db.execute("SELECT session, key FROM parent WHERE id = 1").fetchone()
+        except sqlite3.Error:
+            return None
+        return (row[0], row[1]) if row else None
+
+    def record_parent(self, session: str | None, key: str = "") -> None:
+        """A new parent, or None to forget it."""
+        if session is None:
+            self._write("the parent's end", "DELETE FROM parent", ())
+        else:
+            self._write("the parent session",
+                        "INSERT OR REPLACE INTO parent (id, session, key) VALUES (1, ?, ?)", (session, key))
 
     def record_replaced(self, by: str | None) -> None:
         """Where the daemon that took the agent runs, or None to clear it."""
@@ -750,21 +774,24 @@ def policy_text(settings: Settings) -> str:
     return (nl * 2).join(parts)
 
 
-def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "") -> str:
+def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "",
+                 forked: bool = False) -> str:
     """Fill the host's wording with this wake's facts: the reason, the policy,
     the thread, and the newest post only (the agent fetches more itself, to
     save tokens). DATA_NOTICE, the policy and the researcher's own
     instructions go in whatever the template says, and the body is
     substituted last, so a post cannot occupy any of those places.
-    docs/10-security.md.
+    For a wake ``forked`` from the parent session, which holds the policy,
+    the researcher's instructions and the sandbox's notice, the prompt
+    points to them there instead. docs/10-security.md.
     """
-    policy = policy or POLICY_UNFETCHED.format(reason="none was given")
+    policy = IN_PARENT if forked else policy or POLICY_UNFETCHED.format(reason="none was given")
     posts = topic.get("post_stream", {}).get("posts") or []
     title = topic.get("title", "(untitled)")
     topic_id = topic.get("id")
     count = topic.get("posts_count") or len(posts)
 
-    from_researcher = local.instructions(settings.agent_dir or None)
+    from_researcher = "" if forked else local.instructions(settings.agent_dir or None)
 
     latest = newest_post(topic)
     author = latest.get("username", "?")
@@ -806,7 +833,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     if from_researcher and from_researcher not in filled:
         filled += chr(10) + chr(10) + from_researcher
 
-    config = sandbox_config(settings)
+    config = None if forked else sandbox_config(settings)
     return filled if config is None else filled + chr(10) + chr(10) + wake_notice(settings, config)
 
 
@@ -818,7 +845,8 @@ WAKE_NAME = "qupa wake:"
 # the wake browser. The diary leaves out every session named one of these.
 CHECK_NAME = "qupa check"
 TUNE_NAME = "qupa tune:"
-KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME)
+PARENT_NAME = "qupa parent"
+KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME, PARENT_NAME)
 
 
 @dataclass
@@ -934,18 +962,19 @@ def mcp_config_disagreement(settings: Settings) -> str:
 
 
 def wake_settings(config: dict | None) -> str:
-    """The ``--settings`` a wake gets, as JSON: the sandbox's hook, and the
-    forum's tools loaded with the session rather than searched for, so a
-    wake spends no call finding them. Their definitions then sit in the part
-    of the prompt every wake shares, which the prompt cache serves."""
-    chosen = json.loads(sandbox.claude_settings()) if config is not None else {}
-    chosen["env"] = {"ENABLE_TOOL_SEARCH": "false"}
-    return json.dumps(chosen)
+    """The ``--settings`` a wake gets, as JSON: the sandbox's hook. Claude
+    Code's tool search stays on, so a tool's definition is loaded only by a
+    wake that searches for it. A wake that only reads its post, as most do,
+    then rereads a shared start some 26k tokens shorter at every request,
+    and a parent's first fork can read the parent's cache entry."""
+    return json.dumps(json.loads(sandbox.claude_settings()) if config is not None else {})
 
 
-def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "") -> list[str]:
+def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "",
+                    parent: str = "", choice: models.Choice | None = None) -> list[str]:
     """The command line that wakes the agent, its session named for ``wake``
-    or else ``name``."""
+    or else ``name``, forked from the session ``parent`` when one is given,
+    on the model and effort of ``wake`` or else ``choice``."""
     config = sandbox_config(settings)
 
     # A background session, which the researcher can attach to while it runs.
@@ -953,10 +982,14 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
     # for somebody to approve it. The name is how the daemon finds the session
     # again among Claude Code's, and in `/resume` it tells one wake from another.
     command = ["claude", "--bg", prompt, "--permission-mode", "dontAsk"]
+    if parent:
+        command[2:2] = ["--resume", parent, "--fork-session"]
     if wake is not None or name:
         command += ["--name", wake.label if wake is not None else name]
     if wake is not None:
         command += models.Choice(wake.model, wake.effort).flags()
+    elif choice is not None:
+        command += choice.flags()
     if settings.mcp_config and Path(settings.mcp_config).is_file():
         command += ["--mcp-config", settings.mcp_config]
     else:
@@ -1058,11 +1091,13 @@ def run_in_background(
     timeout: int = WAKE_TIMEOUT,
     on_session=None,
     alive=None,
+    ended=None,
 ) -> tuple[str, str]:
     """Start ``command`` (a ``claude --bg``), wait for it to end, and remove
     it, since a finished background session keeps its processes (some 400 MB)
-    until it is. Returns its last state ("done", "failed", "timeout", or why
-    it never started) and its session id."""
+    until it is. ``ended``, given the session id, says it has ended where
+    Claude Code still lists it as working. Returns its last state ("done",
+    "failed", "timeout", or why it never started) and its session id."""
     env = outside_session_env()
     try:
         started = subprocess.run(
@@ -1094,6 +1129,9 @@ def run_in_background(
                     on_session(session)
             if entry is not None and entry.get("state") in ("done", "failed"):
                 state = str(entry["state"])
+                break
+            if ended is not None and session and ended(session):
+                state = "done"
                 break
             if entry is None and session:
                 state = "gone"
@@ -1151,11 +1189,14 @@ def wake_agent(
     on_session=None,
     alive=None,
     on_failure=None,
+    parent: str = "",
+    fresh_prompt: str = "",
 ) -> bool:
     """Invoke the agent runtime once: the only place that costs tokens.
     ``alive`` is called each minute a background wake runs, and ``on_failure``
-    with why a wake did not finish."""
-    command = runtime_command(settings, prompt, wake)
+    with why a wake did not finish. Forked from ``parent`` when one is given,
+    and woken afresh with ``fresh_prompt`` if the fork does not start."""
+    command = runtime_command(settings, prompt, wake, parent=parent)
 
     def failing(reason: str) -> bool:
         if on_failure is not None:
@@ -1192,11 +1233,123 @@ def wake_agent(
             on_session(session)
 
     state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
+    if parent and state.startswith("did not start") and fresh_prompt:
+        LOG.warning("the wake could not fork the parent session (%s); waking afresh", state)
+        command = [command[0], *runtime_command(settings, fresh_prompt, wake)[1:]]
+        state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
     if state != "done":
         LOG.error("the background wake ended %s", state)
         return failing(failure_reason(state, session))
     LOG.info("%s finished", command[0])
     return True
+
+
+# ------------------------------------------------------------ the parent
+
+
+# Every wake and diary entry forks from one session that already holds what
+# they all share: who the agent is, the policy, the researcher's
+# instructions and the sandbox's notice. Claude Code offers a resumed
+# session one tool more than a fresh one, so a parent's first fork cannot
+# read the parent's own cache entry and writes the shared part again, at
+# about the price of a fresh wake; every later fork within the hour reads
+# it, at a tenth of the price, and writes only its own task. Measured on
+# Opus 5.5: a fresh wake or a first fork about 30k input-token equivalents,
+# a later fork about 4k, the parent itself about 29k. So an existing parent
+# is always forked, warm or cold, and a new one made when wakes are due
+# together.
+PARENT_MARK = "This session is the shared start of your forum wakes and diary entries."
+PARENT_READY = "READY"
+# How many wakes must be due at once to make a parent, which pays for
+# itself by the third.
+PARENT_BURST = 2
+# In a forked prompt where the template places the policy.
+IN_PARENT = (
+    "The forum's policy, the hash a write needs, what this agent kit can do, your researcher's "
+    "instructions and what this unattended run can reach are in the first message of this "
+    "session. They hold for this task."
+)
+
+
+def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
+    """What every fork shares, ending in the request to answer READY."""
+    if settings.researcher:
+        whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
+    else:
+        whoami = f"You are `{settings.api_username}` here."
+    nl = chr(10)
+    parts = [
+        PARENT_MARK + " Each wake and each diary entry continues from here with its own task, in a session "
+        "of its own, so nothing one of them reads reaches another.",
+        whoami,
+        policy,
+        local.instructions(settings.agent_dir or None),
+        wake_notice(settings, config),
+        f"There is no task yet. Call no tools and answer with just {PARENT_READY}.",
+    ]
+    return (nl * 2).join(part for part in parts if part)
+
+
+def parent_key(settings: Settings, prompt: str, choice: models.Choice, config: dict) -> str:
+    """What a parent was made from: a fork of one made from anything else
+    would act on an old policy or old instructions, or miss the cache."""
+    made_from = [prompt, choice.model, choice.effort, wake_settings(config), settings.mcp_config,
+                 settings.agent_dir, list(CLAUDE_ALLOWED_TOOLS), __version__]
+    return hashlib.sha256(json.dumps(made_from).encode("utf-8")).hexdigest()
+
+
+def parent_for(settings: Settings, journal: Journal | None, policy: str, choice: models.Choice,
+               due: int, dry_run: bool = False) -> str:
+    """The session for a wake on ``choice`` to fork from, or "" to wake
+    afresh: the parent made from what this wake would share, and with
+    ``due`` wakes waiting and none made yet, a new one, made here."""
+    config = sandbox_config(settings)
+    if journal is None or dry_run or config is None:
+        return ""
+    from . import wakes  # wakes imports this module
+
+    prompt = parent_prompt(settings, policy, config)
+    key = parent_key(settings, prompt, choice, config)
+    stored = journal.parent()
+    if stored is not None and stored[1] == key and wakes.transcript_path(stored[0]) is not None:
+        return stored[0]
+    if due < PARENT_BURST:
+        return ""
+    session = make_parent(settings, prompt, choice, journal)
+    if session:
+        journal.record_parent(session, key)
+    return session
+
+
+def make_parent(settings: Settings, prompt: str, choice: models.Choice, journal: Journal) -> str:
+    """Start the parent session and wait for its READY. Its id, or ""."""
+    executable = shutil.which("claude")
+    if executable is None:
+        return ""
+    command = [executable, *runtime_command(settings, prompt, name=PARENT_NAME, choice=choice)[1:]]
+    wake = Wake(agent_dir=settings.agent_dir, topic_id=None, post_number=None,
+                title="the parent session every wake forks from", reason="parent",
+                model=choice.model, effort=choice.effort)
+    row = journal.begin(wake)
+    LOG.info("starting the parent session that wakes fork from")
+
+    def learnt(session: str) -> None:
+        if row is not None:
+            journal.set_session(row, session)
+
+    # Claude Code lists a session that has answered as still working, so its
+    # end is read from what it said.
+    state, session = run_in_background(
+        executable, command, settings.agent_dir or None, timeout=300, on_session=learnt,
+        ended=lambda session: PARENT_READY in last_said(session),
+    )
+    ok = state == "done" and bool(session)
+    if row is not None:
+        journal.end(row, ok)
+    if not ok:
+        LOG.warning("the parent session did not start (%s); wakes run afresh", state)
+        return ""
+    return session
 
 
 def newer_kit() -> str | None:
@@ -1402,8 +1555,11 @@ def one_pass(
 
         if policy is None:
             policy = policy_text(settings)
-        prompt = build_prompt(settings, candidate.reason, topic, wording, policy)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
+        fresh = build_prompt(settings, candidate.reason, topic, wording, policy)
+        parent = parent_for(settings, journal, policy, models.Choice(wake.model, wake.effort),
+                            len(candidates), dry_run)
+        prompt = build_prompt(settings, candidate.reason, topic, wording, policy, forked=True) if parent else fresh
         # Before it starts, so one that never returns still shows.
         row = journal.begin(wake) if journal is not None and not dry_run else None
         on_session = (lambda session, row=row: journal.set_session(row, session)) if row is not None else None
@@ -1416,6 +1572,7 @@ def one_pass(
         ok = wake_agent(
             settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
             alive=lambda: ranking.alive(agent), on_failure=on_failure,
+            parent=parent, fresh_prompt=fresh,
         )
         if row is not None:
             journal.end(row, ok)
@@ -1509,13 +1666,18 @@ def diary_pass(
             for session in found:
                 session.written = None
 
-    prompt = diary.build_prompt(
-        settings, template, day, start, end,
-        diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher),
-        diary.digest(found), wake_notice(settings, config), diary.transcripts_notice(directory),
-        policy_text(settings),
-    )
+    policy = policy_text(settings)
     chosen_model = models.read(models.DIARY)
+    # One diary entry a day, so it forks a parent the wakes made, and makes none.
+    parent = parent_for(settings, journal, policy, chosen_model, 1, dry_run)
+    where = diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher)
+
+    def diary_prompt(forked: bool) -> str:
+        return diary.build_prompt(
+            settings, template, day, start, end, where, diary.digest(found),
+            "" if forked else wake_notice(settings, config), diary.transcripts_notice(directory),
+            IN_PARENT if forked else policy, forked=forked,
+        )
     wake = Wake(
         agent_dir=settings.agent_dir, topic_id=None, post_number=None,
         title=f"{diary.topic_title(settings.api_username)}, {day.isoformat()}",
@@ -1527,8 +1689,8 @@ def diary_pass(
     on_session = (lambda session: journal.set_session(row, session)) if row is not None else None
     agent = settings.api_username
     try:
-        ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
-                        alive=lambda: ranking.alive(agent))
+        ok = wake_agent(settings, diary_prompt(bool(parent)), dry_run=dry_run, wake=wake, on_session=on_session,
+                        alive=lambda: ranking.alive(agent), parent=parent, fresh_prompt=diary_prompt(False))
     finally:
         if root is not None:
             shutil.rmtree(root, ignore_errors=True)
