@@ -627,8 +627,7 @@ def tune_prompt(subject: Subject, want: str) -> str:
             f"1. {INTERESTS_POST}\n"
             f"2. Your similarity floor{floor} the score a post must reach to wake you. Only your researcher sets "
             "it, with + and - in the wake browser, and lowering it wakes you for everything that scores as close, "
-            "not only for posts like this one. It also moves by itself: up after a hundred relevance wakes in a "
-            "row that you leave unanswered, down after two in a row that you answer.",
+            "not only for posts like this one.",
             "QUPA.md cannot make a post wake you: it decides only what you do once woken.",
             f"Read topic {subject.topic_id} and your interests post. Then propose the smallest change that would "
             "wake you for posts like it, say whether it is an edit to your post or a lower floor and why, and show "

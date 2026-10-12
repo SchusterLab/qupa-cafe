@@ -42,7 +42,6 @@ from ranking import (  # noqa: E402
     Ranker,
     State,
     Texts,
-    wake_outcome,
     embedding_limit,
     older_than,
     parse_agents,
@@ -393,7 +392,7 @@ def test_a_first_post_is_still_scored_by_its_topic(state):
 def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
     """The daemon polls a minute later, on the next UTC day."""
     ranker = OfflineRanker(Config(), state, [])
-    an_hour_ago = (datetime.now(timezone.utc) - HOUR).isoformat()
+    an_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     state.db.execute(
         "INSERT INTO wakes (agent, post_id, day, at, kind) VALUES ('a-agent', 7, ?, ?, 'forum')",
@@ -427,151 +426,17 @@ def test_a_wake_more_than_a_day_old_is_no_longer_pending(state):
 # ------------------------------------------------------- each agent's floor
 
 
-WOKEN = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
-HOUR = timedelta(hours=1)
-
-
-def test_a_wake_is_not_judged_before_it_settles():
-    assert wake_outcome(WOKEN, WOKEN + HOUR / 2, WOKEN + HOUR, False, True, HOUR) is None
-
-
-def test_a_reply_in_the_topic_counts_as_replied():
-    assert wake_outcome(WOKEN, WOKEN + HOUR, None, False, True, HOUR) == "replied"
-
-
-def test_no_reply_with_the_daemon_still_polling_counts_as_silent():
-    assert wake_outcome(WOKEN, WOKEN + 2 * HOUR, WOKEN + HOUR, False, False, HOUR) == "silent"
-
-
-def test_no_reply_from_a_machine_that_is_off_is_not_yet_silent():
-    """An agent whose daemon stopped polling has not declined anything."""
-    assert wake_outcome(WOKEN, WOKEN + 9 * HOUR, WOKEN + HOUR / 2, False, False, HOUR) is None
-
-
-def test_a_wake_that_coincides_with_a_mention_is_ignored():
-    """The kit folds the two into one run, which belongs to the mention."""
-    assert wake_outcome(WOKEN, WOKEN + HOUR, WOKEN + HOUR, True, True, HOUR) == "ignored"
-    assert wake_outcome(WOKEN, WOKEN + HOUR, WOKEN + HOUR, True, False, HOUR) == "ignored"
-
-
-def settle_all(state, config, outcomes, agent="a-agent"):
-    moves = []
-    for post_id, outcome in enumerate(outcomes, start=1):
-        state.record_wake(agent, post_id)
-        moves.append(state.settle(agent, post_id, outcome, config))
-    return moves
-
-
-def test_ten_silent_wakes_in_a_row_raise_the_floor(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
-
-    moves = settle_all(state, config, ["silent"] * 10)
-
-    assert moves == [None] * 9 + [0.72]
-    assert state.floor("a-agent", config.similarity_floor) == 0.72
-
-
-def test_the_run_starts_again_after_the_floor_moves(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
-
-    settle_all(state, config, ["silent"] * 19)
-
-    assert state.floor("a-agent", config.similarity_floor) == 0.72
-
-
-def test_two_replied_wakes_in_a_row_lower_the_floor(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02)
-
-    assert config.replied_wakes_to_lower == 2
-    assert settle_all(state, config, ["replied"] * 2) == [None, 0.68]
-
-
-def test_a_reply_breaks_a_silent_run_and_silence_breaks_a_replied_one(state):
-    config = Config(similarity_floor=0.70, silent_wakes_to_raise=10, replied_wakes_to_lower=3)
-
-    settle_all(state, config, ["silent"] * 9 + ["replied"] * 2 + ["silent"] + ["replied"] * 2)
-
-    assert state.floor("a-agent", config.similarity_floor) == 0.70
-
-
-def test_an_ignored_wake_neither_extends_nor_breaks_a_run(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02, replied_wakes_to_lower=3)
-
-    moves = settle_all(state, config, ["replied", "ignored", "ignored", "replied", "replied"])
-
-    assert moves[-1] == 0.68
-
-
-def test_the_floor_stays_within_its_bounds(state):
-    config = Config(similarity_floor=0.61, floor_step=0.02, floor_min=0.60, replied_wakes_to_lower=1)
-
-    settle_all(state, config, ["replied"] * 5)
-
-    assert state.floor("a-agent", config.similarity_floor) == 0.60
-
-
-def test_floors_are_per_agent(state):
-    config = Config(similarity_floor=0.70, replied_wakes_to_lower=1)
-
-    settle_all(state, config, ["replied"], agent="one")
-
-    assert state.floor("one", config.similarity_floor) == 0.68
-    assert state.floor("two", config.similarity_floor) == 0.70
-
-
-def test_the_floor_and_the_outcomes_survive_a_restart(tmp_path):
+def test_the_floor_survives_a_restart(tmp_path):
     path = str(tmp_path / "ranking.sqlite3")
-    config = Config(similarity_floor=0.70, replied_wakes_to_lower=1)
-    settle_all(State(path), config, ["replied"])
-
-    reopened = State(path)
-
-    assert reopened.floor("a-agent", config.similarity_floor) == 0.68
-    assert reopened.unsettled_wakes() == {}
-
-
-class SettlingRanker(OfflineRanker):
-    """Answers each wake's facts from a table instead of the forum."""
-
-    def __init__(self, config, state, facts):
-        super().__init__(config, state, [])
-        self.facts = facts
-
-    def wake_facts(self, agent, post_id, woken):
-        return self.facts.get(post_id)
-
-
-def test_settling_counts_wakes_in_order_and_waits_for_an_undecided_one(state):
-    config = Config(similarity_floor=0.70, replied_wakes_to_lower=2, wake_settle_minutes=60)
-    for post_id in (1, 2, 3):
-        state.record_wake("a-agent", post_id)
-    state.record_poll("a-agent")
-    # Post 1 was answered, post 2 not yet and the daemon has not polled since,
-    # post 3 was answered: 1 and 3 are not two in a row while 2 is open.
-    ranker = SettlingRanker(config, state, {1: (False, True), 2: (False, False), 3: (False, True)})
-
-    ranker.settle_wakes(now=datetime.now(timezone.utc) + 2 * HOUR)
-
-    assert [post_id for post_id, _ in state.unsettled_wakes()["a-agent"]] == [2, 3]
-    assert state.floor("a-agent", config.similarity_floor) == 0.70
-
-
-def test_a_wake_on_a_vanished_post_is_ignored(state):
-    config = Config(wake_settle_minutes=60)
-    state.record_wake("a-agent", 1)
-    ranker = SettlingRanker(config, state, {})
-
-    ranker.settle_wakes(now=datetime.now(timezone.utc) + 2 * HOUR)
-
-    assert state.unsettled_wakes() == {}
+    State(path).set_floor("a-agent", 0.68)
+    assert State(path).floor("a-agent", 0.70) == 0.68
 
 
 def test_the_ranker_compares_with_the_agent_s_own_floor(state):
     """OfflineRanker scores everything 0.9."""
-    config = Config(similarity_floor=0.70, floor_step=0.25, floor_max=1.0, silent_wakes_to_raise=1)
+    config = Config(similarity_floor=0.70, floor_max=1.0)
     ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")])
-    state.record_wake("a-agent", 100)
-    state.settle("a-agent", 100, "silent", config)
+    state.set_floor("a-agent", 0.95)
 
     decisions = {d.agent: d for d in ranker.score_post(a_post(1, "someone"))}
 
@@ -1090,17 +955,6 @@ def test_setting_a_floor_needs_the_agent_s_key(endpoint):
 
     assert status == 401
     assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
-
-
-def test_a_floor_set_by_hand_starts_the_runs_again(state):
-    config = Config(similarity_floor=0.70, floor_step=0.02, silent_wakes_to_raise=10)
-    settle_all(state, config, ["silent"] * 9)
-
-    state.set_floor("a-agent", 0.80)
-    state.record_wake("a-agent", 100)
-
-    assert state.settle("a-agent", 100, "silent", config) is None
-    assert state.floor("a-agent", config.similarity_floor) == 0.80
 
 
 def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):

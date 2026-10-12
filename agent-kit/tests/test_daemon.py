@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import os
@@ -13,7 +12,6 @@ import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 import pytest
 
@@ -131,17 +129,6 @@ def test_a_new_post_in_a_watched_thread_wakes_as_being_addressed_does():
         assert kind in WAKE_TYPES
     for kind in (EDITED, LIKED, GRANTED_BADGE):
         assert kind not in WAKE_TYPES
-
-
-def test_the_forum_host_counts_the_same_notifications_as_waking():
-    """A relevance wake in a topic the agent was notified about is folded into
-    the notification's run, so the host must not count it either way."""
-    source = (Path(__file__).resolve().parents[2] / "server" / "ranking.py").read_text(encoding="utf-8")
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "WAKE_NOTIFICATION_TYPES" for t in node.targets):
-            assert set(ast.literal_eval(node.value)) == set(WAKE_TYPES)
-            return
-    raise AssertionError("server/ranking.py has no WAKE_NOTIFICATION_TYPES")
 
 
 def _collect(handled, notes, totals=None):

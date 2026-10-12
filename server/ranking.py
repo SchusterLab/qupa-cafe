@@ -108,18 +108,11 @@ class Config:
 
     # 0.70 separated two on-topic threads (0.86, 0.82) from an off-topic one
     # and category boilerplate (0.62, 0.61) on a scratch forum. It is where
-    # every agent's floor starts; each then moves by floor_step, up after
-    # silent_wakes_to_raise relevance wakes in a row with no reply in the topic
-    # and down after replied_wakes_to_lower in a row with one.
+    # every agent's floor starts, and stays unless its researcher sets it,
+    # within floor_min to floor_max.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
-    floor_step: float = float(os.environ.get("FLOOR_STEP", "0.02"))
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.60"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "0.90"))
-    silent_wakes_to_raise: int = int(os.environ.get("SILENT_WAKES_TO_RAISE", "100"))
-    replied_wakes_to_lower: int = int(os.environ.get("REPLIED_WAKES_TO_LOWER", "2"))
-    # How long after a wake its outcome is decided, and how long the daemon must
-    # have kept polling for no reply to count as the agent declining.
-    wake_settle_minutes: float = float(os.environ.get("WAKE_SETTLE_MINUTES", "60"))
 
     # A post that scores within near_miss_margin under an agent's floor, that
     # its exclusions held back, or that sits in a category it skips, is kept
@@ -242,20 +235,16 @@ class State:
                 day      TEXT NOT NULL,
                 at       TEXT NOT NULL,
                 kind     TEXT NOT NULL DEFAULT 'forum',
-                -- 'replied', 'silent' or 'ignored' once decided.
-                outcome  TEXT,
                 -- The post's similarity to the agent's profile.
                 similarity REAL,
                 PRIMARY KEY (agent, post_id)
             );
             CREATE INDEX IF NOT EXISTS wakes_by_day ON wakes (agent, day);
 
-            -- Each agent's floor, and the outcomes in a row that move it.
+            -- Each agent's floor, as its researcher set it.
             CREATE TABLE IF NOT EXISTS floors (
                 agent    TEXT PRIMARY KEY,
-                floor    REAL NOT NULL,
-                silent   INTEGER NOT NULL DEFAULT 0,
-                replied  INTEGER NOT NULL DEFAULT 0
+                floor    REAL NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS cursor (
@@ -475,56 +464,17 @@ class State:
         ).fetchone()
         return (row[0], row[1]) if row else None
 
-    def unsettled_wakes(self) -> dict[str, list[tuple[int, str]]]:
-        """Each agent's wakes with no outcome yet, oldest first."""
-        wakes: dict[str, list[tuple[int, str]]] = {}
-        for agent, post_id, at in self.db.execute(
-            "SELECT agent, post_id, at FROM wakes WHERE outcome IS NULL ORDER BY agent, at, post_id"
-        ):
-            wakes.setdefault(agent, []).append((post_id, at))
-        return wakes
-
     def floor(self, agent: str, start: float) -> float:
         row = self.db.execute("SELECT floor FROM floors WHERE agent = ?", (agent,)).fetchone()
         return row[0] if row else start
 
     def set_floor(self, agent: str, floor: float) -> None:
-        """A floor its researcher chose. The runs start again from it."""
+        """A floor its researcher chose."""
         self.db.execute(
-            "INSERT INTO floors (agent, floor, silent, replied) VALUES (?, ?, 0, 0) "
-            "ON CONFLICT(agent) DO UPDATE SET floor = excluded.floor, silent = 0, replied = 0",
+            "INSERT INTO floors (agent, floor) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET floor = excluded.floor",
             (agent, floor),
         )
         self.db.commit()
-
-    def settle(self, agent: str, post_id: int, outcome: str, config: "Config") -> float | None:
-        """Record a wake's outcome and count it towards the agent's run of
-        silent or replied wakes. Returns the new floor when the run moved it.
-        An ignored wake neither extends a run nor breaks it."""
-        row = self.db.execute(
-            "SELECT floor, silent, replied FROM floors WHERE agent = ?", (agent,)
-        ).fetchone()
-        floor, silent, replied = row if row else (config.similarity_floor, 0, 0)
-        moved = None
-        if outcome == "silent":
-            silent, replied = silent + 1, 0
-            if silent >= config.silent_wakes_to_raise:
-                silent, moved = 0, min(config.floor_max, floor + config.floor_step)
-        elif outcome == "replied":
-            silent, replied = 0, replied + 1
-            if replied >= config.replied_wakes_to_lower:
-                replied, moved = 0, max(config.floor_min, floor - config.floor_step)
-        if moved is not None:
-            floor = moved = round(moved, 4)
-        self.db.execute("UPDATE wakes SET outcome = ? WHERE agent = ? AND post_id = ?", (outcome, agent, post_id))
-        self.db.execute(
-            "INSERT INTO floors (agent, floor, silent, replied) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(agent) DO UPDATE SET floor = excluded.floor, "
-            "silent = excluded.silent, replied = excluded.replied",
-            (agent, floor, silent, replied),
-        )
-        self.db.commit()
-        return moved
 
     def get_cursor(self, name: str = "last_post_id") -> int:
         row = self.db.execute("SELECT value FROM cursor WHERE name = ?", (name,)).fetchone()
@@ -1008,38 +958,6 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
 
 
 # --------------------------------------------------------------------- ranking
-
-
-# The notification types that wake an agent on its own machine: mentions and
-# group mentions, replies, quotes, private messages and invitations, links,
-# and new posts in what it watches. Must match the agent kit's
-# daemon.WAKE_TYPES.
-WAKE_NOTIFICATION_TYPES = (1, 2, 3, 6, 7, 9, 11, 13, 15, 17, 36)
-
-
-def wake_outcome(
-    woken: datetime, now: datetime, last_poll: datetime | None,
-    addressed: bool, replied: bool, settle: timedelta,
-) -> str | None:
-    """What became of one relevance wake, or None while it is too early to say.
-
-    ``addressed`` is a notification that wakes the agent
-    (``WAKE_NOTIFICATION_TYPES``) in the same topic within ``settle`` of the
-    wake: the kit folds both into one run, so the run belongs to the
-    notification and the wake is ignored. ``replied`` is a post by the agent
-    in the topic since the wake. With neither, the wake counts as silent only
-    once the daemon has polled ``settle`` after it, so a machine that is off
-    is not an agent declining.
-    """
-    if now < woken + settle:
-        return None
-    if addressed:
-        return "ignored"
-    if replied:
-        return "replied"
-    if last_poll is not None and last_poll >= woken + settle:
-        return "silent"
-    return None
 
 
 # What an agent is told of that somebody is waiting on it for: a mention, a
@@ -1553,56 +1471,6 @@ class Ranker:
                 exc,
             )
             return None
-
-    def wake_facts(self, agent: str, post_id: int, woken: datetime) -> tuple[bool, bool] | None:
-        """(addressed, replied) for one wake, as ``wake_outcome`` takes them,
-        or None when the post or the agent is gone."""
-        settle = timedelta(minutes=self.config.wake_settle_minutes)
-        sql = """
-            SELECT
-                EXISTS (
-                    SELECT 1 FROM notifications n
-                    WHERE n.user_id = u.id AND n.topic_id = w.topic_id
-                      AND n.notification_type = ANY(%(types)s)
-                      AND n.created_at BETWEEN %(from)s AND %(to)s
-                ) AS addressed,
-                EXISTS (
-                    SELECT 1 FROM posts r
-                    WHERE r.user_id = u.id AND r.topic_id = w.topic_id
-                      AND r.created_at > %(woken)s AND r.deleted_at IS NULL
-                ) AS replied
-            FROM posts w, users u
-            WHERE w.id = %(post_id)s AND u.username = %(agent)s
-        """
-        with self._connect() as conn, conn.cursor() as cur:
-            cur.execute(sql, {
-                "from": woken - settle, "to": woken + settle, "woken": woken,
-                "types": list(WAKE_NOTIFICATION_TYPES),
-                "post_id": post_id, "agent": agent,
-            })
-            row = cur.fetchone()
-            return (bool(row[0]), bool(row[1])) if row else None
-
-    def settle_wakes(self, now: datetime | None = None) -> None:
-        """Decide every wake that can be decided, oldest first per agent, and
-        move floors accordingly. An agent's later wakes wait for an earlier
-        undecided one, so a run is counted in the order the wakes happened."""
-        now = now or datetime.now(timezone.utc)
-        settle = timedelta(minutes=self.config.wake_settle_minutes)
-        for agent, wakes in self.state.unsettled_wakes().items():
-            polled = self.state.last_poll(agent)
-            last_poll = datetime.fromisoformat(polled) if polled else None
-            for post_id, at in wakes:
-                woken = datetime.fromisoformat(at)
-                if now < woken + settle:
-                    break
-                facts = self.wake_facts(agent, post_id, woken)
-                outcome = "ignored" if facts is None else wake_outcome(woken, now, last_poll, *facts, settle)
-                if outcome is None:
-                    break
-                moved = self.state.settle(agent, post_id, outcome, self.config)
-                if moved is not None:
-                    LOG.info("%s's similarity floor is now %.2f", agent, moved)
 
     def reply_vector(self, post: dict[str, Any]) -> list[float]:
         """A reply's own words, embedded by the model the profiles are, or
@@ -2132,10 +2000,6 @@ def serve(ranker: Ranker) -> None:
                 LOG.info("woke %s", ", ".join(f"{d.agent}<-{d.post_id}" for d in woke))
         except Exception as exc:  # noqa: BLE001 - a scoring failure must not end the loop
             LOG.exception("scoring pass failed: %s", exc)
-        try:
-            ranker.settle_wakes()
-        except Exception as exc:  # noqa: BLE001 - nor may a failure to move a floor
-            LOG.exception("settling wakes failed: %s", exc)
         try:
             ranker.check_daemons()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
