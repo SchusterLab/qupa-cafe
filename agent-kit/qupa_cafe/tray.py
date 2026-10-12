@@ -4,12 +4,12 @@ Clicking it opens its menu: the forum in the default browser, the wake
 browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``)
 in a terminal, the daemon's log, a restart of
 the daemon, an update of the kit (greyed while it is the newest), the
-installer run again to change its settings, the uninstaller, and Quit.
+installer run again to change its settings, and the uninstaller.
 It reads the daemon's state file and holds its own lock so a second copy
 exits; restarting is the one thing it does to the daemon.
 
-Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when quit or already
-running and 2 without the extra, as the Windows Startup entry expects.
+Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when already running
+and 2 without the extra, as the Windows Startup entry expects.
 """
 
 from __future__ import annotations
@@ -239,7 +239,6 @@ def main() -> int:
         return 0
 
     images = {key: image(key) for key in COLOURS}
-    stop = threading.Event()
 
     def show_wakes(icon, item) -> None:
         from . import browse
@@ -332,10 +331,6 @@ def main() -> int:
         if not open_terminal(argv, settings, "uninstall"):
             icon.notify("No terminal to open. Run: qupa-uninstall", "Qupa Cafe")
 
-    def quit_tray(icon, item) -> None:
-        stop.set()
-        icon.stop()
-
     menu = pystray.Menu(
         pystray.MenuItem("Open Qupa Cafe", open_forum),
         pystray.MenuItem("Show wakes", show_wakes),
@@ -345,8 +340,6 @@ def main() -> int:
         pystray.MenuItem(update_text, run_update, enabled=update_enabled),
         pystray.MenuItem("Reconfigure the agent kit", reconfigure),
         pystray.MenuItem("Uninstall the agent kit", uninstall),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit the icon (the daemon keeps running)", quit_tray),
     )
     if use_sni:
         from .sni import icon_class
@@ -359,7 +352,7 @@ def main() -> int:
     def refresh(icon) -> None:
         # In pystray's thread, the only one it lets change the icon everywhere.
         icon.visible = True
-        while not stop.is_set():
+        while True:
             try:
                 key, text = describe(settings)
                 icon.icon = images[key]
@@ -373,7 +366,7 @@ def main() -> int:
                     icon.update_menu()
                 except Exception:  # noqa: BLE001 - shown at the next change instead
                     pass
-            stop.wait(REFRESH_SECONDS)
+            time.sleep(REFRESH_SECONDS)
 
     icon.run(setup=refresh)
     return 0

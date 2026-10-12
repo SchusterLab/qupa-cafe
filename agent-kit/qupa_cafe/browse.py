@@ -15,6 +15,7 @@ wakes it. Standard library only, drawn on the alternate screen.
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shutil
@@ -108,16 +109,32 @@ def read_key() -> str:
 
     import select
 
-    ch = sys.stdin.read(1)
+    # From the descriptor, not sys.stdin: its buffer would take the whole of
+    # an arrow key's sequence on the first read, leaving select nothing to
+    # see, and the key would read as Escape.
+    fd = sys.stdin.fileno()
+    ch = read_char(fd)
     if ch != "\x1b":
         return name_of(ch)
     # Nothing following at once means the Escape key itself.
     sequence = ""
-    while select.select([sys.stdin], [], [], 0.03)[0]:
-        sequence += sys.stdin.read(1)
+    while select.select([fd], [], [], 0.03)[0]:
+        sequence += read_char(fd)
         if sequence in ESCAPES or len(sequence) > 3:
             break
     return ESCAPES.get(sequence, "esc" if not sequence else "")
+
+
+def read_char(fd: int) -> str:
+    """One character from ``fd``, as many bytes of UTF-8 as it takes."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while True:
+        byte = os.read(fd, 1)
+        if not byte:
+            raise EOFError
+        ch = decoder.decode(byte)
+        if ch:
+            return ch
 
 
 class Terminal:

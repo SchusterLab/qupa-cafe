@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from qupa_cafe import browse, daemon, wakes
 from qupa_cafe.daemon import Settings, claim_lock
 
@@ -462,3 +464,19 @@ def test_m_and_f_step_the_model_and_effort_wakes_run_on(tmp_path):
     # Reading a wake, they are not the browser's to take.
     b.handle("enter")
     assert b.handle("m") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the console is read through msvcrt there")
+@pytest.mark.parametrize("typed, key", [(b"\x1b[A", "up"), (b"\x1b[B", "down"), (b"\x1b[6~", "pgdn"), (b"\x1b", "esc"), (b"\xc3\xa9", "\u00e9")])
+def test_a_key_is_read_whole_from_the_terminal(monkeypatch, typed, key):
+    """An arrow key arrives as several bytes at once, which must not read as
+    Escape followed by nothing."""
+    import os
+
+    reading, writing = os.pipe()
+    os.write(writing, typed)
+    with os.fdopen(reading, "r") as stdin:
+        monkeypatch.setattr(sys, "stdin", stdin)
+        assert browse.read_key() == key
+    os.close(writing)
+
