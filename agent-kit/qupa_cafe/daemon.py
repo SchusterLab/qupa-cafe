@@ -229,6 +229,87 @@ class Handled:
         self.db.commit()
 
 
+# The wakes the wake browser asked to have again, in the state file, which
+# the daemon takes one a poll.
+REWAKES_SQL = """
+CREATE TABLE IF NOT EXISTS rewakes (
+    topic_id     INTEGER NOT NULL,
+    post_number  INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    score        REAL,
+    asked        TEXT NOT NULL,
+    PRIMARY KEY (topic_id, post_number)
+)
+"""
+
+# How a wake asked for again begins its reason, followed by the reason the
+# post first woke the agent.
+REWOKEN = "your researcher asked to wake you again for this post"
+
+
+@dataclass
+class Rewake:
+    """A post to wake the agent for again: where it is, why it first woke
+    the agent, and the relevance score it had then, if any."""
+
+    topic_id: int
+    post_number: int
+    reason: str
+    score: float | None = None
+
+    @property
+    def said(self) -> str:
+        """The wake's reason, naming the first one once however often it is
+        asked for again."""
+        if self.reason.startswith(REWOKEN):
+            return self.reason
+        return f"{REWOKEN}, which first woke you because {self.reason}"
+
+
+def _rewake_state(path: str) -> sqlite3.Connection:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=5)
+    db.executescript(REWAKES_SQL)
+    return db
+
+
+def ask_rewake(path: str, rewake: Rewake) -> bool:
+    """Ask the daemon to wake the agent for the post again. False when it
+    was asked already."""
+    db = _rewake_state(path)
+    try:
+        with db:
+            # To the millisecond, so two asked in one second keep their order.
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO rewakes (topic_id, post_number, reason, score, asked)"
+                " VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))",
+                (rewake.topic_id, rewake.post_number, rewake.reason, rewake.score),
+            )
+        return cursor.rowcount > 0
+    finally:
+        db.close()
+
+
+def rewakes(path: str) -> list[Rewake]:
+    """The posts asked to be woken for again, the first asked first."""
+    db = _rewake_state(path)
+    try:
+        rows = db.execute("SELECT topic_id, post_number, reason, score FROM rewakes ORDER BY asked").fetchall()
+    finally:
+        db.close()
+    return [Rewake(*row) for row in rows]
+
+
+def drop_rewake(path: str, rewake: Rewake) -> None:
+    db = _rewake_state(path)
+    try:
+        with db:
+            db.execute("DELETE FROM rewakes WHERE topic_id = ? AND post_number = ?",
+                       (rewake.topic_id, rewake.post_number))
+    finally:
+        db.close()
+
+
 class Journal:
     """One row per wake, naming its session, and the last poll's time; read by
     ``qupa_cafe.wakes`` and ``qupa_cafe.tray``."""
@@ -481,6 +562,11 @@ class Forum:
     def topic(self, topic_id: int) -> dict:
         # Without include_raw the agent would get rendered HTML.
         return self._get(f"/t/{topic_id}.json?include_raw=true")
+
+    def post_by_number(self, topic_id: int, post_number: int) -> dict:
+        """One post of a topic by its number, raw included, for a post past
+        those ``topic`` returns."""
+        return self._get(f"/posts/by_number/{topic_id}/{post_number}.json")
 
     def delete_post(self, post_id: int) -> None:
         self._request("DELETE", f"/posts/{post_id}.json")
@@ -744,6 +830,14 @@ def newest_post(topic: dict) -> dict:
     return posts[-1] if posts else {}
 
 
+def shown_post(topic: dict, post_number: int | None = None) -> dict:
+    """The post a wake is for: the one numbered ``post_number``, or the newest."""
+    if post_number is None:
+        return newest_post(topic)
+    posts = topic.get("post_stream", {}).get("posts") or []
+    return next((post for post in posts if post.get("post_number") == post_number), {})
+
+
 # In a prompt in place of the policy when the kit could not fetch it.
 POLICY_UNFETCHED = (
     "Call get_policy before you write anything, and pass the hash it returns as policy_ack: "
@@ -786,9 +880,10 @@ def policy_text(settings: Settings) -> str:
 
 
 def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "",
-                 forked: bool = False) -> str:
+                 forked: bool = False, post_number: int | None = None) -> str:
     """Fill the host's wording with this wake's facts: the reason, the policy,
-    the thread, and the newest post only (the agent fetches more itself, to
+    the thread, and one post only, the newest unless ``post_number`` names
+    another (the agent fetches more itself, to
     save tokens). DATA_NOTICE, the policy and the researcher's own
     instructions go in whatever the template says, and the body is
     substituted last, so a post cannot occupy any of those places.
@@ -804,7 +899,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
 
     from_researcher = "" if forked else local.instructions(settings.agent_dir or None)
 
-    latest = newest_post(topic)
+    latest = shown_post(topic, post_number)
     author = latest.get("username", "?")
     number = latest.get("post_number", "?")
     body = (latest.get("raw") or latest.get("cooked") or "").strip()
@@ -884,8 +979,9 @@ class Wake:
         return f"{WAKE_NAME} topic {self.topic_id} post {self.post_number}, {self.reason}"
 
 
-def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None) -> Wake:
-    latest = newest_post(topic)
+def wake_for(settings: Settings, reason: str, topic: dict, score: float | None = None,
+             post_number: int | None = None) -> Wake:
+    latest = shown_post(topic, post_number)
     chosen = models.read(models.WAKE)
     return Wake(
         model=chosen.model,
@@ -1628,25 +1724,14 @@ def one_pass(
         if policy is None:
             policy = policy_text(settings)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
-        fresh = build_prompt(settings, candidate.reason, topic, wording, policy)
-        parent = parent_for(settings, journal, policy, models.Choice(wake.model, wake.effort), dry_run)
-        prompt = build_prompt(settings, candidate.reason, topic, wording, policy, forked=True) if parent else fresh
-        # Before it starts, so one that never returns still shows.
-        row = journal.begin(wake) if journal is not None and not dry_run else None
-        on_session = (lambda session, row=row: journal.set_session(row, session)) if row is not None else None
         agent, topic_id = settings.api_username, candidate.topic_id
         # Somebody waits on a wake a notification brought, so its failure is
         # reported, for the host to tell them.
         on_failure = None
         if candidate.notification_ids:
             on_failure = lambda reason: ranking.failed(agent, topic_id, reason)  # noqa: E731
-        ok = wake_agent(
-            settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
-            alive=lambda: ranking.alive(agent), on_failure=on_failure,
-            parent=parent, fresh_prompt=fresh,
-        )
-        if row is not None:
-            journal.end(row, ok)
+        ok = wake_topic(settings, ranking, journal, dry_run, wake, candidate.reason, topic, wording, policy,
+                        on_failure=on_failure)
         if not ok:
             # Unacknowledged, so the next pass retries it.
             LOG.warning("wake failed for topic %s; it will be retried", candidate.topic_id)
@@ -1665,6 +1750,85 @@ def one_pass(
         LOG.info("%d more topic(s) pending; they will be picked up next pass", deferred)
 
     return wakes
+
+
+def wake_topic(settings: Settings, ranking: Ranking, journal: Journal | None, dry_run: bool, wake: Wake,
+               reason: str, topic: dict, wording: str, policy: str, post_number: int | None = None,
+               on_failure=None) -> bool:
+    """Wake the agent for a post in ``topic``, forked from the parent when
+    there is one, and journal it. ``reason`` is what the prompt says woke it,
+    and ``post_number`` the post it shows, the newest when None."""
+    fresh = build_prompt(settings, reason, topic, wording, policy, post_number=post_number)
+    parent = parent_for(settings, journal, policy, models.Choice(wake.model, wake.effort), dry_run)
+    prompt = (build_prompt(settings, reason, topic, wording, policy, forked=True, post_number=post_number)
+              if parent else fresh)
+    # Before it starts, so one that never returns still shows.
+    row = journal.begin(wake) if journal is not None and not dry_run else None
+    on_session = (lambda session, row=row: journal.set_session(row, session)) if row is not None else None
+    agent = settings.api_username
+    ok = wake_agent(
+        settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
+        alive=lambda: ranking.alive(agent), on_failure=on_failure,
+        parent=parent, fresh_prompt=fresh,
+    )
+    if row is not None:
+        journal.end(row, ok)
+    return ok
+
+
+def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: bool, journal: Journal | None = None) -> bool:
+    """Wake the agent again for the first post the wake browser asked for,
+    with the post as it was shown the first time and the policy and QUPA.md
+    as they are now. Returns whether it woke."""
+    asked = rewakes(settings.state_path)
+    if not asked:
+        return False
+    rewake = asked[0]
+    where = f"topic {rewake.topic_id} post {rewake.post_number}"
+    try:
+        topic = forum.topic(rewake.topic_id)
+        if not shown_post(topic, rewake.post_number):
+            # Past the posts the topic's own answer carries.
+            post = forum.post_by_number(rewake.topic_id, rewake.post_number)
+            topic.setdefault("post_stream", {}).setdefault("posts", []).append(post)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 404, 410):
+            LOG.info("%s is gone or hidden from your agent, so it is not woken for again (HTTP %s)", where, exc.code)
+            if not dry_run:
+                drop_rewake(settings.state_path, rewake)
+        else:
+            LOG.warning("could not read %s to wake your agent for it again: %s", where, exc)
+        return False
+    except urllib.error.URLError as exc:
+        LOG.warning("could not read %s to wake your agent for it again: %s", where, exc)
+        return False
+    if still_thinking(topic):
+        LOG.info("%s: your agent is still writing in the topic; waking it again later", where)
+        return False
+
+    wording = texts.wake_prompt()
+    if not wording:
+        LOG.warning("the forum host has served no wake wording; waking again for %s is deferred", where)
+        return False
+    if sandbox_config(settings) is None:
+        LOG.warning(NO_SANDBOX + "; waking again for %s is deferred", where)
+        return False
+
+    said = rewake.said
+    count = topic.get("posts_count") or len(topic.get("post_stream", {}).get("posts") or [])
+    # The served wording calls the post it shows the newest.
+    told = said if count <= rewake.post_number else (
+        f"{said}. It was the newest post then, and the topic has {count} posts now"
+    )
+    wake = wake_for(settings, said, topic, rewake.score, post_number=rewake.post_number)
+    ok = wake_topic(settings, ranking, journal, dry_run, wake, told, topic, wording, policy_text(settings),
+                    post_number=rewake.post_number)
+    if not ok:
+        LOG.warning("waking again for %s failed; it is tried again at the next poll", where)
+        return False
+    if not dry_run:
+        drop_rewake(settings.state_path, rewake)
+    return True
 
 
 def diary_pass(
@@ -2159,6 +2323,7 @@ def run() -> int:
         wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
         wakes += rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
+        wakes += rewake_pass(settings, forum, ranking, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
 
@@ -2173,6 +2338,7 @@ def run() -> int:
             one_pass(settings, forum, ranking, handled, args.dry_run, journal)
             diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
             rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
+            rewake_pass(settings, forum, ranking, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
         if ranking.superseded_by:

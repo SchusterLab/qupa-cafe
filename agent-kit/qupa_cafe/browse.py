@@ -4,7 +4,9 @@ In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
 raise and lower the agent's relevance threshold, and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter opens its session in Claude Code (attached to, while the wake
-still runs), and Esc goes back. In either, ``t`` then ``r``, ``i`` or ``h``
+still runs), and Esc goes back. In either, ``r`` has the daemon wake the
+agent again for the chosen wake's post, as ``QUPA.md`` says now, and ``t``
+then ``r``, ``i`` or ``h``
 asks the agent, in Claude Code, to change its interests post or
 ``QUPA.md`` so that it replies to wakes like the chosen one, ignores them,
 or replies to them differently. ``n`` swaps the wakes for the near misses,
@@ -26,7 +28,10 @@ from datetime import datetime
 from pathlib import Path
 
 from . import local, models, wakes
-from .daemon import CLAUDE_ALLOWED_TOOLS, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Settings, background_sessions, claim_lock
+from .daemon import (
+    CLAUDE_ALLOWED_TOOLS, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Rewake, Settings, ask_rewake,
+    background_sessions, claim_lock,
+)
 
 # -------------------------------------------------------------------- keys
 
@@ -55,6 +60,9 @@ WAKE_QUESTION = ("Tune your agent on posts like this one, which do not wake it:"
 # In the list: the posts that came close to waking the agent, in place of its
 # wakes, and back.
 MISSED_KEY = "n"
+
+# In the list of wakes or in a wake: wake the agent again for its post.
+REWAKE_KEY = "r"
 
 # In either browser's list: step the model its wakes run on, and the effort.
 MODEL_KEYS = {"m": "model", "f": "effort"}
@@ -269,6 +277,10 @@ class Browser:
     _detail: list[str] = field(default_factory=list)
     # Rows the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
+    # The wake's lines as last drawn, folded to the width, and the page they
+    # were drawn in, which scrolling moves through.
+    _folded: tuple = ()
+    _page: int = 0
 
     @property
     def selected(self) -> Wake | None:
@@ -303,8 +315,8 @@ class Browser:
 
     def handle(self, key: str, height: int = 24) -> str | None:
         """Apply a key. Returns the action ``run`` carries out -- ``"quit"``,
-        ``"ask"``, ``"raise"``, ``"lower"``, or ``"tune-"`` and what to tune
-        -- or nothing."""
+        ``"ask"``, ``"rewake"``, ``"raise"``, ``"lower"``, or ``"tune-"`` and
+        what to tune -- or nothing."""
         self.message = ""
         if self.choices:
             choices, self.choices = self.choices, {}
@@ -314,6 +326,8 @@ class Browser:
         if key == TUNE_KEY:
             self._tune()
             return None
+        if key == REWAKE_KEY and self.selected and (self.viewing or not self.showing_missed):
+            return "rewake"
         if key == MISSED_KEY and not self.viewing:
             self.showing_missed = not self.showing_missed
             return None
@@ -329,13 +343,7 @@ class Browser:
             return None
 
         if self.viewing:
-            page = page_size(height)
-            last = max(len(self._detail) - page, 0)
-            moves = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "home": -len(self._detail), "end": len(self._detail)}
-            if key in moves:
-                self.scroll = min(max(self.scroll + moves[key], 0), last)
-            elif key in ("esc", "left", "backspace", "\x08", "\x7f"):
-                self.viewing = False
+            scroll(self, key, height)
             return None
 
         shown = self.missed if self.showing_missed else self.items
@@ -389,38 +397,21 @@ class Browser:
     def _listing(
         self, cols: int, rows: int, what: str, count: int, line, index: int, empty: str, keys: list[str]
     ) -> list[str]:
-        """The list, of wakes or of near misses, with what is around it.
-        ``line(i)`` draws the ``i``th, and only those on screen are drawn, so
-        a long journal reads only the transcripts it shows."""
+        """The list, of wakes or of near misses, with what is around it."""
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
-        out = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE)])
-        out.append("")
-
-        if not count:
-            out.append(wakes.paint("  " + empty, "meta"))
-        room = max(rows - len(out) - 3, 1)
-        self._room = room
-        top = min(max(index - room + 1, 0), max(count - room, 0))
-        out += [line(i) for i in range(top, min(top + room, count))]
-
-        while len(out) < rows - 2:
-            out.append("")
-        where = ""
-        if count > room:
-            end = min(top + room, count)
-            where = wakes.paint(f"  {what} {top + 1}-{end} of {count}", "meta")
-        out.append(self.status_line() or where)
+        header = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE)])
         other = "n for wakes" if self.showing_missed else "n for near misses"
-        out.append(hints([*keys, other, "Esc to quit"]))
+        out, self._room = listing(cols, rows, header, what, count, line, index, empty, self.status_line(),
+                                  [*keys, other, "Esc to quit"])
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
         def line(i: int) -> str:
             return self._row(self.items[i], i == self.index, cols)
 
-        keys = ["↑↓ to select", "Enter to read", *(["t to tune replies"] if self.items else [])]
+        keys = ["↑↓ to select", "Enter to read", *(["r to wake again", "t to tune replies"] if self.items else [])]
         empty = "No wakes recorded yet. The daemon records each one from kit 0.9.0 on."
         return self._listing(cols, rows, "wakes", len(self.items), line, self.index, empty, keys)
 
@@ -467,20 +458,11 @@ class Browser:
         )
 
     def _detail_frame(self, cols: int, rows: int) -> list[str]:
-        page = page_size(rows)
-        shown = self._detail[self.scroll : self.scroll + page]
-        out = list(shown)
-        while len(out) < page:
-            out.append("")
-        end = min(self.scroll + page, len(self._detail))
-        where = wakes.paint(f"  lines {self.scroll + 1}-{end} of {len(self._detail)}", "meta")
-        out.append(self.status_line() or where)
         keys = ["↑↓ to scroll"]
         if self.selected and self.selected.askable:
             keys.append("Enter to open in Claude Code")
-        keys += ["t to tune replies", "Esc to go back"]
-        out.append(hints(keys))
-        return out
+        keys += ["r to wake again", "t to tune replies", "Esc to go back"]
+        return detail_frame(self, cols, rows, keys)
 
 
 def row_mark(style: str) -> str:
@@ -505,8 +487,8 @@ def refresh(browser, items: list[Wake], state: wakes.Status) -> None:
     found = next((i for i, w in enumerate(items) if chosen and w.row.session == chosen), None)
     browser.index = found if found is not None else min(browser.index, max(len(items) - 1, 0))
     if browser.viewing and found is not None:
+        # The place read to is kept; drawing keeps it within the lines.
         browser._detail = wakes.render(items[found].row, transcript=items[found].transcript)
-        browser.scroll = min(browser.scroll, max(len(browser._detail) - 1, 0))
     elif browser.viewing:
         browser.viewing = False
 
@@ -523,26 +505,162 @@ def box(cols: int, title: str, lines: list[str]) -> list[str]:
     """Claude Code's rounded box: a grey border round an orange title."""
     inner = cols - 4
     out = [wakes.paint("╭" + "─" * (cols - 2) + "╮", "rule")]
-    for text, plain in [(title, visible(title))] + [(line, visible(line)) for line in lines]:
+    # A line too long for the box goes on inside it, on the next.
+    for text in [piece for line in [title, *lines] for piece in fold(line, inner)]:
         # Measured in columns: the cup in the title is two wide.
-        pad = max(inner - wakes.columns(plain), 0)
+        pad = max(inner - wakes.columns(visible(text)), 0)
         out.append(wakes.paint("│ ", "rule") + text + " " * pad + wakes.paint(" │", "rule"))
     out.append(wakes.paint("╰" + "─" * (cols - 2) + "╯", "rule"))
     return out
 
 
 def page_size(rows: int) -> int:
-    """Lines of a wake per page; shared by drawing and scrolling so they agree."""
+    """Lines of a wake per page before the first drawing has measured it."""
     return max(rows - 2, 1)
+
+
+ESCAPE = r"\x1b\[[0-9;?]*[A-Za-z]"
+# An escape sequence or one character, in the order they are drawn.
+DRAWN = re.compile(ESCAPE + "|.", re.S)
+RESET = "\x1b[0m"
 
 
 def visible(text: str) -> str:
     """``text`` without its escape sequences, to measure it by."""
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    return re.sub(ESCAPE, "", text)
+
+
+def fold(text: str, cols: int) -> list[str]:
+    """``text`` as lines at most ``cols`` columns wide, broken at a space
+    when one comes late enough on the line and anywhere otherwise, the lines
+    after the first indented as the first is, past any mark it begins with,
+    and each in the colours it had. A line wider than the terminal would wrap there, and the screen
+    would scroll its top line out of view."""
+    plain = visible(text)
+    if wakes.columns(plain) <= cols:
+        return [text]
+    cols = max(cols, 2)
+    # Each character drawn, with the colour it is drawn in.
+    cells: list[tuple[str, str]] = []
+    colour = ""
+    for token in DRAWN.findall(text):
+        if token.startswith("\x1b["):
+            if token.endswith("m"):
+                colour = "" if token in (RESET, "\x1b[m") else colour + token
+            continue
+        cells.append((colour, token))
+    lead = min(wakes.columns(re.match(r" *(?:[^\w\s] )?", plain).group()), cols // 2)
+    lines: list[str] = []
+    start = 0
+    while start < len(cells):
+        room = cols if not lines else cols - lead
+        end, used, space = start, 0, None
+        while end < len(cells) and used + wakes.columns(cells[end][1]) <= room:
+            if cells[end][1] == " ":
+                space = end
+            used += wakes.columns(cells[end][1])
+            end += 1
+        if end < len(cells):
+            if cells[end][1] == " ":
+                space = end
+            if space is not None and space - start > room // 2:
+                end = space
+        end = max(end, start + 1)
+        lines.append(("" if not lines else " " * lead) + painted(cells[start:end]))
+        start = end + 1 if end < len(cells) and cells[end][1] == " " else end
+    return lines
+
+
+def painted(cells: list[tuple[str, str]]) -> str:
+    """Characters in their colours, as one line that ends with none."""
+    out, current = "", ""
+    for colour, ch in cells:
+        if colour != current:
+            out += (RESET if current else "") + colour
+            current = colour
+        out += ch
+    return out + (RESET if current else "")
 
 
 def hints(keys: list[str]) -> str:
     return "  " + wakes.paint(" · ".join(keys), "meta")
+
+
+def hint_lines(keys: list[str], cols: int) -> list[str]:
+    """The keys on as many lines as the width needs, broken between keys."""
+    lines: list[list[str]] = [[]]
+    for key in keys:
+        if lines[-1] and wakes.columns(visible(hints([*lines[-1], key]))) > cols:
+            lines.append([])
+        lines[-1].append(key)
+    return [piece for line in lines for piece in fold(hints(line), cols)]
+
+
+def listing(cols: int, rows: int, header: list[str], what: str, count: int, line, index: int, empty: str,
+            status: str, keys: list[str]) -> tuple[list[str], int]:
+    """A list under ``header``, with the status line, or where the list is
+    scrolled to, and the keys below it, every line within the width so that
+    the screen never scrolls. ``line(i)`` draws the ``i``th, and only those
+    on screen are drawn, so a long journal reads only the transcripts it
+    shows. Returns the lines and the rows the list had room for."""
+    above = fold(status, cols) if status else [""]
+    below = hint_lines(keys, cols)
+    gone = fold(wakes.paint("  " + empty, "meta"), cols) if not count else []
+    # On a screen too short for it all, the box gives up its lines from the
+    # bottom up, keeping its title and its border, before the list goes.
+    spare = rows - len(above) - len(below) - len(gone) - 3
+    if spare < len(header):
+        header = header[: max(spare - 1, 0)] + header[-1:] if spare >= 2 else []
+    out = [*header, "", *gone]
+    room = max(rows - len(out) - len(above) - len(below) - 1, 1)
+    top = min(max(index - room + 1, 0), max(count - room, 0))
+    out += [fold(line(i), cols)[0] for i in range(top, min(top + room, count))]
+    while len(out) < rows - len(above) - len(below):
+        out.append("")
+    if not status and count > room:
+        above = [wakes.paint(f"  {what} {top + 1}-{min(top + room, count)} of {count}", "meta")]
+    return (out + above + below)[:rows], room
+
+
+def folded_detail(browser, cols: int) -> list[str]:
+    """The lines of the wake ``browser`` is reading, folded to ``cols``,
+    folded again only when the lines or the width have changed."""
+    kept = browser._folded
+    if not kept or kept[0] is not browser._detail or kept[1] != cols:
+        browser._folded = (browser._detail, cols, [piece for line in browser._detail for piece in fold(line, cols)])
+    return browser._folded[2]
+
+
+def detail_frame(browser, cols: int, rows: int, keys: list[str]) -> list[str]:
+    """A page of the wake ``browser`` is reading, with the status line, or
+    where the page is, and the keys below it, every line within the width."""
+    lines = folded_detail(browser, cols)
+    status = browser.status_line()
+    above = fold(status, cols) if status else [""]
+    below = hint_lines(keys, cols)
+    page = max(rows - len(above) - len(below), 1)
+    browser._page = page
+    browser.scroll = min(browser.scroll, max(len(lines) - page, 0))
+    out = lines[browser.scroll : browser.scroll + page]
+    out += [""] * (page - len(out))
+    if not status:
+        end = min(browser.scroll + page, len(lines))
+        above = [wakes.paint(f"  lines {browser.scroll + 1}-{end} of {len(lines)}", "meta")]
+    return (out + above + below)[:rows]
+
+
+def scroll(browser, key: str, height: int) -> None:
+    """Apply a key to the wake ``browser`` is reading: move through it by the
+    lines and the page it was last drawn with, or go back to the list."""
+    kept = browser._folded
+    lines = kept[2] if kept and kept[0] is browser._detail else browser._detail
+    page = browser._page or page_size(height)
+    last = max(len(lines) - page, 0)
+    moves = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "home": -len(lines), "end": len(lines)}
+    if key in moves:
+        browser.scroll = min(max(browser.scroll + moves[key], 0), last)
+    elif key in ("esc", "left", "backspace", "\x08", "\x7f"):
+        browser.viewing = False
 
 
 # --------------------------------------------------------------- asking
@@ -599,6 +717,20 @@ def ask(row: wakes.Row) -> str:
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return ""
+
+
+def rewake(settings: Settings, item: Wake) -> str:
+    """Ask the daemon to wake the agent again for the wake's post. Returns a
+    message for the list."""
+    row = item.row
+    if wakes.is_parent(row):
+        return "The parent session has no post to wake your agent for again: it is what every wake starts from."
+    if row.topic_id is None or not row.post_number:
+        return "This wake has no post to wake your agent for again."
+    where = f"post {row.post_number} of topic {row.topic_id}"
+    if not ask_rewake(settings.state_path, Rewake(row.topic_id, row.post_number, row.reason, row.score)):
+        return f"Your agent is already waiting to be woken again for {where}."
+    return f"Your agent is woken again for {where} at the daemon's next poll, as QUPA.md says now."
 
 
 # --------------------------------------------------------------- tuning
@@ -763,7 +895,7 @@ def tune(subject: Subject, want: str) -> str:
         subprocess.call(command, cwd=cwd)
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
-    return ""
+    return "" if want == "wake" else "r on a wake wakes your agent again for its post, as QUPA.md says now."
 
 
 # ------------------------------------------------------------ one window
@@ -906,6 +1038,8 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 browser.message = set_floor(settings, browser, action)
             if action in MODEL_KEYS.values():
                 browser.message = change_model(models.WAKE, action)
+            if action == "rewake":
+                browser.message = rewake(settings, browser.selected)
             if action == "ask" or (action or "").startswith("tune-"):
                 chosen = browser.selected.row.session if browser.selected else ""
                 terminal.suspend()

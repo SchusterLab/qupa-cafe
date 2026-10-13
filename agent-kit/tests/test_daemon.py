@@ -1379,3 +1379,80 @@ def test_an_edited_claude_md_makes_a_new_parent(tmp_path, monkeypatch):
 def test_claude_code_s_folder_for_a_directory():
     assert daemon.claude_project_dir(r"C:\Users\slab\qupa-cafe-agent").name == "C--Users-slab-qupa-cafe-agent"
 
+
+
+# ------------------------------------------------------------- waking again
+
+
+def _thread(*authors, posts_count=None):
+    posts = [{"post_number": n, "username": who, "raw": f"post {n} by {who}"} for n, who in enumerate(authors, 1)]
+    return {"id": 10, "title": "Topic 10", "posts_count": posts_count or len(posts), "post_stream": {"posts": posts}}
+
+
+class PostsForum(FakeForum):
+    """FakeForum with posts past those its topics carry, and errors to raise."""
+
+    def __init__(self, topics, posts=None, error=None):
+        super().__init__(topics)
+        self.posts = posts or {}
+        self.error = error
+
+    def topic(self, topic_id):
+        if self.error is not None:
+            raise self.error
+        return json.loads(json.dumps(self.topics[topic_id]))
+
+    def post_by_number(self, topic_id, post_number):
+        return self.posts[(topic_id, post_number)]
+
+
+def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2):
+    state = str(tmp_path / "state.sqlite3")
+    texts.save({"wake_prompt": "Reason: %REASON%.\n### post %POST_NUMBER% by %AUTHOR%\n%BODY%"})
+    monkeypatch.setattr(daemon, "policy_text", lambda settings: "the policy")
+    prompts = []
+    monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append((prompt, k)) or ok)
+    daemon.ask_rewake(state, daemon.Rewake(10, post_number, "you were mentioned", 0.8))
+    journal = daemon.Journal(state)
+    woke = daemon.rewake_pass(_settings(state_path=state), forum, FakeRanking(), False, journal)
+    return woke, prompts, state, journal
+
+
+def test_a_wake_asked_for_again_shows_its_own_post_and_says_the_topic_has_grown(tmp_path, monkeypatch):
+    forum = PostsForum({10: _thread("alice", "bob", "u")})
+    woke, [(prompt, kwargs)], state, journal = _rewake(tmp_path, monkeypatch, forum)
+    assert woke
+    assert "### post 2 by bob\npost 2 by bob" in prompt and "post 3 by u" not in prompt
+    assert (f"Reason: {daemon.REWOKEN}, which first woke you because you were mentioned. "
+            "It was the newest post then, and the topic has 3 posts now.\n") in prompt
+    wake = kwargs["wake"]
+    assert (wake.topic_id, wake.post_number, wake.score) == (10, 2, 0.8)
+    assert wake.reason == f"{daemon.REWOKEN}, which first woke you because you were mentioned"
+    assert journal.db.execute("SELECT status, reason FROM wakes").fetchall() == [("finished", wake.reason)]
+    assert daemon.rewakes(state) == []
+
+
+def test_a_post_still_the_newest_is_not_said_to_have_been_followed(tmp_path, monkeypatch):
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, PostsForum({10: _thread("alice", "bob")}))
+    assert woke and "posts now" not in prompt
+
+
+def test_a_post_past_those_the_topic_carries_is_fetched_by_its_number(tmp_path, monkeypatch):
+    forum = PostsForum({10: _thread("alice", posts_count=40)},
+                       posts={(10, 30): {"post_number": 30, "username": "carol", "raw": "the thirtieth"}})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=30)
+    assert woke and "### post 30 by carol\nthe thirtieth" in prompt
+
+
+def test_a_failed_wake_again_waits_for_the_next_poll_and_a_post_gone_is_dropped(tmp_path, monkeypatch):
+    woke, _, state, _ = _rewake(tmp_path, monkeypatch, PostsForum({10: _thread("alice", "bob")}), ok=False)
+    assert not woke and daemon.rewakes(state) == [daemon.Rewake(10, 2, "you were mentioned", 0.8)]
+
+    gone = urllib.error.HTTPError("http://x/t/10.json", 404, "Not Found", {}, None)
+    woke, prompts, state, _ = _rewake(tmp_path, monkeypatch, PostsForum({}, error=gone))
+    assert not woke and not prompts and daemon.rewakes(state) == []
+
+    down = urllib.error.URLError("refused")
+    daemon.ask_rewake(state, daemon.Rewake(10, 2, "you were mentioned"))
+    assert not daemon.rewake_pass(_settings(state_path=state), PostsForum({}, error=down), FakeRanking(), False)
+    assert len(daemon.rewakes(state)) == 1

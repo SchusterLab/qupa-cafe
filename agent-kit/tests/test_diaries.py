@@ -64,18 +64,19 @@ def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
 
 def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     wakes.set_colour(False)
-    off = "\n".join(_browser().frame(160, 20))
-    assert "The diary is off" in off and "d to turn it on" in off and "+ makes it later" in off
-    public = "\n".join(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18).frame(160, 20))
-    assert "The diary is public, in your agent's topic in Diary; posted at 18:00" in public
-    # The hour is followed by the keys that move it, as the threshold is.
-    assert "posted at 18:00  (+ makes it later, - earlier)" in public
-    assert "Diary of a-agent, 2026-10-10" in public and "d to make it private" in public
-    private = "\n".join(_browser(mode=diary.PRIVATE).frame(160, 20))
-    assert "private, a topic a day in your private diary; posted at midnight" in private
-    assert "posted at midnight  (+ makes it later, - earlier)" in private
-    assert "Posted at midnight  (+ makes it later, - earlier)" in off
-    assert "d to turn it off" in private
+    lines = lambda b: [line.strip("│ ") for line in b.frame(160, 20)]
+    off = lines(_browser())
+    assert "○ The diary is off  (d to turn it on)" in off and "Posted at midnight  (+ makes it later, - earlier)" in off
+    public = lines(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18))
+    # The mode is followed by the key that changes it, and the hour by the
+    # keys that move it, as the threshold is.
+    assert "● The diary is public, in your agent's topic in Diary  (d to make it private)" in public
+    assert "Posted at 18:00  (+ makes it later, - earlier)" in public
+    assert any("Diary of a-agent, 2026-10-10" in line for line in public)
+    assert not any("d to make it private" in line for line in public[-3:])
+    private = lines(_browser(mode=diary.PRIVATE))
+    assert "● The diary is private, a topic a day in your private diary  (d to turn it off)" in private
+    assert "Posted at midnight  (+ makes it later, - earlier)" in private
 
 
 def test_d_steps_from_off_to_public_to_private_and_back_writing_env():
@@ -170,3 +171,19 @@ def test_r_asks_for_the_chosen_entry_s_day_once_and_only_with_the_diary_on(tmp_p
     assert diary.rewrites(settings.state_path) == [diary.date(2026, 10, 10)]
     # Nothing to write again in an empty list.
     assert _browser().handle("r") is None
+
+
+def test_the_diary_browser_fits_the_screen_whatever_its_lines():
+    """A line the terminal wraps scrolls the top of the screen out of view."""
+    long = "woken because it was time for your diary, " + "written again " * 20
+    transcript = wakes.Transcript("p", [long] * 40, [])
+    b = _browser([browse.Wake(_row(), transcript)] * 10, mode=diary.PUBLIC)
+    b.message = "Your agent writes the diary of 2026-10-10 again at the daemon's next poll, as QUPA.md says now."
+    for cols, rows in ((61, 12), (80, 24), (120, 40)):
+        b.viewing = False
+        frames = [b.frame(cols, rows)]
+        b.handle("enter", rows)
+        frames.append(b.frame(cols, rows))
+        for frame in frames:
+            assert len(frame) == rows
+            assert max(wakes.columns(browse.visible(line)) for line in frame) <= cols

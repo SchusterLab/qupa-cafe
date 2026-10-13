@@ -43,7 +43,7 @@ def test_enter_reads_the_wake_and_escape_goes_back():
     b.handle("enter")
     assert b.viewing
     assert any("You were woken." in line for line in b.frame(100, 30))
-    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · t to tune replies · Esc to go back"
+    assert b.frame(100, 30)[-1].strip() == "↑↓ to scroll · Enter to open in Claude Code · r to wake again · t to tune replies · Esc to go back"
     # Enter in a wake opens it in Claude Code.
     assert b.handle("enter") == "ask"
     b.handle("esc")
@@ -55,11 +55,11 @@ def test_enter_reads_the_wake_and_escape_goes_back():
 def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     b = _browser(browse.Wake(_row(1), SAID), browse.Wake(_row(2), SAID))
     b.handle("down")
-    frame = b.frame(100, 20)
+    frame = b.frame(120, 20)
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · t to tune replies · n for near misses · Esc to quit"
+        "↑↓ to select · Enter to read · r to wake again · t to tune replies · n for near misses · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -415,10 +415,10 @@ def test_a_second_browser_is_noticed_and_not_opened(tmp_path, monkeypatch, capsy
 
 def test_the_list_scrolls_past_a_screenful_and_says_where_it_is():
     b = _browser(*(browse.Wake(_row(i), SAID) for i in range(1, 101)))
-    frame = b.frame(100, 20)
+    frame = b.frame(120, 20)
     assert "wakes 1-" in frame[-2] and "of 100" in frame[-2]
     b.handle("end")
-    frame = b.frame(100, 20)
+    frame = b.frame(120, 20)
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 100" in chosen[0]
     assert frame[-2].strip().endswith("-100 of 100")
@@ -435,7 +435,7 @@ def test_page_keys_move_by_what_the_list_has_room_for():
 
 
 def test_a_list_that_fits_shows_no_position():
-    frame = _browser(browse.Wake(_row(1), SAID)).frame(100, 20)
+    frame = _browser(browse.Wake(_row(1), SAID)).frame(120, 20)
     assert "wakes 1-" not in frame[-2]
 
 
@@ -535,3 +535,84 @@ def test_no_key_within_the_timeout_reads_as_none(monkeypatch):
             assert browse.read_key(0.1) == ""
         os.close(writing)
 
+
+
+# ------------------------------------------------------------- waking again
+
+
+def test_r_asks_for_the_chosen_wake_s_post_once(tmp_path):
+    settings = Settings(state_path=str(tmp_path / "state.sqlite3"))
+    b = _browser(browse.Wake(_row(7, score=0.81), SAID))
+    assert b.handle("r") == "rewake"
+    assert "woken again for post 1 of topic 7 at the daemon's next poll" in browse.rewake(settings, b.selected)
+    assert "already waiting" in browse.rewake(settings, b.selected)
+    assert daemon.rewakes(settings.state_path) == [daemon.Rewake(7, 1, "you were mentioned", 0.81)]
+    # And from the wake itself.
+    b.handle("enter")
+    assert b.handle("r") == "rewake"
+
+
+def test_r_has_no_post_to_wake_for_in_the_parent_the_near_misses_or_an_empty_list(tmp_path):
+    settings = Settings(state_path=str(tmp_path / "state.sqlite3"))
+    parent = wakes.Row("2026-10-11 00:01:00", None, "finished", "p", "/agent", None, None, "parent",
+                       daemon.PARENT_REASON)
+    assert "parent session" in browse.rewake(settings, browse.Wake(parent, SAID))
+    assert daemon.rewakes(settings.state_path) == []
+    b = _browser(browse.Wake(_row(7), SAID))
+    b.handle("n")
+    assert b.handle("r") is None
+    assert _browser().handle("r") is None
+
+
+def test_a_wake_asked_for_again_names_the_reason_it_first_woke_once():
+    first = daemon.Rewake(7, 1, "you were mentioned")
+    assert first.said == f"{daemon.REWOKEN}, which first woke you because you were mentioned"
+    assert daemon.Rewake(7, 1, first.said).said == first.said
+
+
+# ---------------------------------------------------------- fitting the screen
+
+
+def test_a_line_too_wide_is_folded_at_a_space_in_its_colours_and_indent():
+    wakes.set_colour(True)
+    try:
+        line = "    " + wakes.paint("alpha beta gamma delta epsilon", "meta") + " zeta"
+        folded = browse.fold(line, 20)
+        assert [browse.visible(piece) for piece in folded] == ["    alpha beta gamma", "    delta epsilon", "    zeta"]
+        # Each piece ends in no colour, and one broken inside a colour takes it up again.
+        assert all(piece.endswith(browse.RESET) for piece in folded[:2])
+        assert folded[1].lstrip(" ").startswith("\x1b[")
+        # A wide character counts two, and a word longer than the line is cut.
+        assert all(wakes.columns(browse.visible(p)) <= 6 for p in browse.fold("日本語のテキスト", 6))
+        assert browse.fold("x" * 25, 10) == ["x" * 10, "x" * 10, "x" * 5]
+        # A line that begins with a mark goes on under its text.
+        assert [browse.visible(p) for p in browse.fold("● The diary is public", 12)] == ["● The diary", "  is public"]
+    finally:
+        wakes.set_colour(False)
+
+
+def test_no_frame_is_wider_or_taller_than_the_screen():
+    """A line the terminal wraps, or one line too many, scrolls the top of the
+    screen out of view."""
+    long = "woken because " + "a reason that goes on and on " * 8
+    transcript = wakes.Transcript("p", [long] * 50, [])
+    for cols, rows in ((61, 12), (80, 24), (100, 30)):
+        b = _browser(*(browse.Wake(_row(i), transcript) for i in range(1, 40)), floor=0.72)
+        b.message = "A message for the list, long enough to need a second line on any screen narrower than this one."
+        frames = [b.frame(cols, rows)]
+        b.handle("enter", rows)
+        frames.append(b.frame(cols, rows))
+        b.handle("end", rows)
+        frames.append(b.frame(cols, rows))
+        for frame in frames:
+            assert len(frame) == rows
+            assert max(wakes.columns(browse.visible(line)) for line in frame) <= cols
+
+
+def test_the_end_of_a_wake_is_reached_in_the_lines_it_is_drawn_in():
+    transcript = wakes.Transcript("p", ["word " * 60] * 10 + ["the last line"], [])
+    b = _browser(browse.Wake(_row(1), transcript))
+    b.handle("enter")
+    b.frame(80, 20)
+    b.handle("end", 20)
+    assert any("the last line" in line for line in b.frame(80, 20))

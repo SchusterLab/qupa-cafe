@@ -57,6 +57,8 @@ class DiaryBrowser:
     message: str = ""
     _detail: list[str] = field(default_factory=list)
     _room: int = 10
+    _folded: tuple = ()
+    _page: int = 0
 
     @property
     def selected(self) -> browse.Wake | None:
@@ -86,13 +88,7 @@ class DiaryBrowser:
             return None
 
         if self.viewing:
-            page = browse.page_size(height)
-            last = max(len(self._detail) - page, 0)
-            moves = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "home": -len(self._detail), "end": len(self._detail)}
-            if key in moves:
-                self.scroll = min(max(self.scroll + moves[key], 0), last)
-            elif key in ("esc", "left", "backspace", "\x08", "\x7f"):
-                self.viewing = False
+            browse.scroll(self, key, height)
             return None
 
         if not self.items:
@@ -108,16 +104,18 @@ class DiaryBrowser:
 
     # ------------------------------------------------------------ frames
 
-    def diary_line(self) -> str:
-        """The diary's mode, then its hour and the keys that move it, as the
-        wake browser follows the threshold with its keys."""
-        keys = wakes.paint("  (+ makes it later, - earlier)", "meta")
-        if not self.chosen.on:
-            return wakes.paint("○ ", "meta") + f"The diary is off: d turns it on. Posted at {self.chosen.at()}" + keys
-        return (
-            wakes.paint("● ", "good")
-            + f"The diary is {self.chosen.mode}, {ROW_PLACES[self.chosen.mode]}; posted at {self.chosen.at()}" + keys
-        )
+    def diary_lines(self) -> list[str]:
+        """The diary's mode and the key that changes it, then its hour and
+        the keys that move it, as the wake browser follows the threshold with
+        its keys."""
+        following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
+        mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
+        where = f"The diary is {self.chosen.mode}, {ROW_PLACES[self.chosen.mode]}" if self.chosen.on else "The diary is off"
+        mark = wakes.paint("● ", "good") if self.chosen.on else wakes.paint("○ ", "meta")
+        return [
+            mark + where + wakes.paint(f"  ({mode})", "meta"),
+            f"  Posted at {self.chosen.at()}" + wakes.paint("  (+ makes it later, - earlier)", "meta"),
+        ]
 
     def status_line(self) -> str:
         return self.message and wakes.paint("  " + self.message, "yours")
@@ -129,25 +127,14 @@ class DiaryBrowser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  diary of {self.agent}" if self.agent else "  diary", "meta"
         )
-        out = browse.box(cols, title, [wakes.daemon_line(self.state), self.diary_line(), browse.model_line(models.DIARY)])
-        out.append("")
-        if not self.items:
-            out.append(wakes.paint("  No diary entries yet. The first is written at the next hour it is posted at, with it on.", "meta"))
-        room = max(rows - len(out) - 3, 1)
-        self._room = room
-        top = min(max(self.index - room + 1, 0), max(len(self.items) - room, 0))
-        out += [self._row(self.items[i], i == self.index, cols) for i in range(top, min(top + room, len(self.items)))]
-        while len(out) < rows - 2:
-            out.append("")
-        where = ""
-        if len(self.items) > room:
-            where = wakes.paint(f"  entries {top + 1}-{min(top + room, len(self.items))} of {len(self.items)}", "meta")
-        out.append(self.status_line() or where)
-        following = diary.MODES[(diary.MODES.index(self.chosen.mode) + 1) % len(diary.MODES)]
-        mode = {diary.OFF: "d to turn it off", diary.PUBLIC: "d to turn it on"}.get(following, f"d to make it {following}")
-        keys = ["↑↓ to select", *(["Enter to read", "r to write it again"] if self.items else []), mode,
+        header = browse.box(cols, title, [wakes.daemon_line(self.state), *self.diary_lines(), browse.model_line(models.DIARY)])
+        keys = ["↑↓ to select", *(["Enter to read", "r to write it again"] if self.items else []),
                 "e to change how it is written", "Esc to quit"]
-        out.append(browse.hints(keys))
+        empty = "No diary entries yet. The first is written at the next hour it is posted at, with it on."
+        out, self._room = browse.listing(
+            cols, rows, header, "entries", len(self.items), lambda i: self._row(self.items[i], i == self.index, cols),
+            self.index, empty, self.status_line(), keys,
+        )
         return out
 
     def _row(self, item: browse.Wake, chosen: bool, cols: int) -> str:
@@ -159,19 +146,11 @@ class DiaryBrowser:
                                     row.title, "accent" if style == "accent" else None)
 
     def _detail_frame(self, cols: int, rows: int) -> list[str]:
-        page = browse.page_size(rows)
-        out = list(self._detail[self.scroll : self.scroll + page])
-        while len(out) < page:
-            out.append("")
-        end = min(self.scroll + page, len(self._detail))
-        where = wakes.paint(f"  lines {self.scroll + 1}-{end} of {len(self._detail)}", "meta")
-        out.append(self.status_line() or where)
         keys = ["↑↓ to scroll"]
         if self.selected and self.selected.askable:
             keys.append("Enter to open in Claude Code")
         keys += ["r to write it again", "e to change how it is written", "Esc to go back"]
-        out.append(browse.hints(keys))
-        return out
+        return browse.detail_frame(self, cols, rows, keys)
 
 
 # ------------------------------------------------------------- the edit
