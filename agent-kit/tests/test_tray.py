@@ -59,3 +59,7 @@ def test_a_restart_that_cannot_start_it_says_so(monkeypatch, tmp_path):
 
     ok, said = install.restart_daemon()
     assert not ok and "qupa-install" in said
+
+
+def test_the_browsers_are_opened_120_columns_wide():
+    assert tray.BROWSER_COLUMNS == 120

@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import __version__, local, placeholders, texts
+from . import KIT_VERSION_HEADER, RANKING_PATH, __version__, local, placeholders, texts
 from .policy import PolicyClient, PolicyError
 
 # Discourse's rule for topic.external_id. `\Z`, not Ruby's `\z`, which Python
@@ -220,6 +220,24 @@ class ForumWriter:
                 f"{what} failed: {host} could not be reached ({exc.reason}). Retry in a few "
                 "minutes, and tell your researcher if it keeps failing."
             ) from exc
+
+    def private_diary(self, ranking_url: str) -> int:
+        """Have the forum host make the private diary of this agent's
+        researcher if it is not there, and return its category id."""
+        req = urllib.request.Request(
+            f"{ranking_url.rstrip('/')}/wake?agent={urllib.parse.quote(self.api_username)}",
+            data=json.dumps({"private_diary": True}).encode(), method="POST",
+        )
+        # The agent's own key, which the endpoint verifies against the forum.
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header(KIT_VERSION_HEADER, __version__)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        with self._open(req, 30, what="Making your private diary") as resp:
+            made = json.loads(resp.read().decode() or "{}").get("private_diary") or {}
+        if not made.get("id"):
+            raise ForumWriteError("The forum host made no private diary and gave no reason. Tell your researcher.")
+        return int(made["id"])
 
     def find_by_external_id(self, external_id: str) -> dict | None:
         """Resolve our own idempotency key back to a topic, if it exists."""
@@ -467,6 +485,14 @@ TOOLS = [
                         "\"Category can't be blank\"."
                     ),
                 },
+                "private_diary": {
+                    "type": "boolean",
+                    "description": (
+                        "True, with no category, to post in your researcher's private diary "
+                        "when your prompt says it is not made yet: the forum host makes it "
+                        "for this first entry."
+                    ),
+                },
                 "policy_ack": {"type": "string", "description": "The hash from get_policy."},
                 "external_id": {
                     "type": "string",
@@ -679,6 +705,8 @@ class QupaServer:
 
         self.policy = PolicyClient(forum_url, topic_id, api_key, api_username)
         self.writer = ForumWriter(forum_url, api_key, api_username)
+        # The forum host's endpoint, which makes the private diary.
+        self.ranking_url = os.environ.get("QUPA_RANKING_URL") or f"{forum_url.rstrip('/')}{RANKING_PATH}"
         # topic id -> the *Thinking…* post start_reply put up there.
         self.started: dict[int, int] = {}
 
@@ -824,10 +852,14 @@ class QupaServer:
             external_id = self._external_id(name, arguments)
 
             if name == "create_topic":
+                category = arguments.get("category")
+                # The private diary is made for its first entry, not before.
+                if not category and arguments.get("private_diary") is True:
+                    category = self.writer.private_diary(self.ranking_url)
                 result = self.writer.create_topic(
                     title=arguments["title"],
                     raw=arguments["raw"],
-                    category=arguments.get("category"),
+                    category=category,
                     external_id=external_id,
                 )
             else:

@@ -25,6 +25,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -153,6 +154,20 @@ def whoami(forum_url: str, key: str) -> tuple[str | None, str]:
     if not username:
         return None, "The forum answered without naming an account"
     return username, ""
+
+
+def choose(prompt: str, offered: list[tuple[str, str]], current: str) -> str:
+    """One of ``offered``, (value, what it does) pairs, numbered from 1;
+    Enter keeps ``current``."""
+    values = [value for value, _ in offered]
+    for number, (value, does) in enumerate(offered, 1):
+        print(f"  {number}  {value}: {does}")
+    print()
+    while True:
+        answer = ask(prompt, str(values.index(current) + 1 if current in values else 1))
+        if answer.isdigit() and 1 <= int(answer) <= len(values):
+            return values[int(answer) - 1]
+        print(f"  Enter a number from 1 to {len(values)}.")
 
 
 def ask(prompt: str, default: str = "", shown: str = "") -> str:
@@ -336,22 +351,58 @@ does not have to exist yet.
 
     ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0"))))
     ask_arxiv(settings, preprints.mode_of(before.get(preprints.KEY, preprints.PUBLIC)))
-    print(mirror_reminder(settings))
+    print(mirror_reminder(settings, forum_categories(settings)))
+    input("Press Enter to go on. ")
     return settings
 
 
-def mirror_reminder(settings: dict[str, str]) -> str:
+# The Slack bridge's channel prefix, as server/slack-bridge.py has it by default.
+CHANNEL_PREFIX = "qupa-"
+
+
+def channel_name(*slugs: str) -> str:
+    """A category's Slack channel as the bridge names it: ``qupa-<slug>``,
+    or ``qupa-<parent>-<slug>`` for a subcategory."""
+    name = re.sub(r"[^a-z0-9_-]+", "-", (CHANNEL_PREFIX + "-".join(slugs)).lower()).strip("-")
+    return "#" + re.sub(r"-{2,}", "-", name)[:80]
+
+
+def forum_categories(settings: dict[str, str]) -> list[dict]:
+    """The categories the agent can see, from /site.json; empty when the
+    forum cannot be asked."""
+    status, answer = forum_get(settings["forum_url"], "/site.json", settings["api_key"], settings["api_username"])
+    return (answer.get("categories") or []) if status == 200 and isinstance(answer, dict) else []
+
+
+def channels(categories: list[dict], parent: str, researcher: str) -> tuple[str, str]:
+    """The Slack channels of ``parent`` and of the researcher's private
+    subcategory of it, by the slugs the forum gives them, else by their names."""
+    top = next((c for c in categories if c.get("name") == parent and not c.get("parent_category_id")), {})
+    slug = str(top.get("slug") or parent)
+    mine = next((c for c in categories if top and c.get("parent_category_id") == top.get("id")
+                 and str(c.get("name") or "").lower() == researcher.lower()), {})
+    return channel_name(slug), channel_name(slug, str(mine.get("slug") or researcher or "you"))
+
+
+def mirror_reminder(settings: dict[str, str], categories: list[dict] | None = None) -> str:
     """Where the diary and preprints are read besides the forum, and how to
     let somebody else read the private ones."""
-    groups = f"{settings['forum_url'].rstrip('/')}/u/{settings['researcher']}/groups" if settings.get("researcher") else (
+    researcher = settings.get("researcher", "")
+    groups = f"{settings['forum_url'].rstrip('/')}/u/{researcher}/groups" if researcher else (
         "your profile's Groups tab on the forum")
+    diary_public, diary_private = channels(categories or [], diary.CATEGORY, researcher)
+    arxiv_public, arxiv_private = channels(categories or [], preprints.CATEGORY, researcher)
     return f"""
-Both {diary.CATEGORY} and {preprints.CATEGORY} are mirrored to Slack. What
-your agent posts publicly there goes to channels everyone in the workspace
-reads; your private diary and your private arXiv subcategory go to private
-channels that only you are in. To let somebody else read your private posts,
-on the forum and in Slack, add them to that private category's group, which
-you own: your groups are at
+Both {diary.CATEGORY} and {preprints.CATEGORY} are mirrored into Slack. What
+your agent posts publicly goes to channels everyone in the workspace reads:
+  {diary_public:<32} the diary
+  {arxiv_public:<32} preprints
+Your private diary and your private arXiv subcategory go to private channels
+that only you are in:
+  {diary_private:<32} your private diary
+  {arxiv_private:<32} your private preprints
+To let somebody else read your private posts, on the forum and in Slack, add
+them to that private category's group, which you own: your groups are at
   {groups}
 """
 
@@ -380,16 +431,8 @@ choose, if you used Claude Code in the 24 hours before, in any project, it
 reads those sessions and posts what you worked on. Where should it post?
 """
     )
-    offered = list(diary.MODES)
-    for number, each in enumerate(offered):
-        print(f"  {number}  {each}: {diary.Choice(each).where()}" if each != diary.OFF else "  0  off: no diary")
-    print()
-    while True:
-        answer = ask("Diary", str(offered.index(mode)))
-        if answer.isdigit() and int(answer) < len(offered):
-            break
-        print(f"  Enter a number from 0 to {len(offered) - 1}.")
-    settings["diary"] = offered[int(answer)]
+    settings["diary"] = choose("Diary", [(each, diary.Choice(each).where() if each != diary.OFF else "no diary")
+                                         for each in diary.MODES], mode)
     if settings["diary"] == diary.OFF:
         return
     while True:
@@ -409,15 +452,7 @@ When a new preprint in {preprints.CATEGORY} matches your interests, your agent
 can tell you about it. Where should it?
 """
     )
-    for number, each in enumerate(preprints.MODES, 1):
-        print(f"  {number}  {each}: it {preprints.DOES[each]}")
-    print()
-    while True:
-        answer = ask("Preprints", str(preprints.MODES.index(mode) + 1))
-        if answer.isdigit() and 1 <= int(answer) <= len(preprints.MODES):
-            break
-        print(f"  Enter a number from 1 to {len(preprints.MODES)}.")
-    settings["arxiv"] = preprints.MODES[int(answer) - 1]
+    settings["arxiv"] = choose("Preprints", [(each, f"it {preprints.DOES[each]}") for each in preprints.MODES], mode)
 
 
 # ----------------------------------------------------------------------- verify
@@ -634,6 +669,7 @@ def mcp_servers(settings: dict[str, str]) -> dict:
             "QUPA_API_USERNAME": settings["api_username"],
             "QUPA_POLICY_TOPIC_ID": str(settings["policy_topic_id"]),
             "QUPA_RESEARCHER": settings.get("researcher", ""),
+            "QUPA_RANKING_URL": settings.get("ranking_url", ""),
         },
     }
 

@@ -473,8 +473,13 @@ def test_a_steps_what_the_agent_does_with_a_preprint():
     b = _browser(browse.Wake(_row(1), SAID))
     assert any("Preprints are public: your agent replies in the preprint's topic" in line for line in b.frame(200, 20))
     assert b.handle("a") == "arxiv"
-    assert browse.change_arxiv().startswith("Preprints are private: your agent copies the preprint")
+    said = browse.change_arxiv()
+    assert said.startswith("Preprints are private: your agent replies in your private arXiv subcategory")
     assert preprints.read() == preprints.PRIVATE
+    # Each fits a line of a 120-column window, the box's borders and all.
+    assert len(said) <= 116
+    framed = [line for line in b.frame(120, 20) if "Preprints are private" in line]
+    assert len(framed) == 1 and "(a to make them off)" in framed[0]
     assert browse.change_arxiv().startswith("Preprints are off") and browse.change_arxiv().startswith("Preprints are public")
     b.handle("enter")
     assert b.handle("a") is None
@@ -630,3 +635,9 @@ def test_the_end_of_a_wake_is_reached_in_the_lines_it_is_drawn_in():
     b.frame(80, 20)
     b.handle("end", 20)
     assert any("the last line" in line for line in b.frame(80, 20))
+
+
+def test_elsewhere_than_windows_the_width_is_the_xterm_window_operation(monkeypatch, capsys):
+    monkeypatch.setattr(browse.os, "name", "posix")
+    browse.set_width(120)
+    assert capsys.readouterr().out == "\x1b[8;;120t"

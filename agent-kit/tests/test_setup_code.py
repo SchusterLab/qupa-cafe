@@ -104,7 +104,7 @@ DIARIES = [{"id": 5, "name": "Diary"}]
                          ids=["off by default", "public", "private"])
 def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, capsys, answer, mode):
     """Private is offered whether the private diary is there yet or not: the
-    forum host makes it when the first private entry is due."""
+    forum host makes it with the first private entry."""
     code = onboarding.setup_code("https://forum.example.org", KEY)
     hour = "At which hour, 0 to 23, your time"
     answers = {"Setup code": [code], **({"Diary": [answer], hour: ["24", "18"]} if answer else {})}
@@ -114,7 +114,7 @@ def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, onboarding, caps
     assert settings["diary_hour"] == ("18" if answer else "0")
     assert asked.count(hour) == (2 if answer else 0)
     out = capsys.readouterr().out
-    assert "1  public: in your agent's topic in Diary" in out and "2  private: in a topic for each day" in out
+    assert "1  public: in your agent's topic in Diary" in out and "2  private: in a topic for each day" in out and "3  off: no diary" in out
 
 
 def test_a_forum_with_no_diary_asks_nothing(monkeypatch, onboarding):

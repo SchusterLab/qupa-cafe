@@ -745,12 +745,6 @@ class Ranking:
         ``RankingError``."""
         return self._ask(agent, {"private_arxiv": True}).get("private_arxiv") or {}
 
-    def private_diary(self, agent: str) -> dict:
-        """Ask the forum host for the private diary of the agent's researcher,
-        which it makes if it is not there. Its id and name; raises
-        ``RankingError``."""
-        return self._ask(agent, {"private_diary": True}).get("private_diary") or {}
-
     def _ask(self, agent: str, body: dict) -> dict:
         """One POST to /wake whose answer the caller needs; raises
         ``RankingError`` with the host's own reason when it has one."""
@@ -2054,7 +2048,7 @@ def diary_pass(
     if ready is None:
         return False
     template, config = ready
-    where = diary_where(settings, forum, ranking, state, dry_run, now, chosen, day)
+    where = diary_where(settings, forum, chosen, day)
     if where is None:
         return False
     ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
@@ -2113,7 +2107,7 @@ def rewrite_pass(
     if entry is not None:
         where = diary.rewrite_where(entry)
     else:
-        posted = diary_where(settings, forum, ranking, state, dry_run, now, chosen, day)
+        posted = diary_where(settings, forum, chosen, day)
         if posted is None:
             return False
         where = diary.rewrite_new(posted)
@@ -2161,21 +2155,18 @@ def diary_ready(settings: Settings, day: date) -> tuple[str, dict] | None:
     return template, config
 
 
-def diary_where(settings: Settings, forum: Forum, ranking: Ranking, state: diary.Diary, dry_run: bool,
-                now: datetime | None, chosen: diary.Choice, day: date) -> str | None:
+def diary_where(settings: Settings, forum: Forum, chosen: diary.Choice, day: date) -> str | None:
     """Where the day's entry is posted and with which tool, for the prompt;
     None when the diary has nowhere to go."""
     place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
-    # The forum host makes a private diary the first time one is due.
-    if place is None and chosen.mode == diary.PRIVATE and not dry_run:
+    # A private diary not made yet is made by `create_topic` for its first
+    # entry, so a wake that posts nothing makes nothing; it needs Diary there.
+    if place is None and chosen.mode == diary.PRIVATE and settings.researcher:
         try:
-            made = ranking.private_diary(settings.api_username)
-        except RankingError as exc:
-            LOG.warning("the forum host did not make your private diary, so no diary is written: %s", exc)
-            state.failed(day, now)
-            return None
-        LOG.info("the forum host made your private diary, %s / %s", diary.CATEGORY, made.get("name"))
-        place = diary.forum_place(forum, settings.api_username, chosen.mode, settings.researcher)
+            if diary.place(diary.categories(forum), diary.PUBLIC, settings.researcher) is not None:
+                place = None, None
+        except (urllib.error.URLError, ValueError, KeyError) as exc:
+            LOG.warning("could not find the diary on the forum: %s", exc)
     if place is None:
         LOG.warning("no diary is written: %s", diary.missing(chosen.mode, settings.researcher))
         return None

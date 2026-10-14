@@ -326,6 +326,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n\n")[0])
     parser.add_argument("--print", action="store_true", help="print the entries rather than browse them")
     parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--columns", type=int, help="make the window this many columns wide before browsing")
     args = parser.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
@@ -335,6 +336,8 @@ def main() -> int:
     load_env_file()
     settings = Settings()
     if not args.print and sys.stdin.isatty() and sys.stdout.isatty():
+        if args.columns:
+            browse.set_width(args.columns)
         return run(settings)
     print_entries(settings)
     return 0

@@ -243,21 +243,13 @@ def projects(tmp_path, monkeypatch):
 
 
 class FakeRanking:
-    """The forum host, which makes the private diary when asked, adding it
-    to what the forum shows the agent."""
+    """The forum host, which the daemon tells it is still there."""
 
-    def __init__(self, site=None, refuse=""):
-        self.site, self.refuse, self.asked = site, refuse, []
+    def __init__(self, site=None):
+        self.site = site
 
     def alive(self, agent):
         pass
-
-    def private_diary(self, agent):
-        self.asked.append(agent)
-        if self.refuse:
-            raise daemon.RankingError(self.refuse)
-        self.site.append({"id": 9, "name": "a", "parent_category_id": 5, "read_restricted": True})
-        return {"id": 9, "name": "a"}
 
 
 def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=(), ranking=None):
@@ -307,30 +299,27 @@ def test_a_day_with_sessions_wakes_the_agent_once_and_journals_it(handled, proje
     assert titles == ["Diary of a-agent, 2026-10-10"]
 
 
-def test_a_private_diary_not_there_yet_is_made_by_the_forum_host_before_the_wake(handled, projects, monkeypatch):
+def test_a_private_diary_not_there_yet_is_made_by_the_first_entry_s_create_topic(handled, projects, monkeypatch):
+    """Not before the wake, so a wake that posts nothing makes nothing."""
     texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
     write_session(projects, "mine", [prompt("work", at(9))])
     site = [c for c in SITE if c["id"] != 6]
-    ranking = FakeRanking(site)
-    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site, ranking=ranking)
-    assert woke and ranking.asked == ["a-agent"]
-    assert "category=9" in woken[0][0] and "a-agent, 2026-10-10" in woken[0][0]
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site)
+    assert woke and "private_diary=true and no category" in woken[0][0] and "category=" not in woken[0][0]
+    assert "a-agent, 2026-10-10" in woken[0][0] and site == [c for c in SITE if c["id"] != 6]
 
 
-def test_one_there_already_is_not_asked_for(handled, projects, monkeypatch):
+def test_one_there_already_is_posted_in_by_its_id(handled, projects, monkeypatch):
     texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
     write_session(projects, "mine", [prompt("work", at(9))])
-    ranking = FakeRanking(list(SITE))
-    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=list(SITE), ranking=ranking)
-    assert woke and not ranking.asked and "category=6" in woken[0][0]
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=list(SITE))
+    assert woke and "category=6" in woken[0][0] and "private_diary" not in woken[0][0]
 
 
-def test_a_private_diary_the_host_will_not_make_leaves_the_day_to_do(handled, projects, monkeypatch):
+def test_a_private_diary_without_the_diary_category_leaves_the_day_to_do(handled, projects, monkeypatch):
     texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
     write_session(projects, "mine", [prompt("work", at(9))])
-    site = [c for c in SITE if c["id"] != 6]
-    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site,
-                        ranking=FakeRanking(site, refuse="no Diary category"))
+    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=[])
     assert not woke and not woken and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 

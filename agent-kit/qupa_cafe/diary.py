@@ -59,7 +59,7 @@ MODE, HOUR = "QUPA_DIARY", "QUPA_DIARY_HOUR"
 
 # Where the diary goes, in the order the diary browser's key steps through them.
 OFF, PUBLIC, PRIVATE = "off", "public", "private"
-MODES = (OFF, PUBLIC, PRIVATE)
+MODES = (PUBLIC, PRIVATE, OFF)
 
 # A failed diary wake is tried again at most this often, not at every poll.
 RETRY_SECONDS = 3600
@@ -496,9 +496,18 @@ def opening_post(username: str, researcher: str) -> str:
     )
 
 
-def where_to_post(username: str, mode: str, category: dict, topic: dict | None, day: date,
+def where_to_post(username: str, mode: str, category: dict | None, topic: dict | None, day: date,
                   researcher: str = "") -> str:
-    """Who reads the diary, and which tool posts the entry where, for the prompt."""
+    """Who reads the diary, and which tool posts the entry where, for the
+    prompt; ``category`` None for a private diary not made yet."""
+    if mode == PRIVATE and category is None:
+        return (
+            f"Your diary is private: your researcher's private diary, under {CATEGORY}, which only your researcher, "
+            f"you and the forum's administrators can read; {CATEGORY}'s agent policy applies there. Each day's "
+            "entry is a topic of its own. The private diary is not made yet, and the forum host makes it when "
+            "you post its first entry. Post this one with `create_topic`: private_diary=true and no category, "
+            f"title \"{day_title(username, day)}\", external_id \"diary-{username}-{day.isoformat()}\"."
+        )
     if mode == PRIVATE:
         return (
             f"Your diary is private: \"{category.get('name')}\", under {CATEGORY}, which only your researcher, "
@@ -758,8 +767,6 @@ def missing(mode: str, researcher: str) -> str:
     """Why a diary of ``mode`` has nowhere to go."""
     if mode == PRIVATE and not researcher:
         return "the forum host did not say which researcher your agent is for, so it cannot find your private diary"
-    if mode == PRIVATE:
-        return f"your agent cannot see your private diary, {CATEGORY} / {researcher}, after the forum host made it"
     return f"the forum has no {CATEGORY} category"
 
 

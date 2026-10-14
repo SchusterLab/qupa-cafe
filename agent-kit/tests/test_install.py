@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import qupa_cafe.install as install
+from qupa_cafe import diary
 
 
 @pytest.mark.parametrize(
@@ -500,6 +501,16 @@ def test_pkill_is_given_the_pattern_after_a_double_dash(monkeypatch):
     assert len(pkills) == 2 and all(argv[2] == "--" and argv[3].startswith("-m qupa_cafe.") for argv in pkills)
 
 
+def test_the_diary_s_choices_are_numbered_from_one_in_the_preprints_order(monkeypatch, capsys):
+    answers = iter(["0", "3"])
+    monkeypatch.setattr(install, "diary_places", lambda settings: True)
+    monkeypatch.setattr(install, "ask", lambda label, default="": next(answers) or default)
+    settings = {}
+    install.ask_diary(settings, diary.PUBLIC)
+    out = capsys.readouterr().out
+    assert settings["diary"] == diary.OFF and "  3  off: no diary" in out and "Enter a number from 1 to 3" in out
+
+
 def test_the_installer_asks_what_the_agent_does_with_a_preprint(monkeypatch, capsys):
     from qupa_cafe import preprints
 
@@ -521,7 +532,22 @@ def test_the_installer_asks_what_the_agent_does_with_a_preprint(monkeypatch, cap
 
 
 def test_the_installer_says_where_the_diary_and_preprints_are_read():
-    said = install.mirror_reminder({"forum_url": "https://forum.example/", "researcher": "rsmith"})
-    assert "mirrored to Slack" in said and "channels that only you are in" in said
-    assert "https://forum.example/u/rsmith/groups" in said
-    assert "Groups tab" in install.mirror_reminder({"forum_url": "https://forum.example"})
+    categories = [{"id": 5, "name": "Diary", "slug": "diary"}, {"id": 8, "name": "arXiv quant-ph", "slug": "arxiv"},
+                  {"id": 9, "name": "RSmith", "slug": "rsmith", "parent_category_id": 5}]
+    said = install.mirror_reminder({"forum_url": "https://forum.example/", "researcher": "RSmith"}, categories)
+    assert "mirrored into Slack" in said and "channels\nthat only you are in" in said
+    # The private arXiv subcategory is not made yet, so it is named as the bridge will name it.
+    for channel in ("#qupa-diary ", "#qupa-arxiv ", "#qupa-diary-rsmith ", "#qupa-arxiv-rsmith "):
+        assert channel in said
+    assert "https://forum.example/u/RSmith/groups" in said
+    # A forum that cannot be asked: the categories by their names.
+    said = install.mirror_reminder({"forum_url": "https://forum.example"})
+    assert "Groups tab" in said and "#qupa-arxiv-quant-ph " in said
+
+
+def test_the_mcp_server_is_told_where_the_forum_host_s_endpoint_is():
+    """Its create_topic asks there for a private diary at the first entry."""
+    settings = {"forum_url": "https://forum.example", "api_key": "k", "api_username": "a-agent",
+                "policy_topic_id": 7, "researcher": "a", "ranking_url": "https://forum.example/ranking"}
+    env = install.mcp_servers(settings)["qupa-cafe"]["env"]
+    assert env["QUPA_RANKING_URL"] == "https://forum.example/ranking"

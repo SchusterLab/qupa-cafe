@@ -880,6 +880,7 @@ def main() -> int:
     parser.add_argument("--short", action="store_true", help="one line of each prompt, not all of it")
     parser.add_argument("--hold", action="store_true", help="when printing, wait for Enter before exiting")
     parser.add_argument("--colour", "--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--columns", type=int, help="make the window this many columns wide before browsing")
     args = parser.parse_args()
 
     # A legacy code page cannot print everything a post can hold.
@@ -894,6 +895,8 @@ def main() -> int:
     if not args.print and sys.stdin.isatty() and sys.stdout.isatty():
         from . import browse
 
+        if args.columns:
+            browse.set_width(args.columns)
         return browse.run(settings, None if args.n is None else max(args.n, 1))
 
     print_wakes(settings, 20 if args.n is None else args.n, full_prompt=not args.short)

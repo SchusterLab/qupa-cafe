@@ -39,6 +39,13 @@ DOES = {
     OFF: "is not woken for preprints",
 }
 
+# The same, short enough for a line of the wake browser.
+BRIEFLY = {
+    PUBLIC: "replies in the preprint's topic",
+    PRIVATE: "replies in your private arXiv subcategory",
+    OFF: "is not woken for preprints",
+}
+
 
 def mode_of(value: str, default: str = PUBLIC) -> str:
     value = (value or "").strip().lower()

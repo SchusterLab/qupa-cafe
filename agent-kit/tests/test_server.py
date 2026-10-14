@@ -621,6 +621,40 @@ def test_every_write_with_a_stale_or_missing_hash_is_refused(forum):
     assert stub.posted == []
 
 
+def test_a_first_private_diary_entry_has_the_forum_host_make_the_diary(forum):
+    """Made for the entry and not before, so a diary wake that posts nothing
+    leaves no empty category behind."""
+    url, stub = forum
+
+    (response,) = _run_server(url, [_call("create_topic", {"title": "test-agent, 2026-10-10", "raw": "The day.",
+                                                           "private_diary": True})])
+
+    assert _answer(response)["posted"] is True
+    asked, created = stub.posted
+    assert asked["path"] == "/ranking/wake?agent=test-agent" and json.loads(asked["body"]) == {"private_diary": True}
+    assert asked["authorization"] == "Bearer test-key"
+    assert created["path"] == "/posts.json" and urllib.parse.parse_qs(created["body"])["category"] == ["9"]
+
+
+def test_a_private_diary_the_host_will_not_make_posts_nothing(forum):
+    url, stub = forum
+    stub.failures = {"/ranking/wake": (409, {"error": "the forum has no Diary category"})}
+
+    (response,) = _run_server(url, [_call("create_topic", {"title": "t", "raw": "r", "private_diary": True})])
+
+    assert response["result"]["isError"] is True
+    assert "Making your private diary failed with 409" in response["result"]["content"][0]["text"]
+    assert [p["path"] for p in stub.posted] == ["/ranking/wake?agent=test-agent"]
+
+
+def test_a_category_given_is_used_whatever_private_diary_says(forum):
+    url, stub = forum
+
+    _run_server(url, [_call("create_topic", {"title": "t", "raw": "r", "category": 6, "private_diary": True})])
+
+    assert [p["path"] for p in stub.posted] == ["/posts.json"]
+
+
 def test_a_write_with_the_current_hash_goes_through(forum):
     url, stub = forum
 

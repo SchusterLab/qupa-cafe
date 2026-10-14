@@ -41,6 +41,9 @@ COLOURS = {
 # Windows truncates a tray tooltip at 127 characters.
 TOOLTIP_CHARS = 120
 
+# How wide the wake and diary browsers make the window the icon opens them in.
+BROWSER_COLUMNS = 120
+
 # Tried in order on Linux.
 TERMINALS = (
     ("xdg-terminal-exec", []),
@@ -251,7 +254,7 @@ def main() -> int:
             if not browse.bring_to_front():
                 icon.notify("The wake browser is already open.", "Qupa Cafe")
             return
-        argv = [console_python(), "-m", "qupa_cafe.wakes"]
+        argv = [console_python(), "-m", "qupa_cafe.wakes", "--columns", str(BROWSER_COLUMNS)]
         if not open_terminal(argv, settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.wakes", "Qupa Cafe")
 
@@ -262,7 +265,7 @@ def main() -> int:
             if not browse.bring_to_front(diaries.TITLE):
                 icon.notify("The diary browser is already open.", "Qupa Cafe")
             return
-        argv = [console_python(), "-m", "qupa_cafe.diaries"]
+        argv = [console_python(), "-m", "qupa_cafe.diaries", "--columns", str(BROWSER_COLUMNS)]
         if not open_terminal(argv, settings, "show-diary"):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.diaries", "Qupa Cafe")
 

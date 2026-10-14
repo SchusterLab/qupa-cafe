@@ -77,7 +77,7 @@ def arxiv_line() -> str:
     mode = preprints.read()
     following = preprints.MODES[(preprints.MODES.index(mode) + 1) % len(preprints.MODES)]
     mark = wakes.paint("○ ", "meta") if mode == preprints.OFF else wakes.paint("● ", "good")
-    return mark + f"Preprints are {mode}: your agent {preprints.DOES[mode]}" + wakes.paint(
+    return mark + f"Preprints are {mode}: your agent {preprints.BRIEFLY[mode]}" + wakes.paint(
         f"  (a to make them {following})", "meta"
     )
 
@@ -85,7 +85,7 @@ def arxiv_line() -> str:
 def change_arxiv() -> str:
     """Step what the agent does with a preprint, and say what it is now."""
     mode = preprints.step()
-    return f"Preprints are {mode}: your agent {preprints.DOES[mode]}, from the daemon's next poll."
+    return f"Preprints are {mode}: your agent {preprints.BRIEFLY[mode]}, from the daemon's next poll."
 
 
 def model_line(kind: str) -> str:
@@ -947,6 +947,45 @@ def set_title(title: str = TITLE) -> None:
             ctypes.windll.kernel32.SetConsoleTitleW(title)
         except Exception:  # noqa: BLE001 - a title is a convenience
             pass
+
+
+def set_width(columns: int) -> None:
+    """Make the window ``columns`` wide, keeping its height. On Windows the
+    console's buffer and window are set, since a console ignores the xterm
+    window operation that Terminal, iTerm2, xterm and VTE's terminals honour;
+    a terminal that does neither stays as it is."""
+    if os.name != "nt":
+        sys.stdout.write(f"\x1b[8;;{columns}t")
+        sys.stdout.flush()
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Coord(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class Rect(ctypes.Structure):
+            _fields_ = [("Left", ctypes.c_short), ("Top", ctypes.c_short),
+                        ("Right", ctypes.c_short), ("Bottom", ctypes.c_short)]
+
+        class BufferInfo(ctypes.Structure):
+            _fields_ = [("dwSize", Coord), ("dwCursorPosition", Coord), ("wAttributes", wintypes.WORD),
+                        ("srWindow", Rect), ("dwMaximumWindowSize", Coord)]
+
+        kernel32 = ctypes.windll.kernel32
+        out = kernel32.GetStdHandle(-11)
+        info = BufferInfo()
+        if not kernel32.GetConsoleScreenBufferInfo(out, ctypes.byref(info)):
+            return
+        top, bottom = info.srWindow.Top, info.srWindow.Bottom
+        # The buffer is never narrower than the window: widen it first, then
+        # the window, then fit the buffer to the window.
+        kernel32.SetConsoleScreenBufferSize(out, Coord(max(columns, info.dwSize.X), info.dwSize.Y))
+        kernel32.SetConsoleWindowInfo(out, True, ctypes.byref(Rect(0, top, columns - 1, bottom)))
+        kernel32.SetConsoleScreenBufferSize(out, Coord(columns, info.dwSize.Y))
+    except Exception:  # noqa: BLE001 - a width is a convenience
+        pass
 
 
 def bring_to_front(title: str = TITLE) -> bool:
