@@ -862,10 +862,12 @@ class Bridge:
         return channel_name(category, self.category(parent_id) if parent_id else None, self.prefix)
 
     def ensure_channel(self, category: dict) -> str | None:
-        """The category's channel, created if needed; None if read-restricted."""
+        """The category's channel, created if needed: a public one for a
+        category everybody reads, and a private one, holding the people who
+        can read it, for a read-restricted one. None when Slack will not make
+        a private channel, as for a token without the ``groups`` scopes."""
         category_id = category.get("id")
-        if category.get("read_restricted"):
-            return None
+        private = bool(category.get("read_restricted"))
         existing = self.state.channel_for(category_id)
         if existing:
             return existing
@@ -875,14 +877,23 @@ class Bridge:
 
         channel_id = None
         try:
-            channel_id = self.slack.conversations_create(name=name, is_private=False)["channel"]["id"]
-            LOG.info("created #%s for %s", name, category.get("name"))
+            channel_id = self.slack.conversations_create(name=name, is_private=private)["channel"]["id"]
+            LOG.info("created %s #%s for %s", "private" if private else "public", name, category.get("name"))
         except Exception as exc:
+            if private and "name_taken" not in str(exc):
+                LOG.warning("cannot make a private channel for %s, so it stays on the forum: %s",
+                            category.get("name"), exc)
+                return None
             if "name_taken" not in str(exc):
                 raise
-            # Made by hand, or the state file was lost: adopt it.
-            channel_id = self.find_channel(name)
+            # Made by hand, or the state file was lost: adopt it. A private
+            # one is found only if the bot is in it.
+            channel_id = self.find_channel(name, private)
             if not channel_id:
+                if private:
+                    LOG.warning("#%s exists and the bridge is not in it, so %s stays on the forum",
+                                name, category.get("name"))
+                    return None
                 raise
             try:
                 self.slack.conversations_join(channel=channel_id)
@@ -897,12 +908,53 @@ class Bridge:
         except Exception as exc:
             LOG.info("could not set the purpose of #%s: %s", name, exc)
         self.state.set_channel(category_id, channel_id)
+        if private:
+            self.ensure_members(category, channel_id)
         return channel_id
 
-    def find_channel(self, name: str) -> str | None:
+    def readers(self, category: dict) -> set[str]:
+        """The people who can read a read-restricted category: the members
+        of the groups it is granted to, without agents and feeds, which post
+        through the bridge."""
+        granted = self.forum.category(category["id"]).get("group_permissions") or []
+        people: set[str] = set()
+        for permission in granted:
+            group = permission.get("group_name")
+            if group and group != "everyone":
+                people |= self.members(group)
+        return {p for p in people if p and not self.is_agent(p) and not self.is_feed(p)}
+
+    def ensure_members(self, category: dict, channel_id: str) -> None:
+        """A private channel's members brought in line with who can read its
+        category on the forum: those with a Slack account invited, and anyone
+        else in it removed, since they would read what the forum keeps from
+        them."""
+        wanted = {sid for name in self.readers(category) if (sid := self.slack_id_for(name))}
+        current: set[str] = set()
         cursor = None
         while True:
-            page = self.slack.conversations_list(types="public_channel", limit=200, cursor=cursor, exclude_archived=True)
+            page = self.slack.conversations_members(channel=channel_id, limit=200, cursor=cursor)
+            current |= set(page.get("members") or [])
+            cursor = (page.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+        current.discard(self.bot_user_id)
+        adding = sorted(wanted - current)
+        if adding:
+            self.slack.conversations_invite(channel=channel_id, users=",".join(adding))
+            LOG.info("invited %d reader(s) of %s to its channel", len(adding), category.get("name"))
+        for user in sorted(current - wanted):
+            try:
+                self.slack.conversations_kick(channel=channel_id, user=user)
+                LOG.info("removed %s from the channel of %s, which they cannot read", user, category.get("name"))
+            except Exception as exc:
+                LOG.warning("cannot remove %s from the channel of %s: %s", user, category.get("name"), exc)
+
+    def find_channel(self, name: str, private: bool = False) -> str | None:
+        cursor = None
+        kind = "private_channel" if private else "public_channel"
+        while True:
+            page = self.slack.conversations_list(types=kind, limit=200, cursor=cursor, exclude_archived=True)
             for channel in page.get("channels") or []:
                 if channel.get("name") == name:
                     return channel.get("id")
@@ -923,7 +975,8 @@ class Bridge:
             LOG.warning("cannot rename #%s to #%s: %s", current, wanted, exc)
 
     def sync_categories(self, force: bool = False) -> None:
-        """A channel for every category everybody can read, under its current name."""
+        """A channel for every category, under its current name, and for a
+        read-restricted one its members as the forum's readers are now."""
         if not force and time.time() - self._last_category_sync < CATEGORY_SYNC_SECONDS:
             return
         self._last_category_sync = time.time()
@@ -935,6 +988,8 @@ class Bridge:
                     channel_id = self.ensure_channel(category.value)
                     if channel_id:
                         self.ensure_name(category.value, channel_id)
+                        if category.value.get("read_restricted"):
+                            self.ensure_members(category.value, channel_id)
             except Exception as exc:
                 LOG.error("cannot make a channel for %s: %s", category.value.get("name"), exc)
 
@@ -1010,7 +1065,7 @@ class Bridge:
         category = self.category(topic["category_id"])
         channel_id = self.ensure_channel(category)
         if not channel_id:
-            return "restricted category"
+            return "a private category with no channel"
 
         # The first post is the thread's parent; a feed topic's waits for a
         # reply, which brings it.
@@ -2027,7 +2082,8 @@ def make_slack() -> Any:
 # The scopes providers/slack/manifest.yml grants.
 REQUIRED_SCOPES = {
     "channels:history", "channels:join", "channels:manage", "channels:read",
-    "chat:write", "chat:write.customize", "files:read", "files:write", "im:history", "im:write",
+    "chat:write", "chat:write.customize", "files:read", "files:write",
+    "groups:history", "groups:read", "groups:write", "im:history", "im:write",
     "mpim:history", "mpim:read", "mpim:write", "users:read", "users:read.email",
 }
 

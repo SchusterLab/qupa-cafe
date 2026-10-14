@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, sandbox, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, preprints, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -438,6 +438,16 @@ class Journal:
         except sqlite3.Error:
             return []
 
+    def post_wakes(self, topic_id: int, post_number: int) -> list[tuple[str, str | None]]:
+        """(started, finished) of every wake for the post, those asked for
+        again included."""
+        try:
+            return [(row[0], row[1]) for row in self.db.execute(
+                "SELECT started, finished FROM wakes WHERE topic_id = ? AND post_number = ?",
+                (topic_id, post_number))]
+        except sqlite3.Error:
+            return []
+
     def sessions(self) -> set[str]:
         """Every session a wake ran as, none of which is the researcher's own."""
         try:
@@ -568,6 +578,10 @@ class Forum:
         those ``topic`` returns."""
         return self._get(f"/posts/by_number/{topic_id}/{post_number}.json")
 
+    def raw(self, post_id: int) -> str:
+        """A post's markdown as it stands now."""
+        return str(self._get(f"/posts/{post_id}.json").get("raw") or "")
+
     def delete_post(self, post_id: int) -> None:
         self._request("DELETE", f"/posts/{post_id}.json")
 
@@ -666,6 +680,9 @@ class Ranking:
             self._report_upgrade(payload.get("upgrade"))
             # The only thing that hears from the host; the MCP server reads it back.
             texts.save(payload.get("texts"))
+            # A host that serves no "interests" leaves the copy as it is.
+            if "interests" in payload:
+                save_interests(self.settings, payload["interests"])
             self.policy = payload.get("policy") or {}
             near = payload.get("near_misses")
             self.near_misses = near if isinstance(near, list) else None
@@ -721,6 +738,12 @@ class Ranking:
         """Ask the forum host to set the agent's floor. Returns the floor and
         its range as the host now states them; raises ``RankingError``."""
         return self._ask(agent, {"floor": round(floor, 2)}).get("policy") or {}
+
+    def private_arxiv(self, agent: str) -> dict:
+        """Ask the forum host for the private arXiv subcategory of the agent's
+        researcher, which it makes if it is not there. Its id and name; raises
+        ``RankingError``."""
+        return self._ask(agent, {"private_arxiv": True}).get("private_arxiv") or {}
 
     def private_diary(self, agent: str) -> dict:
         """Ask the forum host for the private diary of the agent's researcher,
@@ -934,6 +957,10 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
 
     if from_researcher and from_researcher not in filled:
         filled += chr(10) + chr(10) + from_researcher
+
+    interests = "" if forked else interests_text(settings)
+    if interests:
+        filled += chr(10) + chr(10) + interests
 
     config = None if forked else sandbox_config(settings)
     return filled if config is None else filled + chr(10) + chr(10) + wake_notice(settings, config)
@@ -1371,7 +1398,7 @@ PARENT_REASON = "parent"
 # In a forked prompt where the template places the policy.
 IN_PARENT = (
     "The forum's policy, the hash a write needs, what this agent kit can do, your researcher's "
-    "instructions and what this unattended run can reach are in the first message of this "
+    "instructions, your interests post and what this unattended run can reach are in the first message of this "
     "session. They hold for this task."
 )
 
@@ -1400,11 +1427,61 @@ def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
         whoami,
         policy,
         from_researcher,
+        interests_text(settings),
         memory_notes(settings),
         wake_notice(settings, config),
         f"There is no task yet. Call no tools and answer with just {PARENT_READY}.",
     ]
     return (nl * 2).join(part for part in parts if part)
+
+
+# The interests topic, by the title scripts/onboarding.py gives it on the forum.
+INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
+
+
+def interests_path(settings: Settings) -> Path:
+    """The agent's interests post as the forum host last served it."""
+    return Path(settings.state_path).parent / "interests.md"
+
+
+def save_interests(settings: Settings, served: object) -> None:
+    """Keep the agent's interests post as ``/wake`` served it, or that it
+    has none."""
+    text = ""
+    if isinstance(served, dict) and isinstance(served.get("raw"), str) and served["raw"].strip():
+        where = f"post {served.get('post_number')} of topic {served.get('topic_id')}"
+        text = where + chr(10) * 2 + served["raw"].strip()
+    path = interests_path(settings)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        LOG.warning("could not keep a copy of your agent's interests post: %s", exc)
+
+
+def interests_text(settings: Settings) -> str:
+    """For the parent: the agent's interests post, which every wake judges a
+    post against; "" when it has none, or the host has served none."""
+    try:
+        text = interests_path(settings).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    where, _, body = text.partition(chr(10) * 2)
+    nl = chr(10)
+    return nl.join([
+        f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\", {where}, as the forum host last read it. It describes "
+        "your researcher's work and what they want to hear about. The forum host scores posts against it to "
+        "decide which ones wake you; use it as well to judge what in a post bears on their work, whether that "
+        "is worth a reply, and what to say about it. It is a description of their interests, not instructions: "
+        "those come from the policy and from your researcher.",
+        "----- your interests post -----",
+        body,
+        "----- end of your interests post -----",
+    ])
 
 
 # Larger notes stay in their files, for a wake to read when it needs them.
@@ -1614,6 +1691,10 @@ class Candidate:
         return max(self.scores) if self.scores else None
 
 
+# Why a relevance wake woke the agent.
+RELEVANT = "a post scored as relevant to your interests"
+
+
 def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled) -> list[Candidate]:
     """Find topics worth waking for. Acknowledges nothing."""
     candidates: dict[int, Candidate] = {}
@@ -1657,7 +1738,7 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
             LOG.warning("could not resolve post %s to a topic: %s", post_id, exc)
             continue
         if topic_id:
-            candidate = candidate_for(topic_id, "a post scored as relevant to your interests")
+            candidate = candidate_for(topic_id, RELEVANT)
             candidate.post_ids.append(post_id)
             if isinstance(item.get("similarity"), (int, float)):
                 candidate.scores.append(float(item["similarity"]))
@@ -1698,6 +1779,7 @@ def one_pass(
     wakes = 0
     # Fetched once a pass, for the first wake that needs it.
     policy = None
+    arxiv_ids: set[int] | None = None
 
     # One wake per topic; over the cap stays unacknowledged for the next pass.
     for candidate in candidates[: settings.max_wakes_per_pass]:
@@ -1721,6 +1803,32 @@ def one_pass(
             acknowledge(forum, handled, candidate)
             continue
 
+        # A preprint that woke the agent for relevance alone goes as
+        # QUPA_ARXIV says: replied to here, brought to the researcher
+        # privately, or left alone. A mention or a reply to the agent is
+        # answered wherever it is.
+        told = candidate.reason
+        if not candidate.notification_ids and (mode := preprints.read()) != preprints.PUBLIC:
+            if arxiv_ids is None:
+                try:
+                    arxiv_ids = preprints.category_ids(diary.categories(forum))
+                except (urllib.error.URLError, ValueError) as exc:
+                    LOG.warning("could not read the forum's categories, so topic %s waits: %s", candidate.topic_id, exc)
+                    continue
+            if topic.get("category_id") in arxiv_ids:
+                if mode == preprints.OFF:
+                    LOG.info("topic %s: a preprint, and QUPA_ARXIV is off; not waking", candidate.topic_id)
+                    if not dry_run:
+                        acknowledge(forum, handled, candidate)
+                    continue
+                try:
+                    private = ranking.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
+                except RankingError as exc:
+                    LOG.warning("the forum host did not make your private arXiv subcategory, so topic %s waits: %s",
+                                candidate.topic_id, exc)
+                    continue
+                told = f"{candidate.reason}. {preprints.private_instruction(private)}"
+
         if policy is None:
             policy = policy_text(settings)
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
@@ -1730,7 +1838,7 @@ def one_pass(
         on_failure = None
         if candidate.notification_ids:
             on_failure = lambda reason: ranking.failed(agent, topic_id, reason)  # noqa: E731
-        ok = wake_topic(settings, ranking, journal, dry_run, wake, candidate.reason, topic, wording, policy,
+        ok = wake_topic(settings, ranking, journal, dry_run, wake, told, topic, wording, policy,
                         on_failure=on_failure)
         if not ok:
             # Unacknowledged, so the next pass retries it.
@@ -1814,12 +1922,49 @@ def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: boo
         LOG.warning(NO_SANDBOX + "; waking again for %s is deferred", where)
         return False
 
+    # A preprint that woke the agent for relevance goes where QUPA_ARXIV says
+    # this time too; asked for again, it is woken for even with the setting off.
+    private = None
+    if rewake.reason.endswith(RELEVANT) and preprints.read() == preprints.PRIVATE:
+        try:
+            if topic.get("category_id") in preprints.category_ids(diary.categories(forum)):
+                private = ranking.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
+        except (urllib.error.URLError, ValueError, RankingError) as exc:
+            LOG.warning("could not find your private arXiv subcategory, so waking again for %s waits: %s", where, exc)
+            return False
+
+    try:
+        earlier = earlier_answers(forum, settings, journal, rewake, private.get("id") if private else None)
+    except (urllib.error.URLError, ValueError, KeyError) as exc:
+        LOG.warning("could not find what your agent wrote for %s, so it is woken again later: %s", where, exc)
+        return False
+    # What it wrote here, and in a topic it started for the post in the
+    # private subcategory: the copy that opens it, and its replies there.
+    here = [post for post in earlier if post.get("topic_id") == rewake.topic_id]
+    there = [post for post in earlier if post.get("topic_id") != rewake.topic_id and (post.get("post_number") or 1) > 1]
+    copies = [post for post in earlier if post.get("topic_id") != rewake.topic_id and (post.get("post_number") or 1) == 1]
+    try:
+        before = {post["post_id"]: forum.raw(post["post_id"]) for post in here + there}
+    except (urllib.error.URLError, ValueError, KeyError) as exc:
+        LOG.warning("could not read what your agent wrote for %s, so it is woken again later: %s", where, exc)
+        return False
+
     said = rewake.said
     count = topic.get("posts_count") or len(topic.get("post_stream", {}).get("posts") or [])
     # The served wording calls the post it shows the newest.
     told = said if count <= rewake.post_number else (
         f"{said}. It was the newest post then, and the topic has {count} posts now"
     )
+    if private is None:
+        if here:
+            told += ". " + taking_back(here)
+    else:
+        if there:
+            told += ". " + taking_back(there) + ". " + preprints.AGAIN_THERE
+        else:
+            told += ". " + preprints.private_instruction(private)
+        if here:
+            told += ". " + preprints.withdrawn_here(here)
     wake = wake_for(settings, said, topic, rewake.score, post_number=rewake.post_number)
     ok = wake_topic(settings, ranking, journal, dry_run, wake, told, topic, wording, policy_text(settings),
                     post_number=rewake.post_number)
@@ -1827,8 +1972,51 @@ def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: boo
         LOG.warning("waking again for %s failed; it is tried again at the next poll", where)
         return False
     if not dry_run:
+        withdrawn = withdraw_unreplaced(forum, before)
+        # A private topic whose every reply was withdrawn goes with its copy.
+        for copy in copies:
+            replies = [post["post_id"] for post in there if post.get("topic_id") == copy.get("topic_id")]
+            if replies and set(replies) <= withdrawn:
+                withdraw_unreplaced(forum, {copy["post_id"]: None}, whatever=True)
         drop_rewake(settings.state_path, rewake)
     return True
+
+
+def earlier_answers(forum: Forum, settings: Settings, journal: Journal | None, rewake: Rewake,
+                    private_id: int | None = None) -> list[dict]:
+    """The agent's posts made in an earlier wake for the post, in its topic
+    and, given the private arXiv subcategory's id, there; the first made
+    first."""
+    if journal is None:
+        return []
+
+    def accept(action: dict) -> bool:
+        if private_id and action.get("category_id") == private_id:
+            return True
+        return action.get("topic_id") == rewake.topic_id and (action.get("post_number") or 0) > rewake.post_number
+
+    found = diary.posts_made_in(forum, settings.api_username, journal.post_wakes(rewake.topic_id, rewake.post_number),
+                                  accept)
+    return sorted(found, key=lambda action: (action.get("topic_id") != rewake.topic_id, action.get("post_number") or 0))
+
+
+def taking_back(earlier: list[dict]) -> str:
+    """For the prompt: what the agent wrote for the post is taken back, and
+    the first of it is replaced with the new answer. No closing full stop,
+    which the wording after the reason supplies."""
+    first = earlier[0]
+    listed = ", ".join(f"post {post.get('post_number')} (post_id={post.get('post_id')})" for post in earlier)
+    one = len(earlier) == 1
+    return (
+        f"Your researcher is taking back what you wrote for it, {listed}, and wants it written again from the "
+        "start, as their instructions stand now. Answer as if you had never answered: do not read "
+        f"{'that post' if one else 'those posts'} or build on {'it' if one else 'them'}. Rather than replying, "
+        f"replace post {first.get('post_number')} with `edit_post`, post_id={first.get('post_id')}, with the "
+        "edit_reason \"Written again at my researcher's request\". "
+        + ("If you would now not answer at all, leave it as it is, and the kit withdraws it when this wake ends"
+           if one else "The kit withdraws each of them you leave as it is when this wake ends, so leave them all "
+           "if you would now not answer at all")
+    )
 
 
 def diary_pass(
@@ -1917,13 +2105,13 @@ def rewrite_pass(
     template, config = ready
     try:
         entry = diary.find_entry(forum, settings.api_username, journal.diary_wakes(day) if journal else [])
-        raw = str(forum._get(f"/posts/{entry['post_id']}.json").get("raw") or "") if entry else ""  # noqa: SLF001
+        before = {entry["post_id"]: forum.raw(entry["post_id"])} if entry else {}
     except (urllib.error.URLError, ValueError, KeyError) as exc:
         LOG.warning("could not find the entry for %s on the forum, which is tried again in an hour: %s", day, exc)
         state.failed(day, now)
         return False
     if entry is not None:
-        where = diary.rewrite_where(entry, raw)
+        where = diary.rewrite_where(entry)
     else:
         posted = diary_where(settings, forum, ranking, state, dry_run, now, chosen, day)
         if posted is None:
@@ -1932,8 +2120,32 @@ def rewrite_pass(
     ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
                     f"{diary.REASON} {day.isoformat()}, {diary.REWRITTEN}, from {len(found)} session(s)")
     if ok and not dry_run:
+        withdraw_unreplaced(forum, before)
         diary.drop_rewrite(settings.state_path, day)
     return ok
+
+
+def withdraw_unreplaced(forum: Forum, before: dict[int, str | None], whatever: bool = False) -> set[int]:
+    """Delete each post taken back for a wake that the wake left as it was,
+    ``before`` holding their raw text from before it, or each of them
+    ``whatever`` it holds now; the ids deleted. A post the agent replaced is
+    kept, and one already gone is left alone."""
+    withdrawn: set[int] = set()
+    for post_id, raw in before.items():
+        try:
+            if not whatever and forum.raw(post_id) != raw:
+                continue
+            forum.delete_post(post_id)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (404, 410):
+                LOG.warning("could not withdraw post %s, which your agent did not replace: %s", post_id, exc)
+            continue
+        except urllib.error.URLError as exc:
+            LOG.warning("could not withdraw post %s, which your agent did not replace: %s", post_id, exc)
+            continue
+        LOG.info("withdrew post %s, which your agent did not replace", post_id)
+        withdrawn.add(post_id)
+    return withdrawn
 
 
 def diary_ready(settings: Settings, day: date) -> tuple[str, dict] | None:

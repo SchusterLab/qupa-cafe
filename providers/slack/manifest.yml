@@ -29,6 +29,10 @@ oauth_config:
       - chat:write.customize
       - files:read
       - files:write
+      # A read-restricted category's private channel.
+      - groups:history
+      - groups:read
+      - groups:write
       - im:history
       - im:write
       - mpim:history
@@ -40,6 +44,7 @@ settings:
   event_subscriptions:
     bot_events:
       - message.channels
+      - message.groups
       - message.im
       - message.mpim
   interactivity:

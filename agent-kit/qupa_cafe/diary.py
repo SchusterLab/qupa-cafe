@@ -600,11 +600,10 @@ ENTRY_SLACK = timedelta(minutes=5)
 ENTRY_PAGES = 20
 
 
-def find_entry(forum, username: str, wakes: list[tuple[str, str | None]]) -> dict | None:
-    """The entry the agent posted in one of a day's diary ``wakes``, given as
-    (started, finished) from the journal: the latest of its posts made in
-    one, in Diary or a diary under it, leaving out a public diary's opening
-    post. None when it posted none the forum still has."""
+def posts_made_in(forum, username: str, wakes: list[tuple[str, str | None]], accept) -> list[dict]:
+    """The agent's posts made in one of ``wakes``, given as (started,
+    finished) from the journal, that ``accept`` takes, newest first, as
+    ``/user_actions.json`` lists them. Only posts the forum still has."""
     spans = []
     for started, finished in wakes:
         begin = _moment(started)
@@ -613,47 +612,57 @@ def find_entry(forum, username: str, wakes: list[tuple[str, str | None]]) -> dic
         end = _moment(finished) if finished else None
         spans.append((begin - ENTRY_SLACK, (end or begin + timedelta(hours=1)) + ENTRY_SLACK))
     if not spans:
-        return None
-    listed = categories(forum)
-    parent = next((c["id"] for c in listed if str(c.get("name") or "").lower() == CATEGORY.lower()
-                   and not c.get("parent_category_id")), None)
-    diaries = {parent} | {c["id"] for c in listed if parent is not None and c.get("parent_category_id") == parent}
+        return []
     earliest = min(begin for begin, _ in spans)
     user = urllib.parse.quote(username)
+    found = []
     for page in range(ENTRY_PAGES):
         actions = forum._get(f"/user_actions.json?username={user}&filter=4,5&offset={page * 30}")  # noqa: SLF001
         actions = actions.get("user_actions") or []
         for action in actions:
             made = _moment(action.get("created_at") or "")
-            if made is None or action.get("deleted") or action.get("category_id") not in diaries:
-                continue
-            if action.get("category_id") == parent and action.get("post_number") == 1:
+            if made is None or action.get("deleted") or not accept(action):
                 continue
             if any(begin <= made <= end for begin, end in spans):
-                return action
+                found.append(action)
         # Newest first, so a page that ends before the first wake ends the search.
         oldest = _moment(actions[-1].get("created_at") or "") if actions else None
         if len(actions) < 30 or (oldest is not None and oldest < earliest):
-            return None
-    return None
+            break
+    return found
 
 
-def fenced(text: str) -> str:
-    """``text`` in a Markdown fence longer than any run of backticks in it."""
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return f"{fence}markdown\n{text}\n{fence}"
+def find_entry(forum, username: str, wakes: list[tuple[str, str | None]]) -> dict | None:
+    """The entry the agent posted in one of a day's diary ``wakes``: the
+    latest of its posts made in one, in Diary or a diary under it, leaving
+    out a public diary's opening post. None when it posted none the forum
+    still has."""
+    if not wakes:
+        return None
+    listed = categories(forum)
+    parent = next((c["id"] for c in listed if str(c.get("name") or "").lower() == CATEGORY.lower()
+                   and not c.get("parent_category_id")), None)
+    diaries = {parent} | {c["id"] for c in listed if parent is not None and c.get("parent_category_id") == parent}
+
+    def accept(action: dict) -> bool:
+        if action.get("category_id") not in diaries:
+            return False
+        return not (action.get("category_id") == parent and action.get("post_number") == 1)
+
+    found = posts_made_in(forum, username, wakes, accept)
+    return found[0] if found else None
 
 
-def rewrite_where(entry: dict, raw: str) -> str:
+def rewrite_where(entry: dict) -> str:
     """For the prompt: write the entry again and replace the one posted."""
     return (
         "Your researcher asked for this entry to be written again, as their instructions stand now; they may "
-        "have changed them since you wrote it. Write it afresh from the sessions rather than by editing the "
-        f"old text. It is post {entry.get('post_number')} of topic {entry.get('topic_id')}, "
-        f"\"{entry.get('title') or ''}\". Replace it with `edit_post`, post_id={entry.get('post_id')}, with the "
-        "edit_reason \"Written again at my researcher's request\", and post nothing new. If there is now "
-        "nothing to write, leave it as it is. It reads now:\n\n" + fenced(raw)
+        "have changed them since you wrote it. They are taking back the entry you posted, so write the new one "
+        "from the sessions alone, as if there had been none: do not read the old one or build on it. It is post "
+        f"{entry.get('post_number')} of topic {entry.get('topic_id')}, \"{entry.get('title') or ''}\". Replace it "
+        f"with `edit_post`, post_id={entry.get('post_id')}, with the edit_reason \"Written again at my "
+        "researcher's request\", and post nothing new. If there is now nothing to write, leave it as it is, "
+        "and the kit withdraws it when this wake ends."
     )
 
 

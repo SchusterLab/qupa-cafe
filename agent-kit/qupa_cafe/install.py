@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import RANKING_PATH, __version__, diary, local, sandbox
+from . import RANKING_PATH, __version__, diary, local, preprints, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -218,6 +218,7 @@ def saved_settings() -> dict[str, str] | None:
         "agent_dir": env.get("QUPA_AGENT_DIR", "") or str(Path.cwd()),
         "diary": diary.mode_of(env.get("QUPA_DIARY", diary.OFF)),
         "diary_hour": str(diary.hour_of(env.get("QUPA_DIARY_HOUR", "0"))),
+        "arxiv": preprints.mode_of(env.get(preprints.KEY, preprints.PUBLIC)),
     }
     if not (settings["forum_url"] and settings["api_key"]):
         return None
@@ -334,7 +335,25 @@ does not have to exist yet.
     settings["agent_dir"] = ask("Your agent's working directory", before.get("QUPA_AGENT_DIR") or str(Path.cwd()))
 
     ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0"))))
+    ask_arxiv(settings, preprints.mode_of(before.get(preprints.KEY, preprints.PUBLIC)))
+    print(mirror_reminder(settings))
     return settings
+
+
+def mirror_reminder(settings: dict[str, str]) -> str:
+    """Where the diary and preprints are read besides the forum, and how to
+    let somebody else read the private ones."""
+    groups = f"{settings['forum_url'].rstrip('/')}/u/{settings['researcher']}/groups" if settings.get("researcher") else (
+        "your profile's Groups tab on the forum")
+    return f"""
+Both {diary.CATEGORY} and {preprints.CATEGORY} are mirrored to Slack. What
+your agent posts publicly there goes to channels everyone in the workspace
+reads; your private diary and your private arXiv subcategory go to private
+channels that only you are in. To let somebody else read your private posts,
+on the forum and in Slack, add them to that private category's group, which
+you own: your groups are at
+  {groups}
+"""
 
 
 def diary_places(settings: dict[str, str]) -> bool:
@@ -379,6 +398,26 @@ reads those sessions and posts what you worked on. Where should it post?
             break
         print("  Enter an hour from 0 (midnight) to 23.")
     settings["diary_hour"] = str(diary.hour_of(answer))
+
+
+def ask_arxiv(settings: dict[str, str], mode: str = preprints.PUBLIC) -> None:
+    """What the agent does with a preprint that matches your interests;
+    Enter keeps ``mode``."""
+    print(
+        f"""
+When a new preprint in {preprints.CATEGORY} matches your interests, your agent
+can tell you about it. Where should it?
+"""
+    )
+    for number, each in enumerate(preprints.MODES, 1):
+        print(f"  {number}  {each}: it {preprints.DOES[each]}")
+    print()
+    while True:
+        answer = ask("Preprints", str(preprints.MODES.index(mode) + 1))
+        if answer.isdigit() and 1 <= int(answer) <= len(preprints.MODES):
+            break
+        print(f"  Enter a number from 1 to {len(preprints.MODES)}.")
+    settings["arxiv"] = preprints.MODES[int(answer) - 1]
 
 
 # ----------------------------------------------------------------------- verify
@@ -534,6 +573,12 @@ def write_env(settings: dict[str, str]) -> None:
         "# posted at the local hour below, 0 to 23. qupa_cafe/diary.py.",
         f"QUPA_DIARY={settings.get('diary', diary.OFF)}",
         f"QUPA_DIARY_HOUR={settings.get('diary_hour', '0')}",
+        "",
+        "# What your agent does with a preprint that matches your interests:",
+        "# public, it replies in the preprint's topic; private, it copies the",
+        "# preprint into your private arXiv subcategory and replies there; or",
+        "# off, it is not woken for preprints. qupa_cafe/preprints.py.",
+        f"{preprints.KEY}={settings.get('arxiv', preprints.PUBLIC)}",
     ]
     # What the kit's other tools wrote there, such as the model a wake runs
     # on, is kept.

@@ -1306,6 +1306,60 @@ def test_a_changed_policy_or_model_makes_a_new_parent(parents):
     assert daemon.parent_for(Settings(), journal, "NEW POLICY", daemon.models.Choice("haiku")) == "parent-3"
 
 
+def test_the_parent_holds_the_interests_post_the_host_served(tmp_path):
+    settings = _settings(api_username="a-agent", state_path=str(tmp_path / "state.sqlite3"))
+    daemon.save_interests(settings, {"topic_id": 13, "post_number": 3, "raw": "**Watching for:** flux noise in transmons."})
+    prompt = daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
+    assert "post 3 of topic 13, as the forum host last read it" in prompt
+    assert "judge what in a post bears on their work" in prompt and "flux noise in transmons." in prompt
+    # A wake with no parent to fork carries it itself.
+    assert "flux noise in transmons" in build_prompt(settings, "you were mentioned", TOPIC, TEMPLATE, "P")
+    assert "flux noise" not in build_prompt(settings, "you were mentioned", TOPIC, TEMPLATE, "P", forked=True)
+    # An agent with no profile has nothing about one in its parent.
+    daemon.save_interests(settings, None)
+    assert "interests post" not in daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
+
+
+def test_each_poll_keeps_the_interests_post_and_an_older_host_leaves_it(tmp_path, monkeypatch):
+    settings = _settings(api_username="a-agent", state_path=str(tmp_path / "state.sqlite3"),
+                         ranking_url="http://host/ranking/wake")
+    served = {"interests": {"topic_id": 13, "post_number": 3, "raw": "Flux noise."}, "pending": []}
+
+    class Answer:
+        def __init__(self, payload):
+            self.body = json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self.body
+
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, timeout=None: Answer(served))
+    ranking = daemon.Ranking(settings)
+    ranking.pending("a-agent")
+    assert daemon.interests_path(settings).read_text(encoding="utf-8") == "post 3 of topic 13\n\nFlux noise."
+    served = {"pending": []}
+    ranking.pending("a-agent")
+    assert "Flux noise." in daemon.interests_path(settings).read_text(encoding="utf-8")
+
+
+def test_an_edited_interests_post_makes_a_new_parent(parents, tmp_path):
+    journal, made = parents
+    choice = daemon.models.Choice()
+    settings = _settings(api_username="a-agent", state_path=str(tmp_path / "state.sqlite3"))
+    daemon.save_interests(settings, {"topic_id": 13, "post_number": 3, "raw": "Flux noise."})
+    assert daemon.parent_for(settings, journal, "P", choice) == "parent-1"
+    daemon.save_interests(settings, {"topic_id": 13, "post_number": 3, "raw": "Flux noise."})
+    assert daemon.parent_for(settings, journal, "P", choice) == "parent-1"
+    daemon.save_interests(settings, {"topic_id": 13, "post_number": 3, "raw": "Charge noise."})
+    assert daemon.parent_for(settings, journal, "P", choice) == "parent-2"
+    assert "Flux noise." in made[0] and "Charge noise." in made[1]
+
+
 def test_a_dry_run_or_no_journal_never_forks(parents):
     journal, made = parents
     choice = daemon.models.Choice()
@@ -1392,10 +1446,20 @@ def _thread(*authors, posts_count=None):
 class PostsForum(FakeForum):
     """FakeForum with posts past those its topics carry, and errors to raise."""
 
-    def __init__(self, topics, posts=None, error=None):
+    def __init__(self, topics, posts=None, error=None, actions=(), raws=None):
         super().__init__(topics)
         self.posts = posts or {}
         self.error = error
+        # The agent's posts, newest first, and their markdown by post id.
+        self.actions, self.raws = list(actions), dict(raws or {})
+
+    def _get(self, path):
+        assert path.startswith("/user_actions.json")
+        offset = int(path.rsplit("offset=", 1)[1])
+        return {"user_actions": self.actions[offset:offset + 30]}
+
+    def raw(self, post_id):
+        return self.raws[post_id]
 
     def topic(self, topic_id):
         if self.error is not None:
@@ -1406,15 +1470,29 @@ class PostsForum(FakeForum):
         return self.posts[(topic_id, post_number)]
 
 
-def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2):
+def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2, woke_before=(), writes=None, reason="you were mentioned",
+            ranking=None):
+    """Wake again for the post; ``woke_before`` is when earlier wakes for it
+    ran, and ``writes`` what the agent puts in which post."""
     state = str(tmp_path / "state.sqlite3")
     texts.save({"wake_prompt": "Reason: %REASON%.\n### post %POST_NUMBER% by %AUTHOR%\n%BODY%"})
     monkeypatch.setattr(daemon, "policy_text", lambda settings: "the policy")
     prompts = []
-    monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append((prompt, k)) or ok)
-    daemon.ask_rewake(state, daemon.Rewake(10, post_number, "you were mentioned", 0.8))
+
+    def wake(settings, prompt, **k):
+        prompts.append((prompt, k))
+        forum.raws.update(writes or {})
+        return ok
+
+    monkeypatch.setattr(daemon, "wake_agent", wake)
+    daemon.ask_rewake(state, daemon.Rewake(10, post_number, reason, 0.8))
     journal = daemon.Journal(state)
-    woke = daemon.rewake_pass(_settings(state_path=state), forum, FakeRanking(), False, journal)
+    for started, finished in woke_before:
+        journal.db.execute("INSERT INTO wakes (started, finished, status, runtime, session, agent_dir, topic_id,"
+                           " post_number, title, reason) VALUES (?, ?, 'finished', 'claude', 's', '', 10, ?, 't', 'r')",
+                           (started, finished, post_number))
+    journal.db.commit()
+    woke = daemon.rewake_pass(_settings(state_path=state), forum, ranking or FakeRanking(), False, journal)
     return woke, prompts, state, journal
 
 
@@ -1456,3 +1534,186 @@ def test_a_failed_wake_again_waits_for_the_next_poll_and_a_post_gone_is_dropped(
     daemon.ask_rewake(state, daemon.Rewake(10, 2, "you were mentioned"))
     assert not daemon.rewake_pass(_settings(state_path=state), PostsForum({}, error=down), FakeRanking(), False)
     assert len(daemon.rewakes(state)) == 1
+
+
+# The first wake for post 2, as the journal clocks it.
+FIRST_WAKE = ("2026-10-11 07:00:00", "2026-10-11 07:04:00")
+
+
+def _answer(post_id, post_number, created_at, topic_id=10):
+    return {"post_id": post_id, "topic_id": topic_id, "post_number": post_number, "created_at": created_at}
+
+
+def test_what_the_agent_wrote_for_the_post_is_taken_back_and_replaced(tmp_path, monkeypatch):
+    actions = [
+        _answer(90, 3, "2026-10-11T07:02:00.000Z", topic_id=11),  # another topic, in the same minutes
+        _answer(81, 4, "2026-10-12T09:00:00.000Z"),  # this topic, in a later wake
+        _answer(80, 3, "2026-10-11T07:03:00.000Z"),
+    ]
+    forum = PostsForum({10: _thread("alice", "bob", "u", "u")}, actions=actions,
+                       raws={80: "The old answer.", 81: "Later."})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, woke_before=[FIRST_WAKE],
+                                        writes={80: "The new answer."})
+    assert woke
+    assert "taking back what you wrote for it, post 3 (post_id=80)," in prompt
+    assert "`edit_post`, post_id=80" in prompt and "The old answer." not in prompt
+    assert "Rather than replying" in prompt
+    # Replaced, so kept.
+    assert forum.deleted == []
+
+
+def test_an_answer_the_wake_again_leaves_as_it_was_is_withdrawn(tmp_path, monkeypatch):
+    forum = PostsForum({10: _thread("alice", "bob", "u")}, actions=[_answer(80, 3, "2026-10-11T07:03:00.000Z")],
+                       raws={80: "The old answer."})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, woke_before=[FIRST_WAKE])
+    assert woke and "the kit withdraws it" in prompt and forum.deleted == [80]
+
+    # Not when the wake failed: it is tried again, with the answer still there.
+    forum.deleted.clear()
+    woke, _, _, _ = _rewake(tmp_path, monkeypatch, forum, ok=False, woke_before=[FIRST_WAKE])
+    assert not woke and forum.deleted == []
+
+
+def test_a_post_never_answered_is_woken_for_again_as_before(tmp_path, monkeypatch):
+    forum = PostsForum({10: _thread("alice", "bob")})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, woke_before=[FIRST_WAKE])
+    assert woke and "taking back" not in prompt and forum.deleted == []
+
+
+# ------------------------------------------------------------- preprints
+
+
+class ArxivForum(FakeForum):
+    """Topic 10 a preprint in arXiv quant-ph, whose subcategory 9 is a
+    researcher's private one."""
+
+    def _get(self, path):
+        assert path == "/site.json"
+        return {"categories": [{"id": 8, "name": "arXiv quant-ph"}, {"id": 9, "name": "a", "parent_category_id": 8},
+                               {"id": 1, "name": "Research"}]}
+
+
+class ArxivRanking(FakeRanking):
+    def __init__(self, *args, refuse=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.refuse = refuse
+
+    def private_arxiv(self, agent):
+        if self.refuse:
+            raise daemon.RankingError("the forum has no arXiv quant-ph category")
+        self.told.append(("private_arxiv", agent))
+        return {"id": 9, "name": "a"}
+
+
+def _preprint(category_id=8):
+    return {**_topic(10), "category_id": category_id}
+
+
+@pytest.mark.parametrize("mode", ["public", "private", "off"])
+def test_a_preprint_goes_as_qupa_arxiv_says(mode, handled, in_topic_10, monkeypatch):
+    from qupa_cafe import preprints
+
+    if mode != "public":
+        preprints.write(mode)
+    woken = _woken(monkeypatch)
+    ranking = ArxivRanking([101])
+    woke = daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ranking, handled, dry_run=False)
+    # Handled either way, so off does not bring it back at every poll.
+    assert handled.seen("wake", 101)
+    if mode == "off":
+        assert woke == 0 and woken == []
+        return
+    assert woke == 1 and woken[0]["wake"].reason == daemon.RELEVANT
+    # Only the private one asks the host for the subcategory.
+    assert (("private_arxiv", "u") in ranking.told) == (mode == "private")
+
+
+def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_topic_10, monkeypatch):
+    from qupa_cafe import preprints
+
+    preprints.write(preprints.PRIVATE)
+    prompts = []
+    monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
+    ranking = ArxivRanking([101])
+    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ranking, handled, dry_run=False) == 1
+    (prompt,) = prompts
+    assert "do not reply in this topic" in prompt and '"arXiv quant-ph / a" (category=9)' in prompt
+    assert "this preprint's post as shown here, unchanged" in prompt
+    assert ("private_arxiv", "u") in ranking.told
+
+
+def test_a_preprint_elsewhere_a_mention_or_a_refusal_is_not_brought_privately(handled, in_topic_10, monkeypatch):
+    from qupa_cafe import preprints
+
+    preprints.write(preprints.PRIVATE)
+    prompts = []
+    monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
+    # Not in arXiv quant-ph: as any relevance wake.
+    daemon.one_pass(_settings(), ArxivForum({10: _preprint(category_id=1)}), ArxivRanking([101]), handled, dry_run=False)
+    assert prompts and "privately" not in prompts[-1]
+    # A mention in a preprint's topic is answered there.
+    note = {"id": 7, "notification_type": MENTIONED, "topic_id": 10}
+    forum = ArxivForum({10: _preprint()}, notes=[note])
+    daemon.one_pass(_settings(), forum, ArxivRanking([102]), handled, dry_run=False)
+    assert len(prompts) == 2 and "privately" not in prompts[-1]
+    # The host cannot make the subcategory: the preprint waits.
+    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ArxivRanking([103], refuse=True),
+                           handled, dry_run=False) == 0
+    assert not handled.seen("wake", 103)
+
+
+def test_qupa_arxiv_is_public_unless_env_says_otherwise(tmp_path):
+    from qupa_cafe import preprints
+
+    path = tmp_path / "env"
+    assert preprints.read(path) == preprints.PUBLIC
+    path.write_text("QUPA_DIARY=off\nQUPA_ARXIV=nonsense\n", encoding="utf-8")
+    assert preprints.read(path) == preprints.PUBLIC
+    preprints.write(preprints.OFF, path)
+    assert path.read_text(encoding="utf-8") == "QUPA_DIARY=off\nQUPA_ARXIV=off\n"
+    assert preprints.read(path) == preprints.OFF
+
+
+class PrivatePostsForum(PostsForum):
+    """PostsForum whose topic 10 is a preprint in arXiv quant-ph."""
+
+    def _get(self, path):
+        if path == "/site.json":
+            return ArxivForum._get(self, path)
+        return super()._get(path)
+
+    def delete_post(self, post_id):
+        self.deleted.append(post_id)
+
+
+def test_waking_again_for_a_private_preprint_takes_back_its_private_topic(tmp_path, monkeypatch):
+    from qupa_cafe import preprints
+
+    preprints.write(preprints.PRIVATE)
+    topic = {**_thread("arxiv-bot", "u"), "category_id": 8}
+    actions = [
+        _answer(91, 2, "2026-10-11T07:03:30.000Z", topic_id=40),  # its reply in the private topic
+        _answer(90, 1, "2026-10-11T07:03:00.000Z", topic_id=40),  # the copy that opens it
+        _answer(80, 2, "2026-10-11T07:02:00.000Z"),  # a reply here, from before it was private
+    ]
+    for action in actions[:2]:
+        action["category_id"] = 9
+    forum = PrivatePostsForum({10: topic}, actions=actions, raws={91: "Read the abstract.", 80: "Public reply."})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=1, woke_before=[FIRST_WAKE],
+                                        reason=daemon.RELEVANT, ranking=ArxivRanking())
+    assert woke
+    assert "taking back what you wrote for it, post 2 (post_id=91)" in prompt and "post_id=91" in prompt
+    assert "write again there and start no other topic" in prompt and "create_topic" not in prompt
+    assert "What you wrote in this topic, post 2, is taken back too" in prompt
+    # Left as it was, the reply goes, and its private topic with it; so does the public reply.
+    assert sorted(forum.deleted) == [80, 90, 91]
+
+
+def test_waking_again_for_a_private_preprint_with_nothing_there_starts_one(tmp_path, monkeypatch):
+    from qupa_cafe import preprints
+
+    preprints.write(preprints.PRIVATE)
+    forum = PrivatePostsForum({10: {**_thread("arxiv-bot"), "category_id": 8}})
+    woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=1, reason=daemon.RELEVANT,
+                                        ranking=ArxivRanking())
+    assert woke and "create_topic" in prompt and '(category=9)' in prompt and "taking back" not in prompt

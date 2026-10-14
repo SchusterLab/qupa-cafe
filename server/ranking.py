@@ -528,19 +528,39 @@ def message(name: str, **tokens: str) -> str:
     return text
 
 
-# A researcher's private diary: a subcategory of Diary, as
-# 40-configure-forum.py makes it, granted to a group of its own, whose name is
-# cut to Discourse's default limit on a name.
-DIARY_CATEGORY = "Diary"
-DIARY_GROUP_PREFIX = "diary-"
-DIARY_GROUP_LENGTH = 20
+@dataclass(frozen=True)
+class PrivateSpace:
+    """A subcategory of one of the categories 40-configure-forum.py makes,
+    named after a researcher and granted to a group of their own, which holds
+    them and their agent: what it is under, its group's prefix and full name,
+    and its description, with ``{researcher}`` and ``{agent}`` filled in."""
+
+    parent: str
+    prefix: str
+    full_name: str
+    description: str
+
+
+# A researcher's private diary, and the private place their agent brings them
+# preprints in rather than replying in the preprint's topic.
+PRIVATE_DIARY = PrivateSpace(
+    "Diary", "diary-", "Private diary of {researcher}",
+    "The private diary of {researcher}: only they, {agent} and the forum's administrators can read it.",
+)
+PRIVATE_ARXIV = PrivateSpace(
+    "arXiv quant-ph", "arxiv-", "Private preprints of {researcher}",
+    "The preprints {agent} brings to {researcher} privately: only they, {agent} and the forum's administrators "
+    "can read it.",
+)
+# A group's name is cut to Discourse's default limit on a name.
+GROUP_LENGTH = 20
 # Create, reply and see; and a group only its members and staff see.
 FULL_PERMISSION = "1"
 MEMBERS_ONLY = "2"
 
 
-class PrivateDiaryError(Exception):
-    """Why a researcher's private diary cannot be made."""
+class PrivateCategoryError(Exception):
+    """Why a researcher's private subcategory cannot be made."""
 
 
 # The policy topic's title as 40-configure-forum.py writes it, and a phrase
@@ -1087,26 +1107,35 @@ class Ranker:
         return candidate if self.forum.user(candidate) else None
 
     def ensure_private_diary(self, agent: str) -> dict[str, Any]:
-        """The private diary of ``agent``'s researcher, made if it is not
-        there: a subcategory of Diary named after them, granted to one group
-        alone, `diary-<researcher>`, which holds the researcher and the agent.
-        Returns its id and name; raises ``PrivateDiaryError`` with the reason
-        it cannot be made."""
+        """The private diary of ``agent``'s researcher, made if it is not there."""
+        return self.ensure_private(agent, PRIVATE_DIARY)
+
+    def ensure_private_arxiv(self, agent: str) -> dict[str, Any]:
+        """The private subcategory of arXiv quant-ph that ``agent`` brings its
+        researcher preprints in, made if it is not there."""
+        return self.ensure_private(agent, PRIVATE_ARXIV)
+
+    def ensure_private(self, agent: str, space: PrivateSpace) -> dict[str, Any]:
+        """``space`` for ``agent``'s researcher, made if it is not there: a
+        subcategory of ``space.parent`` named after them, granted to one group
+        alone, ``<prefix><researcher>``, which holds the researcher and the
+        agent. Returns its id and name; raises ``PrivateCategoryError`` with the
+        reason it cannot be made."""
         researcher = self.researcher_for(agent)
         if researcher is None:
-            raise PrivateDiaryError(f"{agent} is not <researcher>-agent for a researcher on this forum")
-        group = f"{DIARY_GROUP_PREFIX}{researcher.lower()}"[:DIARY_GROUP_LENGTH]
-        full_name = f"Private diary of {researcher}"
+            raise PrivateCategoryError(f"{agent} is not <researcher>-agent for a researcher on this forum")
+        group = f"{space.prefix}{researcher.lower()}"[:GROUP_LENGTH]
+        full_name = space.full_name.format(researcher=researcher)
 
         listed = self.forum.get("/site.json").get("categories") or []
-        parent = next((c for c in listed if c.get("name") == DIARY_CATEGORY and not c.get("parent_category_id")), None)
+        parent = next((c for c in listed if c.get("name") == space.parent and not c.get("parent_category_id")), None)
         if parent is None:
-            raise PrivateDiaryError(f"the forum has no {DIARY_CATEGORY} category")
+            raise PrivateCategoryError(f"the forum has no {space.parent} category")
         existing = next((c for c in listed if c.get("parent_category_id") == parent["id"]
                          and str(c.get("name") or "").lower() == researcher.lower()), None)
         # Checked before anything is written, so a refusal leaves nothing half made.
         if existing is not None and not existing.get("read_restricted"):
-            raise PrivateDiaryError(f"{DIARY_CATEGORY} / {existing['name']} exists and everyone can read it")
+            raise PrivateCategoryError(f"{space.parent} / {existing['name']} exists and everyone can read it")
 
         try:
             found = self.forum.get(f"/groups/{group}.json")["group"]
@@ -1117,37 +1146,42 @@ class Ranker:
                 "group[name]": group, "group[full_name]": full_name,
                 "group[visibility_level]": MEMBERS_ONLY, "group[members_visibility_level]": MEMBERS_ONLY,
             }).get("basic_group") or {}
-            LOG.info("made group %s for %s's private diary", group, researcher)
+            LOG.info("made group %s, %s", group, full_name)
         # A name cut to the limit could be another researcher's group.
         if found.get("full_name") != full_name:
-            raise PrivateDiaryError(f"the group {group} exists and is not {researcher}'s private diary")
-        members = self.forum.get(f"/groups/{group}/members.json?limit=50").get("members") or []
-        present = {str(m.get("username") or "").lower() for m in members}
+            raise PrivateCategoryError(f"the group {group} exists and is not for {full_name}")
+        listed_members = self.forum.get(f"/groups/{group}/members.json?limit=50")
+        present = {str(m.get("username") or "").lower() for m in listed_members.get("members") or []}
         adding = [name for name in (researcher, agent) if name.lower() not in present]
         if adding:
             self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(adding)})
+        # The researcher owns the group, so that they can let somebody else
+        # read it by adding them, on the group's page.
+        owners = {str(m.get("username") or "").lower() for m in listed_members.get("owners") or []}
+        if researcher.lower() not in owners:
+            self.forum.write("PUT", f"/groups/{found['id']}/owners.json", {"usernames": researcher})
 
         if existing is not None:
             return {"id": existing["id"], "name": existing["name"]}
         made = self.forum.write("POST", "/categories", {
             "name": researcher, "color": parent.get("color") or "8C6D46",
             "parent_category_id": str(parent["id"]),
-            "description": f"The private diary of {researcher}: only they, {agent} and the forum's administrators "
-                           "can read it." + self.policy_link(),
+            "description": space.description.format(researcher=researcher, agent=agent)
+                           + self.policy_link(space.parent),
             f"permissions[{group}]": FULL_PERMISSION,
         }).get("category") or {}
-        LOG.info("made %s / %s, %s's private diary, granted to %s alone", DIARY_CATEGORY, researcher, researcher, group)
+        LOG.info("made %s / %s, %s, granted to %s alone", space.parent, researcher, full_name, group)
         return {"id": made.get("id"), "name": researcher}
 
-    def policy_link(self) -> str:
-        """A private diary's About paragraph naming the rules that apply
+    def policy_link(self, category: str) -> str:
+        """A private subcategory's About paragraph naming the rules that apply
         there, as 40-configure-forum.py writes one in each category it makes;
         nothing when the policy topic cannot be found."""
         topic_id = PolicyTopic(self.forum).id()
         if topic_id is None:
             return ""
         return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}) and its rules for "
-                f"{DIARY_CATEGORY}, which apply in every subcategory of {DIARY_CATEGORY}.")
+                f"{category}, which apply in every subcategory of {category}.")
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
         """Tell the researcher that their agent's kit is behind, once per
@@ -1907,18 +1941,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Before a diary wake, a kit whose diary is private asks for the
-        # private diary of its agent's researcher, which is made if need be.
-        if body.get("private_diary") is True:
+        # private diary of its agent's researcher, and before a preprint's wake
+        # one that brings preprints privately asks for their private arXiv
+        # subcategory, each made if need be.
+        for asked, space in (("private_diary", PRIVATE_DIARY), ("private_arxiv", PRIVATE_ARXIV)):
+            if body.get(asked) is not True:
+                continue
             try:
-                made = self.ranker.ensure_private_diary(agent)
-            except PrivateDiaryError as exc:
+                made = self.ranker.ensure_private(agent, space)
+            except PrivateCategoryError as exc:
                 self._send(409, {"error": str(exc)})
                 return
             except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
-                LOG.error("could not make %s's private diary: %s", agent, exc)
-                self._send(502, {"error": f"the forum did not make the private diary: {exc}"})
+                LOG.error("could not make %s's %s / %s: %s", agent, space.parent, "private", exc)
+                self._send(502, {"error": f"the forum did not make the private {space.parent} subcategory: {exc}"})
                 return
-            self._send(200, {"agent": agent, "private_diary": made})
+            self._send(200, {"agent": agent, asked: made})
             return
 
         try:

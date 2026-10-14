@@ -580,18 +580,22 @@ ACTIONS = [
 class EntryForum(SiteForum):
     """The forum with the agent's posts, newest first, and their raw text."""
 
-    def __init__(self, site, created, actions, raw="The old entry, with ``` in it."):
+    def __init__(self, site, created, actions, raw="The old entry."):
         super().__init__(site, created)
-        self.actions, self.raw, self.paths = actions, raw, []
+        self.actions, self.text, self.paths, self.deleted = actions, raw, [], []
 
     def _get(self, path):
         self.paths.append(path)
         if path.startswith("/user_actions.json"):
             offset = int(path.rsplit("offset=", 1)[1])
             return {"user_actions": self.actions[offset:offset + 30]}
-        if path.startswith("/posts/"):
-            return {"raw": self.raw}
         return super()._get(path)
+
+    def raw(self, post_id):
+        return self.text
+
+    def delete_post(self, post_id):
+        self.deleted.append(post_id)
 
 
 def test_the_entry_is_the_agent_s_diary_post_made_in_that_day_s_wake():
@@ -605,12 +609,21 @@ def test_the_entry_is_the_agent_s_diary_post_made_in_that_day_s_wake():
     assert diary.find_entry(forum, "a-agent", []) is None
 
 
-def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=({"id": 41, "category_id": 5},)):
+def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=({"id": 41, "category_id": 5},),
+             writes=None):
+    """Write the day again; ``writes``, if given, is what the agent replaces the entry with."""
     woken = []
-    monkeypatch.setattr(daemon, "wake_agent", lambda s, p, **k: woken.append((p, k)) or ok)
     forum = EntryForum(SITE, list(created), actions)
+
+    def wake(s, p, **k):
+        woken.append((p, k))
+        if writes is not None:
+            forum.text = writes
+        return ok
+
+    monkeypatch.setattr(daemon, "wake_agent", wake)
     woke = daemon.rewrite_pass(settings, forum, FakeRanking(SITE), diary.Diary(), False, journal, now=NOW)
-    return woke, woken
+    return woke, woken, forum
 
 
 @pytest.fixture
@@ -630,12 +643,13 @@ def rewriting(tmp_path, projects):
 
 def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting, monkeypatch, handled):
     settings, journal = rewriting
-    woke, woken = _rewrite(settings, journal, monkeypatch)
+    woke, woken, forum = _rewrite(settings, journal, monkeypatch, writes="The new entry.")
     assert woke
     [(text, kwargs)] = woken
     assert "`edit_post`, post_id=77" in text and "post nothing new" in text
-    # Quoted whole, in a fence its own backticks do not close.
-    assert "````markdown\nThe old entry, with ``` in it.\n````" in text
+    # Taken back, so the agent writes afresh rather than adding to it.
+    assert "The old entry." not in text and "do not read the old one" in text
+    assert forum.deleted == []
     assert "Session: mine" in text
     assert kwargs["wake"].reason.startswith(f"{diary.REASON} 2026-10-10, {diary.REWRITTEN}")
     assert diary.rewrites(settings.state_path) == []
@@ -645,15 +659,21 @@ def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting
 
 def test_a_day_whose_entry_is_gone_is_posted_as_a_new_one(rewriting, monkeypatch):
     settings, journal = rewriting
-    woke, woken = _rewrite(settings, journal, monkeypatch, actions=[])
+    woke, woken, _ = _rewrite(settings, journal, monkeypatch, actions=[])
     assert woke and "has no entry of yours for it" in woken[0][0] and "topic_id=41" in woken[0][0]
     assert "edit_post" not in woken[0][0]
 
 
 def test_a_failed_rewrite_is_kept_and_one_with_the_diary_off_is_dropped(rewriting, monkeypatch):
     settings, journal = rewriting
-    woke, _ = _rewrite(settings, journal, monkeypatch, ok=False)
-    assert not woke and diary.rewrites(settings.state_path) == [DAY]
+    woke, _, forum = _rewrite(settings, journal, monkeypatch, ok=False)
+    assert not woke and diary.rewrites(settings.state_path) == [DAY] and forum.deleted == []
     off = _settings(diary.OFF, state_path=settings.state_path)
-    woke, woken = _rewrite(off, journal, monkeypatch)
+    woke, woken, _ = _rewrite(off, journal, monkeypatch)
     assert not woke and not woken and diary.rewrites(settings.state_path) == []
+
+
+def test_an_entry_the_rewrite_leaves_as_it_was_is_withdrawn(rewriting, monkeypatch):
+    settings, journal = rewriting
+    woke, woken, forum = _rewrite(settings, journal, monkeypatch)
+    assert woke and "the kit withdraws it" in woken[0][0] and forum.deleted == [77]

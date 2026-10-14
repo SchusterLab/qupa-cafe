@@ -145,7 +145,7 @@ def test_only_the_keys_shown_do_anything():
     forum host tells the researcher of a newer kit, so the list takes no key
     for either and shows no notice."""
     b = _browser(browse.Wake(_row(1), SAID))
-    for key in ("o", "q", "a", "l", "u"):
+    for key in ("o", "q", "l", "u"):
         assert b.handle(key) is None
         assert not b.viewing
     assert not any("is available" in line for line in b.frame(100, 20))
@@ -464,6 +464,20 @@ def test_m_and_f_step_the_model_and_effort_wakes_run_on(tmp_path):
     # Reading a wake, they are not the browser's to take.
     b.handle("enter")
     assert b.handle("m") is None
+
+
+def test_a_steps_what_the_agent_does_with_a_preprint():
+    """Written to env, where the daemon reads it again at its next poll."""
+    from qupa_cafe import preprints
+
+    b = _browser(browse.Wake(_row(1), SAID))
+    assert any("Preprints are public: your agent replies in the preprint's topic" in line for line in b.frame(200, 20))
+    assert b.handle("a") == "arxiv"
+    assert browse.change_arxiv().startswith("Preprints are private: your agent copies the preprint")
+    assert preprints.read() == preprints.PRIVATE
+    assert browse.change_arxiv().startswith("Preprints are off") and browse.change_arxiv().startswith("Preprints are public")
+    b.handle("enter")
+    assert b.handle("a") is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the console is read through msvcrt there")

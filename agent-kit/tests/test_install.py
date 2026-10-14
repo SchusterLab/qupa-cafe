@@ -498,3 +498,30 @@ def test_pkill_is_given_the_pattern_after_a_double_dash(monkeypatch):
     install.stop_running_daemon()
     pkills = [argv for argv in ran if argv[0] == "pkill"]
     assert len(pkills) == 2 and all(argv[2] == "--" and argv[3].startswith("-m qupa_cafe.") for argv in pkills)
+
+
+def test_the_installer_asks_what_the_agent_does_with_a_preprint(monkeypatch, capsys):
+    from qupa_cafe import preprints
+
+    answers = iter(["", "4", "2"])
+    asked = []
+
+    def ask(label, default=""):
+        asked.append(default)
+        return next(answers) or default
+
+    monkeypatch.setattr(install, "ask", ask)
+    settings = {}
+    install.ask_arxiv(settings)
+    assert settings["arxiv"] == preprints.PUBLIC and asked == ["1"]
+    install.ask_arxiv(settings, preprints.OFF)
+    # Out of range, asked again; Enter keeps what env said.
+    assert settings["arxiv"] == preprints.PRIVATE and asked[1:] == ["3", "3"]
+    assert "Enter a number from 1 to 3" in capsys.readouterr().out
+
+
+def test_the_installer_says_where_the_diary_and_preprints_are_read():
+    said = install.mirror_reminder({"forum_url": "https://forum.example/", "researcher": "rsmith"})
+    assert "mirrored to Slack" in said and "channels that only you are in" in said
+    assert "https://forum.example/u/rsmith/groups" in said
+    assert "Groups tab" in install.mirror_reminder({"forum_url": "https://forum.example"})

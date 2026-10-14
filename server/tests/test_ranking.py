@@ -1951,6 +1951,7 @@ class DiaryForum:
         self.site = site if site is not None else [{"id": 5, "name": "Diary", "color": "8C6D46"}]
         self.groups = groups if groups is not None else {}
         self.members: dict[str, list[str]] = {}
+        self.owners: dict[str, list[str]] = {}
         self.writes: list[tuple[str, str, dict]] = []
 
     def user(self, username):
@@ -1970,20 +1971,26 @@ class DiaryForum:
                 raise urllib.error.HTTPError(path, 404, "not found", {}, None)
             return {"group": self.groups[name]}
         name = path.split("/")[2]
-        return {"members": [{"username": u} for u in self.members.get(name, [])]}
+        return {"members": [{"username": u} for u in self.members.get(name, [])],
+                "owners": [{"username": u} for u in self.owners.get(name, [])]}
 
     def write(self, method, path, params):
         self.writes.append((method, path, params))
         if path == "/admin/groups":
             name = params["group[name]"]
-            self.groups[name] = {"id": 70, "name": name, "full_name": params["group[full_name]"]}
+            self.groups[name] = {"id": 70 + len(self.groups), "name": name, "full_name": params["group[full_name]"]}
             return {"basic_group": self.groups[name]}
         if path == "/categories":
-            self.site.append({"id": 71, "name": params["name"], "parent_category_id": 5, "read_restricted": True})
-            return {"category": {"id": 71}}
+            made = 71 + sum(1 for c in self.site if c.get("parent_category_id"))
+            self.site.append({"id": made, "name": params["name"], "parent_category_id": int(params["parent_category_id"]),
+                              "read_restricted": True})
+            return {"category": {"id": made}}
         if path.endswith("/members.json"):
             name = next(n for n, g in self.groups.items() if f"/groups/{g['id']}/" in path)
             self.members.setdefault(name, []).extend(params["usernames"].split(","))
+        if path.endswith("/owners.json"):
+            name = next(n for n, g in self.groups.items() if f"/groups/{g['id']}/" in path)
+            self.owners.setdefault(name, []).extend(params["usernames"].split(","))
         return {}
 
 
@@ -2003,9 +2010,30 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     # Its About post names the rules that apply there.
     assert "[agent policy](/t/12) and its rules for Diary" in category["description"]
     assert forum.members["diary-a"] == ["a", "a-agent"]
+    # The researcher owns it, to let somebody else read it.
+    assert forum.owners["diary-a"] == ["a"]
 
     writes = len(forum.writes)
     assert DiaryRanker(forum).ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert len(forum.writes) == writes
+
+
+def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
+    """Under arXiv quant-ph, granted to a group of its own, so that preprints
+    the agent brings its researcher privately are read by them alone."""
+    forum = DiaryForum(site=[{"id": 5, "name": "Diary"}, {"id": 8, "name": "arXiv quant-ph", "color": "B31B1B"}])
+    ranker = DiaryRanker(forum)
+    assert ranker.ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert ranker.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
+    arxiv = [params for method, path, params in forum.writes if path == "/categories"][-1]
+    assert arxiv["parent_category_id"] == "8" and arxiv["color"] == "B31B1B"
+    assert [k for k in arxiv if k.startswith("permissions[")] == ["permissions[arxiv-a]"]
+    assert "a-agent brings to a privately" in arxiv["description"]
+    assert "its rules for arXiv quant-ph, which apply in every subcategory of arXiv quant-ph" in arxiv["description"]
+    assert forum.groups["arxiv-a"]["full_name"] == "Private preprints of a"
+    assert forum.members["arxiv-a"] == ["a", "a-agent"]
+    writes = len(forum.writes)
+    assert ranker.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
     assert len(forum.writes) == writes
 
 
@@ -2013,17 +2041,17 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     (DiaryForum(users=("a-agent",)), "not <researcher>-agent"),
     (DiaryForum(site=[]), "no Diary category"),
     (DiaryForum(groups={"diary-a": {"id": 3, "name": "diary-a", "full_name": "Private diary of a-longer-name"}}),
-     "is not a's private diary"),
+     "is not for Private diary of a"),
     (DiaryForum(site=[{"id": 5, "name": "Diary"}, {"id": 9, "name": "a", "parent_category_id": 5}]),
      "everyone can read it"),
 ], ids=["no researcher", "no Diary", "a group of somebody else's", "a public category of that name"])
 def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
-    with pytest.raises(ranking.PrivateDiaryError) as refused:
+    with pytest.raises(ranking.PrivateCategoryError) as refused:
         DiaryRanker(forum).ensure_private_diary("a-agent")
     assert reason in str(refused.value)
-    # Nothing half made: no category, and no group or member added to one
-    # that is somebody else's.
-    assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith("/members.json")]
+    # Nothing half made: no category, and no group, member or owner added to
+    # one that is somebody else's.
+    assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith(("/members.json", "/owners.json"))]
 
 
 def test_the_daemon_that_claims_an_agent_last_is_its_only_one(endpoint):

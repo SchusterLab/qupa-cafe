@@ -50,6 +50,9 @@ def no_local_text(tmp_path, monkeypatch):
     from qupa_cafe import daemon
 
     monkeypatch.setattr(daemon, "make_parent", lambda *args, **kwargs: "")
+    # And the state beside it, such as the copy of the agent's interests post
+    # that every parent carries.
+    monkeypatch.setenv("QUPA_STATE", str(tmp_path / "daemon.sqlite3"))
 
 
 @pytest.fixture(autouse=True)

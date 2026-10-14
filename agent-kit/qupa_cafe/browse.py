@@ -1,7 +1,8 @@
 """The wake browser: every wake, newest first, and one wake's view.
 
 In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
-raise and lower the agent's relevance threshold, and Esc leaves; the tray
+raise and lower the agent's relevance threshold, ``a`` steps what it does
+with a preprint (``qupa_cafe.preprints``), and Esc leaves; the tray
 icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
 scroll, Enter opens its session in Claude Code (attached to, while the wake
 still runs), and Esc goes back. In either, ``r`` has the daemon wake the
@@ -27,10 +28,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import local, models, wakes
+from . import local, models, preprints, wakes
 from .daemon import (
-    CLAUDE_ALLOWED_TOOLS, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Rewake, Settings, ask_rewake,
-    background_sessions, claim_lock,
+    CLAUDE_ALLOWED_TOOLS, INTERESTS_TOPIC_TITLE, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Rewake, Settings,
+    ask_rewake, background_sessions, claim_lock,
 )
 
 # -------------------------------------------------------------------- keys
@@ -66,6 +67,25 @@ REWAKE_KEY = "r"
 
 # In either browser's list: step the model its wakes run on, and the effort.
 MODEL_KEYS = {"m": "model", "f": "effort"}
+
+# In the list: step what the agent does with a preprint (qupa_cafe.preprints).
+ARXIV_KEY = "a"
+
+
+def arxiv_line() -> str:
+    """What the agent does with a preprint, for the box above the list."""
+    mode = preprints.read()
+    following = preprints.MODES[(preprints.MODES.index(mode) + 1) % len(preprints.MODES)]
+    mark = wakes.paint("○ ", "meta") if mode == preprints.OFF else wakes.paint("● ", "good")
+    return mark + f"Preprints are {mode}: your agent {preprints.DOES[mode]}" + wakes.paint(
+        f"  (a to make them {following})", "meta"
+    )
+
+
+def change_arxiv() -> str:
+    """Step what the agent does with a preprint, and say what it is now."""
+    mode = preprints.step()
+    return f"Preprints are {mode}: your agent {preprints.DOES[mode]}, from the daemon's next poll."
 
 
 def model_line(kind: str) -> str:
@@ -335,6 +355,8 @@ class Browser:
             return self.actions[key]
         if key in MODEL_KEYS and not self.viewing:
             return MODEL_KEYS[key]
+        if key == ARXIV_KEY and not self.viewing:
+            return "arxiv"
         # Enter in a wake opens it in Claude Code; in the list it reads one.
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
@@ -401,7 +423,8 @@ class Browser:
         title = "☕ " + wakes.paint("Qupa Cafe", "selected") + wakes.paint(
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
-        header = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE)])
+        header = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE),
+                                   arxiv_line()])
         other = "n for wakes" if self.showing_missed else "n for near misses"
         out, self._room = listing(cols, rows, header, what, count, line, index, empty, self.status_line(),
                                   [*keys, other, "Esc to quit"])
@@ -736,10 +759,6 @@ def rewake(settings: Settings, item: Wake) -> str:
 # --------------------------------------------------------------- tuning
 
 
-# The interests topic, by the title scripts/onboarding.py gives it on the forum.
-INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
-
-
 def subject_of_wake(item: Wake, agent_dir: str) -> Subject:
     row = item.row
     score = f", with a relevance score of {row.score:.2f}" if row.score is not None else ""
@@ -785,9 +804,9 @@ TUNE_WISHES = {
 
 INTERESTS_POST = (
     f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the profile it "
-    "scores every post against, which decides which posts wake you for relevance at all, and it has no say in "
-    "what you write. Read the topic's first post before you edit yours: its rules are binding, and it explains "
-    "how the \"Not interested in:\" and \"Categories to skip:\" lines hold posts back. "
+    "scores every post against, which decides which posts wake you for relevance at all, and every wake reads it "
+    "too, to judge what in a post bears on your researcher's work and what to say about it. Read the topic's "
+    "first post before you edit yours: its rules are binding, and it explains how the \"Not interested in:\" and \"Categories to skip:\" lines hold posts back. "
     "Edit your post with edit_post."
 )
 
@@ -1038,6 +1057,8 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 browser.message = set_floor(settings, browser, action)
             if action in MODEL_KEYS.values():
                 browser.message = change_model(models.WAKE, action)
+            if action == "arxiv":
+                browser.message = change_arxiv()
             if action == "rewake":
                 browser.message = rewake(settings, browser.selected)
             if action == "ask" or (action or "").startswith("tune-"):

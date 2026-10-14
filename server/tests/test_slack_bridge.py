@@ -121,7 +121,8 @@ class StubForum:
     def __init__(self):
         self.categories = {
             1: {"id": 1, "name": "Research", "slug": "research", "read_restricted": False},
-            2: {"id": 2, "name": "Staff", "slug": "staff", "read_restricted": True},
+            2: {"id": 2, "name": "Staff", "slug": "staff", "read_restricted": True,
+                "group_permissions": [{"permission_type": 1, "group_name": "staff"}]},
             8: {"id": 8, "name": "arXiv quant-ph", "slug": "arxiv", "read_restricted": False},
         }
         self.users = {
@@ -131,7 +132,7 @@ class StubForum:
             "pat-agent": {"id": 6, "username": "pat-agent", "email": "pat-agent@forum", "active": True},
             "arxiv-bot": {"id": 5, "username": "arxiv-bot", "email": "arxiv-bot@forum", "active": True},
         }
-        self.groups = {"agents": ["sunada-agent", "pat-agent"], "feeds": ["arxiv-bot"]}
+        self.groups = {"agents": ["sunada-agent", "pat-agent"], "feeds": ["arxiv-bot"], "staff": ["sunada", "sunada-agent"]}
         self.topics: dict[int, dict] = {}
         self.posts: list[dict] = []
         self.invites: list[str] = []
@@ -384,6 +385,11 @@ class FakeSlack:
         self.token = "xoxb-test"
         # Set to an error to refuse uploads, as a token without files:write does.
         self.refuse_files: str | None = None
+        # Likewise private channels, as a token without groups:write does.
+        self.refuse_private: str | None = None
+        self.private: set[str] = set()
+        # Each channel's members, by Slack id; the bot is UBOT.
+        self.members: dict[str, list[str]] = {}
         self._ts = 1000
 
     def _next_ts(self):
@@ -393,8 +399,24 @@ class FakeSlack:
     def conversations_create(self, name, is_private):
         if name in self.channels:
             raise SlackError("The server responded with: {'ok': False, 'error': 'name_taken'}")
+        if is_private and self.refuse_private:
+            raise SlackError(f"The server responded with: {{'ok': False, 'error': '{self.refuse_private}'}}")
         self.channels[name] = f"C{len(self.channels) + 1}"
+        if is_private:
+            self.private.add(self.channels[name])
+        self.members[self.channels[name]] = ["UBOT"]
         return {"channel": {"id": self.channels[name]}}
+
+    def conversations_members(self, channel, limit=200, cursor=None):
+        return {"members": list(self.members.get(channel, [])), "response_metadata": {}}
+
+    def conversations_invite(self, channel, users):
+        self.calls.append(("invite", {"channel": channel, "users": users}))
+        self.members.setdefault(channel, []).extend(users.split(","))
+
+    def conversations_kick(self, channel, user):
+        self.calls.append(("kick", {"channel": channel, "user": user}))
+        self.members[channel].remove(user)
 
     def conversations_list(self, **kwargs):
         return {"channels": [{"name": n, "id": i} for n, i in self.channels.items()], "response_metadata": {}}
@@ -550,8 +572,9 @@ def test_a_new_forums_first_posts_reach_slack(connect):
 def test_first_run_relays_no_history_but_makes_channels(world):
     stub, slack, bridge = world
     assert replies(slack) == []
-    # A channel for every category everybody can read, and none for staff.
-    assert set(slack.channels) == {"qupa-research", "qupa-arxiv"}
+    # A channel for every category, and a private one for staff.
+    assert set(slack.channels) == {"qupa-research", "qupa-arxiv", "qupa-staff"}
+    assert slack.private == {slack.channels["qupa-staff"]}
 
 
 def test_a_post_becomes_a_reply_in_its_topics_thread(world):
@@ -748,14 +771,46 @@ def test_a_persons_mention_is_their_slack_one_and_an_agents_stays_a_name(world):
     assert update["text"].startswith("Thanks, <@UP>.\n_<")
 
 
-def test_restricted_categories_private_messages_and_whispers_stay_out(world):
+def test_private_messages_and_whispers_stay_out_of_channels(world):
     stub, slack, bridge = world
-    stub.topic(20, "Moderation notes", 2, "sunada")
-    stub.post(20, "sunada", "Staff only.")
     stub.topic(21, "A private message", None, "sunada", archetype="private_message")
     stub.post(21, "sunada", "Just between us.")
     stub.post(10, "sunada", "A whisper.", post_type=4)
     assert bridge.poll() == 0
+    assert slack.messages == []
+
+
+def test_a_private_category_is_a_private_channel_of_its_readers(world):
+    stub, slack, bridge = world
+    staff = slack.channels["qupa-staff"]
+    # The readers with a Slack account, and not the agent, which posts through the bridge.
+    assert ("invite", {"channel": staff, "users": "US"}) in slack.calls
+    stub.topic(20, "Moderation notes", 2, "sunada")
+    stub.post(20, "sunada", "Staff only.")
+    assert bridge.poll() == 1
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    assert parent["channel"] == staff and "Staff only." in parent["text"]
+
+    # A reply there is posted as its writer, as anywhere.
+    event = reply_event(slack, bridge, "US", "Noted.", topic_id=20)
+    assert bridge.handle_message(event).startswith("posted")
+
+    # Who reads it follows the forum, at the hourly sync.
+    stub.groups["staff"] = ["pat"]
+    bridge._groups.clear()
+    bridge.sync_categories(force=True)
+    assert slack.members[staff] == ["UBOT", "UP"]
+    assert ("kick", {"channel": staff, "user": "US"}) in slack.calls
+
+
+def test_a_private_category_slack_will_not_make_a_channel_for_stays_on_the_forum(connect):
+    stub, slack, bridge = connect(first_run="newest")
+    slack.refuse_private = "missing_scope"
+    bridge.poll()
+    assert "qupa-staff" not in slack.channels and "qupa-research" in slack.channels
+    stub.topic(20, "Moderation notes", 2, "sunada")
+    stub.post(20, "sunada", "Staff only.")
+    bridge.poll()
     assert slack.messages == []
 
 
@@ -790,7 +845,7 @@ def test_channels_are_renamed_when_the_prefix_changes(world):
     bridge.sync_categories(force=True)
     # Renamed in place: the same channel, so its threads still map to topics.
     assert slack.channels["lab-research"] == research
-    assert set(slack.channels) == {"lab-research", "lab-arxiv"}
+    assert set(slack.channels) == {"lab-research", "lab-arxiv", "lab-staff"}
     assert bridge.state.channel_for(1) == research
 
     # A name somebody already took by hand leaves the channel as it is.
@@ -994,6 +1049,7 @@ def test_a_repeated_title_gets_the_time(world):
 def test_somebody_with_no_agent_is_told(world):
     stub, slack, bridge = world
     stub.groups["agents"] = ["pat-agent"]
+    bridge._groups.clear()
     assert bridge.handle_message(dm("US", "Anyone there?", "7300.1")) == "no agent to send to"
     assert stub.created_as == []
 
