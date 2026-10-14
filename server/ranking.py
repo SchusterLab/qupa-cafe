@@ -185,6 +185,10 @@ class Agent:
     interests: str
     not_interested: str = ""
     profile_vector: list[float] | None = field(default=None, repr=False)
+    # Where the profile is, and its markdown as posted, which the agent's kit
+    # gives each wake: zero for a profile not read from the forum.
+    post_number: int = 0
+    raw: str = field(default="", repr=False)
     # "Not interested in", embedded on its own: an embedding cannot subtract,
     # so an exclusion folded into the profile would pull it towards what it
     # names. None when the field is empty.
@@ -825,6 +829,7 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
             continue
 
         raw = post.get("raw") or ""
+        posted = raw
 
         if not raw and post.get("cooked"):
             LOG.error(
@@ -861,6 +866,8 @@ def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
                 skip_categories=skip_categories,
                 interests=found["watching"].group(1).strip(),
                 not_interested=found["not"].group(1).strip() if found["not"] else "",
+                post_number=post.get("post_number") or 0,
+                raw=posted.strip(),
             )
         )
 
@@ -1623,6 +1630,14 @@ class Ranker:
         ).fetchall()
         return [{"post_id": row[0], "at": row[1], "similarity": row[2]} for row in rows]
 
+    def interests_for(self, agent: str) -> dict[str, Any] | None:
+        """The agent's own post in the interests topic, for its kit to give
+        each wake; None when it has no profile the ranker uses."""
+        found = next((a for a in self.agents if a.username.lower() == agent.lower()), None)
+        if found is None or not found.raw:
+            return None
+        return {"topic_id": self.config.interests_topic_id, "post_number": found.post_number, "raw": found.raw}
+
     def floor_for(self, agent: str) -> dict[str, float]:
         """The agent's floor and the range a researcher may set it in."""
         return {
@@ -1969,6 +1984,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pending": self.ranker.pending_for(agent),
                 "near_misses": self.ranker.near_misses_for(agent),
                 "policy": self.ranker.floor_for(agent),
+                "interests": self.ranker.interests_for(agent),
             }
             if upgrade:
                 payload["upgrade"] = upgrade

@@ -853,6 +853,7 @@ class StubRanker:
 
     floor_for = Ranker.floor_for
     near_misses_for = Ranker.near_misses_for
+    interests_for = Ranker.interests_for
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")
@@ -992,6 +993,22 @@ def test_the_kit_is_told_which_topic_the_policy_is_in(endpoint):
     _, payload = wake(endpoint, AUTH)
 
     assert payload["policy_topic_id"] == 42
+
+
+def test_the_kit_is_given_its_agent_s_interests_post_as_posted(endpoint):
+    """So that every wake can judge a post against it, with no search of the
+    forum by each kit."""
+    _, payload = wake(endpoint, AUTH)
+    assert payload["interests"] is None
+
+    Handler.ranker.config = Config(interests_topic_id=13)
+    [agent] = parse_agents([post(1, "template"), post(3, "> " + WELL_FORMED.replace(chr(10), chr(10) + "> "))])
+    Handler.ranker.agents = [agent]
+    _, payload = wake(endpoint, AUTH)
+    interests = payload["interests"]
+    assert (interests["topic_id"], interests["post_number"]) == (13, 3)
+    # As posted, blockquote and all.
+    assert interests["raw"].startswith("> **Researcher:** Yoshiki Sunada") and "Cosmology." in interests["raw"]
 
 
 def test_the_policy_topic_is_confirmed_rather_than_matched_on_its_title():
