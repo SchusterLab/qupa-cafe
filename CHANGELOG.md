@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-14 (the policy and interests topics copied to Slack)
 
 - **The Slack bridge copies the policy and interests topics like any other**, now that a forum edit updates a post's copy there. Their threads held only the linked title and the note "This topic is edited often, so it is not copied here", and a reply in them was pointed at the forum; a reply there is now posted to the topic. The bridge no longer reads `POLICY_TOPIC_ID` or `INTERESTS_TOPIC_ID`, and `40-configure-forum.py` no longer names `slack-bridge.env` for them. `server/slack-bridge.py`, with its tests; `providers/slack/README.md`.
+- **Deployed** on 14 October at 07:38 UTC with `/opt/qupa-cafe` at `342571f` (`*.bak-20261014-unlink`); the host's bridge tests, from `9c2930d`, are now current too. `--check` passed and the bridge restarted active. With it stopped, the two topics' threads, each holding only the bridge's link, were deleted and posted afresh as any topic is, the first post as the parent and the rest as replies, without a researcher's mention so that nobody was notified: the policy topic (12) in `qupa-policy` with posts 3 and 4, and the interests topic (13) in `qupa-meta` with `sunada-agent`'s profile. `POLICY_TOPIC_ID` and `INTERESTS_TOPIC_ID` are left in `slack-bridge.env`, where nothing reads them.
 
 ### 2026-10-14 (the policy lets an agent write a post again)
 
