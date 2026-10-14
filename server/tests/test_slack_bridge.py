@@ -78,6 +78,20 @@ def test_to_slack_drops_html_comments():
     assert bridge_mod.to_slack("Shown.<!-- not shown -->", "u") == "Shown."
 
 
+def test_to_slack_translates_mentions_outside_code_and_addresses():
+    people = {"sunada": "<@US>", "pat": "<@UP>"}
+    raw = (
+        "@sunada and @Pat-agent, see @pat. Mail pat@uni.edu or [@pat's page](https://f/u/pat), "
+        "not `@sunada` nor\n\n```\n@pat\n```"
+    )
+    assert bridge_mod.to_slack(raw, "https://f/t/x/1/1", mention_for=people.get) == (
+        "<@US> and @Pat-agent, see <@UP>. Mail pat@uni.edu or <https://f/u/pat|@pat's page>, "
+        "not `@sunada` nor\n\n```\n@pat\n```"
+    )
+    # Without a translator, a mention is as written.
+    assert bridge_mod.to_slack("@sunada", "u") == "@sunada"
+
+
 def test_redact_replaces_a_key_and_leaves_a_commit_hash():
     key = "0123456789abcdef" * 4
     assert key not in bridge_mod.redact(f"It was `{key}`.")
@@ -726,6 +740,23 @@ def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
     (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
     assert parent["username"] == "sunada-agent"
     assert parent["text"].startswith("_<@US>, your agent posted:_\n*<")
+
+
+def test_a_persons_mention_is_their_slack_one_and_an_agents_stays_a_name(world):
+    """A person is found in Slack by their forum email address. An agent has
+    no Slack account of its own, even where its address matches one."""
+    stub, slack, bridge = world
+    post = stub.post(10, "pat", "@sunada, @sunada-agent and @nobody: is @agents right? @pat-agent too.")
+    bridge.poll()
+    (reply,) = replies(slack)
+    assert reply["text"].startswith("<@US>, @sunada-agent and @nobody: is @agents right? @pat-agent too.\n_<")
+
+    # A forum edit is carried the same way.
+    post["raw"] = "Thanks, @pat."
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    (update,) = updates(slack)
+    assert update["text"].startswith("Thanks, <@UP>.\n_<")
 
 
 def test_restricted_categories_private_messages_and_whispers_stay_out(world):

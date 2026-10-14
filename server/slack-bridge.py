@@ -517,6 +517,14 @@ _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
 _HTML_LINK = re.compile(r"""<a\s[^>]*?href\s*=\s*(["'])([^"'\s]+)\1[^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# A mention as Discourse finds one: not inside a word or an address, and a
+# username ends in a letter, digit or underscore, so a full stop after it is
+# the sentence's. The first group is what to step over: code, and the tokens
+# Slack's text is left with, which are all in angle brackets.
+_FORUM_MENTION = re.compile(
+    r"(```.*?```|~~~.*?~~~|`[^`\n]+`|<[^>\n]*>)|(?<![\w@/.])@(\w(?:[\w.-]*\w)?)",
+    re.DOTALL,
+)
 
 
 # A Discourse API key; a SHA-256 digest has the same shape and goes too.
@@ -587,10 +595,25 @@ def md_link(match: re.Match, base: str) -> str:
     return f"<{url}|{match.group(1)}>"
 
 
-def to_slack(raw: str, link: str, codes: bool = False) -> str:
-    """Forum markdown, readable in a thread: links, bold and images converted,
-    and the rest as written, in full. ``link`` is the post's address, against
-    which a relative one is resolved; ``codes`` is ``redact``'s. A post is at
+def slack_mentions(text: str, mention_for: Callable[[str], str | None]) -> str:
+    """Each ``@username`` in Slack text as ``mention_for`` gives it, or as
+    written when it gives None. Code and Slack's own ``<...>`` tokens, such as
+    a link holding an address with an ``@``, are left alone."""
+    def swap(match: re.Match) -> str:
+        if match.group(1):
+            return match.group(1)
+        return mention_for(match.group(2)) or match.group(0)
+
+    return _FORUM_MENTION.sub(swap, text)
+
+
+def to_slack(
+    raw: str, link: str, codes: bool = False, mention_for: Callable[[str], str | None] | None = None,
+) -> str:
+    """Forum markdown, readable in a thread: links, bold, images and, with
+    ``mention_for``, mentions converted, and the rest as written, in full.
+    ``link`` is the post's address, against which a relative one is resolved;
+    ``codes`` is ``redact``'s. A post is at
     most `max_post_length` (3,800) characters, which with a title and a closing
     line stays under the 4,000 Slack allows in an edited message; a new one may
     run to 40,000. The forum's own files follow the post, uploaded by
@@ -603,6 +626,8 @@ def to_slack(raw: str, link: str, codes: bool = False) -> str:
     # Links after escaping, so their angle brackets are the only live ones.
     text = _MD_LINK.sub(lambda m: md_link(m, link), text)
     text = _MD_BOLD.sub(lambda m: f"*{m.group(1)}*", text)
+    if mention_for:
+        text = slack_mentions(text, mention_for)
     return text.strip()
 
 
@@ -757,6 +782,15 @@ class Bridge:
                     LOG.warning("cannot look %s up in Slack: %s", username, exc)
         self._slack_ids[key] = Cached(found)
         return found
+
+    def slack_mention(self, username: str) -> str | None:
+        """A person's forum mention as their Slack one, found by email address,
+        so that it notifies them in Slack too. None for anybody else: an agent,
+        a feed, a group, or a person with no Slack account."""
+        if self.is_agent(username) or self.is_feed(username):
+            return None
+        slack_id = self.slack_id_for(username)
+        return f"<@{slack_id}>" if slack_id else None
 
     def forum_user_for(self, slack_user: str) -> tuple[dict | None, str | None]:
         """(forum account, email) for a Slack user; either may be None. Raises
@@ -1112,7 +1146,7 @@ class Bridge:
         if "raw" not in post:
             post = {**post, "raw": self.forum.post(post["id"]).get("raw", "")}
         raw = post.get("raw") or ""
-        body = PLACEHOLDER_SLACK_TEXT if PLACEHOLDER.search(raw) else to_slack(raw, url, codes)
+        body = PLACEHOLDER_SLACK_TEXT if PLACEHOLDER.search(raw) else to_slack(raw, url, codes, self.slack_mention)
         lead = ""
         if mention and self.is_agent(author):
             researcher = self.researcher_for(author)
