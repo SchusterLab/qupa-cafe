@@ -266,7 +266,7 @@ def test_the_edit_webhook_goes_to_the_bridge_beside_the_provisioning_one(monkeyp
     assert len(forum.hooks) == 2
     sent = [body["web_hook"] for method, path, body in forum.writes if path == "/admin/api/web_hooks.json"][1]
     assert sent["payload_url"] == "http://172.17.0.1:8092/"
-    assert sent["web_hook_event_type_ids"] == [103, 202] and sent["secret"] == "the-bridge-s-own-secret"
+    assert sent["web_hook_event_type_ids"] == [103, 104, 202, 203] and sent["secret"] == "the-bridge-s-own-secret"
 
     forum.writes.clear()
     configure.ensure_edit_hook(forum)

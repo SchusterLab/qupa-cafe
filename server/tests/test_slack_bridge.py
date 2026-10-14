@@ -12,6 +12,7 @@ Run from the repository root::
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import re
 import sys
@@ -138,6 +139,7 @@ class StubForum:
         self.added: list[tuple[int, str]] = []
         self.created_as: list[tuple[str, dict]] = []
         self.edited_as: list[tuple[str, int, str]] = []
+        self.deleted_as: list[tuple[str, int]] = []
         self.next_post = 100
         # upload:// reference -> bytes; an image whose bytes are None is known
         # to the forum but fails to download.
@@ -335,6 +337,17 @@ def serve(stub: StubForum):
                 return self._json(200, {"post": post})
             return self._json(404, {})
 
+        def do_DELETE(self):  # noqa: N802
+            if self.path.startswith("/posts/"):
+                post_id = int(self.path.split("/")[2].removesuffix(".json"))
+                post = next(p for p in stub.posts if p["id"] == post_id)
+                if post["username"] != self.headers.get("Api-Username"):
+                    return self._json(403, {"errors": ["You are not permitted to delete this post."]})
+                post["user_deleted"] = True
+                stub.deleted_as.append((self.headers.get("Api-Username"), post_id))
+                return self._json(200, {})
+            return self._json(404, {})
+
         def log_message(self, *args):
             pass
 
@@ -366,6 +379,8 @@ class FakeSlack:
         # Every message the bot has in Slack, by its ts.
         self.sent: dict[str, dict] = {}
         self.files: list[dict] = []
+        # The messages uploads make in a thread, by their ts.
+        self.file_messages: dict[str, dict] = {}
         self.token = "xoxb-test"
         # Set to an error to refuse uploads, as a token without files:write does.
         self.refuse_files: str | None = None
@@ -414,7 +429,17 @@ class FakeSlack:
         if self.refuse_files:
             raise SlackError(f"The server responded with: {{'ok': False, 'error': '{self.refuse_files}'}}")
         self.files.append(kwargs)
-        return {"files": [{"id": f"F{len(self.files)}"}]}
+        file_id = f"F{len(self.files)}"
+        if kwargs.get("thread_ts"):
+            self.file_messages[self._next_ts()] = {"channel": kwargs["channel"], "thread_ts": kwargs["thread_ts"],
+                                                   "files": [{"id": file_id}]}
+        return {"files": [{"id": file_id}]}
+
+    def files_delete(self, file):
+        self.calls.append(("delete file", {"file": file}))
+        for ts, message in list(self.file_messages.items()):
+            if any(f["id"] == file for f in message["files"]):
+                del self.file_messages[ts]
 
     def chat_update(self, channel, ts, text):  # noqa: N802
         self.sent[ts]["text"] = text
@@ -429,8 +454,12 @@ class FakeSlack:
             {"ts": t, "text": m["text"], "bot_id": "B1"}
             for t, m in self.sent.items()
             if m["channel"] == channel and (t == ts or m.get("thread_ts") == ts)
+        ] + [
+            {"ts": t, "text": "", "bot_id": "B1", "files": m["files"]}
+            for t, m in self.file_messages.items()
+            if m["channel"] == channel and m["thread_ts"] == ts
         ]
-        return {"messages": thread, "response_metadata": {}}
+        return {"messages": sorted(thread, key=lambda m: m["ts"]), "response_metadata": {}}
 
     def chat_postEphemeral(self, **kwargs):  # noqa: N802
         self.ephemerals.append(kwargs)
@@ -1561,7 +1590,125 @@ def test_the_edit_webhook_is_verified_and_queues_the_edit(world):
         assert deliver("post_created", {"post": {"id": 8}}) == (200, "ignored")
         assert deliver("post_edited", {"post": {"id": 7}}) == (200, "accepted")
         assert deliver("topic_edited", {"topic": {"id": 10}}) == (200, "accepted")
-        assert list(bridge._edits) == [("post", 7), ("topic", 10)]
+        assert deliver("post_destroyed", {"post": {"id": 9}}) == (200, "accepted")
+        assert deliver("topic_destroyed", {"topic": {"id": 11}}) == (200, "accepted")
+        assert list(bridge._edits) == [("post", 7), ("topic", 10), ("post-deleted", 9), ("topic-deleted", 11)]
     finally:
         httpd.shutdown()
     assert bridge_mod.listen_for_edits(bridge, "127.0.0.1", 0, "") is None
+
+
+# ------------------------------------------------------------ deletions
+
+
+def deleted(slack):
+    return [c[1]["ts"] for c in slack.calls if c[0] == "delete"]
+
+
+def test_a_post_deleted_on_the_forum_takes_its_copy_and_its_files_from_slack(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    stub.uploads["upload://aBc.png"] = PNG
+    kept = stub.post(10, "pat", "This one stays.")
+    gone_post = stub.post(10, "sunada-agent", "A plot. ![a.png](upload://aBc.png)")
+    bridge.poll()
+    ts = bridge.state.copy_of(gone_post["id"]).ts
+    assert len(slack.file_messages) == 1
+
+    gone_post["user_deleted"] = True
+    bridge.edited("post-deleted", gone_post["id"])
+    bridge.poll()
+    assert deleted(slack) == [ts] and slack.file_messages == {}
+    assert bridge.state.copy_of(gone_post["id"]) is None
+    assert bridge.state.copy_of(kept["id"]).ts in slack.sent
+
+
+def test_a_post_still_on_the_forum_or_written_in_slack_keeps_its_message(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    back = stub.post(10, "pat", "Deleted, and then recovered.")
+    written = stub.post(10, "sunada", "From Slack.")
+    bridge.state.record_from_slack(written["id"], slack.channels["qupa-research"], "999.1", "From Slack.")
+    bridge.poll()
+    written["user_deleted"] = True
+    bridge.edited("post-deleted", back["id"])
+    bridge.edited("post-deleted", written["id"])
+    bridge.poll()
+    assert deleted(slack) == []
+
+
+def test_a_deleted_topic_takes_the_bridges_messages_from_its_thread(world):
+    stub, slack, bridge = world
+    stub.topic(11, "Leakage in the cat qubit", 1, "pat")
+    first = stub.post(11, "pat", "Does leakage matter?")
+    stub.post(11, "sunada-agent", "It does.")
+    bridge.poll()
+    channel, parent = bridge.state.thread_for(11)
+    ours = [t for t, m in slack.sent.items() if m["channel"] == channel]
+    assert len(ours) == 2
+
+    # The first post's deletion is the topic's, whichever is reported.
+    first["user_deleted"] = True
+    bridge.edited("post-deleted", first["id"])
+    bridge.poll()
+    assert sorted(deleted(slack)) == sorted(ours) and deleted(slack)[-1] == parent
+    assert bridge.state.thread_for(11) is None
+
+    stub.topics[11]["deleted_at"] = "2026-10-14T08:00:00Z"
+    bridge.edited("topic-deleted", 11)
+    bridge.poll()
+    assert len(deleted(slack)) == 2
+
+
+def test_a_message_deleted_in_slack_deletes_its_post_as_its_writer(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    channel = slack.channels["qupa-research"]
+    written = stub.post(10, "sunada", "From Slack.")
+    bridge.state.record_from_slack(written["id"], channel, "999.1", "From Slack.")
+
+    event = {"type": "message", "subtype": "message_deleted", "channel": channel, "deleted_ts": "999.1",
+             "previous_message": {"user": "US", "ts": "999.1", "thread_ts": "990.1", "text": "From Slack."}}
+    assert bridge.handle_message(event) == f"deleted post {written['id']} as sunada"
+    assert stub.deleted_as == [("sunada", written["id"])]
+    # Gone already, and the bridge's own deletions, are nothing to do.
+    assert "gone from the forum already" in bridge.handle_message(event)
+    ours = {**event, "previous_message": {"bot_id": "B1", "ts": "1001.000100"}}
+    assert bridge.handle_message(ours) == "not a deletion by a person"
+    elsewhere = {**event, "previous_message": {"user": "US", "ts": "123.4"}}
+    assert bridge.handle_message(elsewhere) == "a deleted message that is not on the forum"
+
+
+# ------------------------------------------------------- images on white
+
+
+def _png(mode, colour):
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new(mode, (4, 4), colour).save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_a_transparent_image_goes_to_slack_on_white_and_any_other_as_it_is():
+    from PIL import Image
+
+    clear = _png("RGBA", (0, 0, 0, 0))
+    flat = bridge_mod.on_white(clear, "plot.png")
+    with Image.open(io.BytesIO(flat)) as image:
+        assert image.format == "PNG" and image.mode == "RGB" and image.getpixel((0, 0)) == (255, 255, 255)
+    opaque = _png("RGBA", (10, 20, 30, 255))
+    assert bridge_mod.on_white(opaque, "plot.png") == opaque
+    assert bridge_mod.on_white(clear, "notes.pdf") == clear
+    assert bridge_mod.on_white(b"not an image", "plot.png") == b"not an image"
+
+
+def test_a_posts_transparent_image_reaches_slack_on_white(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    stub.uploads["upload://cLr.png"] = _png("RGBA", (0, 0, 0, 0))
+    stub.post(10, "pat", "A plot. ![c.png](upload://cLr.png)")
+    bridge.poll()
+    (sent,) = slack.files
+    assert sent["file_uploads"][0]["content"] == bridge_mod.on_white(stub.uploads["upload://cLr.png"], "c.png")
+    assert sent["file_uploads"][0]["content"] != stub.uploads["upload://cLr.png"]

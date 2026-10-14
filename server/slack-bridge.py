@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import hmac
 import html
+import io
 import json
 import logging
 import mimetypes
@@ -59,17 +60,24 @@ INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
 INVITE_MARGIN_SECONDS = 3600
 # What Bridge.invite returns when it gave somebody a link.
 INVITED = ("no account, invited", "no account, invited already")
-# Edited often, so a copy in Slack would soon be out of date: each has a thread
-# holding only a link to it.
-# The forum's post_edited and topic_edited webhook, on the docker bridge,
-# signed with BRIDGE_HOOK_SECRET; without a secret no listener starts and
-# forum edits stay on the forum.
+# The forum's webhook for edits and deletions, on the docker bridge, signed
+# with BRIDGE_HOOK_SECRET; without a secret no listener starts and forum edits
+# and deletions stay on the forum.
 HOOK_HOST = os.environ.get("BRIDGE_HOOK_HOST", "172.17.0.1")
 HOOK_PORT = int(os.environ.get("BRIDGE_HOOK_PORT", "8092"))
 HOOK_SECRET = os.environ.get("BRIDGE_HOOK_SECRET", "")
-# A post's edit, and a first post's edited with its topic's title, which the
-# forum reports as the topic's.
-EDIT_EVENTS = {"post_edited": "post", "topic_edited": "topic"}
+# Each event the webhook reports: what the bridge does about it, and the key
+# of its payload naming the post or topic. A first post edited with its
+# topic's title is reported as the topic's; a topic deleted is reported as its
+# first post's deletion too.
+HOOK_EVENTS = {
+    "post_edited": ("post", "post"),
+    "topic_edited": ("topic", "topic"),
+    "post_destroyed": ("post-deleted", "post"),
+    "topic_destroyed": ("topic-deleted", "topic"),
+}
+HOOK_LABELS = {"post": "edit of post", "topic": "edit of topic", "post-deleted": "deletion of post",
+               "topic-deleted": "deletion of topic"}
 
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
@@ -447,6 +455,9 @@ class Forum:
     def edit(self, post_id: int, raw: str, as_user: str) -> dict:
         return self.request("PUT", f"/posts/{post_id}.json", {"post[raw]": raw}, as_user=as_user)
 
+    def delete(self, post_id: int, as_user: str) -> Any:
+        return self.request("DELETE", f"/posts/{post_id}.json", as_user=as_user)
+
     def add_to_message(self, topic_id: int, username: str) -> dict:
         return self.request("POST", f"/t/{topic_id}/invite.json", {"user": username})
 
@@ -552,6 +563,42 @@ def files_in(raw: str) -> list[tuple[str, str]]:
     for label, short_url in _UPLOADED_FILE.findall(raw):
         seen.setdefault(short_url, label.split("|")[0].strip())
     return [(name, short_url) for short_url, name in seen.items()][:MAX_FILES_PER_POST]
+
+
+# Image types that can be transparent, flattened onto white for Slack.
+TRANSPARENT_TYPES = (".png", ".gif", ".webp")
+
+
+def on_white(content: bytes, filename: str) -> bytes:
+    """An image with transparent pixels, flattened onto white in its own
+    format, since a dark theme makes a transparent plot's black lines
+    disappear; anything else, or anything Pillow cannot read, as it is. An
+    animation is left alone."""
+    if posixpath.splitext(filename)[1].lower() not in TRANSPARENT_TYPES:
+        return content
+    try:
+        from PIL import Image
+    except ImportError:
+        LOG.warning("Pillow is not installed, so %s goes to Slack as it is", filename)
+        return content
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            if getattr(image, "n_frames", 1) > 1:
+                return content
+            if image.mode not in ("RGBA", "LA", "PA") and "transparency" not in image.info:
+                return content
+            kind = image.format or "PNG"
+            rgba = image.convert("RGBA")
+            if rgba.getextrema()[3][0] == 255:
+                return content
+            white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            white.alpha_composite(rgba)
+            out = io.BytesIO()
+            white.convert("RGB").save(out, format=kind)
+            return out.getvalue()
+    except Exception as exc:  # noqa: BLE001 - a picture Pillow cannot read goes as it is
+        LOG.warning("%s goes to Slack as it is: %s", filename, exc)
+        return content
 
 
 def upload_markdown(upload: dict, name: str) -> str:
@@ -1088,7 +1135,7 @@ class Bridge:
                     filename = name
                 else:
                     filename = name + extension
-                content = self.forum.download(served[short_url])
+                content = on_white(self.forum.download(served[short_url]), filename)
                 files.append({"content": content, "filename": filename, "title": name or stored})
             if files:
                 self.slack.files_upload_v2(channel=channel_id, thread_ts=thread_ts, file_uploads=files)
@@ -1118,20 +1165,28 @@ class Bridge:
     # -------------------------------------------------------- forum edits
 
     def edited(self, kind: str, item_id: int) -> None:
-        """A forum edit the webhook reported, for the next poll to carry."""
+        """A forum edit or deletion the webhook reported, for the next poll
+        to carry."""
         with self._edits_lock:
             self._edits[(kind, item_id)] = None
 
     def carry_edits(self) -> int:
-        """Each reported edit's copy brought up to date. While the forum
-        cannot answer, the rest wait for the next poll."""
+        """Each reported edit's copy brought up to date, and each deleted
+        post's or topic's copy deleted. While the forum cannot answer, the rest
+        wait for the next poll."""
         with self._edits_lock:
             pending = list(self._edits)
+        carriers = {
+            "post": self.carry_edit,
+            "topic": self.carry_topic_edit,
+            "post-deleted": self.carry_delete,
+            "topic-deleted": self.carry_topic_delete,
+        }
         carried = 0
         for kind, item_id in pending:
             try:
                 with self.lock:
-                    outcome = self.carry_edit(item_id) if kind == "post" else self.carry_topic_edit(item_id)
+                    outcome = carriers[kind](item_id)
             except Transient as exc:
                 LOG.warning("edits wait for the next poll: %s", exc)
                 return carried
@@ -1141,10 +1196,105 @@ class Bridge:
                 outcome = "failed"
             with self._edits_lock:
                 self._edits.pop((kind, item_id), None)
-            if outcome.startswith("updated"):
+            if outcome.startswith(("updated", "deleted")):
                 carried += 1
-            LOG.info("edit of %s %d: %s", kind, item_id, outcome)
+            LOG.info("%s %d: %s", HOOK_LABELS[kind], item_id, outcome)
         return carried
+
+    def carry_delete(self, post_id: int) -> str:
+        """A post deleted on the forum: its copy in Slack deleted, with the
+        files sent after it; a first post's, its whole thread's. A post
+        written in Slack keeps its writer's message there, which only they
+        can delete."""
+        if self.state.watching(post_id):
+            return "a *Thinking…* post, whose copy goes with it"
+        try:
+            post = self.forum.post(post_id)
+        except Refused as exc:
+            if exc.status not in (403, 404):
+                raise
+            post = None
+        if post is not None and not gone(post):
+            return "still on the forum"
+        if self.state.origin_of(post_id) is not None:
+            return "came from Slack, where the message is its writer's"
+        copy = self.state.copy_of(post_id) or (self.find_copy(post) if post else None)
+        if copy is None:
+            return "no copy in Slack"
+        if copy.parent:
+            topic_id = self.state.topic_for(copy.channel_id, copy.thread_ts)
+            if topic_id is not None:
+                return self.delete_thread(topic_id)
+        self.delete_message(copy.channel_id, copy.thread_ts, copy.ts)
+        self.state.drop_copy(post_id)
+        return f"deleted its copy in {copy.channel_id}"
+
+    def carry_topic_delete(self, topic_id: int) -> str:
+        """A topic deleted on the forum: its thread's messages from the bridge
+        deleted in Slack."""
+        try:
+            topic = self.forum.topic(topic_id)
+        except Refused as exc:
+            if exc.status not in (403, 404):
+                raise
+            topic = None
+        if topic is not None and not topic.get("deleted_at"):
+            return "still on the forum"
+        self._topics.pop(topic_id, None)
+        return self.delete_thread(topic_id)
+
+    def delete_thread(self, topic_id: int) -> str:
+        """Every message of the bridge's in a topic's thread, parent last,
+        with their files. Somebody's own reply stays, which only they can
+        delete, under Slack's note that the parent was deleted."""
+        threaded = self.state.thread_for(topic_id)
+        if threaded is None:
+            return "no thread in Slack"
+        channel_id, thread_ts = threaded
+        messages = self.thread_messages(channel_id, thread_ts)
+        ours = [m for m in messages if self.ours(m)]
+        for message in sorted(ours, key=lambda m: m.get("ts") == thread_ts):
+            if message.get("files"):
+                self.delete_files(message)
+            else:
+                self.slack.chat_delete(channel=channel_id, ts=message["ts"])
+        self.state.drop_thread(topic_id)
+        return f"deleted its thread in {channel_id}"
+
+    def ours(self, message: dict) -> bool:
+        return bool(message.get("bot_id")) or message.get("user") == self.bot_user_id
+
+    def delete_files(self, message: dict) -> None:
+        """The files a message of the bridge's carries, deleted from Slack,
+        which takes the message that shared them with them."""
+        for file in message.get("files") or []:
+            if file.get("id"):
+                try:
+                    self.slack.files_delete(file=file["id"])
+                except Exception as exc:
+                    if "file_not_found" not in str(exc) and "file_deleted" not in str(exc):
+                        raise
+
+    def delete_message(self, channel_id: str, thread_ts: str, ts: str) -> None:
+        """One copy in a thread, and the files sent right after it: the
+        bridge's messages that carry files and follow it, up to the first
+        message that is not one."""
+        messages = sorted(self.thread_messages(channel_id, thread_ts), key=lambda m: float(m.get("ts") or 0))
+        after = False
+        for message in messages:
+            if message.get("ts") == ts:
+                after = True
+                continue
+            if not after:
+                continue
+            if not (self.ours(message) and message.get("files")):
+                break
+            self.delete_files(message)
+        try:
+            self.slack.chat_delete(channel=channel_id, ts=ts)
+        except Exception as exc:
+            if "message_not_found" not in str(exc):
+                raise
 
     def carry_topic_edit(self, topic_id: int) -> str:
         """A first post edited with its topic's title: the thread's parent."""
@@ -1411,6 +1561,8 @@ class Bridge:
         # It names no user of its own: who wrote the message is inside it.
         if event.get("subtype") == "message_changed":
             return self.handle_edit(event)
+        if event.get("subtype") == "message_deleted":
+            return self.handle_delete(event)
         if event.get("bot_id") or event.get("user") in (None, self.bot_user_id):
             return "not from a person"
         if event.get("channel_type") in ("im", "mpim"):
@@ -1497,6 +1649,33 @@ class Bridge:
                 return f"transient: {exc}"
             self.state.set_slack_raw(post_id, raw)
         return f"edited post {post_id} as {author}"
+
+    def handle_delete(self, event: dict) -> str:
+        """A message written in Slack, deleted there: its post is deleted as
+        its writer."""
+        message = event.get("previous_message") or {}
+        user = message.get("user")
+        if message.get("bot_id") or user in (None, self.bot_user_id):
+            return "not a deletion by a person"
+        channel_id = event.get("channel") or ""
+        with self.lock:
+            written = self.state.written_at(channel_id, message.get("ts") or event.get("deleted_ts") or "")
+            if written is None:
+                return "a deleted message that is not on the forum"
+            post_id = written[0]
+            try:
+                post = self.forum.post(post_id)
+                if gone(post):
+                    return f"post {post_id} is gone from the forum already"
+                author = post.get("username") or ""
+                self.forum.delete(post_id, as_user=author)
+            except Refused as exc:
+                if exc.status == 404:
+                    return f"post {post_id} is gone from the forum already"
+                reason = forum_error(exc)
+                self.ephemeral(channel_id, user, message.get("thread_ts"), f"The forum did not delete that post: {reason}")
+                return f"refused: {reason}"
+        return f"deleted post {post_id} as {author}"
 
     def slack_file(self, file: dict) -> bytes:
         """A Slack file's bytes, read with the bot token, which needs
@@ -1778,11 +1957,11 @@ def hook_handler(bridge: Bridge, secret: str) -> type[BaseHTTPRequestHandler]:
                 LOG.info("webhook ping accepted")
                 self._send(200, "pong")
                 return
-            kind = EDIT_EVENTS.get(event)
+            kind, key = HOOK_EVENTS.get(event, (None, None))
             item_id = None
             if kind:
                 try:
-                    item_id = int((json.loads(raw).get(kind) or {}).get("id"))
+                    item_id = int((json.loads(raw).get(key) or {}).get("id"))
                 except (ValueError, TypeError, AttributeError):
                     item_id = None
             if item_id is None:

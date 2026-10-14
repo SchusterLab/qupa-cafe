@@ -1,0 +1,9 @@
+// An image with a transparent background, such as a plot saved without one,
+// loses its dark lines on a dark theme, so every image in a post sits on
+// white: in the post, in the composer's preview and in the lightbox. The
+// files themselves are left as they were uploaded.
+.cooked img:not(.emoji):not(.avatar):not(.site-icon),
+.d-editor-preview img:not(.emoji):not(.avatar):not(.site-icon),
+.pswp__img {
+  background-color: #fff;
+}

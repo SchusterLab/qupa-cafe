@@ -124,12 +124,13 @@ BACKUP_SETTINGS = {"backup_frequency": "1", "maximum_backups": "7"}
 USERNAME_SETTINGS = {"max_username_length": "30"}
 
 THEME_COMPONENT_NAME = "Qupa Cafe front-end defaults"
-THEME_COMPONENT_SOURCES = {
-    "discourse/api-initializers/qupa-invite-defaults.js": "theme-invite-defaults.js",
-    "discourse/api-initializers/qupa-username-headroom.js": "theme-username-headroom.js",
-}
-THEME_TARGET_EXTRA_JS = "extra_js"
-THEME_TYPE_JS = 6
+# Each field of the component: its name, the file in config/ it holds, its
+# target and its type, as Discourse numbers them (ThemeField.types).
+THEME_COMPONENT_SOURCES = [
+    ("discourse/api-initializers/qupa-invite-defaults.js", "theme-invite-defaults.js", "extra_js", 6),
+    ("discourse/api-initializers/qupa-username-headroom.js", "theme-username-headroom.js", "extra_js", 6),
+    ("scss", "theme-image-background.scss", "common", 1),
+]
 
 # The onboarding message is the one welcome a researcher gets.
 ONBOARDING_SETTINGS = {"send_tl1_welcome_message": "false"}
@@ -176,14 +177,15 @@ PROVISION_HOOK = {
     "web_hook_event_type_ids": [304],
 }
 # post_edited (202) and topic_edited (103), a first post edited with its
-# title, to server/slack-bridge.py on the docker bridge, as JSON, signed with
+# title, and post_destroyed (203) and topic_destroyed (104), to
+# server/slack-bridge.py on the docker bridge, as JSON, signed with
 # BRIDGE_HOOK_SECRET. providers/slack/README.md.
 EDIT_HOOK = {
     "payload_url": "http://172.17.0.1:8092/",
     "content_type": 1,
     "wildcard_web_hook": False,
     "active": True,
-    "web_hook_event_type_ids": [103, 202],
+    "web_hook_event_type_ids": [103, 104, 202, 203],
 }
 # Discourse refuses a shorter secret.
 MIN_HOOK_SECRET_LENGTH = 12
@@ -609,12 +611,13 @@ def ensure_policy_links(api: Discourse, policy_id: int | None, category_ids: dic
 
 
 def ensure_theme_component(api: Discourse) -> None:
-    """One component, one script per front-end behaviour, attached to every theme.
-    A theme lives in the database, so it survives a rebuild."""
+    """One component, a script or a stylesheet per front-end behaviour,
+    attached to every theme. A theme lives in the database, so it survives a
+    rebuild."""
     print(f"\n== Theme component: {THEME_COMPONENT_NAME}")
 
     fields = []
-    for field_name, source_name in THEME_COMPONENT_SOURCES.items():
+    for field_name, source_name, target, type_id in THEME_COMPONENT_SOURCES:
         path = ROOT / "config" / source_name
         try:
             source = path.read_text(encoding="utf-8")
@@ -622,7 +625,7 @@ def ensure_theme_component(api: Discourse) -> None:
             print(f"   ERROR: cannot read {path}: {exc}", file=sys.stderr)
             FAILURES.append(f"theme component not installed: {exc}")
             return
-        fields.append({"name": field_name, "target": THEME_TARGET_EXTRA_JS, "value": source, "type_id": THEME_TYPE_JS})
+        fields.append({"name": field_name, "target": target, "value": source, "type_id": type_id})
 
     themes = api.get("/admin/themes.json").get("themes", [])
     existing = next((t for t in themes if t.get("name") == THEME_COMPONENT_NAME), None)
@@ -639,13 +642,13 @@ def ensure_theme_component(api: Discourse) -> None:
             print("   ERROR: created the component and cannot read it back", file=sys.stderr)
             FAILURES.append("theme component created but could not be read back")
             return
-        print(f"   created    component {existing['id']} with {len(fields)} script(s)")
+        print(f"   created    component {existing['id']} with {len(fields)} field(s)")
         attached = set()
     else:
         on_forum = {f.get("name"): f.get("value") for f in existing.get("theme_fields") or []}
         stale = [f for f in fields if on_forum.get(f["name"]) != f["value"]]
         if not stale:
-            print(f"   unchanged  component {existing['id']} carries this copy of {len(fields)} script(s)")
+            print(f"   unchanged  component {existing['id']} carries this copy of {len(fields)} field(s)")
         else:
             # Every field: a PUT carrying a subset drops the rest.
             api.put(f"/admin/themes/{existing['id']}.json", json_body={"theme": {"theme_fields": fields}})
@@ -773,8 +776,8 @@ def ensure_provision_hook(api: Discourse) -> None:
 
 
 def ensure_edit_hook(api: Discourse) -> None:
-    """The post_edited and topic_edited webhook, to the Slack bridge."""
-    ensure_webhook(api, "post_edited and topic_edited, to the Slack bridge", EDIT_HOOK, "BRIDGE_HOOK_SECRET",
+    """The webhook for edits and deletions, to the Slack bridge."""
+    ensure_webhook(api, "edits and deletions, to the Slack bridge", EDIT_HOOK, "BRIDGE_HOOK_SECRET",
                    "providers/slack/README.md")
 
 
