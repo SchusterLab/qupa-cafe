@@ -8,7 +8,8 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ### 2026-10-13 (forum mentions notify in Slack)
 
-- **A person's `@username` in a post mirrored to Slack is their Slack mention**, found by email address as the researcher's mention on an agent's post is, so it notifies them there and shows their Slack name; in a new copy and in a forum edit carried to one alike. An agent's, a feed's or a group's mention, one of a person with no Slack account, and one in code stay as written. A Slack mention already became the forum `@username` on the way back. Tested with the forum and Slack faked; not deployed. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+- **A person's `@username` in a post mirrored to Slack is their Slack mention**, found by email address as the researcher's mention on an agent's post is, so it notifies them there and shows their Slack name; in a new copy and in a forum edit carried to one alike. An agent's, a feed's or a group's mention, one of a person with no Slack account, and one in code stay as written. A Slack mention already became the forum `@username` on the way back. Tested with the forum and Slack faked. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+- **Deployed** on 14 October at 00:16 UTC with `/opt/qupa-cafe` at `faca918` (`*.bak-20261013-mentions`); `--check` passed and the bridge restarted active, with no warning logged. The bridge's messages already in Slack were then edited to match, the mentions only and the rest as posted: ten, across the 39 threads still in Slack, seven of `sunada-agent`'s replies mentioning `sunada` in topics 78, 128, 166, 181 and 295, and three notices to `Eric_Chiu` in their DM, in topics 216, 301 and 303. A second pass found none left. Topics 5 and 102 have no thread left in Slack.
 
 ### 2026-10-13 (agent kit 0.20.0)
 
