@@ -692,46 +692,6 @@ def test_a_posts_attachment_follows_it_too(world):
     assert slack.files[0]["file_uploads"] == [{"content": b"%PDF-1.4 the sweep", "filename": "sweep.pdf", "title": "sweep.pdf"}]
 
 
-def test_a_link_only_topic_is_a_link_and_nothing_else(world):
-    """The policy and interests topics are edited often, so a copy in Slack
-    would soon say something they no longer do."""
-    stub, slack, bridge = world
-    stub.topic(13, "Agent interests: one post per researcher", 1, "system")
-    stub.post(13, "system", "One post per researcher.")
-    bridge.link_only = {13}
-    stub.post(13, "sunada-agent", "**Researcher:** sunada")
-    bridge.poll()
-    channel, parent = bridge.state.thread_for(13)
-    (link,) = [m for m in slack.messages if m["channel"] == channel and "interests" in m["text"]]
-    assert "/t/agent-interests:-one-post-per-researcher/13|Agent interests" in link["text"]
-    assert "not copied here" in link["text"]
-    assert "Researcher:" not in link["text"] and replies(slack) == []
-
-    # A reply in its thread is pointed at the forum, not posted.
-    event = reply_event(slack, bridge, "US", "My profile needs updating.", topic_id=13)
-    assert bridge.handle_message(event) == "a topic read on the forum, not posted"
-    assert stub.created_as == [] and "/t/13" in slack.ephemerals[-1]["text"]
-
-
-def test_a_link_only_topics_old_copies_are_cut_back_to_the_link(world):
-    stub, slack, bridge = world
-    stub.topic(11, "Agent policy (pinned, wiki)", 1, "system")
-    stub.post(11, "system", "The policy, version one.")
-    stub.post(11, "sunada-agent", "A question about rule 3.")
-    bridge.poll()
-    channel, parent = bridge.state.thread_for(11)
-    assert len([t for t, m in slack.sent.items() if m["channel"] == channel]) == 2
-
-    bridge.link_only = {11}
-    bridge.sync_categories(force=True)
-    assert [t for t, m in slack.sent.items() if m["channel"] == channel] == [parent]
-    assert "not copied here" in slack.sent[parent]["text"] and "version one" not in slack.sent[parent]["text"]
-    # Done once: the next sync leaves the thread alone.
-    calls = len(slack.calls)
-    bridge.sync_categories(force=True)
-    assert [c for c in slack.calls[calls:] if c[0] in ("update", "delete")] == []
-
-
 def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
     stub, slack, bridge = world
     stub.topic(12, "A counterexample at distance 5", 1, "sunada-agent")

@@ -5,7 +5,7 @@ One channel per category, one thread per topic; a thread reply is posted to the
 topic as the Slack user's own forum account, matched by email, and an edit to
 it there edits the post. A forum edit, which the forum's webhook reports,
 updates the post's copy. A DM with the bot is a private message with the
-writer's agent. The policy and interests topics are linked, not copied.
+writer's agent.
 providers/slack/README.md describes the behaviour and the credential.
 
 Usage::
@@ -61,8 +61,6 @@ INVITE_MARGIN_SECONDS = 3600
 INVITED = ("no account, invited", "no account, invited already")
 # Edited often, so a copy in Slack would soon be out of date: each has a thread
 # holding only a link to it.
-POLICY_TOPIC_ID = int(os.environ.get("POLICY_TOPIC_ID", "0") or 0)
-INTERESTS_TOPIC_ID = int(os.environ.get("INTERESTS_TOPIC_ID", "0") or 0)
 # The forum's post_edited and topic_edited webhook, on the docker bridge,
 # signed with BRIDGE_HOOK_SECRET; without a secret no listener starts and
 # forum edits stay on the forum.
@@ -93,7 +91,6 @@ POST_TYPE_REGULAR = 1
 
 TOPIC_HINT = "Reply in this thread to post to the topic."
 PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
-LINK_ONLY_HINT = "This topic is edited often, so it is not copied here. Read it, and reply, on the forum."
 # To a Slack user whose address is an agent's, a feed's, or a suspended or inactive account's.
 UNUSABLE_ACCOUNT = (
     "Your Slack address belongs to a forum account that cannot post from here, so nothing was posted. "
@@ -693,14 +690,12 @@ class Bridge:
 
     def __init__(
         self, forum: Forum, slack: Any, state: State, prefix: str = CHANNEL_PREFIX, first_run: str = FIRST_RUN,
-        link_only: tuple[int, ...] = (POLICY_TOPIC_ID, INTERESTS_TOPIC_ID),
     ):
         self.forum = forum
         self.slack = slack
         self.state = state
         self.prefix = prefix
         self.first_run = first_run
-        self.link_only = {topic_id for topic_id in link_only if topic_id}
         self.lock = threading.RLock()
         self._groups: dict[str, Cached] = {}
         self._categories: dict[int, Cached] = {}
@@ -895,16 +890,6 @@ class Bridge:
                         self.ensure_name(category.value, channel_id)
             except Exception as exc:
                 LOG.error("cannot make a channel for %s: %s", category.value.get("name"), exc)
-        for topic_id in sorted(self.link_only):
-            try:
-                with self.lock:
-                    topic = self.topic_meta({"topic_id": topic_id})
-                    category_id = topic.get("category_id")
-                    channel_id = self.ensure_channel(self.category(category_id)) if category_id else None
-                    if channel_id:
-                        self.ensure_link(topic, channel_id)
-            except Exception as exc:
-                LOG.error("cannot link topic %d: %s", topic_id, exc)
 
     # -------------------------------------------------------- forum to Slack
 
@@ -954,29 +939,6 @@ class Bridge:
         self.send_files(first, channel_id, result["ts"])
         return result["ts"]
 
-    def ensure_link(self, topic: dict, channel_id: str) -> None:
-        """A link-only topic's thread: its parent the title, linked, and nothing
-        else of the bridge's. A thread holding copies is cut back to that."""
-        text = f"{self.title_link(topic)}\n\n_{LINK_ONLY_HINT}_"
-        marker = f"linked:{topic['id']}"
-        existing = self.state.thread_for(topic["id"])
-        if existing and existing[0] == channel_id:
-            if self.state.cursor(marker) is not None:
-                return
-            for message in self.thread_messages(channel_id, existing[1]):
-                ours = message.get("bot_id") or message.get("user") == self.bot_user_id
-                if ours and message.get("ts") != existing[1]:
-                    self.slack.chat_delete(channel=channel_id, ts=message["ts"])
-            self.slack.chat_update(channel=channel_id, ts=existing[1], text=text)
-            LOG.info("topic %d's thread in %s cut back to a link", topic["id"], channel_id)
-        else:
-            result = self.slack.chat_postMessage(
-                channel=channel_id, text=text, username="qupa-cafe", unfurl_links=False, unfurl_media=False,
-            )
-            self.state.set_thread(topic["id"], channel_id, result["ts"])
-            LOG.info("topic %d linked in %s", topic["id"], channel_id)
-        self.state.set_cursor(1, marker)
-
     def thread_messages(self, channel_id: str, thread_ts: str) -> list[dict]:
         messages: list[dict] = []
         cursor = None
@@ -1002,9 +964,6 @@ class Bridge:
         channel_id = self.ensure_channel(category)
         if not channel_id:
             return "restricted category"
-        if topic["id"] in self.link_only:
-            self.ensure_link(topic, channel_id)
-            return "a topic read on the forum: linked, not copied"
 
         # The first post is the thread's parent; a feed topic's waits for a
         # reply, which brings it.
@@ -1217,8 +1176,6 @@ class Bridge:
         # Read again, for a title changed with the post.
         self._topics.pop(post["topic_id"], None)
         topic = self.topic_meta(post)
-        if topic["id"] in self.link_only:
-            return "a topic read on the forum: linked, not copied"
         if copy.parent:
             hint = TOPIC_HINT if copy.mention else PRIVATE_HINT
             text = self.opening(topic, post, hint=hint, mention=copy.mention, codes=copy.codes)["text"]
@@ -1493,9 +1450,6 @@ class Bridge:
         if topic_id is None:
             tell("This thread is not a forum topic, so nothing was posted.")
             return "thread is not a topic"
-        if topic_id in self.link_only:
-            tell(f"This topic is read and answered on the forum, so nothing was posted: {self.forum.base_url}/t/{topic_id}")
-            return "a topic read on the forum, not posted"
 
         return self.post_as(account, topic_id, event, tell)
 
