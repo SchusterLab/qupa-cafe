@@ -52,7 +52,7 @@ jobs:
       # ranking server's tests, which run on the forum host, not on a
       # researcher's machine.
       - name: Install what the tests need
-        run: python -m pip install --quiet pytest "psycopg[binary]"
+        run: python -m pip install --quiet pytest "psycopg[binary]" "pillow>=10,<13"
 
       - name: Documentation rules
         run: python scripts/check-docs.py
