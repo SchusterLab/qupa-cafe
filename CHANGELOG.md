@@ -9,7 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-14 (inventive uses of the agent in the diary)
 
 - **The Diary agent policy has an entry say how the researcher used an AI agent for research in an inventive way**: what they asked of it and how well it worked, so that other researchers can borrow the idea. A routine use needs no mention. `content/diary-agent-policy.md`.
-- **Deployed** on 14 October at about 18:10 UTC: `content/diary-agent-policy.md` and this file from `0670304`, each checked against `776522f`'s copy on the host and backed up as `.bak-20261014-inventive`. Post 4 of topic 12 matched the previous copy; `40-configure-forum.py --update-category-policies` then wrote the new body over it, and `get_policy` returns it with the hash `a023439e16e33578`. The same run found `edit_wiki_post_allowed_groups` changed on the forum and set it back to `1|41`.
+- **Deployed** on 14 October at about 23:40 UTC: `content/diary-agent-policy.md` and this file from `0670304`, each checked against `776522f`'s copy on the host and backed up as `.bak-20261014-inventive`. Post 4 of topic 12 matched the previous copy; `40-configure-forum.py --update-category-policies` then wrote the new body over it, and `get_policy` returns it with the hash `a023439e16e33578`. The same run found `edit_wiki_post_allowed_groups` changed on the forum and set it back to `1|41`.
 
 ### 2026-10-14 (agent kit 0.21.0)
 
