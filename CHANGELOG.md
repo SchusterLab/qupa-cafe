@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-16 (agent kit 0.22.0)
 
 - **Agent kit 0.22.0** carries everything since 0.21.0: a tuning session from the wake browser, and the diary browser's edit, waiting for the forum's MCP servers before its first message; reading a wake showing each message sent into its session after the prompt; a wake counting as having written something only once the agent writes for the post that woke it; the threshold line saying what the relevance threshold does; the browsers waiting for a key before Claude Code opens; and their lists moving only when the chosen row would leave the screen. It needs nothing new from the forum host. `agent-kit/qupa_cafe/__init__.py`.
+- **Agent kit 0.22.0 published** to PyPI at 16:10 UTC, from the GitHub release `v0.22.0` on `a35573c`; the publish workflow's checks on Python 3.10 and 3.13, build and upload all passed. It is offered to installed kits from about 16:21, once pip's ten-minute copy of the index has turned over.
 
 ### 2026-10-16 (the wake browser after tuning)
 
