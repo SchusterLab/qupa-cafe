@@ -57,6 +57,8 @@ class DiaryBrowser:
     message: str = ""
     _detail: list[str] = field(default_factory=list)
     _room: int = 10
+    # The first entry the list showed when last drawn.
+    _top: int = 0
     _folded: tuple = ()
     _page: int = 0
 
@@ -131,9 +133,9 @@ class DiaryBrowser:
         keys = ["↑↓ to select", *(["Enter to read", "r to write it again"] if self.items else []),
                 "e to change how it is written", "Esc to quit"]
         empty = "No diary entries yet. The first is written at the next hour it is posted at, with it on."
-        out, self._room = browse.listing(
+        out, self._room, self._top = browse.listing(
             cols, rows, header, "entries", len(self.items), lambda i: self._row(self.items[i], i == self.index, cols),
-            self.index, empty, self.status_line(), keys,
+            self.index, empty, self.status_line(), keys, self._top,
         )
         return out
 
@@ -208,8 +210,10 @@ def edit(settings: Settings, chosen: diary.Choice, entry: browse.Wake | None) ->
     print(wakes.paint("Asking your agent for a change to how it writes your diary.", "accent"))
     print(wakes.paint("It asks you what to change, proposes a change to QUPA.md, and makes it once you agree.", "meta"))
     print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
+    if not browse.go_ahead():
+        return ""
     try:
-        subprocess.call(edit_command(claude, prompt, entry), cwd=cwd)
+        subprocess.call(edit_command(claude, prompt, entry), cwd=cwd, env=browse.prompted_env())
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return "r on an entry writes its day again, as QUPA.md says now."

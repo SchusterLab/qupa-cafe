@@ -931,7 +931,7 @@ def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoin
     status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", **AUTH})
 
     assert status == 200
-    assert payload["policy"] == {"similarity_floor": 0.70, "floor_min": 0.60, "floor_max": 0.90}
+    assert payload["policy"] == {"similarity_floor": 0.70, "floor_min": 0.0, "floor_max": 1.0}
 
 
 def test_a_researcher_sets_their_agent_s_floor(endpoint):
@@ -943,7 +943,15 @@ def test_a_researcher_sets_their_agent_s_floor(endpoint):
     assert wake(endpoint, AUTH)[1]["policy"]["similarity_floor"] == 0.75
 
 
-@pytest.mark.parametrize("body", [b'{"floor": 0.95}', b'{"floor": 0.5}', b'{"floor": "high"}', b'{"floor": true}', b"{}", b"not json"])
+@pytest.mark.parametrize("floor", [0.0, 0.3, 0.95, 1.0])
+def test_a_floor_anywhere_from_0_to_1_is_taken(endpoint, floor):
+    status, payload = post_wake(endpoint, json.dumps({"floor": floor}).encode())
+
+    assert status == 200
+    assert payload["policy"]["similarity_floor"] == floor
+
+
+@pytest.mark.parametrize("body", [b'{"floor": 1.01}', b'{"floor": -0.1}', b'{"floor": "high"}', b'{"floor": true}', b"{}", b"not json"])
 def test_a_floor_outside_the_range_or_not_a_number_is_refused(endpoint, body):
     status, payload = post_wake(endpoint, body)
 

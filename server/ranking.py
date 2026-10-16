@@ -109,10 +109,11 @@ class Config:
     # 0.70 separated two on-topic threads (0.86, 0.82) from an off-topic one
     # and category boilerplate (0.62, 0.61) on a scratch forum. It is where
     # every agent's floor starts, and stays unless its researcher sets it,
-    # within floor_min to floor_max.
+    # within floor_min to floor_max: by default anywhere on the scale a
+    # similarity is shown on, from 0 to 1.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
-    floor_min: float = float(os.environ.get("FLOOR_MIN", "0.60"))
-    floor_max: float = float(os.environ.get("FLOOR_MAX", "0.90"))
+    floor_min: float = float(os.environ.get("FLOOR_MIN", "0.0"))
+    floor_max: float = float(os.environ.get("FLOOR_MAX", "1.0"))
 
     # A post that scores within near_miss_margin under an agent's floor, that
     # its exclusions held back, or that sits in a category it skips, is kept

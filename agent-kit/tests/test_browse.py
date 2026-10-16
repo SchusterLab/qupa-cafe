@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -75,11 +77,12 @@ def test_the_title_is_a_cup_and_the_box_stays_square():
 
 def test_the_list_shows_each_wake_s_score_and_the_threshold():
     b = _browser(browse.Wake(_row(1, score=0.83), SAID), browse.Wake(_row(2), SAID), floor=0.72)
-    frame = b.frame(100, 20)
+    # As wide as the tray icon opens it, where the threshold's line fits.
+    frame = b.frame(120, 20)
     rows = [line for line in frame if "Topic" in line]
     assert "0.83" in rows[0] and "0.8" not in rows[1].split("Topic")[0]
     assert any("Relevance threshold 0.72" in line for line in frame)
-    assert any("+ raises it, - lowers it" in line for line in frame) and "+" not in frame[-1]
+    assert any("(+ raises, - lowers)" in line for line in frame) and "+" not in frame[-1]
 
 
 def test_plus_and_minus_ask_for_a_threshold_one_step_away_within_range():
@@ -342,6 +345,7 @@ def test_the_hint_follows_whether_the_session_is_attached(monkeypatch, capsys):
     are told; resumed, they are told how to come back to the list."""
     monkeypatch.setattr(browse.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(browse.subprocess, "call", lambda command, cwd=None: 0)
+    monkeypatch.setattr(browse, "read_key", lambda timeout=None: "enter")
 
     monkeypatch.setattr(browse, "ask_command", lambda row, claude: (["claude", "attach", "2bc6e6bc"], True))
     assert browse.ask(_row(5)) == ""
@@ -641,3 +645,54 @@ def test_elsewhere_than_windows_the_width_is_the_xterm_window_operation(monkeypa
     monkeypatch.setattr(browse.os, "name", "posix")
     browse.set_width(120)
     assert capsys.readouterr().out == "\x1b[8;;120t"
+
+
+def test_a_session_started_on_a_prompt_waits_for_the_forum_s_tools(monkeypatch):
+    """Claude Code would send the prompt before its MCP servers are up."""
+    monkeypatch.setenv("MCP_CONNECTION_NONBLOCKING", "1")
+    env = browse.prompted_env()
+    assert env["MCP_CONNECTION_NONBLOCKING"] == "0" and int(env["MCP_CONNECT_TIMEOUT_MS"]) >= 30000
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def test_claude_code_opens_only_after_a_key_and_esc_goes_back(monkeypatch, capsys):
+    """Claude Code clears the screen as it starts, so what is printed before it
+    waits for a key."""
+    monkeypatch.setattr(browse.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(browse, "ask_command", lambda row, claude: (["claude", "--resume", "s-1"], False))
+    ran = []
+    monkeypatch.setattr(browse.subprocess, "call", lambda command, **kw: ran.append(command) or 0)
+    if os.name != "nt":
+        monkeypatch.setattr("termios.tcgetattr", lambda fd: None)
+        monkeypatch.setattr("termios.tcsetattr", lambda fd, when, mode: None)
+        monkeypatch.setattr("tty.setcbreak", lambda fd: None)
+
+    monkeypatch.setattr(browse, "read_key", lambda timeout=None: "esc")
+    assert browse.ask(_row(5)) == "" and ran == []
+    assert "Press any key to open Claude Code" in capsys.readouterr().out
+
+    monkeypatch.setattr(browse, "read_key", lambda timeout=None: "x")
+    browse.ask(_row(5))
+    assert ran == [["claude", "--resume", "s-1"]]
+
+
+def test_the_list_stays_put_while_the_chosen_wake_is_on_screen():
+    """It moves only as far as it takes to show the chosen wake."""
+    b = _browser(*[browse.Wake(_row(i), SAID) for i in range(1, 41)])
+
+    def shown() -> list[int]:
+        return [int(n) for line in b.frame(120, 24) for n in re.findall(r"\(topic (\d+)\)", browse.visible(line))]
+
+    first = shown()
+    for _ in range(len(first) + 4):
+        b.handle("down")
+    scrolled = shown()
+    assert scrolled[-1] == b.items[b.index].row.topic_id and scrolled[0] != first[0]
+
+    # Up within the screen leaves every row where it was.
+    for _ in range(len(scrolled) - 1):
+        b.handle("up")
+        assert shown() == scrolled
+    # Up past the top moves the list by one row.
+    b.handle("up")
+    assert shown()[0] == b.items[b.index].row.topic_id and shown()[1:] == scrolled[:-1]

@@ -625,12 +625,17 @@ class Transcript:
     usage: Usage = field(default_factory=Usage)
 
 
-def read_transcript(path: Path) -> Transcript:
-    """The wake's prompt, what happened after it, and what it wrote."""
+def read_transcript(path: Path, topic_id: int | None = None) -> Transcript:
+    """The wake's prompt, what happened after it, and what it wrote for the
+    post on topic ``topic_id``, or what it wrote at all for None."""
     prompt = ""
     lines: list[str] = []
     wrote: list[str] = []
     names: dict[str, str] = {}
+    # Each call's arguments, for what its answer means.
+    inputs: dict[str, dict] = {}
+    # The post's topic, and the topics and private messages started for it.
+    ours = {topic_id}
     # Each call's line, so its dot can be coloured once its answer arrives.
     calls: dict[str, tuple[int, str]] = {}
     # Each model response's usage and model, by the response's id.
@@ -658,6 +663,11 @@ def read_transcript(path: Path) -> Transcript:
         if kind == "user" and isinstance(content, str):
             if not prompt:
                 prompt = content
+            elif said_by_researcher(record, content):
+                # A later message: a tuning prompt, or what the researcher
+                # typed into the session.
+                lines += prompt_lines(content, True)
+                lines.append("")
             continue
         if not isinstance(content, list):
             continue
@@ -676,6 +686,7 @@ def read_transcript(path: Path) -> Transcript:
             elif btype == "tool_use":
                 tool = short_name(block.get("name", "?"))
                 names[block.get("id", "")] = tool
+                inputs[block.get("id", "")] = dict(block.get("input") or {})
                 if tool in NOISE_TOOLS:
                     continue
                 arguments = dict(block.get("input") or {})
@@ -702,7 +713,7 @@ def read_transcript(path: Path) -> Transcript:
                     lines += policy_lines(text)
                 else:
                     lines += under(answer_lines(text), "result")
-                    if tool in WRITE_TOOLS:
+                    if tool in WRITE_TOOLS and (topic_id is None or answers(tool, inputs.get(tool_id, {}), text, ours)):
                         wrote.append(tool)
                 lines.append("")
 
@@ -713,6 +724,48 @@ def read_transcript(path: Path) -> Transcript:
     for subagent in sorted((path.with_suffix("") / "subagents").glob("*.jsonl")):
         responses.update(subagent_responses(subagent))
     return Transcript(prompt, lines, wrote, usage_of(responses))
+
+
+def said_by_researcher(record: dict, content: str) -> bool:
+    """Whether a message after the prompt is one somebody sent, rather than
+    Claude Code's own: a reminder, a summary made when it compacted the
+    session, or a slash command and its output, which it writes in tags."""
+    return not (record.get("isMeta") or record.get("isCompactSummary") or content.lstrip().startswith("<"))
+
+
+def answers(tool: str, arguments: dict, text: str, ours: set) -> bool:
+    """Whether a write is the wake's answer to its post: a reply in the post's
+    topic or in one ``ours`` holds, an edit of a post there, or a topic or
+    private message started for it, whose topic ``ours`` then takes. An edit
+    of a post elsewhere, such as the interests post, is not, nor is an upload
+    on its own."""
+    if tool in ("create_topic", "send_message"):
+        started = written_topic(text)
+        if started is not None:
+            ours.add(started)
+        return True
+    if tool in ("reply", "start_reply"):
+        try:
+            return int(arguments.get("topic_id") or 0) in ours
+        except (TypeError, ValueError):
+            return False
+    if tool == "edit_post":
+        return written_topic(text) in ours
+    return False
+
+
+def written_topic(text: str) -> int | None:
+    """The topic a write's answer names: the post's, the new topic's, or the
+    edited post's."""
+    try:
+        answer = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    result = answer.get("result") if isinstance(answer, dict) else None
+    if not isinstance(result, dict):
+        return None
+    post = result.get("post") if isinstance(result.get("post"), dict) else result
+    return post.get("topic_id") if isinstance(post.get("topic_id"), int) else None
 
 
 def forked_from(records: list[str]) -> int:
@@ -776,7 +829,7 @@ def outcome(row: Row, transcript: Transcript | None) -> tuple[str, str]:
 
 def transcript_for(row: Row) -> Transcript | None:
     path = transcript_path(row.session)
-    return read_transcript(path) if path is not None else None
+    return read_transcript(path, row.topic_id) if path is not None else None
 
 
 def render(row: Row, full_prompt: bool = True, transcript: Transcript | None = None) -> list[str]:
@@ -838,12 +891,14 @@ def daemon_line(state: Status) -> str:
 
 
 def floor_line(state: Status) -> str:
-    """The agent's similarity floor, and how a researcher changes it."""
+    """The agent's similarity floor, what it does, and how a researcher
+    changes it, in the 116 columns a box 120 wide holds; pressing past the
+    range the forum host allows says so."""
     if state.floor is None:
         return paint("○ ", "meta") + "Relevance threshold not known yet: the daemon has not heard it from the forum."
     return (
-        paint("○ ", "meta") + f"Relevance threshold {state.floor:.2f}"
-        + paint(f"  (from {state.floor_min:.2f} to {state.floor_max:.2f}; + raises it, - lowers it)", "meta")
+        paint("○ ", "meta") + f"Relevance threshold {state.floor:.2f}: how similar a post must be to your interests "
+        "to wake your agent" + paint("  (+ raises, - lowers)", "meta")
     )
 
 

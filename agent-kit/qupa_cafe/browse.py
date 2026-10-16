@@ -297,6 +297,9 @@ class Browser:
     _detail: list[str] = field(default_factory=list)
     # Rows the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
+    # The first row each list, of wakes or of near misses, showed when last
+    # drawn, so that it moves only when the chosen row would leave the screen.
+    _tops: dict[str, int] = field(default_factory=dict)
     # The wake's lines as last drawn, folded to the width, and the page they
     # were drawn in, which scrolling moves through.
     _folded: tuple = ()
@@ -426,8 +429,9 @@ class Browser:
         header = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE),
                                    arxiv_line()])
         other = "n for wakes" if self.showing_missed else "n for near misses"
-        out, self._room = listing(cols, rows, header, what, count, line, index, empty, self.status_line(),
-                                  [*keys, other, "Esc to quit"])
+        out, self._room, self._tops[what] = listing(cols, rows, header, what, count, line, index, empty,
+                                                    self.status_line(), [*keys, other, "Esc to quit"],
+                                                    self._tops.get(what, 0))
         return out
 
     def _list_frame(self, cols: int, rows: int) -> list[str]:
@@ -620,12 +624,15 @@ def hint_lines(keys: list[str], cols: int) -> list[str]:
 
 
 def listing(cols: int, rows: int, header: list[str], what: str, count: int, line, index: int, empty: str,
-            status: str, keys: list[str]) -> tuple[list[str], int]:
+            status: str, keys: list[str], top: int = 0) -> tuple[list[str], int, int]:
     """A list under ``header``, with the status line, or where the list is
     scrolled to, and the keys below it, every line within the width so that
     the screen never scrolls. ``line(i)`` draws the ``i``th, and only those
     on screen are drawn, so a long journal reads only the transcripts it
-    shows. Returns the lines and the rows the list had room for."""
+    shows. ``top`` is the first row shown when last drawn: the list stays
+    there while the chosen row is on screen, and moves only as far as it
+    takes to show it. Returns the lines, the rows the list had room for, and
+    the first row shown."""
     above = fold(status, cols) if status else [""]
     below = hint_lines(keys, cols)
     gone = fold(wakes.paint("  " + empty, "meta"), cols) if not count else []
@@ -636,13 +643,13 @@ def listing(cols: int, rows: int, header: list[str], what: str, count: int, line
         header = header[: max(spare - 1, 0)] + header[-1:] if spare >= 2 else []
     out = [*header, "", *gone]
     room = max(rows - len(out) - len(above) - len(below) - 1, 1)
-    top = min(max(index - room + 1, 0), max(count - room, 0))
+    top = min(max(min(top, index), index - room + 1, 0), max(count - room, 0))
     out += [fold(line(i), cols)[0] for i in range(top, min(top + room, count))]
     while len(out) < rows - len(above) - len(below):
         out.append("")
     if not status and count > room:
         above = [wakes.paint(f"  {what} {top + 1}-{min(top + room, count)} of {count}", "meta")]
-    return (out + above + below)[:rows], room
+    return (out + above + below)[:rows], room, top
 
 
 def folded_detail(browser, cols: int) -> list[str]:
@@ -718,6 +725,31 @@ def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
     return [claude, "--resume", row.session, *fork, *RESUME_MODE], False
 
 
+def go_ahead() -> bool:
+    """Hold what was printed before Claude Code opens until a key is pressed,
+    since Claude Code clears the screen as it starts. False for Esc, which
+    goes back to the list without opening it, and when no key can be read."""
+    print(wakes.paint("Press any key to open Claude Code, or Esc to go back to the list.", "accent"), end="", flush=True)
+    try:
+        if os.name == "nt":
+            key = read_key()
+        else:
+            import termios
+            import tty
+
+            # The browser's own mode is off while it is suspended.
+            saved = termios.tcgetattr(sys.stdin)
+            try:
+                tty.setcbreak(sys.stdin)
+                key = read_key()
+            finally:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, saved)
+    except (EOFError, OSError):
+        key = "esc"
+    print()
+    return key != "esc"
+
+
 def ask(row: wakes.Row) -> str:
     """Run Claude Code on the wake's session until its user leaves it.
     Returns a message for the list, or ``""``."""
@@ -735,6 +767,8 @@ def ask(row: wakes.Row) -> str:
         print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
     else:
         print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
+    if not go_ahead():
+        return ""
     try:
         subprocess.call(command, cwd=cwd)
     except OSError as exc:
@@ -894,6 +928,19 @@ def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     return [claude, prompt, *where, "--allowedTools", ",".join(CLAUDE_ALLOWED_TOOLS)]
 
 
+# Claude Code connects MCP servers in the background and sends a prompt given
+# on its command line at once, so a session started on one finds the forum's
+# tools missing until their servers are up, the discourse one started through
+# npx taking seconds. These make it wait for them first, for as long as it
+# gives a server to start.
+PROMPTED_ENV = {"MCP_CONNECTION_NONBLOCKING": "0", "MCP_CONNECT_TIMEOUT_MS": "30000"}
+
+
+def prompted_env() -> dict[str, str]:
+    """The environment of a Claude Code session started on a prompt."""
+    return {**os.environ, **PROMPTED_ENV}
+
+
 def tune(subject: Subject, want: str) -> str:
     """Run Claude Code on ``tune_prompt`` until its user leaves it. Returns a
     message for the list, or ``""``."""
@@ -910,8 +957,10 @@ def tune(subject: Subject, want: str) -> str:
         print(wakes.paint("It asks you what to change about its replies.", "meta"))
     print(wakes.paint("It proposes a change and makes it once you agree.", "meta"))
     print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
+    if not go_ahead():
+        return ""
     try:
-        subprocess.call(command, cwd=cwd)
+        subprocess.call(command, cwd=cwd, env=prompted_env())
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
     return "" if want == "wake" else "r on a wake wakes your agent again for its post, as QUPA.md says now."

@@ -229,7 +229,10 @@ def test_the_floor_is_read_from_the_journal(tmp_path):
 
     status = wakes.status(state)
     assert (status.floor, status.floor_min, status.floor_max) == (0.72, 0.6, 0.9)
-    assert "Relevance threshold 0.72" in wakes.floor_line(status)
+    line = wakes.floor_line(status)
+    assert "Relevance threshold 0.72: how similar a post must be to your interests to wake your agent" in line
+    # One line in a box 120 columns wide.
+    assert wakes.columns(browse.visible(line)) <= 116
 
 
 def test_a_daemon_is_stopped_after_three_missed_polls():
@@ -315,3 +318,73 @@ def test_the_parent_s_own_transcript_keeps_its_cost(tmp_path, claude_home):
     ]
     transcript = wakes.read_transcript(_transcript(claude_home, SESSION, records))
     assert daemon.PARENT_MARK in transcript.prompt and transcript.usage.cache_written == 13000
+
+
+def _edit(tool_use_id, post_id, topic_id):
+    """An edit_post call and its answer, of a post in ``topic_id``."""
+    call = _assistant({"type": "tool_use", "id": tool_use_id, "name": "mcp__qupa-cafe__edit_post",
+                       "input": {"post_id": post_id, "policy_ack": "abc", "raw": "New text."}})
+    answer = {"edited": True, "post_id": post_id, "result": {"post": {"id": post_id, "topic_id": topic_id}}}
+    return [call, _result(tool_use_id, json.dumps(answer))]
+
+
+TUNING = {"type": "user", "message": {"role": "user", "content": "Your researcher wants you to reply to posts like it."}}
+
+
+def test_a_later_prompt_is_shown_where_it_came(claude_home):
+    """A tuning prompt and what the researcher typed after it; not Claude
+    Code's own messages."""
+    records = WAKE[:6] + [
+        TUNING,
+        {"type": "user", "isMeta": True, "message": {"content": "Caveat: the messages below were generated"}},
+        {"type": "user", "message": {"content": "<command-name>/model</command-name>"}},
+        _assistant({"type": "text", "text": "I would change your interests post."}),
+        {"type": "user", "message": {"content": "Go ahead."}},
+    ]
+    transcript = wakes.read_transcript(_transcript(claude_home, SESSION, records), 59)
+    text = "\n".join(transcript.lines)
+    assert transcript.prompt.startswith("You were woken by a post.")
+    assert "> Your researcher wants you to reply to posts like it." in text
+    assert text.index("reply to posts like it") < text.index("I would change") < text.index("> Go ahead.")
+    assert "Caveat" not in text and "/model" not in text
+
+
+def test_an_edit_of_the_interests_post_is_not_an_answer(tmp_path, claude_home):
+    _transcript(claude_home, SESSION, WAKE[:6] + [TUNING] + _edit("e", 109, 13))
+    [row] = wakes.recent(_journal(tmp_path), 20)
+    text = "\n".join(wakes.render(row))
+    assert "wrote nothing" in text
+    # The edit is still shown.
+    assert "edit_post(" in text and "New text." in text
+
+
+def test_a_reply_after_tuning_is_the_answer(tmp_path, claude_home):
+    _transcript(claude_home, SESSION, WAKE[:6] + _edit("e", 109, 13) + WAKE[6:] + _edit("f", 120, 59))
+    [row] = wakes.recent(_journal(tmp_path), 20)
+    said, _ = wakes.outcome(row, wakes.transcript_for(row))
+    assert said == "wrote: reply, edit_post"
+
+
+def test_a_topic_started_for_the_post_and_a_reply_there_are_answers(tmp_path, claude_home):
+    started = {"posted": True, "result": {"id": 300, "topic_id": 77, "post_number": 1}}
+    records = WAKE[:6] + [
+        _assistant({"type": "tool_use", "id": "t", "name": "mcp__qupa-cafe__create_topic",
+                    "input": {"title": "Copy", "raw": "The paper.", "policy_ack": "abc"}}),
+        _result("t", json.dumps(started)),
+        _assistant({"type": "tool_use", "id": "r", "name": "mcp__qupa-cafe__reply",
+                    "input": {"topic_id": 77, "raw": "What it means for you.", "policy_ack": "abc"}}),
+        _result("r", json.dumps({"posted": True})),
+        _assistant({"type": "tool_use", "id": "x", "name": "mcp__qupa-cafe__reply",
+                    "input": {"topic_id": 5, "raw": "Elsewhere.", "policy_ack": "abc"}}),
+        _result("x", json.dumps({"posted": True})),
+    ]
+    _transcript(claude_home, SESSION, records)
+    [row] = wakes.recent(_journal(tmp_path), 20)
+    said, _ = wakes.outcome(row, wakes.transcript_for(row))
+    assert said == "wrote: create_topic, reply"
+
+
+def test_a_wake_without_a_topic_counts_every_write(tmp_path, claude_home):
+    _transcript(claude_home, SESSION, WAKE[:6] + _edit("e", 109, 13))
+    [row] = wakes.recent(_journal(tmp_path, topic_id=None, post_number=None, reason=daemon.diary.REASON + " today"), 20)
+    assert "wrote: edit_post" in "\n".join(wakes.render(row))
