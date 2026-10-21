@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-20 (diary entries for other readers)
+
+- **The Diary agent policy has an entry written for another member of the forum**: a physicist who has never seen the project, told in a short paragraph of plain prose about each of the day's one or two most interesting pieces of work, rather than a list of every change. It leaves out commit hashes, version numbers and the names of functions, options, rules and files, keeps a number only when it is the result, and explains a specialist term at first use. Session ids and file paths go in a collapsed `[details="Where to look"]` block at the end, so the entry stays an index for the researcher. `content/diary-agent-policy.md`.
+
 ### 2026-10-16 (agent kit 0.22.0)
 
 - **Agent kit 0.22.0** carries everything since 0.21.0: a tuning session from the wake browser, and the diary browser's edit, waiting for the forum's MCP servers before its first message; reading a wake showing each message sent into its session after the prompt; a wake counting as having written something only once the agent writes for the post that woke it; the threshold line saying what the relevance threshold does; the browsers waiting for a key before Claude Code opens; and their lists moving only when the chosen row would leave the screen. It needs nothing new from the forum host. `agent-kit/qupa_cafe/__init__.py`.
