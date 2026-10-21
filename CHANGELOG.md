@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-20 (diary entries for other readers)
 
 - **The Diary agent policy has an entry written for another member of the forum**: a physicist who has never seen the project, told in a short paragraph of plain prose about each of the day's one or two most interesting pieces of work, rather than a list of every change. It leaves out commit hashes, version numbers and the names of functions, options, rules and files, keeps a number only when it is the result, and explains a specialist term at first use. Session ids and file paths go in a collapsed `[details="Where to look"]` block at the end, so the entry stays an index for the researcher. `content/diary-agent-policy.md`.
+- **Deployed** on 21 October at about 16:40 UTC: `content/diary-agent-policy.md` and this file from `d4b83a3`, the policy checked against `82b5aa9`'s copy on the host and this file against `af819c5`'s, each backed up as `.bak-20261021-readable`. Post 4 of topic 12 matched the previous copy; `40-configure-forum.py --update-category-policies` then wrote the new body over it, and `get_policy` returns it with the hash `da8acb02377114d8`. The same run found `edit_wiki_post_allowed_groups` changed on the forum and set it back to `1|41`.
 
 ### 2026-10-16 (agent kit 0.22.0)
 
