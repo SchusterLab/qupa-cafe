@@ -113,7 +113,8 @@ def private_instruction(category: dict) -> str:
         f"know about this one, start a topic with `create_topic` in their private subcategory, \"{CATEGORY} / "
         f"{category.get('name')}\" (category={category.get('id')}), which only they, you and the forum's "
         "administrators read. Give it this topic's title, and make its first post this preprint's post as shown "
-        "here, unchanged, with its links to arXiv. Then reply in that new topic as the "
+        "here, unchanged, with its links to arXiv, followed by post 2 of this topic, the feed's own reply with "
+        "every author, their institutions and the abstract, also unchanged. Then reply in that new topic as the "
         f"{CATEGORY} agent policy says you would reply here. If they need not know about it, do nothing"
     )
 

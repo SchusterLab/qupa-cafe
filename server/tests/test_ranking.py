@@ -635,12 +635,13 @@ def test_the_feed_account_is_the_documented_one():
 
 
 def test_the_similarity_floor_sits_in_the_measured_gap():
-    """Measured on the scratch forum against a circuit-QED profile: on-topic
-    threads scored 0.862 and 0.822, off-topic and boilerplate 0.624 and 0.607.
-    The floor has to separate those two groups; see server/README.md."""
+    """Measured with bge-m3 against a circuit-QED profile: of a day's 65
+    preprints, the two on its subject scored 0.616 and 0.574, and the median
+    0.489. The floor has to let both through and hold back most of the day;
+    see server/README.md."""
     floor = Config().similarity_floor
 
-    assert 0.624 < floor < 0.822
+    assert 0.489 < floor <= 0.574
 
 
 def test_topics_are_what_gets_scored():
@@ -931,7 +932,7 @@ def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoin
     status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", **AUTH})
 
     assert status == 200
-    assert payload["policy"] == {"similarity_floor": 0.70, "floor_min": 0.0, "floor_max": 1.0}
+    assert payload["policy"] == {"similarity_floor": 0.55, "floor_min": 0.0, "floor_max": 1.0}
 
 
 def test_a_researcher_sets_their_agent_s_floor(endpoint):
@@ -1935,6 +1936,74 @@ def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):
 
     status, _ = post_wake(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
     assert status == 400
+
+
+def test_a_feeds_reply_is_never_scored(state, tmp_path):
+    """It carries the preprint's abstract, which the topic's first post is
+    scored by, so scoring it would wake an agent twice for one preprint."""
+    details = {**a_reply(5, "**Authors:** A, B\n\n**Abstract:** Magic."), "username": "arxiv-bot"}
+    later = a_reply(6, "Something else entirely.")
+    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [details, later])
+    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+
+    assert {d.post_id for d in ranker.pass_once()} == {6}
+    assert state.get_cursor() == 6
+
+
+def test_a_feed_topic_waits_until_its_embedding_covers_the_feeds_reply(state, tmp_path):
+    """Scored before, a preprint would be scored by its title and two
+    authors, without the abstract."""
+    topic = a_post(5, "arxiv-bot")
+    later = a_reply(6, "Something else entirely.")
+    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [topic, later])
+    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    embedded = []
+    ranker.reply_embedded = lambda post: post["id"] in embedded
+
+    assert ranker.pass_once() == []
+    assert state.get_cursor() == 0
+
+    embedded.append(5)
+    assert {d.post_id for d in ranker.pass_once()} == {5, 6}
+    assert state.get_cursor() == 6
+
+
+class RepliedRanker(Ranker):
+    """Answers reply_embedded's one query with when the reply and the
+    embedding were made."""
+
+    def __init__(self, config, replied, embedded):
+        self.config = config
+        self.row = (replied, embedded)
+
+    def _connect(self):
+        row = self.row
+
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def execute(self, sql, parameters): pass
+            def fetchone(self): return row
+
+        class Connection(Cursor):
+            def cursor(self): return Cursor()
+
+        return Connection()
+
+
+def test_a_feed_topic_is_scored_on_an_embedding_made_after_its_reply():
+    now = datetime.now(timezone.utc)
+    topic = {**a_post(5, "arxiv-bot"), "user_id": 3, "created_at": (now - timedelta(minutes=5)).replace(tzinfo=None)}
+    replied = (now - timedelta(minutes=5)).replace(tzinfo=None)
+
+    def embedded(**delta):
+        return RepliedRanker(Config(feed_reply_wait_minutes=20), replied, replied + timedelta(**delta)).reply_embedded(topic, now)
+
+    assert embedded(minutes=2)
+    assert not embedded(seconds=-1)
+    assert not RepliedRanker(Config(feed_reply_wait_minutes=20), None, replied).reply_embedded(topic, now)
+    # A reply the forum never took holds nothing past the wait.
+    assert RepliedRanker(Config(feed_reply_wait_minutes=20), None, None).reply_embedded(topic, now + timedelta(minutes=16))
 
 
 def test_the_notice_is_never_scored(state, tmp_path):

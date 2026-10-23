@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Post every preprint arXiv announces in quant-ph to the forum, one topic each.
 
-Run every ten minutes by qupa-arxiv-feed.timer. Each topic carries the paper's
-id as its ``external_id``, which the forum holds unique, so a repeated or
-interrupted run is refused on what it already posted; the state file only
-spares the forum those refusals. Before a build is posted, every earlier preprint topic
-nobody has replied to is deleted. docs/05-forum-config.md 5.10 has the account
-and its key.
+Run every ten minutes by qupa-arxiv-feed.timer. A topic names the first and
+last authors with their institutions, read from the paper's HTML version, and
+the feed's own reply under it gives every author with their institutions, and
+the abstract. A paper waits in the state file's queue for its HTML version for
+up to an hour, and is then posted without affiliations.
+
+Each topic carries the paper's id as its ``external_id``, which the forum holds
+unique, so a repeated or interrupted run is refused on what it already posted.
+When a build is taken in, every earlier preprint topic nobody has replied to is
+deleted. docs/05-forum-config.md 5.10 has the account and its key.
 
 Usage::
 
@@ -18,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import logging
 import os
@@ -29,8 +34,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from pathlib import Path
 
 LOG = logging.getLogger("arxiv-feed")
@@ -44,6 +50,13 @@ CATEGORY_ID = os.environ.get("ARXIV_CATEGORY_ID", "")
 CONTACT = os.environ.get("ARXIV_CONTACT", "")
 STATE_PATH = Path(os.environ.get("ARXIV_STATE", "/var/lib/qupa-arxiv-feed/state.json"))
 POST_INTERVAL = float(os.environ.get("ARXIV_POST_INTERVAL", "2"))
+# The paper's id is appended. One request every three seconds, as arXiv asks.
+HTML_URL = os.environ.get("ARXIV_HTML_URL", "https://arxiv.org/html/")
+HTML_INTERVAL = float(os.environ.get("ARXIV_HTML_INTERVAL", "3"))
+# How long a paper waits for its HTML version before it is posted without.
+HTML_WAIT = float(os.environ.get("ARXIV_HTML_WAIT", "3600"))
+# The author list is near the top; a page this long without one has none.
+HTML_READ_LIMIT = 8 * 1024 * 1024
 
 # `replace` and `replace-cross` are new versions of papers already posted.
 POSTED_TYPES = ("new", "cross")
@@ -51,13 +64,13 @@ POSTED_TYPES = ("new", "cross")
 # Discourse's max_topic_title_length, which this forum leaves at its default.
 MAX_TITLE_LENGTH = 255
 
-# Keeps a collaboration paper under max_post_length.
-MAX_AUTHORS = 25
+# The forum's max_post_length (scripts/40-configure-forum.py), which the
+# feed's reply fits by shortening affiliations and then cutting authors.
+MAX_POST_LENGTH = 3800
 
-TEMPLATE_PATH = Path(
-    os.environ.get("ARXIV_TEMPLATE")
-    or Path(__file__).resolve().parent.parent / "content" / "arxiv-topic.md"
-)
+CONTENT = Path(__file__).resolve().parent.parent / "content"
+TEMPLATE_PATH = Path(os.environ.get("ARXIV_TEMPLATE") or CONTENT / "arxiv-topic.md")
+DETAILS_TEMPLATE_PATH = Path(os.environ.get("ARXIV_DETAILS_TEMPLATE") or CONTENT / "arxiv-details.md")
 
 NS = {
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -77,6 +90,8 @@ class Paper:
     announce_type: str
     primary_category: str
     announced: str
+    # What arXiv's metadata gives in parentheses after a name, or "".
+    listed_affiliations: list[str] = field(default_factory=list)
 
     @property
     def external_id(self) -> str:
@@ -90,6 +105,10 @@ class Paper:
     @property
     def pdf_url(self) -> str:
         return f"https://arxiv.org/pdf/{self.arxiv_id}"
+
+    @property
+    def html_url(self) -> str:
+        return HTML_URL + self.arxiv_id
 
 
 # TeX accent commands as they appear in arXiv author names, mapped to the
@@ -126,6 +145,21 @@ def squash(text: str | None) -> str:
     return " ".join((text or "").split())
 
 
+def split_creators(text: str) -> list[tuple[str, str]]:
+    """(name, affiliation) for each comma-separated author, the affiliation
+    being what follows the name in parentheses, whose commas do not split."""
+    creators, depth, start = [], 0, 0
+    for n, char in enumerate(text + ","):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if char == "," and depth <= 0:
+            part, start, depth = squash(text[start:n]), n + 1, 0
+            if match := re.fullmatch(r"(.*?)\s*\((.*)\)", part):
+                creators.append((squash(match.group(1)), squash(match.group(2))))
+            elif part:
+                creators.append((part, ""))
+    return [(name, affiliation) for name, affiliation in creators if name]
+
+
 def parse_feed(xml_text: str) -> tuple[str, list[Paper]]:
     """The feed's build stamp, and every posted-type paper in it, in feed order."""
     channel = ET.fromstring(xml_text).find("channel")
@@ -156,24 +190,244 @@ def parse_feed(xml_text: str) -> tuple[str, list[Paper]]:
         except (TypeError, ValueError):
             announced = pub_date
 
-        authors = [
-            name for name in (squash(detex(n)) for n in re.split(r",\s*", item.findtext("dc:creator", namespaces=NS) or ""))
-            if name
-        ]
+        creators = split_creators(detex(item.findtext("dc:creator", namespaces=NS) or ""))
 
         papers.append(
             Paper(
                 arxiv_id=match.group(1),
                 title=squash(item.findtext("title")),
-                authors=authors,
+                authors=[name for name, _ in creators],
                 abstract=squash(abstract if found else description),
                 announce_type=announce_type,
                 primary_category=categories[0] if categories else "quant-ph",
                 announced=announced,
+                listed_affiliations=[affiliation for _, affiliation in creators],
             )
         )
 
     return build, papers
+
+
+# ---------------------------------------------------------------- affiliations
+
+
+# Around a superscript in an author's name or affiliation, which may be the
+# number that ties the two together.
+MARK_OPEN, MARK_CLOSE = "\x01", "\x02"
+MARK = re.compile(f"{MARK_OPEN}([^{MARK_CLOSE}]*){MARK_CLOSE}")
+
+
+class AuthorList(HTMLParser):
+    """The authors LaTeXML lists in ``ltx_authors`` at the top of an arXiv HTML
+    page: each one's name, and the text of each affiliation or address given
+    for them, with superscripts marked. Footnotes, emails, labels and
+    mathematics are left out."""
+
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        # (tag, role) for every open element; role is what its text is for.
+        self.open: list[tuple[str, str | None]] = []
+        self.authors: list[dict] = []
+        self.started = self.done = False
+
+    def _append(self, roles, text: str) -> None:
+        if "contact" in roles:
+            self.authors[-1]["contacts"][-1] += text
+        elif "name" in roles:
+            self.authors[-1]["name"] += text
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if self.done:
+            return
+        roles = {role for _, role in self.open}
+        if tag in self.VOID:
+            if tag == "br" and "skip" not in roles:
+                self._append(roles, "\n")
+            return
+
+        classes = set((dict(attrs).get("class") or "").split())
+        role = None
+        if "ltx_authors" in classes and not self.started:
+            role, self.started = "authors", True
+        elif "authors" not in roles or "skip" in roles:
+            role = None
+        elif tag in ("math", "svg") or classes & {"ltx_note", "ltx_contact_name"}:
+            role = "skip"
+        elif tag == "sup" and roles & {"name", "contact"}:
+            role = "mark"
+            self._append(roles, MARK_OPEN)
+        elif {"ltx_creator", "ltx_role_author"} <= classes:
+            role = "creator"
+            self.authors.append({"name": "", "contacts": []})
+        elif "ltx_personname" in classes and "creator" in roles:
+            role = "name"
+        elif "ltx_contact" in classes and "creator" in roles:
+            if classes & {"ltx_role_affiliation", "ltx_role_address"}:
+                role = "contact"
+                self.authors[-1]["contacts"].append("")
+            else:
+                role = "skip"
+        self.open.append((tag, role))
+
+    def handle_endtag(self, tag: str) -> None:
+        for depth in range(len(self.open) - 1, -1, -1):
+            if self.open[depth][0] == tag:
+                closed = [role for _, role in self.open[depth:]]
+                del self.open[depth:]
+                if "mark" in closed and "skip" not in {role for _, role in self.open}:
+                    self._append({role for _, role in self.open}, MARK_CLOSE)
+                if "authors" in closed:
+                    self.done = True
+                return
+
+    def handle_data(self, data: str) -> None:
+        roles = {role for _, role in self.open}
+        if not self.done and "authors" in roles and "skip" not in roles:
+            self._append(roles, data)
+
+
+def clean_affiliation(text: str) -> str:
+    """One line, as the paper gives it, without a closing full stop or the
+    email addresses some papers put after it."""
+    text = re.sub(r"\s*,?\s*\n\s*", ", ", MARK.sub("", text).strip())
+    text = re.split(r"\b(?:e-?mails?|correspond\w*)\s*:", text, flags=re.I)[0]
+    return squash(text).strip(" ,;.")
+
+
+def is_email(text: str) -> bool:
+    return all("@" in part for part in re.split(r"[,;\s]+", text) if part)
+
+
+def page_authors(html_text: str) -> list[tuple[str, list[str]]]:
+    """(name, affiliations) for each author an HTML page lists, in order, the
+    superscripts still marked."""
+    parser = AuthorList()
+    parser.feed(html_text)
+    return [(author["name"], author["contacts"]) for author in parser.authors]
+
+
+def numbered(name: str, contacts: list[str]) -> list[list[str]]:
+    """Each author's affiliations when one name block lists every author:
+    with superscript numbers, which start the affiliations they stand for, or
+    with none, when every author shares every affiliation."""
+    if not MARK.search(name):
+        names = [n for n in re.split(r",|\band\b", squash(name)) if n.strip()]
+        return [[clean_affiliation(c) for c in contacts] for _ in names]
+
+    by_number = {}
+    for contact in contacts:
+        if match := re.match(f"\\s*{MARK.pattern}", contact):
+            by_number[match.group(1).strip()] = clean_affiliation(contact)
+
+    authors: list[list[str]] = []
+    pending = ""
+    for token in re.split(f"({MARK_OPEN}[^{MARK_CLOSE}]*{MARK_CLOSE})", name):
+        if token.startswith(MARK_OPEN):
+            if pending:
+                authors.append([])
+                pending = ""
+            if authors:
+                authors[-1] += [by_number[n] for n in re.split(r"[,\s]+", MARK.sub(r"\1", token))
+                                if n in by_number and by_number[n] not in authors[-1]]
+        else:
+            pending = re.sub(r"^(\s*(,|and\b))+", "", squash(token)).strip(" ,;")
+    if pending:
+        authors.append([])
+    return authors
+
+
+def affiliations(paper: Paper, html_text: str | None) -> list[list[str]] | None:
+    """Each of the paper's authors' affiliations, in the feed's order: from
+    the HTML page, or, where it gives none, from arXiv's metadata. None when
+    neither has any."""
+    found = html_affiliations(paper, html_text) if html_text is not None else None
+    if found is None and any(paper.listed_affiliations):
+        found = [[a] if a else [] for a in paper.listed_affiliations]
+    return found
+
+
+def html_affiliations(paper: Paper, html_text: str) -> list[list[str]] | None:
+    """The affiliations an HTML page gives the paper's authors, or None when
+    it gives none or lists its authors in a way that leaves no telling whose
+    an affiliation is."""
+    listed = page_authors(html_text)
+    if len(listed) == len(paper.authors):
+        affs = [[clean_affiliation(c) for c in contacts] for _, contacts in listed]
+    elif len(listed) == 1 and len(paper.authors) > 1:
+        affs = numbered(*listed[0])
+        if len(affs) != len(paper.authors):
+            return None
+    else:
+        return None
+    affs = [[a for a in own if a and not is_email(a)] for own in affs]
+    return affs if any(affs) else None
+
+
+# A part of an affiliation that names where somebody works, best first. A
+# subunit, such as a department, is a last resort before any other part.
+INSTITUTION_TIERS = [
+    re.compile(r"\b(univ|college|polytechn|politecnic|école|ecole|hochschule|technion)|institute of technology", re.I),
+    re.compile(r"\b(academ|national laborator|inc\b|ltd\b|llc\b|gmbh\b|corporation\b)", re.I),
+    re.compile(r"\b(institut|istituto|research\b|technologies\b)", re.I),
+    re.compile(r"\b(laborat|labs?\b|cent(er|re)\b|centro\b|observatory|cnrs\b|agency\b|foundation\b|national\b)", re.I),
+]
+# From this tier on, an institution may be the site of an organisation.
+SITE_TIER = 2
+# A word that marks a part of an institution wherever it comes in a name.
+SUBUNIT_WORD = re.compile(
+    r"\b(department|departament|dept|school|faculty|division|group|program|chair|section|unit|team|cluster|campus|college)",
+    re.I,
+)
+# A street address or postcode, which no institution's name has.
+ADDRESS = re.compile(r"^\d|\d{3,}|@")
+SUBUNIT = re.compile(
+    r"^(the\s+)?(department|dept\b|school|faculty|division|group|program|chair|section|unit|team|(\S+\s+)?college\s+of\b)",
+    re.I,
+)
+ROLE_PREFIX = re.compile(
+    r"^(?:(?:current|present|permanent|new)\s+(?:affiliation|address)|also\s+(?:at|with)|on\s+leave\s+from|now\s+at)\b\s*:?\s*",
+    re.I,
+)
+# A name that is one campus of many, which the next part names.
+SYSTEM = re.compile(r"^(the\s+)?university\s+of\s+(california|wisconsin)$", re.I)
+
+
+def institution(affiliation: str) -> str:
+    """The institution an affiliation names, such as "University of Ottawa"
+    for "Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada"."""
+    parts = [p.strip(" .") for p in re.split(r"[,;]", ROLE_PREFIX.sub("", affiliation))]
+    parts = [p[1:-1].strip() if p.startswith("(") and p.endswith(")") else p for p in parts if p]
+    if not parts:
+        return affiliation
+    def plain(p: str) -> bool:
+        return not SUBUNIT.match(p) and not ADDRESS.search(p)
+
+    found = None
+    for rank, tier in enumerate(INSTITUTION_TIERS):
+        found = next((n for n, p in enumerate(parts) if tier.search(p) and plain(p)), None)
+        if found is not None:
+            break
+    if found is None:
+        found = next((n for n, p in enumerate(parts) if plain(p)), 0)
+    # An institute, laboratory or centre is often one site of an
+    # organisation named just before it in words no tier has, such as "IBM
+    # Quantum" before "T. J. Watson Research Center", which is named instead.
+    elif rank >= SITE_TIER and found > 0:
+        before = parts[found - 1]
+        if (plain(before) and before[:1].isupper() and not SUBUNIT_WORD.search(before)
+                and not any(t.search(before) for t in INSTITUTION_TIERS)):
+            found -= 1
+    name = parts[found]
+    if SYSTEM.match(name) and found + 1 < len(parts) and not ADDRESS.search(parts[found + 1]):
+        name += ", " + parts[found + 1]
+    return name
+
+
+def institutions(affs: list[str]) -> list[str]:
+    """The distinct institutions of one author, in order."""
+    return list(dict.fromkeys(institution(a) for a in affs))
 
 
 # ---------------------------------------------------------------------- a topic
@@ -191,27 +445,86 @@ def topic_title(paper: Paper) -> str:
 TITLE_ID = re.compile(r"\(arXiv:([^()\s]+)\)$")
 
 
-def topic_body(paper: Paper, template: str) -> str:
-    """Fill the template in one pass, so a placeholder-like abstract is copied."""
-    authors = paper.authors[:MAX_AUTHORS]
-    names = ", ".join(authors)
-    if len(paper.authors) > MAX_AUTHORS:
-        names += f", and {len(paper.authors) - MAX_AUTHORS} more"
+def fill(template: str, values: dict[str, str]) -> str:
+    """Fill a template in one pass, so a placeholder-like abstract is copied.
+    A placeholder filled with nothing leaves no run of blank lines."""
+    filled = re.sub(r"%([A-Z_]+)%", lambda m: values.get(m.group(1), m.group(0)), template)
+    return re.sub(r"\n{3,}", "\n\n", filled).strip()
+
+
+def topic_body(paper: Paper, template: str, affs: list[list[str]] | None = None) -> str:
+    """The topic's first post: the first and last authors, each with their
+    institutions when ``affs`` gives them, how many authors come between, and
+    where and when it was announced."""
+    def named(n: int) -> str:
+        where = institutions(affs[n]) if affs else []
+        return f"**{paper.authors[n]}**" + (f" ({'; '.join(where)})" if where else "")
+
+    count = len(paper.authors)
+    if count == 0:
+        names = "**Authors not listed**"
+    elif count == 1:
+        names = named(0)
+    elif count == 2:
+        names = f"{named(0)} and {named(1)}"
+    else:
+        between = count - 2
+        others = f"{between} other author" + ("s" if between > 1 else "")
+        names = f"{named(0)}, {others}, and {named(count - 1)}"
 
     if paper.announce_type == "cross":
         announcement = f"Cross-listed to quant-ph from {paper.primary_category} on {paper.announced}"
     else:
         announcement = f"Announced in {paper.primary_category} on {paper.announced}"
 
-    values = {
-        "AUTHORS": names or "Authors not listed",
-        "ABSTRACT": paper.abstract,
+    return fill(template, {
+        "AUTHORS": names,
         "ANNOUNCEMENT": announcement,
         "ARXIV_ID": paper.arxiv_id,
         "ABS_URL": paper.abs_url,
         "PDF_URL": paper.pdf_url,
-    }
-    return re.sub(r"%([A-Z_]+)%", lambda m: values.get(m.group(1), m.group(0)), template).strip()
+    })
+
+
+SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) -> tuple[str, str]:
+    """The author list and the numbered affiliations its superscripts point
+    to. Authors who share one set of affiliations have no numbers."""
+    if not affs or all(a == affs[0] for a in affs):
+        names = ", ".join(authors)
+        listed = "; ".join(affs[0]) if affs and affs[0] else ""
+    else:
+        numbers: dict[str, int] = {}
+        marked = []
+        for name, own in zip(authors, affs):
+            marks = [str(numbers.setdefault(a, len(numbers) + 1)) for a in own]
+            marked.append(name + ",".join(marks).translate(SUPERSCRIPT))
+        names = ", ".join(marked)
+        listed = "\n".join(f"{n}. {a}" for a, n in numbers.items())
+    if more:
+        names += f", and {more} more"
+    return names, listed
+
+
+def details_body(paper: Paper, template: str, affs: list[list[str]] | None) -> str:
+    """The feed's reply: every author with their institutions, and the
+    abstract. Over ``MAX_POST_LENGTH``, the authors are cut, saying how many."""
+    def body(shown: int) -> str:
+        own = None if affs is None else [institutions(a) for a in affs[:shown]]
+        names, listed = author_lines(paper.authors[:shown], own, len(paper.authors) - shown)
+        return fill(template, {
+            "AUTHORS": names or "Authors not listed",
+            "AFFILIATIONS": listed,
+            "ABSTRACT": paper.abstract,
+        })
+
+    count = len(paper.authors)
+    shown = count
+    while shown > 1 and len(body(shown)) > MAX_POST_LENGTH:
+        shown -= 1
+    return body(shown)
 
 
 # ---------------------------------------------------------------------- the forum
@@ -256,12 +569,19 @@ class Forum:
                 raise Transient(f"{method} {path} failed: {exc.reason}") from exc
         raise Transient(f"{method} {path} -> gave up after five attempts")
 
-    def topic_exists(self, external_id: str) -> bool:
+    def find_topic(self, external_id: str) -> dict | None:
+        """The topic with this external id, with its first posts, or None."""
         try:
-            self._request("GET", f"/t/external_id/{urllib.parse.quote(external_id)}.json")
-            return True
+            return self._request("GET", f"/t/external_id/{urllib.parse.quote(external_id)}.json")
         except RuntimeError:
-            return False
+            return None
+
+    def has_details(self, topic: dict) -> bool:
+        """Whether the feed's reply is among the topic's posts."""
+        return any(
+            post.get("post_number", 1) > 1 and post.get("username") == self.username
+            for post in (topic.get("post_stream") or {}).get("posts") or []
+        )
 
     def category_topics(self, category: str) -> list[dict]:
         """Every topic the category's page lists, read in full before any change."""
@@ -276,22 +596,26 @@ class Forum:
     def delete_topic(self, topic_id: int) -> None:
         self._request("DELETE", f"/t/{topic_id}.json")
 
-    def create_topic(self, title: str, raw: str, category: str, external_id: str) -> str:
-        """Open one topic. Returns "created" or "exists"; raises on anything else."""
+    def create_topic(self, title: str, raw: str, category: str, external_id: str) -> tuple[str, dict]:
+        """Open one topic. Returns "created" or "exists" with the topic, which
+        for "exists" has its first posts; raises on anything else."""
         try:
-            self._request(
+            post = self._request(
                 "POST",
                 "/posts.json",
                 {"title": title, "raw": raw, "category": category, "external_id": external_id},
             )
-            return "created"
+            return "created", {"id": post.get("topic_id")}
         except Transient:
             raise
         except RuntimeError:
             # A refusal is a duplicate if the topic is there.
-            if self.topic_exists(external_id):
-                return "exists"
+            if (topic := self.find_topic(external_id)) is not None:
+                return "exists", topic
             raise
+
+    def reply(self, topic_id: int, raw: str) -> None:
+        self._request("POST", "/posts.json", {"topic_id": topic_id, "raw": raw})
 
 
 # ---------------------------------------------------------------------- one run
@@ -314,11 +638,15 @@ def save_state(path: Path, state: dict) -> None:
     tmp.replace(path)
 
 
+def user_agent() -> str:
+    contact = f"; mailto:{CONTACT}" if CONTACT else ""
+    return f"qupa-cafe-arxiv-feed (+{FORUM_URL}{contact})"
+
+
 def fetch_feed(url: str, state: dict) -> tuple[str | None, dict]:
     """The feed's text, or None if a conditional request says it is unchanged."""
     req = urllib.request.Request(url)
-    contact = f"; mailto:{CONTACT}" if CONTACT else ""
-    req.add_header("User-Agent", f"qupa-cafe-arxiv-feed (+{FORUM_URL}{contact})")
+    req.add_header("User-Agent", user_agent())
     if state.get("etag"):
         req.add_header("If-None-Match", state["etag"])
     if state.get("last_modified"):
@@ -337,15 +665,42 @@ def fetch_feed(url: str, state: dict) -> tuple[str | None, dict]:
         raise
 
 
-def unreplied_preprints(topics: list[dict], keep: set[str]) -> list[dict]:
-    """The feed's topics that are only their first post, minus the ids in
-    ``keep``. A pinned topic, or one without the id in its title, is not the
-    feed's."""
+def fetch_html(url: str) -> str | None:
+    """A paper's HTML version as far as the end of its author list, or None
+    while arXiv has none to serve."""
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", user_agent())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            parser, chunks, read = AuthorList(), [], 0
+            while not parser.done and read < HTML_READ_LIMIT:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                read += len(chunk)
+                chunks.append(decoder.decode(chunk))
+                parser.feed(chunks[-1])
+            return "".join(chunks)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            LOG.warning("%s -> %s; trying again at the next run", url, exc.code)
+        return None
+    except (urllib.error.URLError, OSError) as exc:
+        LOG.warning("could not fetch %s: %s; trying again at the next run", url, exc)
+        return None
+
+
+def unreplied_preprints(topics: list[dict], keep: set[str], feed: str) -> list[dict]:
+    """The feed's topics that nobody but ``feed`` has posted in, minus the ids
+    in ``keep``. A pinned topic, or one without the id in its title, is not
+    the feed's."""
     return [
         topic for topic in topics
         if (match := TITLE_ID.search(topic.get("title", "")))
         and match.group(1) not in keep
-        and topic.get("posts_count") == 1
+        and (topic.get("posts_count") == 1
+             or (topic.get("posts_count") == 2 and topic.get("last_poster_username") == feed))
         and not topic.get("pinned")
     ]
 
@@ -353,7 +708,9 @@ def unreplied_preprints(topics: list[dict], keep: set[str]) -> list[dict]:
 def prune(forum: Forum, category: str, papers: list[Paper], dry_run: bool) -> tuple[int, int]:
     """Delete the category's unreplied preprints, except this build's own, so
     a resumed build keeps what it already posted. Returns (deleted, refused)."""
-    candidates = unreplied_preprints(forum.category_topics(category), {p.arxiv_id for p in papers})
+    candidates = unreplied_preprints(
+        forum.category_topics(category), {p.arxiv_id for p in papers}, forum.username
+    )
     deleted = refused = 0
 
     for topic in candidates:
@@ -376,30 +733,52 @@ def prune(forum: Forum, category: str, papers: list[Paper], dry_run: bool) -> tu
     return deleted, refused
 
 
-def post_papers(forum: Forum | None, papers: list[Paper], template: str, category: str) -> dict[str, int]:
-    """Open a topic per paper, or print them with ``forum=None``. A refused
-    paper is logged and passed over; a transient failure stops the run."""
-    counts = {"created": 0, "exists": 0, "refused": 0}
+def post_paper(forum: Forum | None, paper: Paper, affs: list[list[str]] | None,
+               templates: tuple[str, str], category: str) -> str:
+    """Open the paper's topic and post the feed's reply in it at once, so the
+    topic is embedded with both. Prints them with ``forum=None``. Returns
+    "created", "exists" or "refused"; a transient failure is raised, and the
+    next run posts what is missing."""
+    title = topic_title(paper)
+    raw, details = topic_body(paper, templates[0], affs), details_body(paper, templates[1], affs)
+    if forum is None:
+        print(f"--- {paper.external_id}\n{title}\n\n{raw}\n\n--- reply\n{details}\n")
+        return "created"
 
-    for paper in papers:
-        title, raw = topic_title(paper), topic_body(paper, template)
-        if forum is None:
-            print(f"--- {paper.external_id}\n{title}\n\n{raw}\n")
-            counts["created"] += 1
+    try:
+        outcome, topic = forum.create_topic(title, raw, category, paper.external_id)
+        if outcome == "created" or not forum.has_details(topic):
+            forum.reply(topic["id"], details)
+    except Transient:
+        raise
+    except RuntimeError as exc:
+        LOG.error("refused %s: %s", paper.arxiv_id, exc)
+        return "refused"
+    return outcome
+
+
+def post_queue(forum: Forum | None, queue: list[dict], templates: tuple[str, str], category: str,
+               save, dry_run: bool) -> dict[str, int]:
+    """Post each queued paper whose HTML version is up, or that has waited
+    ``HTML_WAIT`` for it, taking it off the queue and saving. A dry run
+    waits for nothing. A refused paper is logged and passed over; a
+    transient failure stops the run."""
+    counts = {"created": 0, "exists": 0, "refused": 0, "waiting": 0}
+
+    for entry in list(queue):
+        paper = Paper(**entry["paper"])
+        html = fetch_html(paper.html_url)
+        time.sleep(HTML_INTERVAL)
+        if html is None and time.time() - entry["since"] < HTML_WAIT and not dry_run:
+            counts["waiting"] += 1
             continue
 
-        try:
-            outcome = forum.create_topic(title, raw, category, paper.external_id)
-        except Transient:
-            raise
-        except RuntimeError as exc:
-            LOG.error("refused %s: %s", paper.arxiv_id, exc)
-            counts["refused"] += 1
-            continue
-
+        outcome = post_paper(forum, paper, affiliations(paper, html), templates, category)
+        queue.remove(entry)
+        save()
         counts[outcome] += 1
-        if outcome == "created":
-            LOG.info("posted %s", paper.arxiv_id)
+        if outcome == "created" and forum is not None:
+            LOG.info("posted %s%s", paper.arxiv_id, "" if html else ", with no HTML version")
             time.sleep(POST_INTERVAL)
 
     return counts
@@ -412,44 +791,55 @@ def run(feed_file: str | None, dry_run: bool) -> int:
         xml_text, validators = Path(feed_file).read_text(encoding="utf-8"), {}
     else:
         xml_text, validators = fetch_feed(FEED_URL, state)
-        if xml_text is None:
-            LOG.info("feed unchanged since the last fetch")
-            return 0
-
-    build, papers = parse_feed(xml_text)
-    if build and build == state.get("posted_build"):
-        LOG.info("build %s was already posted in full", build)
-        if validators and not dry_run:
-            save_state(STATE_PATH, {**state, **validators})
+    if xml_text is None and not state.get("queue"):
+        LOG.info("feed unchanged since the last fetch")
         return 0
 
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    def save() -> None:
+        if not dry_run:
+            save_state(STATE_PATH, state)
+
+    templates = (TEMPLATE_PATH.read_text(encoding="utf-8"), DETAILS_TEMPLATE_PATH.read_text(encoding="utf-8"))
     forum = None if dry_run else Forum(FORUM_URL, API_KEY, API_USERNAME)
 
     # A dry run with a key reads the category to show what would go.
     pruner = forum or (Forum(FORUM_URL, API_KEY, API_USERNAME) if API_KEY and CATEGORY_ID else None)
-    deleted = prune_refused = 0
+    prune_refused = 0
     try:
-        if pruner and papers:
-            try:
-                deleted, prune_refused = prune(pruner, CATEGORY_ID, papers, dry_run)
-            except Transient:
-                raise
-            except RuntimeError as exc:
-                # A key without the scopes to list or delete must not stop the feed.
-                LOG.error("could not read the category to delete unreplied topics: %s", exc)
-                prune_refused = 1
-        counts = post_papers(forum, papers, template, CATEGORY_ID)
+        if xml_text is not None:
+            build, papers = parse_feed(xml_text)
+            # `posted_build` names the build in a state file without a queue.
+            if build and build == state.get("build", state.get("posted_build")):
+                LOG.info("build %s was already taken in", build)
+            else:
+                deleted = 0
+                if pruner and papers:
+                    try:
+                        deleted, prune_refused = prune(pruner, CATEGORY_ID, papers, dry_run)
+                    except Transient:
+                        raise
+                    except RuntimeError as exc:
+                        # A key without the scopes to list or delete must not stop the feed.
+                        LOG.error("could not read the category to delete unreplied topics: %s", exc)
+                        prune_refused = 1
+                if state.get("queue"):
+                    LOG.warning("build %s replaces %d papers never posted", build, len(state["queue"]))
+                state.pop("posted_build", None)
+                state.update(build=build, queue=[{"paper": asdict(p), "since": time.time()} for p in papers])
+                LOG.info("build %s: %d unreplied topics deleted, %d papers", build, deleted, len(papers))
+            # Only once the build is taken in, so a failed run fetches it again.
+            state.update(validators)
+            save()
+
+        counts = post_queue(forum, state.setdefault("queue", []), templates, CATEGORY_ID, save, dry_run)
     except Transient as exc:
         LOG.error("stopping: %s. The next run resumes from here.", exc)
         return 1
 
     LOG.info(
-        "build %s: %d unreplied topics deleted, %d papers, %d posted, %d already on the forum, %d refused",
-        build, deleted, len(papers), counts["created"], counts["exists"], counts["refused"],
+        "build %s: %d posted, %d already on the forum, %d refused, %d waiting for an HTML version",
+        state.get("build"), counts["created"], counts["exists"], counts["refused"], counts["waiting"],
     )
-    if not dry_run:
-        save_state(STATE_PATH, {**state, **validators, "posted_build": build})
 
     # Refusals are not retried, so they fail the unit to be seen.
     return 1 if counts["refused"] or prune_refused else 0

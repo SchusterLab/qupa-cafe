@@ -1,5 +1,3 @@
-**%AUTHORS%**
-
-%ABSTRACT%
+%AUTHORS%
 
 %ANNOUNCEMENT%: [arXiv:%ARXIV_ID%](%ABS_URL%), [PDF](%PDF_URL%).

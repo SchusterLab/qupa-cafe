@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import threading
 import urllib.parse
@@ -23,6 +24,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 FIXTURE = HERE / "fixtures" / "quant-ph.xml"
 TEMPLATE = (HERE.parent.parent / "content" / "arxiv-topic.md").read_text(encoding="utf-8")
+DETAILS = (HERE.parent.parent / "content" / "arxiv-details.md").read_text(encoding="utf-8")
 
 spec = importlib.util.spec_from_file_location("arxiv_feed", HERE.parent / "arxiv-feed.py")
 feed = importlib.util.module_from_spec(spec)
@@ -120,34 +122,205 @@ def test_the_body_says_where_a_paper_came_from():
     assert "[PDF](https://arxiv.org/pdf/2610.00112)" in feed.topic_body(cross, TEMPLATE)
 
 
-def test_a_long_author_list_is_cut():
+def test_a_long_author_list_is_cut_to_fit_the_reply():
     paper = papers()[0]
     many = feed.Paper(**{**paper.__dict__, "authors": [f"Author {n}" for n in range(300)]})
+    affs = [[f"Department of Physics, University of Place {n}, Somewhere 12345, Country"] for n in range(300)]
 
-    body = feed.topic_body(many, TEMPLATE)
+    body = feed.details_body(many, DETAILS, affs)
 
-    assert "Author 24," in body
-    assert "Author 25" not in body
-    assert "and 275 more" in body
+    assert len(body) <= feed.MAX_POST_LENGTH
+    assert "University of Place 0" in body and "Department of Physics" not in body
+    assert re.search(r"and \d+ more", body)
+    assert body.endswith(paper.abstract)
 
 
 def test_text_that_looks_like_a_placeholder_is_copied():
     paper = papers()[0]
     tricky = feed.Paper(**{**paper.__dict__, "abstract": "We bound %PDF_URL% and 50% of %ABS_URL%."})
 
-    assert "We bound %PDF_URL% and 50% of %ABS_URL%." in feed.topic_body(tricky, TEMPLATE)
+    assert "We bound %PDF_URL% and 50% of %ABS_URL%." in feed.details_body(tricky, DETAILS, None)
 
 
 def test_no_placeholder_is_left_unfilled():
     for paper in papers():
-        assert "%" not in feed.topic_body(paper, TEMPLATE).replace("50%", "")
+        for body in (feed.topic_body(paper, TEMPLATE, None), feed.details_body(paper, DETAILS, None)):
+            assert "%" not in body.replace("50%", "")
+
+
+# ---------------------------------------------------------- affiliations
+
+# The top of an arXiv HTML page as LaTeXML writes it, one author at a time.
+PER_AUTHOR = """<html><body><div class="ltx_page_main"><h1 class="ltx_title">Global and nonlocal magic</h1>
+<div class="ltx_authors">
+<span class="ltx_creator ltx_role_author"><span class="ltx_personname">Lukas Ebner</span><span class="ltx_note ltx_role_thanks"><span class="ltx_note_content">thanks: lukas@example.org</span></span><span class="ltx_author_notes"><span class="ltx_author_notes_content">
+<span class="ltx_contact ltx_role_email"><span class="ltx_contact_name">Email: </span><a href="mailto:lukas@example.org">lukas@example.org</a></span>
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span>Department of Physics, <br class="ltx_break">University of Ottawa, Ontario, K1N 6N5, Canada </span></span></span></span>
+<span class="ltx_author_before"> </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Roberto Fernández-Barrios</span><span class="ltx_author_notes"><span class="ltx_author_notes_content">
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span>Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark </span>
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span>Institute for <math alttext="\\mathbb{Z}"><mi>Z</mi></math> Physics, Leibniz Universität Hannover, Hannover, Germany. </span></span></span></span>
+<span class="ltx_author_before"> </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Mercedes Martín-Benito</span><span class="ltx_author_notes"><span class="ltx_author_notes_content">
+<span class="ltx_contact ltx_role_address"><span class="ltx_contact_name">Address: </span>Department of Physics, Stanford University, Stanford, CA 94305, USA </span></span></span></span>
+</div>
+<div class="ltx_abstract"><p>Here, using global ...</p></div>
+<div class="ltx_authors"><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Not an author</span></span></div>
+"""
+
+# One name block with numbers, and affiliations that start with theirs (authblk).
+NUMBERED = """<div class="ltx_authors"><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Lukas Ebner<sup class="ltx_sup">1</sup><sup class="ltx_sup">2</sup>,
+Roberto Fernández-Barrios<sup class="ltx_sup">2,*</sup>, and
+Mercedes Martín-Benito<sup class="ltx_sup">3</sup>
+</span><span class="ltx_author_notes"><span class="ltx_author_notes_content">
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span><sup class="ltx_sup">1</sup>Tsinghua University
+</span>
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span><sup class="ltx_sup">2</sup>Zhongguancun Laboratory
+</span>
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span><sup class="ltx_sup">3</sup>Institute of Software, Chinese Academy of Sciences
+</span>
+<span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation: </span>
+lukas@example.org;
+roberto@example.org
+</span></span></span></span></div>"""
+
+
+def test_each_author_has_the_affiliations_the_html_gives_them():
+    assert feed.affiliations(papers()[0], PER_AUTHOR) == [
+        ["Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada"],
+        ["Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark",
+         "Institute for Physics, Leibniz Universität Hannover, Hannover, Germany"],
+        ["Department of Physics, Stanford University, Stanford, CA 94305, USA"],
+    ]
+
+
+def test_numbered_affiliations_go_to_the_authors_whose_numbers_they_carry():
+    assert feed.affiliations(papers()[0], NUMBERED) == [
+        ["Tsinghua University", "Zhongguancun Laboratory"],
+        ["Zhongguancun Laboratory"],
+        ["Institute of Software, Chinese Academy of Sciences"],
+    ]
+
+
+def test_one_unnumbered_name_block_shares_its_affiliations():
+    html = NUMBERED.split("<sup")[0] + ", Roberto Fernández-Barrios and Mercedes Martín-Benito</span>" \
+        '<span class="ltx_contact ltx_role_affiliation">Simula UiB, N-5006 Bergen, Norway Emails: {lukas, roberto}@simula.no</span></span></div>'
+
+    assert feed.affiliations(papers()[0], html) == [["Simula UiB, N-5006 Bergen, Norway"]] * 3
+
+
+def test_a_page_whose_authors_cannot_be_matched_gives_no_affiliations():
+    two = PER_AUTHOR.split('<span class="ltx_author_before"> </span>', 2)
+    html = two[0] + "</div>"
+
+    assert feed.affiliations(papers()[0], html) is None
+    assert feed.affiliations(papers()[0], "<html><body>No authors here</body></html>") is None
+    assert feed.affiliations(papers()[0], None) is None
+
+
+def test_the_affiliations_arxiv_lists_with_the_names_are_used_when_the_html_gives_none():
+    creators = feed.split_creators("Ian N. Hammock (Pritzker School, University of Chicago, Chicago, USA), Kinfung Ngan, "
+                                   "Nazar Delegan (Argonne National Laboratory (ANL), Lemont)")
+    assert creators == [
+        ("Ian N. Hammock", "Pritzker School, University of Chicago, Chicago, USA"),
+        ("Kinfung Ngan", ""),
+        ("Nazar Delegan", "Argonne National Laboratory (ANL), Lemont"),
+    ]
+    paper = feed.Paper(**{**papers()[0].__dict__, "authors": [n for n, _ in creators],
+                          "listed_affiliations": [a for _, a in creators]})
+
+    assert feed.affiliations(paper, None) == [["Pritzker School, University of Chicago, Chicago, USA"], [],
+                                              ["Argonne National Laboratory (ANL), Lemont"]]
+
+
+@pytest.mark.parametrize(
+    "affiliation, name",
+    [
+        ("Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada", "University of Ottawa"),
+        ("Institut für Theoretische Physik, Leibniz Universität Hannover, Hannover, Germany", "Leibniz Universität Hannover"),
+        ("Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark", "Sparrow Quantum"),
+        ("Center for Hybrid Quantum Networks (Hy-Q), Niels Bohr Institute, University of Copenhagen, Blegdamsvej 17",
+         "University of Copenhagen"),
+        ("Wyant College of Optical Sciences, The University of Arizona, Tucson, Arizona 85721, USA", "The University of Arizona"),
+        ("Leinweber Institute for Theoretical Physics, University of California, Berkeley, CA 94720, USA",
+         "University of California, Berkeley"),
+        ("Quantum Performance Laboratory, Sandia National Laboratories, Livermore, California 94550, USA",
+         "Sandia National Laboratories"),
+        ("National Key Laboratory of Materials, Shanghai Institute of Microsystem, Chinese Academy of Sciences, Shanghai",
+         "Chinese Academy of Sciences"),
+        ("Max Planck Institute for the Physics of Complex Systems, Nöthnitzerstr. 38, 01187 Dresden, Germany",
+         "Max Planck Institute for the Physics of Complex Systems"),
+        ("QudeLeap Research, Shanghai 200030, China", "QudeLeap Research"),
+        ("Phasecraft Ltd., Colston Street, Bristol BS1 4XE, United Kingdom", "Phasecraft Ltd"),
+        ("Laboratoire de Physique, (ESPCI - CNRS - Sorbonne Université), Paris", "ESPCI - CNRS - Sorbonne Université"),
+        ("School of Electrical and Computer Engineering", "School of Electrical and Computer Engineering"),
+        ("IBM Quantum, T. J. Watson Research Center, Yorktown Heights, NY 10598, USA",
+         "IBM Quantum"),
+        ("Physics Division, National Center for Theoretical Sciences, Taipei", "National Center for Theoretical Sciences"),
+    ],
+)
+def test_the_institution_is_what_an_affiliation_is_stripped_to(affiliation, name):
+    assert feed.institution(affiliation) == name
+
+
+# ----------------------------------------------------------------- the posts
+
+
+def test_the_topic_names_the_first_and_last_authors_and_their_institutions():
+    paper = papers()[0]
+    body = feed.topic_body(paper, TEMPLATE, feed.affiliations(paper, PER_AUTHOR))
+
+    assert body.startswith("**Lukas Ebner** (University of Ottawa), 1 other author, "
+                           "and **Mercedes Martín-Benito** (Stanford University)\n\n")
+    assert "Fernández-Barrios" not in body
+    assert paper.abstract not in body
+
+
+def test_a_topic_without_affiliations_names_the_authors_alone():
+    paper = papers()[0]
+    two = feed.Paper(**{**paper.__dict__, "authors": paper.authors[:2]})
+
+    many = feed.Paper(**{**paper.__dict__, "authors": [*paper.authors, "Ada Lovelace"]})
+
+    assert feed.topic_body(paper, TEMPLATE, None).startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito**\n")
+    assert feed.topic_body(many, TEMPLATE, None).startswith("**Lukas Ebner**, 2 other authors, and **Ada Lovelace**\n")
+    assert feed.topic_body(two, TEMPLATE, None).startswith("**Lukas Ebner** and **Roberto Fernández-Barrios**\n")
+    assert feed.topic_body(papers()[1], TEMPLATE, None).startswith("**Jane Doe**\n")
+
+
+def test_the_reply_lists_every_author_with_numbered_institutions_and_the_abstract():
+    paper = papers()[0]
+    body = feed.details_body(paper, DETAILS, feed.affiliations(paper, PER_AUTHOR))
+
+    assert body.startswith(
+        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios²,³, Mercedes Martín-Benito⁴\n\n"
+        "1. University of Ottawa\n"
+        "2. Sparrow Quantum\n"
+        "3. Leibniz Universität Hannover\n"
+        "4. Stanford University\n\n"
+    )
+    assert body.endswith(f"**Abstract:** {paper.abstract}")
+
+
+def test_authors_who_share_their_institutions_need_no_numbers():
+    paper = papers()[0]
+    shared = [["Department of Physics, University of Bergen, Norway"], ["Simula UiB, Bergen, Norway"], ["University of Bergen"]]
+
+    assert feed.details_body(paper, DETAILS, shared).startswith(
+        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios², Mercedes Martín-Benito¹\n\n1. University of Bergen\n2. Simula UiB\n\n"
+    )
+    assert feed.details_body(paper, DETAILS, [shared[0], shared[2], shared[0]]).startswith(
+        "**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\nUniversity of Bergen\n\n"
+    )
+    assert feed.details_body(paper, DETAILS, None).startswith(
+        "**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\n**Abstract:**"
+    )
 
 
 # ------------------------------------------------------------------ a run
 
 
 class StubForum(BaseHTTPRequestHandler):
-    """The Discourse endpoints the poster uses, with external ids unique."""
+    """The Discourse endpoints the poster uses, with external ids unique, and
+    arXiv's HTML versions."""
 
     topics: dict[str, dict] = {}
     refuse: set[str] = set()
@@ -156,6 +329,10 @@ class StubForum(BaseHTTPRequestHandler):
     deleted: list[int] = []
     refuse_delete: set[int] = set()
     forbid_lists = False
+    # Topic ids whose replies are refused as the forum being down.
+    down_for_replies: set[int] = set()
+    # arXiv id -> HTML page; any other id is a 404.
+    html: dict[str, str] = {}
 
     def log_message(self, *args):  # noqa: D401 - silence the test output
         pass
@@ -168,7 +345,22 @@ class StubForum(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def by_id(self, topic_id: int) -> dict:
+        return next(t for t in self.topics.values() if t["id"] == topic_id)
+
     def do_GET(self):
+        if self.path.startswith("/html/"):
+            page = self.html.get(self.path.removeprefix("/html/"))
+            if page is None:
+                self.reply(404, {"error": "No HTML for this paper"})
+                return
+            body = page.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/c/7/l/latest.json"):
             if self.forbid_lists:
                 self.reply(403, {"error_type": "invalid_access"})
@@ -182,7 +374,11 @@ class StubForum(BaseHTTPRequestHandler):
             return
         external_id = urllib.parse.unquote(self.path.removeprefix("/t/external_id/").removesuffix(".json"))
         if external_id in self.topics:
-            self.reply(200, {"id": 1})
+            topic = self.topics[external_id]
+            posts = [{"post_number": 1, "username": "arxiv-bot"}] + [
+                {"post_number": n + 2, "username": "arxiv-bot"} for n, _ in enumerate(topic["replies"])
+            ]
+            self.reply(200, {"id": topic["id"], "post_stream": {"posts": posts}})
         else:
             self.reply(404, {"errors": ["not found"]})
 
@@ -197,13 +393,21 @@ class StubForum(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         form = dict(urllib.parse.parse_qsl(self.rfile.read(length).decode()))
-        if form["external_id"] in self.topics:
+        if "topic_id" in form:
+            topic_id = int(form["topic_id"])
+            if topic_id in self.down_for_replies:
+                self.reply(502, {"errors": ["Bad gateway"]})
+                return
+            self.by_id(topic_id)["replies"].append(form["raw"])
+            self.reply(200, {"topic_id": topic_id, "post_number": 2})
+        elif form["external_id"] in self.topics:
             self.reply(422, {"errors": ["External ID has already been taken"]})
         elif form["external_id"] in self.refuse:
             self.reply(422, {"errors": ["Title seems unclear"]})
         else:
-            self.topics[form["external_id"]] = form
-            self.reply(200, {"id": len(self.topics)})
+            topic_id = len(self.topics) + 100
+            self.topics[form["external_id"]] = {**form, "id": topic_id, "replies": []}
+            self.reply(200, {"topic_id": topic_id, "post_number": 1})
 
 
 @pytest.fixture
@@ -214,30 +418,75 @@ def forum(monkeypatch, tmp_path):
     StubForum.deleted = []
     StubForum.refuse_delete = set()
     StubForum.forbid_lists = False
+    StubForum.down_for_replies = set()
+    StubForum.html = {"2610.00129": PER_AUTHOR, "2610.00112": "<html><body>A page with no author list</body></html>"}
     server = ThreadingHTTPServer(("127.0.0.1", 0), StubForum)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
-    monkeypatch.setattr(feed, "FORUM_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setattr(feed, "FORUM_URL", url)
+    monkeypatch.setattr(feed, "HTML_URL", url + "/html/")
     monkeypatch.setattr(feed, "API_KEY", "key")
     monkeypatch.setattr(feed, "CATEGORY_ID", "7")
     monkeypatch.setattr(feed, "POST_INTERVAL", 0)
+    monkeypatch.setattr(feed, "HTML_INTERVAL", 0)
     monkeypatch.setattr(feed, "STATE_PATH", tmp_path / "state.json")
     yield StubForum
     server.shutdown()
 
 
-def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False) -> dict:
+def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False,
+           last_poster: str = "arxiv-bot") -> dict:
     """A topic as the category's page lists it."""
-    return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned}
+    return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned,
+            "last_poster_username": last_poster}
 
 
-def test_a_run_opens_a_topic_per_paper(forum):
+def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     assert feed.run(str(FIXTURE), dry_run=False) == 0
 
     assert set(forum.topics) == {"arxiv-2610_00129", "arxiv-2610_00112"}
     topic = forum.topics["arxiv-2610_00129"]
     assert topic["category"] == "7"
     assert topic["title"].endswith("(arXiv:2610.00129)")
+    assert topic["raw"].startswith("**Lukas Ebner** (University of Ottawa), 1 other author, and ")
+    (details,) = topic["replies"]
+    assert "Roberto Fernández-Barrios²,³" in details and details.endswith(papers()[0].abstract)
+
+
+def test_a_page_with_no_author_list_is_posted_without_waiting(forum):
+    feed.run(str(FIXTURE), dry_run=False)
+
+    topic = forum.topics["arxiv-2610_00112"]
+    assert topic["raw"].startswith("**Jane Doe**\n")
+    assert topic["replies"][0].startswith("**Authors:** Jane Doe\n\n**Abstract:**")
+
+
+def test_a_paper_waits_for_its_html_version_and_then_goes_without(forum, monkeypatch):
+    del forum.html["2610.00112"]
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert set(forum.topics) == {"arxiv-2610_00129"}
+    assert [e["paper"]["arxiv_id"] for e in json.loads(feed.STATE_PATH.read_text())["queue"]] == ["2610.00112"]
+
+    # The same build again, as a run that finds the feed unchanged.
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert set(forum.topics) == {"arxiv-2610_00129"}
+
+    monkeypatch.setattr(feed, "HTML_WAIT", 0)
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert forum.topics["arxiv-2610_00112"]["raw"].startswith("**Jane Doe**\n")
+    assert json.loads(feed.STATE_PATH.read_text())["queue"] == []
+
+
+def test_a_paper_whose_html_turns_up_is_posted_with_it(forum):
+    page = forum.html.pop("2610.00129")
+    feed.run(str(FIXTURE), dry_run=False)
+    assert "arxiv-2610_00129" not in forum.topics
+
+    forum.html["2610.00129"] = page
+    feed.run(str(FIXTURE), dry_run=False)
+    assert "(University of Ottawa)" in forum.topics["arxiv-2610_00129"]["raw"]
 
 
 def test_a_second_run_of_the_same_build_posts_and_deletes_nothing(forum):
@@ -250,12 +499,33 @@ def test_a_second_run_of_the_same_build_posts_and_deletes_nothing(forum):
     assert forum.deleted == []
 
 
+def test_a_build_posted_before_the_queue_is_not_posted_again(forum):
+    build, _ = feed.parse_feed(FIXTURE.read_text(encoding="utf-8"))
+    feed.save_state(feed.STATE_PATH, {"posted_build": build})
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert forum.topics == {}
+
+
 def test_a_run_that_lost_its_state_is_refused_rather_than_duplicating(forum):
     feed.run(str(FIXTURE), dry_run=False)
     feed.STATE_PATH.unlink()
 
     assert feed.run(str(FIXTURE), dry_run=False) == 0
     assert len(forum.topics) == 2
+    assert all(len(topic["replies"]) == 1 for topic in forum.topics.values())
+
+
+def test_a_reply_the_forum_could_not_take_is_posted_by_the_next_run(forum):
+    forum.down_for_replies = {100}
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 1
+    assert forum.topics["arxiv-2610_00129"]["replies"] == []
+
+    forum.down_for_replies = set()
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert len(forum.topics["arxiv-2610_00129"]["replies"]) == 1
+    assert len(forum.topics["arxiv-2610_00112"]["replies"]) == 1
 
 
 def test_a_refused_paper_does_not_hold_back_the_rest_and_fails_the_unit(forum):
@@ -267,6 +537,7 @@ def test_a_refused_paper_does_not_hold_back_the_rest_and_fails_the_unit(forum):
 
 def test_a_forum_that_is_down_leaves_the_build_to_be_retried(monkeypatch, tmp_path):
     monkeypatch.setattr(feed, "FORUM_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(feed, "HTML_URL", "http://127.0.0.1:9/html/")
     monkeypatch.setattr(feed, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(feed, "POST_INTERVAL", 0)
 
@@ -275,11 +546,14 @@ def test_a_forum_that_is_down_leaves_the_build_to_be_retried(monkeypatch, tmp_pa
 
 
 def test_a_dry_run_posts_nothing_and_keeps_no_state(forum, capsys):
+    del forum.html["2610.00112"]
+
     assert feed.run(str(FIXTURE), dry_run=True) == 0
 
     assert forum.topics == {}
     assert not feed.STATE_PATH.exists()
-    assert "arxiv-2610_00112" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "arxiv-2610_00112" in out and "--- reply\n**Authors:** Jane Doe" in out
 
 
 # ------------------------------------------------------------------ unreplied topics
@@ -289,10 +563,11 @@ def test_unreplied_preprints_are_deleted_before_a_build_is_posted(forum):
     forum.listed = [
         listed(1, "About the arXiv quant-ph category"),
         listed(2, "Old and unanswered (arXiv:2609.00001)"),
-        listed(3, "Old and answered (arXiv:2609.00002)", posts_count=2),
+        listed(3, "Old and answered (arXiv:2609.00002)", posts_count=3),
         listed(4, "Pinned by staff (arXiv:2609.00003)", pinned=True),
-        listed(5, "Also unanswered (arXiv:2609.00004)"),
+        listed(5, "Only the feed's reply (arXiv:2609.00004)", posts_count=2),
         listed(6, "In this build already (arXiv:2610.00129)"),
+        listed(7, "Answered once (arXiv:2609.00005)", posts_count=2, last_poster="sunada-agent"),
     ]
 
     assert feed.run(str(FIXTURE), dry_run=False) == 0

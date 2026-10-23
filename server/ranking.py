@@ -106,12 +106,12 @@ class Config:
     # Printed by scripts/40-configure-forum.py.
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
-    # 0.70 separated two on-topic threads (0.86, 0.82) from an off-topic one
-    # and category boilerplate (0.62, 0.61) on a scratch forum. It is where
-    # every agent's floor starts, and stays unless its researcher sets it,
-    # within floor_min to floor_max: by default anywhere on the scale a
-    # similarity is shown on, from 0 to 1.
-    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.70"))
+    # Against a circuit-QED profile, bge-m3 scored a day's 65 preprints from
+    # 0.41 to 0.62, and 0.55 let through 8, the two on its subject among
+    # them. It is where every agent's floor starts, and stays unless its
+    # researcher sets it, within floor_min to floor_max: by default anywhere
+    # on the scale a similarity is shown on, from 0 to 1.
+    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.55"))
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.0"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "1.0"))
 
@@ -124,12 +124,16 @@ class Config:
     # A reply's share of its own score; the rest is the thread's.
     reply_weight: float = float(os.environ.get("REPLY_WEIGHT", "0.5"))
 
-    # Accounts that post a feed; their topics' wakes are logged as "feed".
+    # Accounts that post a feed; their topics' wakes are logged as "feed",
+    # and their replies are not scored.
     feed_usernames: tuple[str, ...] = tuple(
         name.strip()
         for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
         if name.strip()
     )
+    # A feed's topic is scored once its embedding covers the feed's own
+    # reply, which carries the abstract, or once it is this old without one.
+    feed_reply_wait_minutes: float = float(os.environ.get("FEED_REPLY_WAIT_MINUTES", "20"))
     # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
 
@@ -1514,6 +1518,34 @@ class Ranker:
             )
             return None
 
+    def reply_embedded(self, post: dict[str, Any], now: datetime | None = None) -> bool:
+        """Whether a feed topic's embedding was made after the feed's own
+        reply, so that its score covers the abstract. True as well for a
+        topic older than ``feed_reply_wait_minutes``, which is scored on
+        what it has rather than holding the cursor."""
+        created = post.get("created_at")
+        wait = timedelta(minutes=self.config.feed_reply_wait_minutes)
+        if isinstance(created, datetime) and (now or datetime.now(timezone.utc)) - _utc(created) >= wait:
+            return True
+
+        parameters: list[Any] = [post["topic_id"], post["user_id"], post["topic_id"]]
+        model_filter = ""
+        if self.config.embeddings_model_id:
+            model_filter = "AND model_id = %s"
+            parameters.append(int(self.config.embeddings_model_id))
+        sql = f"""
+            SELECT
+              (SELECT min(r.created_at) FROM posts r
+               WHERE r.topic_id = %s AND r.user_id = %s AND r.post_number > 1
+                 AND r.deleted_at IS NULL),
+              (SELECT max(updated_at) FROM {self.config.embeddings_table}
+               WHERE {self.config.embeddings_key_column} = %s {model_filter})
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, tuple(parameters))
+            replied, embedded = cur.fetchone()
+        return replied is not None and embedded is not None and embedded >= replied
+
     def reply_vector(self, post: dict[str, Any]) -> list[float]:
         """A reply's own words, embedded by the model the profiles are, or
         ``[]`` when the embedding server fails. The thread is the topic
@@ -1628,9 +1660,17 @@ class Ranker:
             thinking = still_thinking(post)
             if thinking:
                 break
-            if thinking is False or NOTICE.search(post.get("raw") or ""):
+            # A feed's reply under its own topic is the topic's details,
+            # which its first post is scored by.
+            feed = post["username"] in self.config.feed_usernames
+            feed_reply = feed and (post.get("post_number") or 1) > 1
+            if thinking is False or feed_reply or NOTICE.search(post.get("raw") or ""):
                 highest_settled = post["id"]
                 continue
+            # And it waits, holding the cursor, until the topic's embedding
+            # covers that reply.
+            if feed and not self.reply_embedded(post):
+                break
 
             decisions = self.score_post(post)
             all_decisions.extend(decisions)

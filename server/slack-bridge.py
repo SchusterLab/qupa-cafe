@@ -1068,15 +1068,39 @@ class Bridge:
             return "a private category with no channel"
 
         # The first post is the thread's parent; a feed topic's waits for a
-        # reply, which brings it.
+        # reply from somebody other than the feed, which brings it and the
+        # feed's own replies before it.
+        feed = self.is_feed(topic.get("opener") or "")
         if (post.get("post_number") or 1) == 1:
-            if self.is_feed(topic.get("opener") or ""):
+            if feed:
                 return "a feed topic with no reply yet"
             self.ensure_thread(topic, channel_id, first=post)
             return f"relayed to {channel_id} as its thread's parent"
+        opened = self.state.thread_for(topic["id"]) is not None
+        if feed and not opened and post.get("username") == topic.get("opener"):
+            return "a feed's own reply, which waits for somebody else's"
         thread_ts = self.ensure_thread(topic, channel_id)
+        if feed and not opened:
+            for earlier in self.feed_replies(topic, before=post):
+                self.send(earlier, topic, channel_id, thread_ts)
         self.send(post, topic, channel_id, thread_ts)
         return f"relayed to {channel_id}"
+
+    def feed_replies(self, topic: dict, before: dict) -> list[dict]:
+        """The replies the feed that opened ``topic`` posted before ``before``."""
+        found = []
+        for post_id in (self.forum.topic(topic["id"]).get("post_stream") or {}).get("stream") or []:
+            if post_id == topic.get("first_post_id") or post_id >= before["id"]:
+                continue
+            try:
+                post = self.forum.post(post_id)
+            except Refused as exc:
+                LOG.warning("topic %d opens without the feed's post %d: %s", topic["id"], post_id, exc)
+                continue
+            if (post.get("username") == topic.get("opener") and not gone(post)
+                    and post.get("post_type", POST_TYPE_REGULAR) == POST_TYPE_REGULAR):
+                found.append(post)
+        return found
 
     def send(
         self,

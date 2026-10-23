@@ -1639,6 +1639,7 @@ def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_to
     (prompt,) = prompts
     assert "do not reply in this topic" in prompt and '"arXiv quant-ph / a" (category=9)' in prompt
     assert "this preprint's post as shown here, unchanged" in prompt
+    assert "followed by post 2 of this topic" in prompt and "the abstract, also unchanged" in prompt
     assert ("private_arxiv", "u") in ranking.told
 
 

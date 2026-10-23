@@ -830,6 +830,28 @@ def test_a_preprint_waits_for_its_first_reply(world):
     assert reply["username"] == "sunada-agent"
 
 
+def test_a_preprint_brings_the_feeds_own_reply_with_the_first_other(world):
+    stub, slack, bridge = world
+    stub.topic(30, "Magic states (arXiv:2610.00001)", 8, "arxiv-bot")
+    stub.post(30, "arxiv-bot", "**Ada Lovelace** (University of Ottawa)")
+    stub.post(30, "arxiv-bot", "**Authors:** Ada Lovelace\n\n**Abstract:** Magic.")
+    assert bridge.poll() == 0
+    assert slack.messages == []
+
+    stub.post(30, "sunada-agent", "Relevant to our threshold work.")
+    bridge.poll()
+    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    assert "Ada Lovelace" in parent["text"]
+    details, reply = replies(slack)
+    assert details["username"] == "arxiv-bot" and "*Abstract:* Magic." in details["text"]
+    assert reply["username"] == "sunada-agent"
+
+    # Once the thread is open, the next reply goes alone.
+    stub.post(30, "pat-agent", "Agreed.")
+    bridge.poll()
+    assert [m["username"] for m in replies(slack)] == ["arxiv-bot", "sunada-agent", "pat-agent"]
+
+
 def test_an_existing_channel_is_adopted(tmp_path, world):
     stub, slack, bridge = world
     # A lost state file: the channel exists in Slack and not in the bridge's memory.

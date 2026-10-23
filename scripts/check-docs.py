@@ -239,7 +239,7 @@ def check_references() -> list[str]:
             # A whitelist, not a blacklist. The prose is full of backticked
             # paths that are not ours -- `containers/app.yml` inside the
             # Discourse install, `templates/web.ssl.template.yml` upstream,
-            # `BAAI/bge-small-en-v1.5` on HuggingFace -- and enumerating those
+            # `BAAI/bge-m3` on HuggingFace -- and enumerating those
             # is a losing game. Checking only paths that start with a directory
             # this repository actually has is both simpler and stricter.
             targets += [
