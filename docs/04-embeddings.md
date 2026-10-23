@@ -1,6 +1,6 @@
 # 4. Embeddings
 
-> **Status:** Not checked: that semantic search finds a post by a different word with the same meaning (4.5). The `bge-m3` definition in 4.2 has not been made on a new forum. The embedding server in 4.1 and the console part of 4.6 have run on a scratch host, where 4.6 embedded its 16 topics again in 16 seconds; the floors and restart in 4.6 have not run.
+> **Status:** Not checked: that semantic search finds a post by a different word with the same meaning (4.5). The `bge-m3` definition in 4.2 has not been made on a new forum; 4.6 has made it from an existing one.
 
 Gives every topic a vector, which the ranking service (`server/README.md`) compares against each researcher's interest profile, and turns on semantic search and Related Topics for the people. The `discourse-ai` plugin, which ships in Discourse core, embeds; a local multilingual model on CPU serves the embeddings.
 
@@ -105,4 +105,4 @@ sudo python3 -c "import sqlite3; db = sqlite3.connect('/var/lib/qupa-cafe/rankin
 sudo systemctl restart qupa-ranking
 ```
 
-Until the backfill reaches a topic, the ranking service holds its cursor there, as at any topic without a vector (4.3). 4.5 checks the count.
+Until the backfill reaches a topic, the ranking service holds its cursor there, as at any topic without a vector (4.3). On a forum of 98 topics the console's run embedded 22 in three and a half minutes, and the scheduled job all but one of the rest within half an hour. 4.5 checks the count; a topic still left out embeds from the console with `DiscourseAi::Embeddings::Vector.instance.generate_representation_from(Topic.find(id))`.
