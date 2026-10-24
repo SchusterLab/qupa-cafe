@@ -9,9 +9,9 @@ up to an hour, and is then posted without affiliations.
 
 Each topic carries the paper's id as its ``external_id``, which the forum holds
 unique, so a repeated or interrupted run is refused on what it already posted.
-A topic's title is the paper's, with its arXiv id added only where the forum
-refuses the title alone. When a build is taken in, every earlier topic the feed
-opened that nobody else has replied to is deleted. docs/05-forum-config.md 5.10 has the account and its key.
+A topic's title is the paper's with its arXiv id after it. When a build is
+taken in, every earlier topic the feed opened that nobody else has replied to
+is deleted. docs/05-forum-config.md 5.10 has the account and its key.
 
 Usage::
 
@@ -434,10 +434,9 @@ def institutions(affs: list[str]) -> list[str]:
 # ---------------------------------------------------------------------- a topic
 
 
-def topic_title(paper: Paper, with_id: bool = False) -> str:
-    """The paper's title, cut to fit. ``with_id`` adds its arXiv id, for a
-    title the forum refuses on its own as too short, unclear or a duplicate."""
-    suffix = f" (arXiv:{paper.arxiv_id})" if with_id else ""
+def topic_title(paper: Paper) -> str:
+    """The title with its arXiv id, so it is never too short or a duplicate."""
+    suffix = f" (arXiv:{paper.arxiv_id})"
     room = MAX_TITLE_LENGTH - len(suffix)
     title = paper.title if len(paper.title) <= room else paper.title[: room - 1].rstrip() + "…"
     return title + suffix
@@ -709,7 +708,7 @@ def unreplied_preprints(topics: list[dict], keep: set[str], feed: str) -> list[d
 def prune(forum: Forum, category: str, papers: list[Paper], dry_run: bool) -> tuple[int, int]:
     """Delete the category's unreplied preprints, except this build's own, so
     a resumed build keeps what it already posted. Returns (deleted, refused)."""
-    keep = {topic_title(p, with_id) for p in papers for with_id in (False, True)}
+    keep = {topic_title(p) for p in papers}
     candidates = unreplied_preprints(forum.category_topics(category), keep, forum.username)
     deleted = refused = 0
 
@@ -746,13 +745,7 @@ def post_paper(forum: Forum | None, paper: Paper, affs: list[list[str]] | None,
         return "created"
 
     try:
-        try:
-            outcome, topic = forum.create_topic(title, raw, category, paper.external_id)
-        except Transient:
-            raise
-        except RuntimeError as exc:
-            LOG.info("%s refused as %r (%s); trying with its id", paper.arxiv_id, title, exc)
-            outcome, topic = forum.create_topic(topic_title(paper, with_id=True), raw, category, paper.external_id)
+        outcome, topic = forum.create_topic(title, raw, category, paper.external_id)
         if outcome == "created" or not forum.has_details(topic):
             forum.reply(topic["id"], details)
     except Transient:
