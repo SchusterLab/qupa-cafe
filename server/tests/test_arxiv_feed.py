@@ -100,16 +100,19 @@ def test_the_external_id_is_one_discourse_accepts():
     assert len(external_id) <= 50
 
 
-def test_the_title_carries_the_id():
-    assert feed.topic_title(papers()[0]) == "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
+def test_the_title_is_the_papers_and_carries_the_id_only_when_asked():
+    assert feed.topic_title(papers()[0]) == "Global and nonlocal magic of quantum many-body scars"
+    assert feed.topic_title(papers()[0], with_id=True) == (
+        "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
+    )
 
 
 def test_a_long_title_is_cut_to_fit_and_keeps_the_id():
     paper = papers()[0]
     long = feed.Paper(**{**paper.__dict__, "title": "word " * 100})
 
-    title = feed.topic_title(long)
-
+    assert len(feed.topic_title(long)) <= feed.MAX_TITLE_LENGTH
+    title = feed.topic_title(long, with_id=True)
     assert len(title) <= feed.MAX_TITLE_LENGTH
     assert title.endswith("(arXiv:2610.00129)")
 
@@ -324,6 +327,8 @@ class StubForum(BaseHTTPRequestHandler):
 
     topics: dict[str, dict] = {}
     refuse: set[str] = set()
+    # Titles refused as already used.
+    taken_titles: set[str] = set()
     # The category's page, two topics to a page, and what was deleted from it.
     listed: list[dict] = []
     deleted: list[int] = []
@@ -370,7 +375,8 @@ class StubForum(BaseHTTPRequestHandler):
             body = {"topics": self.listed[2 * page: 2 * page + 2]}
             if more:
                 body["more_topics_url"] = f"/c/7/l/latest?page={page + 1}"
-            self.reply(200, {"topic_list": body})
+            users = [{"id": n, "username": name} for name, n in POSTER_IDS.items()]
+            self.reply(200, {"users": users, "topic_list": body})
             return
         external_id = urllib.parse.unquote(self.path.removeprefix("/t/external_id/").removesuffix(".json"))
         if external_id in self.topics:
@@ -404,6 +410,8 @@ class StubForum(BaseHTTPRequestHandler):
             self.reply(422, {"errors": ["External ID has already been taken"]})
         elif form["external_id"] in self.refuse:
             self.reply(422, {"errors": ["Title seems unclear"]})
+        elif form["title"] in self.taken_titles:
+            self.reply(422, {"errors": ["Title has already been used"]})
         else:
             topic_id = len(self.topics) + 100
             self.topics[form["external_id"]] = {**form, "id": topic_id, "replies": []}
@@ -414,6 +422,7 @@ class StubForum(BaseHTTPRequestHandler):
 def forum(monkeypatch, tmp_path):
     StubForum.topics = {}
     StubForum.refuse = set()
+    StubForum.taken_titles = set()
     StubForum.listed = []
     StubForum.deleted = []
     StubForum.refuse_delete = set()
@@ -435,11 +444,15 @@ def forum(monkeypatch, tmp_path):
     server.shutdown()
 
 
+POSTER_IDS = {"system": -1, "arxiv-bot": 5, "sunada-agent": 9}
+
+
 def listed(topic_id: int, title: str, posts_count: int = 1, pinned: bool = False,
-           last_poster: str = "arxiv-bot") -> dict:
+           last_poster: str = "arxiv-bot", opener: str = "arxiv-bot") -> dict:
     """A topic as the category's page lists it."""
+    posters = [{"description": "Original Poster", "user_id": POSTER_IDS[opener]}]
     return {"id": topic_id, "title": title, "posts_count": posts_count, "pinned": pinned,
-            "last_poster_username": last_poster}
+            "last_poster_username": last_poster, "posters": posters}
 
 
 def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
@@ -448,7 +461,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     assert set(forum.topics) == {"arxiv-2610_00129", "arxiv-2610_00112"}
     topic = forum.topics["arxiv-2610_00129"]
     assert topic["category"] == "7"
-    assert topic["title"].endswith("(arXiv:2610.00129)")
+    assert topic["title"] == "Global and nonlocal magic of quantum many-body scars"
     assert topic["raw"].startswith("**Lukas Ebner** (University of Ottawa), 1 other author, and ")
     (details,) = topic["replies"]
     assert "Roberto Fernández-Barrios²,³" in details and details.endswith(papers()[0].abstract)
@@ -528,6 +541,16 @@ def test_a_reply_the_forum_could_not_take_is_posted_by_the_next_run(forum):
     assert len(forum.topics["arxiv-2610_00112"]["replies"]) == 1
 
 
+def test_a_title_the_forum_refuses_alone_is_posted_with_its_id(forum):
+    forum.taken_titles = {"Global and nonlocal magic of quantum many-body scars"}
+
+    assert feed.run(str(FIXTURE), dry_run=False) == 0
+    assert forum.topics["arxiv-2610_00129"]["title"] == (
+        "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
+    )
+    assert len(forum.topics["arxiv-2610_00129"]["replies"]) == 1
+
+
 def test_a_refused_paper_does_not_hold_back_the_rest_and_fails_the_unit(forum):
     forum.refuse = {"arxiv-2610_00129"}
 
@@ -561,13 +584,14 @@ def test_a_dry_run_posts_nothing_and_keeps_no_state(forum, capsys):
 
 def test_unreplied_preprints_are_deleted_before_a_build_is_posted(forum):
     forum.listed = [
-        listed(1, "About the arXiv quant-ph category"),
+        listed(1, "About the arXiv quant-ph category", opener="system"),
         listed(2, "Old and unanswered (arXiv:2609.00001)"),
         listed(3, "Old and answered (arXiv:2609.00002)", posts_count=3),
         listed(4, "Pinned by staff (arXiv:2609.00003)", pinned=True),
-        listed(5, "Only the feed's reply (arXiv:2609.00004)", posts_count=2),
-        listed(6, "In this build already (arXiv:2610.00129)"),
-        listed(7, "Answered once (arXiv:2609.00005)", posts_count=2, last_poster="sunada-agent"),
+        listed(5, "Only the feed's reply", posts_count=2),
+        listed(6, "Global and nonlocal magic of quantum many-body scars"),
+        listed(7, "Answered once", posts_count=2, last_poster="sunada-agent"),
+        listed(8, "Opened by an agent", opener="sunada-agent", last_poster="sunada-agent"),
     ]
 
     assert feed.run(str(FIXTURE), dry_run=False) == 0

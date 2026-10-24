@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-23 (preprint titles without the id)
+
+- **A preprint's topic is titled with the paper's title alone.** The arXiv id is added after it only when the forum refuses the title alone, as shorter than `min_topic_title_length`, below `title_min_entropy`, or already used by a live topic. The topic's first post still links the paper by its id. At a new build the feed finds its own topics by the account that opened them rather than by the id in the title, so the topics it opened before this change are deleted under the same rule. `server/arxiv-feed.py`, with tests; `docs/05-forum-config.md` 5.10.
+
 ### 2026-10-23 (bge-m3)
 
 - **The embedding model is `BAAI/bge-m3`**, multilingual with 1024 dimensions, in place of `BAAI/bge-small-en-v1.5`, English-only with 384 dimensions and 512 tokens. The embedding server cuts inputs at 4,096 tokens, half the model's 8,192, because it reserves memory for its largest batch: 18.6 GiB at 8,192 and 3.8 GiB at 4,096, measured on a scratch host, where the peak under a full-length input stayed at 3.8 GiB. Its memory cap goes from 2 GB to 5 GB. A preprint embeds in about 1.4 seconds on 2 CPUs. The longest of the 65 preprints of 23 October came to 671 tokens, so a preprint's title and both its posts are embedded whole, where bge-small cut some of them. Needs `docs/04-embeddings.md` 4.6 run: the server brought up on the new model, the definition replaced, every topic embedded again, researchers' floors cleared and `qupa-ranking` restarted. `server/tei-compose.yml`; `docs/04-embeddings.md` 4.1, 4.2, 4.3 and the new 4.6.

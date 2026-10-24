@@ -9,8 +9,9 @@ up to an hour, and is then posted without affiliations.
 
 Each topic carries the paper's id as its ``external_id``, which the forum holds
 unique, so a repeated or interrupted run is refused on what it already posted.
-When a build is taken in, every earlier preprint topic nobody has replied to is
-deleted. docs/05-forum-config.md 5.10 has the account and its key.
+A topic's title is the paper's, with its arXiv id added only where the forum
+refuses the title alone. When a build is taken in, every earlier topic the feed
+opened that nobody else has replied to is deleted. docs/05-forum-config.md 5.10 has the account and its key.
 
 Usage::
 
@@ -433,16 +434,13 @@ def institutions(affs: list[str]) -> list[str]:
 # ---------------------------------------------------------------------- a topic
 
 
-def topic_title(paper: Paper) -> str:
-    """The title with its arXiv id, so it is never too short or a duplicate."""
-    suffix = f" (arXiv:{paper.arxiv_id})"
+def topic_title(paper: Paper, with_id: bool = False) -> str:
+    """The paper's title, cut to fit. ``with_id`` adds its arXiv id, for a
+    title the forum refuses on its own as too short, unclear or a duplicate."""
+    suffix = f" (arXiv:{paper.arxiv_id})" if with_id else ""
     room = MAX_TITLE_LENGTH - len(suffix)
     title = paper.title if len(paper.title) <= room else paper.title[: room - 1].rstrip() + "…"
     return title + suffix
-
-
-# The id topic_title puts at the end, which marks a topic as one of the feed's.
-TITLE_ID = re.compile(r"\(arXiv:([^()\s]+)\)$")
 
 
 def fill(template: str, values: dict[str, str]) -> str:
@@ -584,11 +582,17 @@ class Forum:
         )
 
     def category_topics(self, category: str) -> list[dict]:
-        """Every topic the category's page lists, read in full before any change."""
+        """Every topic the category's page lists, read in full before any change,
+        each with the username of who opened it as ``original_poster``."""
         topics: list[dict] = []
         for page in range(1000):
-            listed = self._request("GET", f"/c/{category}/l/latest.json?page={page}").get("topic_list", {})
-            topics.extend(listed.get("topics", []))
+            answer = self._request("GET", f"/c/{category}/l/latest.json?page={page}")
+            names = {user.get("id"): user.get("username") for user in answer.get("users") or []}
+            listed = answer.get("topic_list", {})
+            for topic in listed.get("topics", []):
+                opener = next((poster.get("user_id") for poster in topic.get("posters") or []
+                               if "Original Poster" in (poster.get("description") or "")), None)
+                topics.append({**topic, "original_poster": names.get(opener)})
             if not listed.get("more_topics_url") or not listed.get("topics"):
                 return topics
         raise RuntimeError(f"category {category} lists more than 1000 pages")
@@ -692,13 +696,12 @@ def fetch_html(url: str) -> str | None:
 
 
 def unreplied_preprints(topics: list[dict], keep: set[str], feed: str) -> list[dict]:
-    """The feed's topics that nobody but ``feed`` has posted in, minus the ids
-    in ``keep``. A pinned topic, or one without the id in its title, is not
-    the feed's."""
+    """The topics ``feed`` opened that nobody else has posted in, minus the
+    titles in ``keep``. A pinned topic is not the feed's."""
     return [
         topic for topic in topics
-        if (match := TITLE_ID.search(topic.get("title", "")))
-        and match.group(1) not in keep
+        if topic.get("original_poster") == feed
+        and topic.get("title") not in keep
         and (topic.get("posts_count") == 1
              or (topic.get("posts_count") == 2 and topic.get("last_poster_username") == feed))
         and not topic.get("pinned")
@@ -708,9 +711,8 @@ def unreplied_preprints(topics: list[dict], keep: set[str], feed: str) -> list[d
 def prune(forum: Forum, category: str, papers: list[Paper], dry_run: bool) -> tuple[int, int]:
     """Delete the category's unreplied preprints, except this build's own, so
     a resumed build keeps what it already posted. Returns (deleted, refused)."""
-    candidates = unreplied_preprints(
-        forum.category_topics(category), {p.arxiv_id for p in papers}, forum.username
-    )
+    keep = {topic_title(p, with_id) for p in papers for with_id in (False, True)}
+    candidates = unreplied_preprints(forum.category_topics(category), keep, forum.username)
     deleted = refused = 0
 
     for topic in candidates:
@@ -746,7 +748,13 @@ def post_paper(forum: Forum | None, paper: Paper, affs: list[list[str]] | None,
         return "created"
 
     try:
-        outcome, topic = forum.create_topic(title, raw, category, paper.external_id)
+        try:
+            outcome, topic = forum.create_topic(title, raw, category, paper.external_id)
+        except Transient:
+            raise
+        except RuntimeError as exc:
+            LOG.info("%s refused as %r (%s); trying with its id", paper.arxiv_id, title, exc)
+            outcome, topic = forum.create_topic(topic_title(paper, with_id=True), raw, category, paper.external_id)
         if outcome == "created" or not forum.has_details(topic):
             forum.reply(topic["id"], details)
     except Transient:
