@@ -117,12 +117,10 @@ def test_a_long_title_is_cut_to_fit_and_keeps_the_id():
     assert title.endswith("(arXiv:2610.00129)")
 
 
-def test_the_body_says_where_a_paper_came_from():
-    new, cross = papers()
-
-    assert "Announced in quant-ph on 2 October 2026" in feed.topic_body(new, TEMPLATE)
-    assert "Cross-listed to quant-ph from math.PR on 2 October 2026" in feed.topic_body(cross, TEMPLATE)
-    assert "[PDF](https://arxiv.org/pdf/2610.00112)" in feed.topic_body(cross, TEMPLATE)
+def test_the_links_follow_the_authors_on_one_line():
+    assert feed.topic_body(papers()[1], TEMPLATE) == (
+        "**Jane Doe** [arXiv:2610.00112](https://arxiv.org/abs/2610.00112), [PDF](https://arxiv.org/pdf/2610.00112)."
+    )
 
 
 def test_a_long_author_list_is_cut_to_fit_the_reply():
@@ -271,8 +269,8 @@ def test_the_topic_names_the_first_and_last_authors_and_their_institutions():
     paper = papers()[0]
     body = feed.topic_body(paper, TEMPLATE, feed.affiliations(paper, PER_AUTHOR))
 
-    assert body.startswith("**Lukas Ebner** (University of Ottawa), 1 other author, "
-                           "and **Mercedes Martín-Benito** (Stanford University)\n\n")
+    assert body.startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** "
+                           "(University of Ottawa; Stanford University) [arXiv:2610.00129]")
     assert "Fernández-Barrios" not in body
     assert paper.abstract not in body
 
@@ -283,10 +281,19 @@ def test_a_topic_without_affiliations_names_the_authors_alone():
 
     many = feed.Paper(**{**paper.__dict__, "authors": [*paper.authors, "Ada Lovelace"]})
 
-    assert feed.topic_body(paper, TEMPLATE, None).startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito**\n")
-    assert feed.topic_body(many, TEMPLATE, None).startswith("**Lukas Ebner**, 2 other authors, and **Ada Lovelace**\n")
-    assert feed.topic_body(two, TEMPLATE, None).startswith("**Lukas Ebner** and **Roberto Fernández-Barrios**\n")
-    assert feed.topic_body(papers()[1], TEMPLATE, None).startswith("**Jane Doe**\n")
+    assert feed.topic_body(paper, TEMPLATE, None).startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** [arXiv:")
+    assert feed.topic_body(many, TEMPLATE, None).startswith("**Lukas Ebner**, 2 other authors, and **Ada Lovelace** [arXiv:")
+    assert feed.topic_body(two, TEMPLATE, None).startswith("**Lukas Ebner** and **Roberto Fernández-Barrios** [arXiv:")
+    assert feed.topic_body(papers()[1], TEMPLATE, None).startswith("**Jane Doe** [arXiv:")
+
+
+def test_first_and_last_authors_who_share_an_institution_name_it_once():
+    paper = papers()[0]
+    affs = [["University of Ottawa"], ["Simula UiB"], ["Department of Physics, University of Ottawa, Canada"]]
+
+    assert feed.topic_body(paper, TEMPLATE, affs).startswith(
+        "**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** (University of Ottawa) [arXiv:"
+    )
 
 
 def test_the_reply_lists_every_author_with_numbered_institutions_and_the_abstract():
@@ -462,7 +469,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     topic = forum.topics["arxiv-2610_00129"]
     assert topic["category"] == "7"
     assert topic["title"] == "Global and nonlocal magic of quantum many-body scars"
-    assert topic["raw"].startswith("**Lukas Ebner** (University of Ottawa), 1 other author, and ")
+    assert topic["raw"].startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** (University of Ottawa;")
     (details,) = topic["replies"]
     assert "Roberto Fernández-Barrios²,³" in details and details.endswith(papers()[0].abstract)
 
@@ -471,7 +478,7 @@ def test_a_page_with_no_author_list_is_posted_without_waiting(forum):
     feed.run(str(FIXTURE), dry_run=False)
 
     topic = forum.topics["arxiv-2610_00112"]
-    assert topic["raw"].startswith("**Jane Doe**\n")
+    assert topic["raw"].startswith("**Jane Doe** [arXiv:")
     assert topic["replies"][0].startswith("**Authors:** Jane Doe\n\n**Abstract:**")
 
 
@@ -488,7 +495,7 @@ def test_a_paper_waits_for_its_html_version_and_then_goes_without(forum, monkeyp
 
     monkeypatch.setattr(feed, "HTML_WAIT", 0)
     assert feed.run(str(FIXTURE), dry_run=False) == 0
-    assert forum.topics["arxiv-2610_00112"]["raw"].startswith("**Jane Doe**\n")
+    assert forum.topics["arxiv-2610_00112"]["raw"].startswith("**Jane Doe** [arXiv:")
     assert json.loads(feed.STATE_PATH.read_text())["queue"] == []
 
 
@@ -499,7 +506,7 @@ def test_a_paper_whose_html_turns_up_is_posted_with_it(forum):
 
     forum.html["2610.00129"] = page
     feed.run(str(FIXTURE), dry_run=False)
-    assert "(University of Ottawa)" in forum.topics["arxiv-2610_00129"]["raw"]
+    assert "(University of Ottawa; Stanford University)" in forum.topics["arxiv-2610_00129"]["raw"]
 
 
 def test_a_second_run_of_the_same_build_posts_and_deletes_nothing(forum):

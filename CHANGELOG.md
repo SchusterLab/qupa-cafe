@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-23 (preprint titles without the id)
 
 - **A preprint's topic is titled with the paper's title alone.** The arXiv id is added after it only when the forum refuses the title alone, as shorter than `min_topic_title_length`, below `title_min_entropy`, or already used by a live topic. The topic's first post still links the paper by its id. At a new build the feed finds its own topics by the account that opened them rather than by the id in the title, so the topics it opened before this change are deleted under the same rule. `server/arxiv-feed.py`, with tests; `docs/05-forum-config.md` 5.10.
+- **A preprint's topic is one line**: the first and last authors and how many come between, then the first and last authors' institutions together in one pair of parentheses, each named once, then the links to the abstract page and the PDF. Where and when the paper was announced is left out. `server/arxiv-feed.py`, `content/arxiv-topic.md`, with tests; `docs/05-forum-config.md` 5.10.
 
 ### 2026-10-23 (bge-m3)
 

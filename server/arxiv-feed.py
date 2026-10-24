@@ -451,12 +451,11 @@ def fill(template: str, values: dict[str, str]) -> str:
 
 
 def topic_body(paper: Paper, template: str, affs: list[list[str]] | None = None) -> str:
-    """The topic's first post: the first and last authors, each with their
-    institutions when ``affs`` gives them, how many authors come between, and
-    where and when it was announced."""
+    """The topic's first post: the first and last authors, how many authors
+    come between, and, when ``affs`` gives them, the institutions of the
+    first and last authors together after the names."""
     def named(n: int) -> str:
-        where = institutions(affs[n]) if affs else []
-        return f"**{paper.authors[n]}**" + (f" ({'; '.join(where)})" if where else "")
+        return f"**{paper.authors[n]}**"
 
     count = len(paper.authors)
     if count == 0:
@@ -470,14 +469,13 @@ def topic_body(paper: Paper, template: str, affs: list[list[str]] | None = None)
         others = f"{between} other author" + ("s" if between > 1 else "")
         names = f"{named(0)}, {others}, and {named(count - 1)}"
 
-    if paper.announce_type == "cross":
-        announcement = f"Cross-listed to quant-ph from {paper.primary_category} on {paper.announced}"
-    else:
-        announcement = f"Announced in {paper.primary_category} on {paper.announced}"
+    ends = ([affs[0], affs[count - 1]] if count > 1 else affs[:1]) if affs else []
+    where = list(dict.fromkeys(name for aff in ends for name in institutions(aff)))
+    if where:
+        names += f" ({'; '.join(where)})"
 
     return fill(template, {
         "AUTHORS": names,
-        "ANNOUNCEMENT": announcement,
         "ARXIV_ID": paper.arxiv_id,
         "ABS_URL": paper.abs_url,
         "PDF_URL": paper.pdf_url,
