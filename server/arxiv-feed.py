@@ -411,9 +411,9 @@ def topic_body(paper: Paper, template: str) -> str:
 
 
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
-# Between an author's numbers, a character that sits high as they do, so that
-# ²˒¹ is not read as twenty-one; a comma would sit on the line.
-SEPARATOR = "˒"
+# Between an author's numbers, a thin space, so that ² ¹ is not read as
+# twenty-one; a comma would sit on the line.
+SEPARATOR = " "
 
 
 def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) -> tuple[str, str]:
