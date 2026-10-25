@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-25 (Abstract, and a full stop)
 
 - **The feed's reply numbers affiliations in superscript digits side by side, with none between**, "Roberto Fernández-Barrios²³", and each affiliation opens with its own, "²Current affiliation: …", in place of a `<sup>` holding commas and a numbered list; Slack has no superscript and showed the commas on the line. An author with an affiliation numbered 10 or more reads ambiguously. `server/arxiv-feed.py`, with tests.
+- **An author's affiliation numbers are parted by `˒`**, a mark that sits high as they do, "Martin Sandberg²˒¹", which side by side read as twenty-one. `server/arxiv-feed.py`, with tests.
 - **Deployed** on 25 October at 06:04 UTC: `707c16d`'s `server/arxiv-feed.py` and its tests over `e7e8aae`'s and `00c15a0`'s copies, backed up as `.bak-20261025-sup`, and the feed's replies in the 18 preprint topics that numbered affiliations rewritten to match, the bridge carrying each to Slack.
 - **A preprint's topic puts a full stop after its authors, and its first link reads "Abstract"**, capitalised: "Jane Doe. [Abstract](…), [PDF](…)." `content/arxiv-topic.md`, with tests.
 - **Deployed** on 25 October at 05:59 UTC: `00c15a0`'s `content/arxiv-topic.md` and its tests over `ef589af`'s copies, backed up as `.bak-20261025-abs`. The first posts of the 21 preprint topics then on the forum, 1126 to 1146, were revised the same way at 06:00, and the bridge carried each to its Slack copy.

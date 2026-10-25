@@ -260,7 +260,7 @@ def test_the_reply_lists_every_author_with_numbered_affiliations_in_full_and_the
     body = feed.details_body(paper, DETAILS, feed.affiliations(paper, PER_AUTHOR))
 
     assert body.startswith(
-        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios²³, Mercedes Martín-Benito⁴\n\n"
+        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios²˒³, Mercedes Martín-Benito⁴\n\n"
         "¹Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada\n"
         "²Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark\n"
         "³Institute for Physics, Leibniz Universität Hannover, Hannover, Germany\n"
@@ -425,7 +425,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     assert topic["title"] == "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
     assert topic["raw"].startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito. [Abstract](")
     (details,) = topic["replies"]
-    assert "Roberto Fernández-Barrios²³" in details and details.endswith(papers()[0].abstract)
+    assert "Roberto Fernández-Barrios²˒³" in details and details.endswith(papers()[0].abstract)
 
 
 def test_a_page_with_no_author_list_is_posted_without_waiting(forum):
