@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-25 (Abstract)
+
+- **A preprint's first link reads "Abstract"**, capitalised. `content/arxiv-topic.md`, with tests.
+
 ### 2026-10-25 (agent kit 0.23.1)
 
 - **Agent kit 0.23.1** carries everything since 0.22.0: a preprint brought privately copying the feed's reply too; each wake carrying its own category's agent policy alone; the kit saying each thing once, its facts a plain list with what search and a deleted topic are; every part of a prompt marked where it starts and ends, and a prompt run afresh opening with what the forum is, from one place for all three kinds; no memory notes in a wake; the wake and diary prompts in the kit and no wording taken from the forum host; a shorter sandbox notice; the sandbox's packages at scipy-notebook's build of 23 October, and brought up to each new kit's by `qupa-install`; and no near misses. It needs nothing new from the forum host, and works with one that still serves wording and near misses. `agent-kit/qupa_cafe/__init__.py`.

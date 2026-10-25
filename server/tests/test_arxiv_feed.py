@@ -116,7 +116,7 @@ def test_a_long_title_is_cut_to_fit_and_keeps_the_id():
 
 def test_the_links_follow_the_authors_on_one_line():
     assert feed.topic_body(papers()[1], TEMPLATE) == (
-        "Jane Doe [abstract](https://arxiv.org/abs/2610.00112), [PDF](https://arxiv.org/pdf/2610.00112)."
+        "Jane Doe [Abstract](https://arxiv.org/abs/2610.00112), [PDF](https://arxiv.org/pdf/2610.00112)."
     )
 
 
@@ -249,10 +249,10 @@ def test_the_topic_names_the_first_and_last_authors_and_no_affiliations():
     two = feed.Paper(**{**paper.__dict__, "authors": paper.authors[:2]})
     many = feed.Paper(**{**paper.__dict__, "authors": [*paper.authors, "Ada Lovelace"]})
 
-    assert feed.topic_body(paper, TEMPLATE).startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito [abstract](")
-    assert feed.topic_body(many, TEMPLATE).startswith("Lukas Ebner, 2 other authors, and Ada Lovelace [abstract](")
-    assert feed.topic_body(two, TEMPLATE).startswith("Lukas Ebner and Roberto Fernández-Barrios [abstract](")
-    assert feed.topic_body(papers()[1], TEMPLATE).startswith("Jane Doe [abstract](")
+    assert feed.topic_body(paper, TEMPLATE).startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito [Abstract](")
+    assert feed.topic_body(many, TEMPLATE).startswith("Lukas Ebner, 2 other authors, and Ada Lovelace [Abstract](")
+    assert feed.topic_body(two, TEMPLATE).startswith("Lukas Ebner and Roberto Fernández-Barrios [Abstract](")
+    assert feed.topic_body(papers()[1], TEMPLATE).startswith("Jane Doe [Abstract](")
 
 
 def test_the_reply_lists_every_author_with_numbered_affiliations_in_full_and_the_abstract():
@@ -423,7 +423,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     topic = forum.topics["arxiv-2610_00129"]
     assert topic["category"] == "7"
     assert topic["title"] == "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
-    assert topic["raw"].startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito [abstract](")
+    assert topic["raw"].startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito [Abstract](")
     (details,) = topic["replies"]
     assert "Roberto Fernández-Barrios<sup>2,3</sup>" in details and details.endswith(papers()[0].abstract)
 
@@ -432,7 +432,7 @@ def test_a_page_with_no_author_list_is_posted_without_waiting(forum):
     feed.run(str(FIXTURE), dry_run=False)
 
     topic = forum.topics["arxiv-2610_00112"]
-    assert topic["raw"].startswith("Jane Doe [abstract](")
+    assert topic["raw"].startswith("Jane Doe [Abstract](")
     assert topic["replies"][0].startswith("**Authors:** Jane Doe\n\n**Abstract:**")
 
 
@@ -449,7 +449,7 @@ def test_a_paper_waits_for_its_html_version_and_then_goes_without(forum, monkeyp
 
     monkeypatch.setattr(feed, "HTML_WAIT", 0)
     assert feed.run(str(FIXTURE), dry_run=False) == 0
-    assert forum.topics["arxiv-2610_00112"]["raw"].startswith("Jane Doe [abstract](")
+    assert forum.topics["arxiv-2610_00112"]["raw"].startswith("Jane Doe [Abstract](")
     assert json.loads(feed.STATE_PATH.read_text())["queue"] == []
 
 
