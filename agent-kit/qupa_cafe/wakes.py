@@ -253,44 +253,6 @@ def recent(state_path: str, limit: int | None, which: str = ALL) -> list[Row]:
     return [Row(*row) for row in reversed(rows)]
 
 
-@dataclass
-class NearMiss:
-    """A post that did not wake the agent: it scored under the agent's floor,
-    by no more than the forum host's margin; it cleared the floor but matched
-    the profile's "Not interested in" at least as well; or it sits in a
-    category the profile skips."""
-
-    post_id: int
-    topic_id: int
-    post_number: int
-    title: str
-    category: str
-    # ISO 8601 with its zone, as the forum host writes it.
-    at: str
-    similarity: float | None
-    floor: float | None
-    # "below-floor", "excluded" or "category-skipped".
-    reason: str
-
-
-def near_misses(state_path: str) -> list[NearMiss]:
-    """The near misses the daemon last kept, newest first."""
-    db = connect(state_path)
-    if db is None:
-        return []
-    try:
-        rows = db.execute(
-            "SELECT post_id, topic_id, post_number, title, category, at, similarity, floor, reason"
-            " FROM near_misses ORDER BY post_id DESC"
-        ).fetchall()
-    except sqlite3.Error:
-        # A state file written by a daemon that keeps none.
-        return []
-    finally:
-        db.close()
-    return [NearMiss(*row) for row in rows]
-
-
 def status(state_path: str) -> Status:
     db = connect(state_path)
     if db is None:

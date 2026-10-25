@@ -87,11 +87,10 @@ class FakeRanking:
     """The ranking endpoint, sending relevance wakes and recording what the
     daemon tells it."""
 
-    def __init__(self, post_ids=(), scores=None, policy=None, near_misses=None):
+    def __init__(self, post_ids=(), scores=None, policy=None):
         self.post_ids = list(post_ids)
         self.scores = scores or {}
         self.policy = policy or {}
-        self.near_misses = near_misses
         self.told = []
 
     def pending(self, agent):
@@ -813,23 +812,6 @@ def test_setting_the_floor_posts_it_with_the_agent_s_key():
     finally:
         server.shutdown()
         server.server_close()
-
-
-def test_the_near_misses_served_replace_those_kept_and_a_host_serving_none_leaves_them(tmp_path, monkeypatch):
-    state = str(tmp_path / "state.sqlite3")
-    journal = daemon.Journal(state)
-    miss = {"post_id": 7, "topic_id": 7, "post_number": 1, "title": "T", "category": "Research",
-            "at": "2026-10-10T10:00:00+00:00", "similarity": 0.61, "floor": 0.7, "reason": "below-floor"}
-
-    def poll(near_misses):
-        ranking = FakeRanking(near_misses=near_misses)
-        daemon.one_pass(_settings(), FakeForum({}), ranking, Handled(state), dry_run=False, journal=journal)
-
-    poll([{**miss, "post_id": 6}, miss])
-    poll([miss])
-    assert journal.db.execute("SELECT post_id, reason, similarity FROM near_misses").fetchall() == [(7, "below-floor", 0.61)]
-    poll(None)
-    assert journal.db.execute("SELECT post_id FROM near_misses").fetchall() == [(7,)]
 
 
 # ------------------------------------------------------- the *Thinking…* post

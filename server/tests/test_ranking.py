@@ -310,82 +310,18 @@ def test_no_number_of_wakes_stops_an_agent_being_woken(state):
     assert wakes_today(state, "a-agent") == 50
 
 
-class ReplyRanker(OfflineRanker):
-    """Topics score 0.9; a reply's own words score by the vector reply_vector returns."""
-
-    def __init__(self, config, state, agents, reply):
-        super().__init__(config, state, agents)
-        self.reply = reply
-        self.embedded: list[str] = []
-
-    def reply_vector(self, post):
-        self.embedded.append(post.get("raw"))
-        return self.reply
-
-
 def a_reply(post_id: int, raw: str = "Thanks, that helps.") -> dict:
     return {**a_post(post_id, "someone"), "post_number": 2, "title": "Dispersive readout", "raw": raw}
 
 
-def test_a_stray_reply_in_an_on_topic_thread_is_not_scored_as_the_thread(state):
-    """The thread scores 0.9; the reply's own words point elsewhere, so the
-    reply scores halfway, under the floor."""
+def test_a_reply_is_scored_by_its_thread_as_the_first_post_is(state):
+    """OfflineRanker scores every topic 0.9; a reply's own words are not embedded."""
     agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    ranker = ReplyRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [agent], reply=[0.0, 1.0])
+    ranker = OfflineRanker(Config(similarity_floor=0.70), state, [agent])
 
     [decision] = ranker.score_post(a_reply(5))
 
-    assert decision.reason == "below-floor"
-    assert round(decision.similarity, 2) == 0.45
-    assert ranker.embedded == ["Thanks, that helps."]
-
-
-def test_a_reply_on_topic_in_an_on_topic_thread_wakes_its_agent(state):
-    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    ranker = ReplyRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [agent], reply=[0.96, 0.28])
-
-    [decision] = ranker.score_post(a_reply(5))
-
-    assert decision.reason == "woken"
-    assert round(decision.similarity, 2) == 0.93
-
-
-def test_the_reply_weight_sets_how_much_the_thread_counts(state):
-    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    thread_only = ReplyRanker(Config(reply_weight=0.0), state, [agent], reply=[0.0, 1.0])
-    reply_only = ReplyRanker(Config(reply_weight=1.0), state, [agent], reply=[0.0, 1.0])
-
-    assert thread_only.score_post(a_reply(5))[0].similarity == 0.9
-    assert reply_only.score_post(a_reply(6))[0].similarity == 0.0
-
-
-def test_a_reply_is_embedded_once_for_every_agent(state):
-    agents = [Agent(f"{n}-agent", n, [], "anything", profile_vector=[1.0, 0.0]) for n in "abc"]
-    ranker = ReplyRanker(Config(), state, agents, reply=[1.0, 0.0])
-
-    ranker.score_post(a_reply(5))
-
-    assert len(ranker.embedded) == 1
-
-
-def test_a_reply_the_embedding_server_cannot_embed_waits_for_the_next_pass(state):
-    """As a topic with no vector yet does, so the reply is retried, not lost."""
-    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    ranker = ReplyRanker(Config(), state, [agent], reply=[])
-
-    [decision] = ranker.score_post(a_reply(5))
-
-    assert decision.reason == "no-embedding-yet"
-
-
-def test_a_first_post_is_still_scored_by_its_topic(state):
-    agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    ranker = ReplyRanker(Config(), state, [agent], reply=[0.0, 1.0])
-
-    [decision] = ranker.score_post(a_post(5, "arxiv-bot"))
-
-    assert decision.reason == "woken" and decision.similarity == 0.9
-    assert ranker.embedded == []
+    assert (decision.reason, decision.similarity) == ("woken", 0.9)
 
 
 def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
@@ -460,11 +396,11 @@ def test_every_agent_over_its_own_floor_is_woken(state):
 # ------------------------------------------------------------ exclusions
 
 
-class VectorRanker(ReplyRanker):
+class VectorRanker(OfflineRanker):
     """A topic scores against each vector as ``scores`` says."""
 
-    def __init__(self, config, state, agents, scores, reply=None):
-        super().__init__(config, state, agents, reply)
+    def __init__(self, config, state, agents, scores):
+        super().__init__(config, state, agents)
         self.scores = scores
 
     def similarity(self, topic_id, vector):
@@ -486,8 +422,6 @@ def test_a_post_matching_the_exclusions_at_least_as_well_as_the_interests_does_n
 
     assert (decision.reason, decision.woke, decision.similarity, decision.exclusion) == ("excluded", False, 0.80, 0.82)
     assert not state.already_woken("a-agent", 1)
-    [miss] = state.near_misses("a-agent", hours=48)
-    assert (miss["reason"], miss["similarity"], miss["floor"]) == ("excluded", 0.80, 0.70)
 
 
 def test_a_post_matching_the_interests_better_wakes_and_logs_the_exclusion_s_score(state):
@@ -509,19 +443,6 @@ def test_the_exclusions_are_checked_only_above_the_floor_and_only_when_there_are
     none = VectorRanker(Config(similarity_floor=0.70), state, [plain], {tuple(INTERESTS): 0.80})
     [decision] = none.score_post(a_post(2, "arxiv-bot"))
     assert (decision.reason, decision.exclusion) == ("woken", None)
-
-
-def test_a_reply_is_checked_against_the_exclusions_as_it_is_scored_against_the_interests(state):
-    """By thread, the exclusions win; the reply's own words are about the
-    interests, and the mix of the two decides."""
-    scores = {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.85}
-    ranker = VectorRanker(Config(similarity_floor=0.70, reply_weight=0.5), state, [excluding_agent()], scores,
-                          reply=INTERESTS)
-
-    [decision] = ranker.score_post(a_reply(5))
-
-    assert decision.reason == "woken"
-    assert decision.similarity == 0.90 and decision.exclusion == 0.425
 
 
 class InterestsForum:
@@ -554,24 +475,6 @@ def test_changing_only_the_exclusions_embeds_them_afresh(state, monkeypatch):
     assert ranker.agents[0].exclusion_vector == [0.5, 0.5]
 
 
-# ------------------------------------------------------------- near misses
-
-
-def test_a_post_close_under_the_floor_is_kept_as_a_near_miss_and_one_far_under_is_not(state):
-    """OfflineRanker scores everything 0.9."""
-    close = OfflineRanker(Config(similarity_floor=0.95, near_miss_margin=0.15), state, [Agent("a-agent", "a", [], "x")])
-    far = OfflineRanker(Config(similarity_floor=1.10, near_miss_margin=0.15), state, [Agent("b-agent", "b", [], "x")])
-    post = {**a_post(1, "arxiv-bot"), "title": "Squeezed states"}
-
-    close.score_post(post)
-    far.score_post(post)
-
-    [miss] = state.near_misses("a-agent", hours=48)
-    assert (miss["post_id"], miss["title"], miss["reason"], miss["floor"]) == (1, "Squeezed states", "below-floor", 0.95)
-    assert miss["similarity"] == 0.9
-    assert state.near_misses("b-agent", hours=48) == []
-
-
 class PrivateRanker(OfflineRanker):
     """Category 6 is read by its group's members alone."""
 
@@ -580,49 +483,17 @@ class PrivateRanker(OfflineRanker):
 
 
 def test_a_post_in_a_private_category_wakes_only_the_agents_who_can_read_it(state):
-    """And the others keep no near miss, which would serve them its title."""
     agents = [Agent("a-agent", "a", [], "x"), Agent("B-agent", "b", [], "x")]
     ranker = PrivateRanker(Config(similarity_floor=0.5), state, agents)
     post = {**a_post(1, "someone"), "category_id": 6, "category_name": "Schuster lab", "read_restricted": True}
     decisions = {d.agent: d.reason for d in ranker.score_post(post)}
     assert decisions == {"a-agent": "cannot-see", "B-agent": "woken"}
 
-    # Close under the floor, which keeps a near miss for an agent that can read it.
-    ranker.config = Config(similarity_floor=0.95)
-    ranker.score_post({**post, "id": 2, "topic_id": 2})
-    assert [m["post_id"] for m in state.near_misses("B-agent", hours=48)] == [2]
-    assert state.near_misses("a-agent", hours=48) == []
 
-
-def test_a_post_in_a_skipped_category_is_kept_as_a_near_miss(state):
+def test_a_post_in_a_skipped_category_wakes_nobody(state):
     ranker = OfflineRanker(Config(), state, [Agent("a-agent", "a", ["arxiv quant-ph"], "x")])
-    ranker.score_post(a_post(1, "arxiv-bot"))
-    [miss] = state.near_misses("a-agent", hours=48)
-    assert (miss["reason"], miss["category"], miss["similarity"]) == ("category-skipped", "arXiv quant-ph", None)
-
-
-def test_explaining_a_post_records_no_near_miss_and_old_near_misses_are_forgotten(state):
-    ranker = OfflineRanker(Config(similarity_floor=0.95), state, [Agent("a-agent", "a", [], "x")])
-    ranker.score_post(a_post(1, "arxiv-bot"), record=False)
-    assert state.near_misses("a-agent", hours=48) == []
-
-    ranker.score_post(a_post(2, "arxiv-bot"))
-    state.db.execute("UPDATE near_misses SET at = ?", ((datetime.now(timezone.utc) - timedelta(hours=49)).isoformat(),))
-    ranker.score_post(a_post(3, "arxiv-bot"))
-    assert [m["post_id"] for m in state.near_misses("a-agent", hours=48)] == [3]
-
-
-def test_the_daemon_is_served_its_near_misses(endpoint, state):
-    decision = ranking.Decision(post_id=9, topic_id=9, agent="yoshi-agent", similarity=0.6, woke=False,
-                                reason="below-floor", floor=0.7)
-    state.record_near_miss(decision, {"post_number": 1, "title": "T", "category_name": "Research"}, hours=48)
-    state.record_near_miss(ranking.Decision(post_id=9, topic_id=9, agent="other-agent", similarity=0.6,
-                                            woke=False, reason="below-floor"), {"title": "T"}, hours=48)
-
-    status, payload = wake(endpoint, {**AUTH, KIT_VERSION_HEADER: "0.9.0"})
-
-    assert status == 200
-    assert [(m["post_id"], m["title"], m["reason"]) for m in payload["near_misses"]] == [(9, "T", "below-floor")]
+    [decision] = ranker.score_post(a_post(1, "arxiv-bot"))
+    assert (decision.reason, decision.woke) == ("category-skipped", False)
 
 
 # -------------------------------------------------------------- the defaults
@@ -852,7 +723,6 @@ class StubRanker:
         return []
 
     floor_for = Ranker.floor_for
-    near_misses_for = Ranker.near_misses_for
     interests_for = Ranker.interests_for
 
     def researcher_for(self, agent: str) -> str:
@@ -1530,11 +1400,11 @@ def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
 # ------------------------------------------------------- the *Thinking…* post
 
 
-class QueuedRanker(ReplyRanker):
+class QueuedRanker(OfflineRanker):
     """Its new posts are a list the test changes between passes."""
 
     def __init__(self, config, state, agents, posts):
-        super().__init__(config, state, agents, reply=[1.0, 0.0])
+        super().__init__(config, state, agents)
         self.queue = posts
 
     def refresh_agents(self):

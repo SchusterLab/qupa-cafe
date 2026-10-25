@@ -28,7 +28,6 @@ import argparse
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
@@ -117,14 +116,6 @@ class Config:
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.0"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "1.0"))
 
-    # A post that scores within near_miss_margin under an agent's floor, that
-    # its exclusions held back, or that sits in a category it skips, is kept
-    # for near_miss_hours, so the wake browser can show what did not wake the
-    # agent.
-    near_miss_margin: float = float(os.environ.get("NEAR_MISS_MARGIN", "0.15"))
-    near_miss_hours: float = float(os.environ.get("NEAR_MISS_HOURS", "48"))
-    # A reply's share of its own score; the rest is the thread's.
-    reply_weight: float = float(os.environ.get("REPLY_WEIGHT", "0.5"))
 
     # Accounts that post a feed; their topics' wakes are logged as "feed",
     # and their replies are not scored.
@@ -284,24 +275,6 @@ class State:
                 PRIMARY KEY (agent, topic_id)
             );
 
-            -- Posts that did not wake an agent but came close, that its
-            -- exclusions held back, or that were in a category it skips, for
-            -- its wake browser: what its researcher may want it woken for.
-            -- Kept for near_miss_hours.
-            CREATE TABLE IF NOT EXISTS near_misses (
-                agent       TEXT NOT NULL,
-                post_id     INTEGER NOT NULL,
-                topic_id    INTEGER NOT NULL,
-                post_number INTEGER NOT NULL,
-                title       TEXT NOT NULL,
-                category    TEXT NOT NULL,
-                at          TEXT NOT NULL,
-                similarity  REAL,
-                floor       REAL,
-                -- 'below-floor', 'excluded' or 'category-skipped'.
-                reason      TEXT NOT NULL,
-                PRIMARY KEY (agent, post_id)
-            );
 
             -- The status this service set on an agent that cannot answer.
             CREATE TABLE IF NOT EXISTS agent_status (
@@ -357,33 +330,6 @@ class State:
                 (before.isoformat(),),
             )
         )
-
-    def record_near_miss(self, decision: "Decision", post: dict[str, Any], hours: float) -> None:
-        """Keep a post that did not wake an agent, and forget those older
-        than ``hours``."""
-        now = datetime.now(timezone.utc)
-        self.db.execute(
-            "INSERT OR REPLACE INTO near_misses (agent, post_id, topic_id, post_number, title, category,"
-            " at, similarity, floor, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                decision.agent, decision.post_id, decision.topic_id, post.get("post_number") or 1,
-                post.get("title") or "", post.get("category_name") or "", now.isoformat(),
-                decision.similarity, decision.floor, decision.reason,
-            ),
-        )
-        self.db.execute("DELETE FROM near_misses WHERE at < ?", ((now - timedelta(hours=hours)).isoformat(),))
-        self.db.commit()
-
-    def near_misses(self, agent: str, hours: float) -> list[dict[str, Any]]:
-        """One agent's near misses of the last ``hours``, newest first."""
-        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        rows = self.db.execute(
-            "SELECT post_id, topic_id, post_number, title, category, at, similarity, floor, reason"
-            " FROM near_misses WHERE agent = ? AND at >= ? ORDER BY post_id DESC",
-            (agent, since),
-        ).fetchall()
-        keys = ("post_id", "topic_id", "post_number", "title", "category", "at", "similarity", "floor", "reason")
-        return [dict(zip(keys, row)) for row in rows]
 
     def already_woken(self, agent: str, post_id: int) -> bool:
         row = self.db.execute(
@@ -827,12 +773,6 @@ def embed(text: str, config: Config = CONFIG) -> list[float]:
     with urllib.request.urlopen(req, timeout=60) as resp:
         result = json.loads(resp.read().decode())
     return result[0] if result and isinstance(result[0], list) else result
-
-
-def cosine(left: list[float], right: list[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right))
-    norm = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
-    return dot / norm if norm else 0.0
 
 
 # The embedding server's input limit, asked once. Negative: asked, no answer.
@@ -1454,17 +1394,6 @@ class Ranker:
             replied, embedded = cur.fetchone()
         return replied is not None and embedded is not None and embedded >= replied
 
-    def reply_vector(self, post: dict[str, Any]) -> list[float]:
-        """A reply's own words, embedded by the model the profiles are, or
-        ``[]`` when the embedding server fails. The thread is the topic
-        vector's part of the score, so it stays out of this one."""
-        text = (post.get("raw") or "").strip() or (post.get("title") or "")
-        try:
-            return embed(text, self.config)
-        except Exception as exc:  # noqa: BLE001 - the caller retries the post
-            LOG.warning("could not embed post %s: %s", post.get("id"), exc)
-            return []
-
     # ---------------------------------------------------------- the decision
 
     def score_post(self, post: dict[str, Any], record: bool = True) -> list[Decision]:
@@ -1474,25 +1403,14 @@ class Ranker:
         decisions: list[Decision] = []
 
         kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
-        # Embedded once for every agent, on the first that gets that far.
-        reply: list[float] | None = None
         # Who may read a post in a read-restricted category, such as a private
         # diary; None for one everybody reads.
         readers = self.readers(post.get("category_id")) if post.get("read_restricted") else None
 
         def match(vector: list[float]) -> float | None:
-            """How well the post matches ``vector``: a topic's first post by its
-            thread, a reply by a mix of its thread and its own words. None
-            while the topic has no embedding."""
-            nonlocal reply
-            score = self.similarity(post["topic_id"], vector)
-            if score is None or (post.get("post_number") or 1) == 1:
-                return score
-            if reply is None:
-                reply = self.reply_vector(post)
-            own = cosine(reply, vector) if reply else None
-            weight = self.config.reply_weight
-            return None if own is None else (1 - weight) * score + weight * own
+            """How well the post's thread matches ``vector``, the first post and
+            every reply alike; None while the topic has no embedding."""
+            return self.similarity(post["topic_id"], vector)
 
         for agent in self.agents:
             base = dict(post_id=post["id"], topic_id=post["topic_id"], agent=agent.username, kind=kind)
@@ -1501,8 +1419,7 @@ class Ranker:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="own-post"))
                 continue
 
-            # Neither woken nor kept as a near miss, which would serve the
-            # post's title to an agent that cannot read it.
+            # Not woken, which would serve the post to an agent that cannot read it.
             if readers is not None and agent.username.lower() not in readers:
                 decisions.append(Decision(**base, similarity=None, woke=False, reason="cannot-see"))
                 continue
@@ -1513,10 +1430,7 @@ class Ranker:
 
             category = (post.get("category_name") or "").lower()
             if category in agent.skip_categories:
-                decision = Decision(**base, similarity=None, woke=False, reason="category-skipped")
-                decisions.append(decision)
-                if record:
-                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
+                decisions.append(Decision(**base, similarity=None, woke=False, reason="category-skipped"))
                 continue
 
             similarity = match(agent.profile_vector or [])
@@ -1526,21 +1440,15 @@ class Ranker:
 
             floor = self.state.floor(agent.username, self.config.similarity_floor)
             if similarity < floor:
-                decision = Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor)
-                decisions.append(decision)
-                if record and similarity >= floor - self.config.near_miss_margin:
-                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
+                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor))
                 continue
 
             # Held back by "Not interested in": the post matches what the
             # agent's researcher excluded at least as well as what they watch for.
             exclusion = match(agent.exclusion_vector) if agent.exclusion_vector else None
             if exclusion is not None and exclusion >= similarity:
-                decision = Decision(**base, similarity=similarity, woke=False, reason="excluded", floor=floor,
-                                    exclusion=exclusion)
-                decisions.append(decision)
-                if record:
-                    self.state.record_near_miss(decision, post, self.config.near_miss_hours)
+                decisions.append(Decision(**base, similarity=similarity, woke=False, reason="excluded", floor=floor,
+                                          exclusion=exclusion))
                 continue
 
             if record:
@@ -1596,9 +1504,6 @@ class Ranker:
         return all_decisions
 
     # ------------------------------------------------------------ read side
-
-    def near_misses_for(self, agent: str) -> list[dict[str, Any]]:
-        return self.state.near_misses(agent, self.config.near_miss_hours)
 
     def pending_for(self, agent: str) -> list[dict[str, Any]]:
         """Every wake recorded for one agent in the last 24 hours, newest first.
@@ -1965,7 +1870,6 @@ class Handler(BaseHTTPRequestHandler):
                 "researcher": self.ranker.researcher_for(agent),
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
-                "near_misses": self.ranker.near_misses_for(agent),
                 "policy": self.ranker.floor_for(agent),
                 "interests": self.ranker.interests_for(agent),
             }

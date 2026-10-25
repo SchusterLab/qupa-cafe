@@ -61,7 +61,7 @@ def test_the_chosen_wake_is_marked_and_the_keys_are_shown():
     chosen = [line for line in frame if "❯" in line]
     assert len(chosen) == 1 and "Topic 2" in chosen[0]
     assert frame[-1].strip() == (
-        "↑↓ to select · Enter to read · r to wake again · t to tune replies · n for near misses · Esc to quit"
+        "↑↓ to select · Enter to read · r to wake again · t to tune replies · Esc to quit"
     )
     assert "Qupa Cafe" in "\n".join(frame[:3])
 
@@ -225,7 +225,7 @@ def test_tuning_resumes_an_ended_wake_s_session_and_starts_a_new_one_otherwise(m
 def test_tuning_approves_the_forum_tools_and_nothing_else():
     """Reading the forum and editing the agent's post ask nothing; a file edit
     still asks, and the prompt is never read as a tool's name."""
-    command = browse.tune_command(browse.subject_of_miss(_miss(7), "/agent"), "claude", "the prompt")
+    command = browse.tune_command(browse.subject_of_wake(browse.Wake(_row(7), None), "/agent"), "claude", "the prompt")
     tools = command[command.index("--allowedTools") + 1].split(",")
     assert "mcp__discourse" in tools and "mcp__qupa-cafe__edit_post" in tools
     assert not [tool for tool in tools if not tool.startswith("mcp__")]
@@ -285,58 +285,6 @@ def test_tuning_how_the_agent_replies_asks_what_to_change_and_points_at_the_file
     assert "wants to change how you reply to posts like the one on topic 42" in prompt
     assert "Ask them first what to change" in prompt
     assert "how you reply is set by QUPA.md alone" in prompt
-    assert "Change nothing until they agree." in prompt
-
-
-def _miss(topic: int, reason: str = "below-floor", similarity: float | None = 0.61, category: str = "Research"):
-    return wakes.NearMiss(topic + 100, topic, 1, f"Missed {topic}", category, "2026-10-10T10:00:00+00:00",
-                          similarity, 0.70, reason)
-
-
-def test_a_post_its_exclusions_held_back_is_marked_and_explained_as_such():
-    b = _browser(browse.Wake(_row(1), SAID))
-    b.missed = [_miss(9, "excluded", 0.80)]
-    b.handle("n")
-    assert any("excluded" in line and "Missed 9" in line for line in b.frame(120, 20))
-
-    prompt = browse.tune_prompt(browse.subject_of_miss(b.missed[0], "/agent"), "wake")
-    assert "it cleared your similarity floor (it scored 0.80)" in prompt
-    assert 'matched the "Not interested in:" line of your interests post at least as well as your interests' in prompt
-
-
-def test_n_shows_the_posts_that_did_not_wake_the_agent_and_t_offers_to_wake_it_for_them():
-    b = _browser(browse.Wake(_row(1), SAID))
-    b.missed = [_miss(7), _miss(8, "category-skipped", None, "Meta")]
-    b.agent_dir = "/agent"
-
-    b.handle("n")
-    frame = b.frame(120, 20)
-    assert any("under 0.70" in line and "Missed 7" in line for line in frame)
-    assert any("skipped" in line and "Missed 8" in line for line in frame)
-    assert frame[-1].strip() == "↑↓ to select · t to tune waking · n for wakes · Esc to quit"
-
-    b.handle("down")
-    b.handle("t")
-    assert b.question == browse.WAKE_QUESTION and browse.WAKE_QUESTION[0] in browse.visible(b.frame(160, 20)[-2])
-    # Reply, ignore and how are about wakes, which this was not.
-    assert b.handle("r") is None
-    b.handle("t")
-    assert b.handle("w") == "tune-wake"
-    assert (b.subject.topic_id, b.subject.woke) == (8, False)
-    assert "Meta" in b.subject.why and "Categories to skip" in b.subject.why
-
-    b.handle("n")
-    assert not b.showing_missed and b.selected.row.topic_id == 1
-
-
-def test_waking_for_posts_like_one_points_at_the_interests_post_and_the_floor_only():
-    subject = browse.subject_of_miss(_miss(7), "/agent")
-    prompt = browse.tune_prompt(subject, "wake")
-    assert "wants you woken for posts like the one on topic 7" in prompt
-    assert "It did not wake you: it scored 0.61 against your similarity floor of 0.70." in prompt
-    assert browse.INTERESTS_TOPIC_TITLE in prompt and "similarity floor, 0.70," in prompt
-    assert "Only your researcher sets it, with + and - in the wake browser" in prompt
-    assert "QUPA.md cannot make a post wake you" in prompt
     assert "Change nothing until they agree." in prompt
 
 
@@ -575,15 +523,12 @@ def test_r_asks_for_the_chosen_wake_s_post_once(tmp_path):
     assert b.handle("r") == "rewake"
 
 
-def test_r_has_no_post_to_wake_for_in_the_parent_the_near_misses_or_an_empty_list(tmp_path):
+def test_r_has_no_post_to_wake_for_in_the_parent_or_an_empty_list(tmp_path):
     settings = Settings(state_path=str(tmp_path / "state.sqlite3"))
     parent = wakes.Row("2026-10-11 00:01:00", None, "finished", "p", "/agent", None, None, "parent",
                        daemon.PARENT_REASON)
     assert "parent session" in browse.rewake(settings, browse.Wake(parent, SAID))
     assert daemon.rewakes(settings.state_path) == []
-    b = _browser(browse.Wake(_row(7), SAID))
-    b.handle("n")
-    assert b.handle("r") is None
     assert _browser().handle("r") is None
 
 

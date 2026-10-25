@@ -369,20 +369,6 @@ class Journal:
                 newer  TEXT,
                 at     TEXT NOT NULL
             );
-            -- Posts that did not wake the agent but came close, or sit in a
-            -- category it skips, or matched its exclusions, as the forum host
-            -- last served them.
-            CREATE TABLE IF NOT EXISTS near_misses (
-                post_id     INTEGER PRIMARY KEY,
-                topic_id    INTEGER NOT NULL,
-                post_number INTEGER NOT NULL,
-                title       TEXT NOT NULL,
-                category    TEXT NOT NULL,
-                at          TEXT NOT NULL,
-                similarity  REAL,
-                floor       REAL,
-                reason      TEXT NOT NULL
-            );
             """
         )
         self.db.commit()
@@ -497,25 +483,6 @@ class Journal:
             (interval,),
         )
 
-    def record_near_misses(self, misses: list[dict]) -> None:
-        """Replace the near misses with the ones the forum host last served."""
-        rows = []
-        for miss in misses:
-            try:
-                rows.append((
-                    int(miss["post_id"]), int(miss["topic_id"]), int(miss.get("post_number") or 1),
-                    str(miss.get("title") or ""), str(miss.get("category") or ""), str(miss["at"]),
-                    miss.get("similarity"), miss.get("floor"), str(miss["reason"]),
-                ))
-            except (KeyError, TypeError, ValueError):
-                continue
-        try:
-            with self.db:
-                self.db.execute("DELETE FROM near_misses")
-                self.db.executemany("INSERT OR REPLACE INTO near_misses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
-        except sqlite3.Error as exc:
-            LOG.warning("could not record the near misses: %s", exc)
-
     def record_floor(self, policy: dict) -> None:
         """Keep the floor the forum host stated, for the wake browser."""
         try:
@@ -606,7 +573,6 @@ class Ranking:
         self.policy: dict = {}
         # The posts that did not wake the agent, from the last poll; None from
         # a host that does not serve them.
-        self.near_misses: list[dict] | None = None
         # This run's name, set by a resident daemon once it has claimed the
         # agent, and where the daemon that has since taken it runs.
         self.instance = ""
@@ -682,8 +648,6 @@ class Ranking:
             if "interests" in payload:
                 save_interests(self.settings, payload["interests"])
             self.policy = payload.get("policy") or {}
-            near = payload.get("near_misses")
-            self.near_misses = near if isinstance(near, list) else None
             return payload.get("pending") or []
         except urllib.error.HTTPError as exc:
             # 409: a newer daemon for this agent, here or elsewhere, has it now.
@@ -1740,8 +1704,6 @@ def one_pass(
     candidates = collect(settings, forum, ranking, handled)
     if journal is not None and not dry_run and ranking.policy:
         journal.record_floor(ranking.policy)
-    if journal is not None and not dry_run and ranking.near_misses is not None:
-        journal.record_near_misses(ranking.near_misses)
     if not candidates:
         return 0
 
