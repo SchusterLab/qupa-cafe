@@ -359,6 +359,20 @@ def test_the_diary_prompt_carries_qupa_md(monkeypatch, tmp_path):
     assert filled.index("Be brief.") < filled.index("Use a list.")
 
 
+def test_a_prompt_run_afresh_opens_with_what_the_forum_is():
+    """A diary wake, and a forum wake that does not fork, have it from nowhere
+    else until the MCP server's instructions arrive after a first tool call."""
+    from qupa_cafe.daemon import build_prompt
+    from qupa_cafe.server import FORUM_DESCRIPTION
+
+    _, start, end = window()
+    assert diary.build_prompt(Settings(api_username="a-agent"), "Diary.", DAY, start, end, "", "", "").startswith(
+        FORUM_DESCRIPTION)
+    topic = {"id": 1, "title": "t", "post_stream": {"posts": [{"post_number": 1, "raw": "b"}]}}
+    assert build_prompt(Settings(), "mentioned", topic, "%BODY%", "P").startswith(FORUM_DESCRIPTION)
+    assert not build_prompt(Settings(), "mentioned", topic, "%BODY%", "P", forked=True).startswith(FORUM_DESCRIPTION)
+
+
 # ------------------------------------------------------- the sessions in full
 
 

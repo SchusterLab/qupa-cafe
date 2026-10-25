@@ -959,7 +959,10 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     # fork has from its parent.
     whoami = "" if forked else who_am_i(settings)
 
-    filled = template
+    # What the forum is opens a prompt that runs afresh, as it opens the parent.
+    from .server import FORUM_DESCRIPTION
+
+    filled = template if forked else FORUM_DESCRIPTION + chr(10) * 2 + template
     for token, value in (
         ("%REASON%", reason),
         ("%WHOAMI%", whoami),

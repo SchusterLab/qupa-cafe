@@ -697,7 +697,10 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
         whoami = f"You are `{settings.api_username}` here."
     from_researcher = local.instructions(settings.agent_dir or None)
 
-    filled = template
+    # What the forum is, which a diary wake, run afresh, has from nowhere else.
+    from .server import FORUM_DESCRIPTION
+
+    filled = FORUM_DESCRIPTION + "\n\n" + template
     for token, value in (
         ("%WHOAMI%", whoami),
         ("%DAY%", day.isoformat()),

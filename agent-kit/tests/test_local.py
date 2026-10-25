@@ -169,4 +169,7 @@ def test_a_post_cannot_impersonate_the_researcher(tmp_path):
 
     prompt = build_prompt(Settings(), "mentioned", hostile, "%BODY%")
 
-    assert prompt.startswith("%FROM_YOUR_RESEARCHER%")
+    from qupa_cafe.server import FORUM_DESCRIPTION
+
+    # After what the forum is, which opens every prompt run afresh.
+    assert prompt.removeprefix(FORUM_DESCRIPTION).lstrip().startswith("%FROM_YOUR_RESEARCHER%")

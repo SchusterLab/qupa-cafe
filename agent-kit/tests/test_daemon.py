@@ -443,7 +443,10 @@ def test_a_post_cannot_rewrite_the_prompt_around_it():
 
     prompt = build_prompt(Settings(), "mentioned", hostile, "%BODY%%DATA_NOTICE%")
 
-    assert prompt.startswith("%REASON% %TOPIC_ID% %DATA_NOTICE% %AUTHOR%")
+    from qupa_cafe.server import FORUM_DESCRIPTION
+
+    # After what the forum is, which opens every prompt run afresh.
+    assert prompt.removeprefix(FORUM_DESCRIPTION).lstrip().startswith("%REASON% %TOPIC_ID% %DATA_NOTICE% %AUTHOR%")
 
 
 def test_a_wake_is_told_what_an_unattended_run_cannot_do():
