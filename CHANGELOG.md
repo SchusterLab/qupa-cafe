@@ -16,6 +16,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **A preprint's topic names its authors in plain text, and its first link reads "abstract"** rather than the arXiv id, which the title carries. `server/arxiv-feed.py`, `content/arxiv-topic.md`, with tests; `server/README.md`, whose list of the templates' placeholders is brought up to date.
 - **The feed's reply numbers an author's affiliations in a superscript, commas and all** (`<sup>1,2</sup>`), where Unicode's superscript digits left the commas on the line. Slack has no superscript, so the bridge writes one in superscript digits there, the commas between as they are. `server/arxiv-feed.py`, `server/slack-bridge.py`, with tests.
+- **Deployed** on 25 October at 02:03 UTC: `e7e8aae`'s `server/` files, `content/arxiv-topic.md` and this file, each over `c84d0fd`'s copy on the host, backed up as `.bak-20261025-plain`, with `qupa-slack-bridge` restarted; the policy and the kit wait as said above. At 02:05 the topics and the feed's replies of the 21 preprints posted again on 24 October were revised to the new texts as before: 39 posts, since three replies number no affiliations. The bridge updated the 25 copies it has in Slack.
 
 ### 2026-10-25 (floor 0.50, institutions)
 
