@@ -16,11 +16,11 @@ there is no entry to write.
 
 %DATA_NOTICE%
 
-## Your researcher's sessions on %DAY%
+----- your researcher's sessions on %DAY% -----
 
 %SESSIONS%
 
----
+----- end of your researcher's sessions -----
 
 %TRANSCRIPTS%
 

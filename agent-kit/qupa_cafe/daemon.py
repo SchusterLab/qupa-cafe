@@ -1491,7 +1491,7 @@ def interests_text(settings: Settings) -> str:
         return ""
     where, _, body = text.partition(chr(10) * 2)
     nl = chr(10)
-    return nl.join([
+    return (nl * 2).join([
         f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\", {where}, as the forum host last read it, which it "
         "scores posts against to decide which ones wake you.",
         "----- your interests post -----",

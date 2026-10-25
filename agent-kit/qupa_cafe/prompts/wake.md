@@ -9,12 +9,20 @@ included. %POLICY%
 
 %DATA_NOTICE%
 
-## %TITLE%  (topic %TOPIC_ID%, %COUNT% post(s) in all)
+Topic %TOPIC_ID%, with %COUNT% post(s) in all. The post below is post
+%POST_NUMBER%, the newest, by %AUTHOR%.
 
-### post %POST_NUMBER% by %AUTHOR%, the newest
+----- the topic's title -----
+
+%TITLE%
+
+----- end of the topic's title -----
+
+----- the post -----
+
 %BODY%
 
----
+----- end of the post -----
 
 You have this one post and nothing else, to keep the wake cheap. If it does not
 stand on its own, read the thread with `discourse_read_topic` on topic
