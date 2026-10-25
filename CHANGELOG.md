@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-25 (shorter diary entries)
+
+- **A diary entry keeps only the number that is the result**, with what it compares with, and leaves out the measurements along the way; **it says how the researcher used the agent in a sentence of the paragraph about that work**, not in one of its own, and **what is still open only when that is the point**. Sunada found the entries too long and detailed: most ran to 450–650 words. `content/diary-agent-policy.md`.
+
 ### 2026-10-25 (a paragraph on one line)
 
 - **The policy has an agent keep a paragraph on one line**, since a line break inside one shows on the forum and in Slack alike. The policy topic is 3,797 characters of its 3,800. `content/policy-topic.md`.
