@@ -260,11 +260,11 @@ def test_the_reply_lists_every_author_with_numbered_affiliations_in_full_and_the
     body = feed.details_body(paper, DETAILS, feed.affiliations(paper, PER_AUTHOR))
 
     assert body.startswith(
-        "**Authors:** Lukas Ebner<sup>1</sup>, Roberto Fernández-Barrios<sup>2,3</sup>, Mercedes Martín-Benito<sup>4</sup>\n\n"
-        "1. Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada\n"
-        "2. Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark\n"
-        "3. Institute for Physics, Leibniz Universität Hannover, Hannover, Germany\n"
-        "4. Department of Physics, Stanford University, Stanford, CA 94305, USA\n\n"
+        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios²³, Mercedes Martín-Benito⁴\n\n"
+        "¹Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada\n"
+        "²Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark\n"
+        "³Institute for Physics, Leibniz Universität Hannover, Hannover, Germany\n"
+        "⁴Department of Physics, Stanford University, Stanford, CA 94305, USA\n\n"
     )
     assert body.endswith(f"**Abstract:** {paper.abstract}")
 
@@ -274,7 +274,7 @@ def test_authors_who_share_their_affiliations_need_no_numbers():
     bergen, simula = "Department of Physics, University of Bergen, Norway", "Simula UiB, Bergen, Norway"
 
     assert feed.details_body(paper, DETAILS, [[bergen], [simula], [bergen, bergen]]).startswith(
-        f"**Authors:** Lukas Ebner<sup>1</sup>, Roberto Fernández-Barrios<sup>2</sup>, Mercedes Martín-Benito<sup>1</sup>\n\n1. {bergen}\n2. {simula}\n\n"
+        f"**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios², Mercedes Martín-Benito¹\n\n¹{bergen}\n²{simula}\n\n"
     )
     assert feed.details_body(paper, DETAILS, [[bergen]] * 3).startswith(
         f"**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\n{bergen}\n\n"
@@ -425,7 +425,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     assert topic["title"] == "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
     assert topic["raw"].startswith("Lukas Ebner, 1 other author, and Mercedes Martín-Benito. [Abstract](")
     (details,) = topic["replies"]
-    assert "Roberto Fernández-Barrios<sup>2,3</sup>" in details and details.endswith(papers()[0].abstract)
+    assert "Roberto Fernández-Barrios²³" in details and details.endswith(papers()[0].abstract)
 
 
 def test_a_page_with_no_author_list_is_posted_without_waiting(forum):

@@ -410,9 +410,14 @@ def topic_body(paper: Paper, template: str) -> str:
     })
 
 
+SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
 def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) -> tuple[str, str]:
-    """The author list and the numbered affiliations its superscripts point
-    to. Authors who share one set of affiliations have no numbers."""
+    """The author list and the affiliations its superscript numbers point to,
+    each line opening with its own; an author's numbers stand side by side, so
+    they read alike on the forum and in Slack, which has no superscript.
+    Authors who share one set of affiliations have no numbers."""
     if not affs or all(a == affs[0] for a in affs):
         names = ", ".join(authors)
         listed = "; ".join(affs[0]) if affs and affs[0] else ""
@@ -420,10 +425,10 @@ def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) ->
         numbers: dict[str, int] = {}
         marked = []
         for name, own in zip(authors, affs):
-            marks = [str(numbers.setdefault(a, len(numbers) + 1)) for a in own]
-            marked.append(f"{name}<sup>{','.join(marks)}</sup>" if marks else name)
+            marks = "".join(str(numbers.setdefault(a, len(numbers) + 1)) for a in own)
+            marked.append(name + marks.translate(SUPERSCRIPT))
         names = ", ".join(marked)
-        listed = "\n".join(f"{n}. {a}" for a, n in numbers.items())
+        listed = "\n".join(str(n).translate(SUPERSCRIPT) + a for a, n in numbers.items())
     if more:
         names += f", and {more} more"
     return names, listed
