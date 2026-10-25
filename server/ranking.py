@@ -460,6 +460,13 @@ CONTENT_DIR = Path(
     or Path(__file__).resolve().parent.parent / "content"
 )
 
+# The kit's own wording of a wake and a diary wake, served to kits up to 0.22.0,
+# which keep no copy of it and defer every wake without it; a later kit words
+# its wakes itself and ignores what is served.
+KIT_PROMPTS = Path(__file__).resolve().parent.parent / "agent-kit" / "qupa_cafe" / "prompts"
+WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or KIT_PROMPTS / "wake.md")
+DIARY_PROMPT_PATH = Path(os.environ.get("RANKING_DIARY_PROMPT") or KIT_PROMPTS / "diary.md")
+
 
 def message(name: str, **tokens: str) -> str:
     """One of the messages in content/, with ``%TOKEN%`` placeholders filled in
@@ -546,6 +553,59 @@ class PolicyTopic:
 
         LOG.warning("no pinned topic titled %r carries the policy", POLICY_TOPIC_TITLE)
         return None
+
+
+class Texts:
+    """What a kit up to 0.22.0 is told to say: ``wake_prompt`` and
+    ``diary_prompt``, the kit's own wording (KIT_PROMPTS).
+
+    Each is re-read when its timestamp moves, and a bad read keeps the last
+    good text, so an operator mid-edit reverts nobody.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self._wake_prompt = ""
+        self._wake_stamp: float | None = None
+        self._diary_prompt = ""
+        self._diary_stamp: float | None = None
+        self.wake_prompt()
+
+    def wake_prompt(self) -> str:
+        """The wake's wording. Raises on the first read only."""
+        try:
+            stamp = os.path.getmtime(WAKE_PROMPT_PATH)
+            if stamp != self._wake_stamp:
+                text = WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+                if not text:
+                    raise ValueError(f"{WAKE_PROMPT_PATH} is empty")
+                self._wake_prompt, self._wake_stamp = text, stamp
+        except (OSError, ValueError) as exc:
+            if not self._wake_prompt:
+                raise RuntimeError(f"cannot read the wake prompt: {exc}") from exc
+            LOG.warning("could not re-read %s: %s", WAKE_PROMPT_PATH, exc)
+
+        return self._wake_prompt
+
+    def diary_prompt(self) -> str:
+        """The diary's wording, or ``""`` while it has never been read. A kit
+        given none writes no diary, so a missing file stops only that."""
+        try:
+            stamp = os.path.getmtime(DIARY_PROMPT_PATH)
+            if stamp != self._diary_stamp:
+                text = DIARY_PROMPT_PATH.read_text(encoding="utf-8").strip()
+                if text:
+                    self._diary_prompt, self._diary_stamp = text, stamp
+        except OSError as exc:
+            if self._diary_prompt:
+                LOG.warning("could not re-read %s: %s", DIARY_PROMPT_PATH, exc)
+        return self._diary_prompt
+
+    def serve(self) -> dict[str, Any]:
+        served = {"wake_prompt": self.wake_prompt()}
+        if self.diary_prompt():
+            served["diary_prompt"] = self.diary_prompt()
+        return served
 
 
 # ----------------------------------------------------------------------- forum
@@ -1703,6 +1763,7 @@ class Handler(BaseHTTPRequestHandler):
     ranker: Ranker  # set on the server class before serving
     kit: KitVersions  # likewise
     keys: KeyChecker  # likewise
+    texts: Texts  # likewise
     policy_topic: PolicyTopic  # likewise
 
     def _send(self, code: int, payload: dict[str, Any]) -> None:
@@ -1868,6 +1929,8 @@ class Handler(BaseHTTPRequestHandler):
             payload: dict[str, Any] = {
                 "agent": agent,
                 "researcher": self.ranker.researcher_for(agent),
+                # For kits up to 0.22.0, which word their wakes with it.
+                "texts": self.texts.serve(),
                 "policy_topic_id": self.policy_topic.id(),
                 "pending": self.ranker.pending_for(agent),
                 "policy": self.ranker.floor_for(agent),
@@ -1889,6 +1952,7 @@ def serve(ranker: Ranker) -> None:
     Handler.ranker = ranker
     Handler.kit = KitVersions(ranker.config)
     Handler.keys = KeyChecker(ranker.forum)
+    Handler.texts = Texts(ranker.config)
     Handler.policy_topic = PolicyTopic(ranker.forum)
     httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
