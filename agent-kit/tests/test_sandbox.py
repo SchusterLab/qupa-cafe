@@ -433,3 +433,55 @@ def test_the_restriction_is_read_from_the_sysctl_or_ubuntu_s_profile(monkeypatch
     assert sandbox.userns_restricted()
     monkeypatch.setattr(sandbox.sys, "platform", "darwin")
     assert not sandbox.userns_restricted()
+
+
+# ------------------------------------------------- the environment, kept up to date
+
+
+KIT_V1 = """[dependencies]
+python = "3.13.15.*"
+pip = "==26.2.1"
+blas = { version = "*", build = "*openblas" }
+pandas = "==3.0.6"
+xlrd = "==2.0.2"
+ffmpeg = "*"
+
+[target.linux.dependencies]
+c-compiler = "*"
+"""
+
+
+def test_a_spec_is_given_to_pixi_add_as_it_takes_one():
+    found = sandbox.dependencies(KIT_V1)
+    assert "c-compiler" not in found
+    assert [sandbox.matchspec(name, spec) for name, spec in found.items()] == [
+        "python=3.13.15.*", "pip==26.2.1", "blas=*=*openblas", "pandas==3.0.6", "xlrd==2.0.2", "ffmpeg",
+    ]
+
+
+def test_a_kit_s_new_pins_reach_the_workspace_and_the_agent_s_own_packages_stay():
+    kit_v2 = KIT_V1.replace('pandas = "==3.0.6"', 'pandas = "==3.1.0"').replace('xlrd = "==2.0.2"\n', "")
+    workspace = KIT_V1.replace('ffmpeg = "*"', 'ffmpeg = "*"\nqutip = ">=5.2.1,<6"')
+
+    add, remove = sandbox.manifest_changes(kit_v2, KIT_V1, workspace)
+
+    assert add == ["pandas==3.1.0"]
+    assert remove == ["xlrd"]
+    # A workspace an earlier kit made before the kit kept its copy: every pin
+    # that differs, and nothing removed.
+    assert sandbox.manifest_changes(kit_v2, None, workspace) == (["pandas==3.1.0"], [])
+
+
+def test_a_workspace_is_updated_once_for_each_new_kit_manifest(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(sandbox, "_run", lambda argv, **kwargs: ran.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""))
+    kit = (sandbox.FILES_DIR / "pixi.toml").read_text(encoding="utf-8")
+    (tmp_path / "pixi.toml").write_text(kit.replace('pandas = "==', 'pandas = "==0.'), encoding="utf-8")
+
+    assert sandbox.update_workspace(tmp_path, "pixi", {})
+    ((_, verb, _, _, *specs),) = ran
+    assert verb == "add" and len(specs) == 1 and specs[0].startswith("pandas==")
+    assert (tmp_path / sandbox.KIT_MANIFEST_COPY).read_text(encoding="utf-8") == kit
+
+    assert sandbox.update_workspace(tmp_path, "pixi", {})
+    assert len(ran) == 1

@@ -35,9 +35,10 @@ Deploy `server/ranking.py` and restart `qupa-ranking` before publishing a kit th
 
 ## The release
 
-1. Bump `__version__` in `agent-kit/qupa_cafe/__init__.py`, the only place it lives.
-2. Update `CHANGELOG.md`.
-3. Commit, and tag `v<version>`.
-4. Create a release on that tag; publishing follows it.
+1. Run `python3 scripts/sync-sandbox-packages.py`, which brings the sandbox's packages up to the newest `scipy-notebook` build and locks them again with pixi, and commit what it changes.
+2. Bump `__version__` in `agent-kit/qupa_cafe/__init__.py`, the only place it lives.
+3. Update `CHANGELOG.md`.
+4. Commit, and tag `v<version>`.
+5. Create a release on that tag; publishing follows it.
 
 Before uploading, the workflow runs the documentation checks, both test suites and a syntax pass (the repository's only CI), builds, and runs `twine check`. It refuses a wheel with no declared licence (reading both `License-Expression` and `License`), one whose licence text does not ship, and a tag (`v0.1.0` or `0.1.0`) that disagrees with the built version. There is no TestPyPI rehearsal, so bad rendering is found only on the real index, where a version can be yanked but never replaced.

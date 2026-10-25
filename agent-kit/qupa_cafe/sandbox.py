@@ -729,6 +729,7 @@ def write_workspace(workspace: Path) -> None:
     if not (workspace / "pixi.toml").exists():
         for name in ("pixi.toml", "pixi.lock"):
             shutil.copyfile(FILES_DIR / name, workspace / name)
+        shutil.copyfile(FILES_DIR / "pixi.toml", workspace / KIT_MANIFEST_COPY)
     # A researcher's global detached-environments would put the environment
     # outside the workspace, where the sandbox cannot reach it.
     (workspace / ".pixi").mkdir(exist_ok=True)
@@ -747,6 +748,75 @@ def write_workspace(workspace: Path) -> None:
             newline=NL,
         )
         path.chmod(0o755)
+
+
+# The kit's manifest as a workspace was last brought up to it, beside the
+# workspace's own, which the agent's `pixi add` and `pixi remove` change.
+KIT_MANIFEST_COPY = ".qupa-kit-pixi.toml"
+
+
+def dependencies(text: str) -> dict[str, str]:
+    """A pixi manifest's [dependencies], each spec as written, from the line
+    form this kit's manifest has and pixi writes."""
+    found: dict[str, str] = {}
+    inside = False
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.startswith("["):
+            inside = line == "[dependencies]"
+        elif inside and "=" in line:
+            name, spec = (part.strip() for part in line.split("=", 1))
+            found[name] = spec
+    return found
+
+
+def matchspec(name: str, spec: str) -> str:
+    """A spec as the manifest writes it, as `pixi add` takes it."""
+    if spec.startswith("{"):
+        fields = dict(
+            (key.strip(), value.strip().strip('"')) for key, value in
+            (part.split("=", 1) for part in spec.strip("{} ").split(",") if "=" in part)
+        )
+        return f"{name}={fields.get('version', '*')}" + (f"={fields['build']}" if "build" in fields else "")
+    spec = spec.strip('"')
+    if spec == "*":
+        return name
+    return name + spec if spec[:1] in "=<>!~" else f"{name}={spec}"
+
+
+def manifest_changes(kit: str, previous: str | None, workspace: str) -> tuple[list[str], list[str]]:
+    """What brings a workspace's manifest up to the kit's: each of the kit's
+    dependencies it holds otherwise or not at all, to add, and each one an
+    earlier kit had and this one has dropped that it still holds, to remove.
+    A package the agent added itself is neither."""
+    new, old, held = dependencies(kit), dependencies(previous or ""), dependencies(workspace)
+    add = [matchspec(name, spec) for name, spec in new.items() if held.get(name) != spec]
+    remove = [name for name in old if name not in new and name in held]
+    return add, remove
+
+
+def update_workspace(workspace: Path, pixi: str, env: dict) -> bool:
+    """Bring a workspace an earlier kit made up to this kit's manifest, so that
+    its packages follow the scipy-notebook build the kit is made from; nothing
+    when it already is. False, having said why, when pixi refuses."""
+    kit = (FILES_DIR / "pixi.toml").read_text(encoding="utf-8")
+    copy = workspace / KIT_MANIFEST_COPY
+    previous = copy.read_text(encoding="utf-8") if copy.exists() else None
+    if previous == kit:
+        return True
+    manifest = workspace / "pixi.toml"
+    add, remove = manifest_changes(kit, previous, manifest.read_text(encoding="utf-8"))
+    for verb, specs in (("remove", remove), ("add", add)):
+        if not specs:
+            continue
+        print(f"  Bringing the Python environment up to this kit: pixi {verb} {len(specs)} package(s)...")
+        result = _run([pixi, verb, "--manifest-path", str(manifest), *specs], env=env)
+        if result.returncode != 0:
+            print(f"  FAILED to {verb} the packages this kit {'dropped' if verb == 'remove' else 'pins'}")
+            print(_tail(result))
+            return False
+    copy.write_text(kit, encoding="utf-8")
+    return True
 
 
 def setup(agent_dir: str, interactive: bool) -> bool:
@@ -803,9 +873,11 @@ def setup(agent_dir: str, interactive: bool) -> bool:
             return False
 
     write_workspace(workspace)
+    env = dict(os.environ, PIXI_CACHE_DIR=str(workspace / ".cache" / "rattler"))
+    if not update_workspace(workspace, pixi, env):
+        return False
     print(f"  Installing the Python environment in {workspace}")
     print("  (scipy-notebook's packages: about 2 GB, a few minutes the first time)...")
-    env = dict(os.environ, PIXI_CACHE_DIR=str(workspace / ".cache" / "rattler"))
     result = _run([pixi, "install", "--manifest-path", str(workspace / "pixi.toml")], env=env)
     if result.returncode != 0:
         print("  FAILED to install the environment")
