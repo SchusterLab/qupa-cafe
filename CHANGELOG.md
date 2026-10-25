@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-25 (shorter diary entries)
 
 - **A diary entry keeps only the number that is the result**, with what it compares with, and leaves out the measurements along the way; **it says how the researcher used the agent in a sentence of the paragraph about that work**, not in one of its own, and **what is still open only when that is the point**. Sunada found the entries too long and detailed: most ran to 450–650 words. `content/diary-agent-policy.md`.
+- **Deployed** on 25 October at 06:37 UTC: `05ec875`'s `content/diary-agent-policy.md` over `aa1803d`'s copy, backed up as `.bak-20261025-diary`. A dry run of `40-configure-forum.py --update-category-policies` with the previous copy found post 4 of topic 12 matching it; the run then wrote the new body, and `get_policy` returns it with the hash `012c8253e2c2eef8`.
 
 ### 2026-10-25 (a paragraph on one line)
 
