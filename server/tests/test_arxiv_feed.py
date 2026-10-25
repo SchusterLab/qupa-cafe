@@ -253,10 +253,37 @@ def test_the_affiliations_arxiv_lists_with_the_names_are_used_when_the_html_give
         ("IBM Quantum, T. J. Watson Research Center, Yorktown Heights, NY 10598, USA",
          "IBM Quantum"),
         ("Physics Division, National Center for Theoretical Sciences, Taipei", "National Center for Theoretical Sciences"),
+        ("QuEL, Inc., Hachioji, Tokyo, Japan", "QuEL, Inc"),
+        ("Department of Physics and Center for Theoretical Physics, National, Taiwan University, Taipei 10617, Taiwan",
+         "National Taiwan University"),
+        ("Research Center for Materials Nanoarchitectonics, National Institute for Materials Science1-1 Namiki, Tsukuba, Japan",
+         "National Institute for Materials Science"),
+        ("Beijing National Laboratory for Condensed Matter Physics, Institute of Physics, Chinese Academy of Sciences, Beijing",
+         "Chinese Academy of Sciences"),
+        ("Departamento de Física, Centro Universitario de Ciencias Exactas e Ingeniería, Universidad de Guadalajara, México",
+         "Universidad de Guadalajara"),
     ],
 )
 def test_the_institution_is_what_an_affiliation_is_stripped_to(affiliation, name):
     assert feed.institution(affiliation) == name
+
+
+def test_a_department_given_on_its_own_is_left_out_beside_an_institution():
+    assert feed.institutions(["School of Electrical and Computer Engineering", "Cornell University, Ithaca, New York"]) == [
+        "Cornell University"]
+    assert feed.institutions(["School of Electrical and Computer Engineering"]) == ["School of Electrical and Computer Engineering"]
+
+
+def test_a_footnote_among_the_affiliations_is_no_affiliation():
+    html = PER_AUTHOR.replace("Department of Physics, <br class=\"ltx_break\">University of Ottawa",
+                              "These two authors contributed equally to this work</span>"
+                              '<span class="ltx_contact ltx_role_affiliation">University of Ottawa')
+    html = html.replace("Stanford, CA 94305, USA", "Stanford, CA 94305, USACorresponding author")
+
+    affs = feed.affiliations(papers()[0], html)
+
+    assert affs[0] == ["University of Ottawa, Ontario, K1N 6N5, Canada"]
+    assert affs[2] == ["Department of Physics, Stanford University, Stanford, CA 94305, USA"]
 
 
 # ----------------------------------------------------------------- the posts

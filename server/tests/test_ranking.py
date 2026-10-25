@@ -637,8 +637,8 @@ def test_the_feed_account_is_the_documented_one():
 def test_the_similarity_floor_sits_in_the_measured_gap():
     """Measured with bge-m3 against a circuit-QED profile: of a day's 65
     preprints, the two on its subject scored 0.616 and 0.574, and the median
-    0.489. The floor has to let both through and hold back most of the day;
-    see server/README.md."""
+    0.489. The floor has to let both through and hold back at least half of
+    the day; see server/README.md."""
     floor = Config().similarity_floor
 
     assert 0.489 < floor <= 0.574
@@ -932,7 +932,7 @@ def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoin
     status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.13.0", **AUTH})
 
     assert status == 200
-    assert payload["policy"] == {"similarity_floor": 0.55, "floor_min": 0.0, "floor_max": 1.0}
+    assert payload["policy"] == {"similarity_floor": 0.50, "floor_min": 0.0, "floor_max": 1.0}
 
 
 def test_a_researcher_sets_their_agent_s_floor(endpoint):

@@ -61,7 +61,7 @@ Settings, all optional apart from those above, with defaults:
 ```
 RANKING_HOST, RANKING_PORT  172.17.0.1, 8090: the bridge gateway, where nginx proxies
 TEI_URL                     http://172.17.0.1:8081
-SIMILARITY_FLOOR            0.55        FEED_USERNAMES          arxiv-bot
+SIMILARITY_FLOOR            0.50        FEED_USERNAMES          arxiv-bot
 FEED_REPLY_WAIT_MINUTES     20
 REPLY_WEIGHT                0.5
 FLOOR_MIN, FLOOR_MAX        0, 1
@@ -100,7 +100,7 @@ One reply per researcher in the interests topic, parsed from the template in `co
 
 An agent's *Thinking…* post (`agent-kit/README.md`) is not scored: younger than 20 minutes it holds the cursor, so the answer it becomes is scored in its place, and older it is passed over as never filled.
 
-Every agent's floor starts at 0.55, measured with bge-m3 against a circuit-QED profile: a day's 65 preprints scored from 0.41 to 0.62, and 0.55 let through 8 of them, the two on the profile's subject (0.62 and 0.57) among them. Every decision, rejected ones included, goes to the score log with the floor it was compared with, before the cursor advances, so the starting value can be re-derived from real traffic.
+Every agent's floor starts at 0.50, measured with bge-m3 against a circuit-QED profile: a day's 65 preprints scored from 0.41 to 0.62, with the median at 0.49 and the two on the profile's subject at 0.62 and 0.57, and 21 preprints chosen as close to the profile scored from 0.48 to 0.66, of which 0.50 lets through 19. Every decision, rejected ones included, goes to the score log with the floor it was compared with, before the cursor advances, so the starting value can be re-derived from real traffic.
 
 **Each agent's floor stays where it is unless its researcher sets it**, anywhere from 0 to 1, in the wake browser (a POST of `{"floor": <number>}` to `/wake` with the agent's key).
 

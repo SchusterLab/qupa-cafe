@@ -107,11 +107,13 @@ class Config:
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
     # Against a circuit-QED profile, bge-m3 scored a day's 65 preprints from
-    # 0.41 to 0.62, and 0.55 let through 8, the two on its subject among
-    # them. It is where every agent's floor starts, and stays unless its
-    # researcher sets it, within floor_min to floor_max: by default anywhere
-    # on the scale a similarity is shown on, from 0 to 1.
-    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.55"))
+    # 0.41 to 0.62, with the median at 0.489 and the two on its subject at
+    # 0.616 and 0.574; and 21 preprints chosen as close to it from 0.48 to
+    # 0.66, of which 0.50 lets through 19. It is where every agent's floor
+    # starts, and stays unless its researcher sets it, within floor_min to
+    # floor_max: by default anywhere on the scale a similarity is shown on,
+    # from 0 to 1.
+    similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.50"))
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.0"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "1.0"))
 

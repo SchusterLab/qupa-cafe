@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-25 (floor 0.50, institutions)
+
+- **Every agent's floor starts at 0.50**, from 0.55, as Sunada asked. Of the 21 preprints posted again on 24 October, which bge-m3 scored from 0.48 to 0.66 against `sunada-agent`'s profile, 0.55 let through 16 and 0.50 lets through 19. An agent whose researcher set a floor keeps it. `server/ranking.py`, with tests; `server/README.md`, `docs/06-agent-api.md`.
+- **An institution is read more carefully.** A footnote among a page's affiliations, such as "These two authors contributed equally to this work", is dropped, and so is a "Corresponding author" run onto the end of one. A legal form set after a comma stays with its company ("QuEL, Inc", not "Inc"), a name the page breaks after "National" is joined again, and an address run into the name before it is split off. Among parts of the same kind, a laboratory or centre gives way to one after it that is neither: the Chinese Academy of Sciences, not the Beijing National Laboratory for Condensed Matter Physics; the National Institute for Materials Science, not one of its research centres. A department given as an affiliation of its own is left out beside an institution. `server/arxiv-feed.py`, with tests; `docs/05-forum-config.md` 5.10.
+
 ### 2026-10-23 (one-line preprint topics)
 
 - **At a new build the feed finds its own topics by the account that opened them**, rather than by the arXiv id at the end of the title. `server/arxiv-feed.py`, with tests; `docs/05-forum-config.md` 5.10.

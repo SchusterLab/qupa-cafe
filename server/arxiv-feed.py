@@ -293,12 +293,16 @@ def clean_affiliation(text: str) -> str:
     """One line, as the paper gives it, without a closing full stop or the
     email addresses some papers put after it."""
     text = re.sub(r"\s*,?\s*\n\s*", ", ", MARK.sub("", text).strip())
-    text = re.split(r"\b(?:e-?mails?|correspond\w*)\s*:", text, flags=re.I)[0]
+    text = re.split(r"\b(?:e-?mails?|correspond\w*)\s*:|corresponding\s+authors?\b", text, flags=re.I)[0]
     return squash(text).strip(" ,;.")
 
 
 def is_email(text: str) -> bool:
     return all("@" in part for part in re.split(r"[,;\s]+", text) if part)
+
+
+# A footnote a page lists among the affiliations, which names nowhere.
+NOTE = re.compile(r"\bcontributed\s+equally\b|\bequal(ly)?\s+contribut|\bthese\s+authors\b", re.I)
 
 
 def page_authors(html_text: str) -> list[tuple[str, list[str]]]:
@@ -362,7 +366,7 @@ def html_affiliations(paper: Paper, html_text: str) -> list[list[str]] | None:
             return None
     else:
         return None
-    affs = [[a for a in own if a and not is_email(a)] for own in affs]
+    affs = [[a for a in own if a and not is_email(a) and not NOTE.search(a)] for own in affs]
     return affs if any(affs) else None
 
 
@@ -393,13 +397,37 @@ ROLE_PREFIX = re.compile(
 )
 # A name that is one campus of many, which the next part names.
 SYSTEM = re.compile(r"^(the\s+)?university\s+of\s+(california|wisconsin)$", re.I)
+# A company's legal form, which a comma sets after its name, as in "QuEL, Inc.".
+LEGAL_FORM = re.compile(r"^(inc|ltd|llc|gmbh|corp|co|plc|ag|s\.?a|b\.?v)\.?$", re.I)
+# A word that begins a name and is no name alone, as in "National, Taiwan University".
+NAME_START = re.compile(r"^(national|state|federal|royal|imperial)$", re.I)
+# A laboratory or centre, which names a part of an institution that a later
+# part of the same tier names in full.
+LAB = re.compile(r"\b(laborat|labs?\b|cent(er|re)\b|centro\b)", re.I)
+
+
+def affiliation_parts(affiliation: str) -> list[str]:
+    """An affiliation's comma-separated parts, with an address run into the
+    name before it split off, a legal form joined to its company's name, and
+    a name broken after its first word joined again."""
+    text = re.sub(r"(?<=[a-z])(?=\d)", ", ", ROLE_PREFIX.sub("", affiliation))
+    parts = [p.strip(" .") for p in re.split(r"[,;]", text)]
+    parts = [p[1:-1].strip() if p.startswith("(") and p.endswith(")") else p for p in parts if p]
+    joined: list[str] = []
+    for part in parts:
+        if joined and LEGAL_FORM.match(part):
+            joined[-1] += ", " + part
+        elif joined and NAME_START.match(joined[-1]):
+            joined[-1] += " " + part
+        else:
+            joined.append(part)
+    return joined
 
 
 def institution(affiliation: str) -> str:
     """The institution an affiliation names, such as "University of Ottawa"
     for "Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada"."""
-    parts = [p.strip(" .") for p in re.split(r"[,;]", ROLE_PREFIX.sub("", affiliation))]
-    parts = [p[1:-1].strip() if p.startswith("(") and p.endswith(")") else p for p in parts if p]
+    parts = affiliation_parts(affiliation)
     if not parts:
         return affiliation
     def plain(p: str) -> bool:
@@ -407,7 +435,8 @@ def institution(affiliation: str) -> str:
 
     found = None
     for rank, tier in enumerate(INSTITUTION_TIERS):
-        found = next((n for n, p in enumerate(parts) if tier.search(p) and plain(p)), None)
+        matches = [n for n, p in enumerate(parts) if tier.search(p) and plain(p)]
+        found = next((n for n in matches if not LAB.search(parts[n])), matches[0]) if matches else None
         if found is not None:
             break
     if found is None:
@@ -427,8 +456,12 @@ def institution(affiliation: str) -> str:
 
 
 def institutions(affs: list[str]) -> list[str]:
-    """The distinct institutions of one author, in order."""
-    return list(dict.fromkeys(institution(a) for a in affs))
+    """The distinct institutions of one author, in order. A department or
+    school given as an affiliation of its own is left out when the author has
+    an institution besides."""
+    names = list(dict.fromkeys(institution(a) for a in affs))
+    whole = [name for name in names if not SUBUNIT.match(name)]
+    return whole or names
 
 
 # ---------------------------------------------------------------------- a topic
