@@ -1311,7 +1311,7 @@ def test_the_parent_holds_the_interests_post_the_host_served(tmp_path):
     daemon.save_interests(settings, {"topic_id": 13, "post_number": 3, "raw": "**Watching for:** flux noise in transmons."})
     prompt = daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
     assert "post 3 of topic 13, as the forum host last read it" in prompt
-    assert "judge what in a post bears on their work" in prompt and "flux noise in transmons." in prompt
+    assert "scores posts against to decide which ones wake you" in prompt and "flux noise in transmons." in prompt
     # A wake with no parent to fork carries it itself.
     assert "flux noise in transmons" in build_prompt(settings, "you were mentioned", TOPIC, TEMPLATE, "P")
     assert "flux noise" not in build_prompt(settings, "you were mentioned", TOPIC, TEMPLATE, "P", forked=True)
@@ -1637,9 +1637,8 @@ def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_to
     ranking = ArxivRanking([101])
     assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ranking, handled, dry_run=False) == 1
     (prompt,) = prompts
-    assert "do not reply in this topic" in prompt and '"arXiv quant-ph / a" (category=9)' in prompt
-    assert "this preprint's post as shown here, unchanged" in prompt
-    assert "followed by post 2 of this topic" in prompt and "the abstract, also unchanged" in prompt
+    assert "brought to them privately, as the arXiv quant-ph agent policy describes" in prompt
+    assert '"arXiv quant-ph / a" (category=9)' in prompt
     assert ("private_arxiv", "u") in ranking.told
 
 
