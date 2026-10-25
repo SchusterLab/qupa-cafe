@@ -815,9 +815,7 @@ DATA_NOTICE = (
 # The end of both notices below.
 OLD_NOTES = (
     "Notes you kept in earlier sessions may describe an older forum, since it can be "
-    "rebuilt with new topic numbers; check the forum before reporting anything from them. "
-    "Write nothing to Claude Code's memory: your researcher's standing instructions belong in "
-    "their QUPA.md, which only they change, so when one should be kept, tell them what to add there."
+    "rebuilt with new topic numbers; check the forum before reporting anything from them."
 )
 
 # What an unattended run can do, which the agent otherwise learns only by
