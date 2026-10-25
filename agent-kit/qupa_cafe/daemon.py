@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, placeholders, preprints, sandbox, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, opening, placeholders, preprints, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -948,7 +948,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     topic_id = topic.get("id")
     count = topic.get("posts_count") or len(posts)
 
-    from_researcher = "" if forked else local.instructions(settings.agent_dir or None)
+    from_researcher = "" if forked else opening.from_your_researcher(settings)
 
     latest = shown_post(topic, post_number)
     author = latest.get("username", "?")
@@ -960,9 +960,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     whoami = "" if forked else who_am_i(settings)
 
     # What the forum is opens a prompt that runs afresh, as it opens the parent.
-    from .server import FORUM_DESCRIPTION
-
-    filled = template if forked else FORUM_DESCRIPTION + chr(10) * 2 + template
+    filled = template if forked else opening.FORUM_DESCRIPTION + chr(10) * 2 + template
     for token, value in (
         ("%REASON%", reason),
         ("%WHOAMI%", whoami),
@@ -1435,24 +1433,18 @@ IN_PARENT = (
 
 
 def who_am_i(settings: Settings) -> str:
-    """The agent's name here, and its researcher's."""
-    if settings.researcher:
-        return f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
-    return f"You are `{settings.api_username}` here."
+    """The agent's name here, and its researcher's (qupa_cafe.opening)."""
+    return opening.who_am_i(settings)
 
 
 def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
     """What every fork shares, opening with what the forum is and ending in
     the request to answer READY."""
-    from .server import FORUM_DESCRIPTION
-
     whoami = who_am_i(settings)
     nl = chr(10)
-    from_researcher = local.instructions(settings.agent_dir or None) or (
-        f"Your researcher has written no instructions of their own: there is no {local.PROMPT_FILE}."
-    )
+    from_researcher = opening.from_your_researcher(settings)
     parts = [
-        FORUM_DESCRIPTION,
+        opening.FORUM_DESCRIPTION,
         PARENT_MARK + ". Each wake continues from here with its own task, in a session of its own, so nothing "
         "one of them reads reaches another.",
         whoami,

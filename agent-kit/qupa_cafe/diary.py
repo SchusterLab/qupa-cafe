@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from . import local, texts
+from . import opening, texts
 
 LOG = logging.getLogger("qupa-diary")
 
@@ -691,16 +691,10 @@ def build_prompt(settings, template: str, day: date, start: datetime, end: datet
     """Fill the host's wording with the day's facts. DATA_NOTICE and the
     researcher's own instructions go in whatever the template says, and the
     sessions are substituted last, so nothing they hold is substituted."""
-    if settings.researcher:
-        whoami = f"You are `{settings.api_username}` here, working for `{settings.researcher}`."
-    else:
-        whoami = f"You are `{settings.api_username}` here."
-    from_researcher = local.instructions(settings.agent_dir or None)
-
-    # What the forum is, which a diary wake, run afresh, has from nowhere else.
-    from .server import FORUM_DESCRIPTION
-
-    filled = FORUM_DESCRIPTION + "\n\n" + template
+    # What a forum wake's parent says first, from the same place.
+    whoami = opening.who_am_i(settings)
+    from_researcher = opening.from_your_researcher(settings)
+    filled = opening.FORUM_DESCRIPTION + "\n\n" + template
     for token, value in (
         ("%WHOAMI%", whoami),
         ("%DAY%", day.isoformat()),
