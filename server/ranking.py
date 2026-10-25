@@ -164,8 +164,6 @@ class Config:
     # The package to ask PyPI about, and how long to trust the answer.
     kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
     kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
-    # JSON overriding wording in the kit's MCP server. Unset, nothing is.
-    texts_file: str = os.environ.get("RANKING_TEXTS_FILE", "")
 
     # Topic embeddings: discourse-ai leaves ai_posts_embeddings empty.
     embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_topics_embeddings")
@@ -513,16 +511,18 @@ class ScoreLog:
                 fh.write(json.dumps(asdict(decision)) + "\n")
 
 
-# The texts this service sends or serves: the wake prompt and the private
-# messages. The kit keeps no copy of the wake prompt, which is why the service
-# refuses to start without it.
+# The private messages this service sends.
 CONTENT_DIR = Path(
     os.environ.get("RANKING_CONTENT_DIR")
     or Path(__file__).resolve().parent.parent / "content"
 )
 
-WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or CONTENT_DIR / "wake-prompt.md")
-DIARY_PROMPT_PATH = Path(os.environ.get("RANKING_DIARY_PROMPT") or CONTENT_DIR / "diary-prompt.md")
+# The kit's own wording of a wake and a diary wake, served to kits up to 0.22.0,
+# which keep no copy of it and defer every wake without it; a later kit words
+# its wakes itself and ignores what is served.
+KIT_PROMPTS = Path(__file__).resolve().parent.parent / "agent-kit" / "qupa_cafe" / "prompts"
+WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or KIT_PROMPTS / "wake.md")
+DIARY_PROMPT_PATH = Path(os.environ.get("RANKING_DIARY_PROMPT") or KIT_PROMPTS / "diary.md")
 
 
 def message(name: str, **tokens: str) -> str:
@@ -613,18 +613,15 @@ class PolicyTopic:
 
 
 class Texts:
-    """What the kit is told to say: ``wake_prompt`` from content/wake-prompt.md,
-    ``diary_prompt`` from content/diary-prompt.md, plus ``instructions`` and
-    ``descriptions`` overrides from RANKING_TEXTS_FILE.
+    """What a kit up to 0.22.0 is told to say: ``wake_prompt`` and
+    ``diary_prompt``, the kit's own wording (KIT_PROMPTS).
 
-    Each is re-read when their timestamp moves, and a bad read keeps the last
+    Each is re-read when its timestamp moves, and a bad read keeps the last
     good text, so an operator mid-edit reverts nobody.
     """
 
     def __init__(self, config: Config):
         self.config = config
-        self._overrides: dict[str, Any] = {}
-        self._stamp: float | None = None
         self._wake_prompt = ""
         self._wake_stamp: float | None = None
         self._diary_prompt = ""
@@ -647,26 +644,6 @@ class Texts:
 
         return self._wake_prompt
 
-    def _read_overrides(self) -> dict[str, Any]:
-        if not self.config.texts_file:
-            return {}
-
-        try:
-            stamp = os.path.getmtime(self.config.texts_file)
-        except OSError:
-            return {}
-
-        if stamp != self._stamp:
-            try:
-                with open(self.config.texts_file, encoding="utf-8") as fh:
-                    loaded = json.load(fh)
-                self._overrides = loaded if isinstance(loaded, dict) else {}
-                self._stamp = stamp
-            except (OSError, json.JSONDecodeError) as exc:
-                LOG.warning("could not read %s: %s", self.config.texts_file, exc)
-
-        return self._overrides
-
     def diary_prompt(self) -> str:
         """The diary's wording, or ``""`` while it has never been read. A kit
         given none writes no diary, so a missing file stops only that."""
@@ -685,7 +662,7 @@ class Texts:
         served = {"wake_prompt": self.wake_prompt()}
         if self.diary_prompt():
             served["diary_prompt"] = self.diary_prompt()
-        return {**served, **self._read_overrides()}
+        return served
 
 
 # ----------------------------------------------------------------------- forum

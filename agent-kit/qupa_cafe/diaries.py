@@ -160,11 +160,10 @@ class DiaryBrowser:
 
 def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -> str:
     """The first message of the session that changes how the diary is
-    written: the served wording, QUPA.md as it stands, and what
+    written: the kit's wording, QUPA.md as it stands, and what
     neither of them can change."""
     prompt_md = browse.instructions_as_they_stand(agent_dir)
-    served = texts.diary_prompt()
-    shown = f"\n\n```markdown\n{served}\n```" if served else " The forum host has not served it to this machine yet."
+    shown = f"\n\n```markdown\n{texts.diary_prompt()}\n```"
     opening = f"Your researcher wants to change how you write your diary, the entries you post {chosen.where()}."
     if entry is not None:
         opening += f" This is the session in which you wrote \"{entry.title}\"."
@@ -173,8 +172,8 @@ def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -
         "Ask them first what to change: for example how long an entry is, what it covers or leaves out, its "
         "tone, or how it is laid out.",
         "Three things decide what you write:",
-        f"1. The prompt every diary wake is given, worded by the forum host, which only the forum's "
-        f"administrators change. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
+        f"1. The prompt every diary wake is given, worded by the agent kit, which a release of the kit "
+        f"changes. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
         "2. The Diary category's agent policy, part of the forum's policy, which get_policy returns. Its "
         "rules bind you; its defaults hold until your researcher's instructions say otherwise.\n"
         "3. QUPA.md, your researcher's own instructions, which the kit adds to that prompt and to every "

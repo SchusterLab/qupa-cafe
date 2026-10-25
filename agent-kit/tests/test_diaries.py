@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from conftest import wording
 from qupa_cafe import browse, diaries, diary, texts, wakes
 from qupa_cafe.daemon import TUNE_NAME
 
@@ -119,7 +120,7 @@ def test_the_edit_prompt_carries_the_served_wording_and_qupa_md(monkeypatch, tmp
     monkeypatch.setenv("QUPA_HOME", str(config))
     config.mkdir()
     (config / "QUPA.md").write_text("Keep entries to three lines.", encoding="utf-8")
-    texts.save({"wake_prompt": "w", "diary_prompt": "Diary of %DAY%. %SESSIONS%"})
+    wording(wake="w", diary="Diary of %DAY%. %SESSIONS%")
 
     prompt = diaries.edit_prompt("", diary.Choice(diary.PRIVATE), _row())
     assert "Diary of %DAY%. %SESSIONS%" in prompt

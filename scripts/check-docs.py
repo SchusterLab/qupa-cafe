@@ -173,7 +173,7 @@ def rewrap(text: str) -> str:
 # them, so the rule this check enforces -- that a single newline becomes a line
 # break in a Discourse post -- does not apply to them, and joining their
 # paragraphs would change the text an agent is handed for no reader's benefit.
-NOT_PROSE = {"content/wake-prompt.md", "content/diary-prompt.md"}
+NOT_PROSE = {"agent-kit/qupa_cafe/prompts/wake.md", "agent-kit/qupa_cafe/prompts/diary.md"}
 
 
 def check_paragraphs(fix: bool) -> list[str]:

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import qupa_cafe.daemon as daemon
+from conftest import wording
 from qupa_cafe import diary, texts
 from qupa_cafe.daemon import Handled, Journal, Settings
 
@@ -272,14 +273,14 @@ def test_without_the_opt_in_nothing_is_read_or_woken(handled, projects, monkeypa
 
 
 def test_a_day_without_sessions_wakes_nothing_and_is_done(handled, projects, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    wording(wake="w", diary="%SESSIONS%")
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
     assert not woke and not woken
     assert handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
 def test_a_day_with_sessions_wakes_the_agent_once_and_journals_it(handled, projects, tmp_path, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%\n%SESSIONS%"})
+    wording(wake="w", diary="%WHERE%\n%SESSIONS%")
     write_session(projects, "mine", [prompt("Fit the T1 data", at(9)), answer("T1 is 42 us.", at(9, 1))])
     journal = Journal(str(tmp_path / "state.sqlite3"))
     write_session(projects, "earlier-wake", [prompt("a wake's prompt", at(9))])
@@ -301,7 +302,7 @@ def test_a_day_with_sessions_wakes_the_agent_once_and_journals_it(handled, proje
 
 def test_a_private_diary_not_there_yet_is_made_by_the_first_entry_s_create_topic(handled, projects, monkeypatch):
     """Not before the wake, so a wake that posts nothing makes nothing."""
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
     site = [c for c in SITE if c["id"] != 6]
     woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=site)
@@ -310,39 +311,37 @@ def test_a_private_diary_not_there_yet_is_made_by_the_first_entry_s_create_topic
 
 
 def test_one_there_already_is_posted_in_by_its_id(handled, projects, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=list(SITE))
     assert woke and "category=6" in woken[0][0] and "private_diary" not in woken[0][0]
 
 
 def test_a_private_diary_without_the_diary_category_leaves_the_day_to_do(handled, projects, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=[])
     assert not woke and not woken and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
 def test_a_failed_diary_wake_leaves_the_day_to_do(handled, projects, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    wording(wake="w", diary="%SESSIONS%")
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, _ = _pass(_settings(), handled, None, monkeypatch, ok=False)
     assert not woke and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
-@pytest.mark.parametrize("served, site", [({"wake_prompt": "w"}, SITE), ({"wake_prompt": "w", "diary_prompt": "d"}, [])],
-                         ids=["no wording", "no category"])
-def test_a_diary_the_forum_cannot_take_is_deferred(handled, projects, monkeypatch, served, site):
-    texts.save(served)
+def test_a_diary_the_forum_cannot_take_is_deferred(handled, projects, monkeypatch):
+    """A forum with no Diary category, where the entry has nowhere to go."""
     write_session(projects, "mine", [prompt("work", at(9))])
-    woke, woken = _pass(_settings(), handled, None, monkeypatch, site=site)
+    woke, woken = _pass(_settings(), handled, None, monkeypatch, site=[])
     assert not woke and not woken
     assert not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
 def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects, monkeypatch, tmp_path):
     """The diary browser writes env; the daemon started with the diary off."""
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%"})
+    wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
     diary.set_choice(diary.Choice(diary.PRIVATE))
     woke, woken = _pass(_settings(diary.OFF), handled, None, monkeypatch, site=list(SITE))
@@ -463,13 +462,13 @@ def test_the_prompt_says_where_the_sessions_are_in_full_or_that_they_are_not(tmp
     _, start, end = window()
     there = diary.transcripts_notice(tmp_path / "t")
     filled = diary.build_prompt(settings, "%SESSIONS%", DAY, start, end, "", "", "", there)
-    # Appended when the served wording has no place for it.
+    # Appended when the wording has no place for it.
     assert str(tmp_path / "t") in filled and "DATA" in there and "deleted when this wake ends" in there
     assert diary.transcripts_notice(None) == ""
 
 
 def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends(handled, projects, tmp_path, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%\n%TRANSCRIPTS%"})
+    wording(wake="w", diary="%SESSIONS%\n%TRANSCRIPTS%")
     write_session(projects, "mine", [prompt("Fit the T1 data", at(9)), answer("T1 is 42 us.", at(9, 1))])
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
@@ -494,7 +493,7 @@ def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends
 
 def test_the_sessions_go_even_when_the_wake_fails_and_without_a_sandbox_no_diary_is_written(
         handled, projects, tmp_path, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%\n%TRANSCRIPTS%"})
+    wording(wake="w", diary="%SESSIONS%\n%TRANSCRIPTS%")
     write_session(projects, "mine", [prompt("work", at(9))])
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(daemon, "sandbox_config", lambda settings: {"workspace": str(workspace)})
@@ -508,7 +507,7 @@ def test_the_sessions_go_even_when_the_wake_fails_and_without_a_sandbox_no_diary
 
 
 def test_a_diary_wake_runs_on_the_researcher_s_default_model_and_effort(handled, projects, monkeypatch):
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    wording(wake="w", diary="%SESSIONS%")
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
     command = daemon.runtime_command(_settings(), "P", woken[0][1]["wake"])
@@ -519,7 +518,7 @@ def test_a_diary_wake_runs_on_the_model_and_effort_chosen_for_it(handled, projec
     from qupa_cafe import models
 
     models.write(models.DIARY, models.Choice("haiku", "low"))
-    texts.save({"wake_prompt": "w", "diary_prompt": "%SESSIONS%"})
+    wording(wake="w", diary="%SESSIONS%")
     write_session(projects, "mine", [prompt("work", at(9))])
     woke, woken = _pass(_settings(), handled, None, monkeypatch)
     command = daemon.runtime_command(_settings(), "P", woken[0][1]["wake"])
@@ -632,7 +631,7 @@ def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=(
 @pytest.fixture
 def rewriting(tmp_path, projects):
     """A day written once and asked to be written again."""
-    texts.save({"wake_prompt": "w", "diary_prompt": "%WHERE%\n%SESSIONS%"})
+    wording(wake="w", diary="%WHERE%\n%SESSIONS%")
     write_session(projects, "mine", [prompt("Fit the T1 data", at(9))])
     path = str(tmp_path / "state.sqlite3")
     journal = Journal(path)

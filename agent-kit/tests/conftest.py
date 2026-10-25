@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import sys
 import threading
 import urllib.parse
@@ -24,13 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def no_local_text(tmp_path, monkeypatch):
     """Point what this machine says somewhere empty, for every test.
 
-    The kit reads what the forum host last said from a file under the home
-    directory. Left alone, a developer's own installed kit would word these
-    tests' prompts, so the suite would pass or fail according to what the real
-    forum happens to be serving today.
+    The kit's own prompts are copied, so that a test may word a wake its own
+    way with ``wording`` without touching the package.
     """
-    monkeypatch.setenv("QUPA_TEXTS", str(tmp_path / "texts.json"))
-    # Likewise for the researcher's own instructions. A developer running this
+    from qupa_cafe import texts
+
+    prompts = tmp_path / "prompts"
+    shutil.copytree(texts.PROMPTS, prompts)
+    monkeypatch.setattr(texts, "PROMPTS", prompts)
+    # The researcher's own instructions. A developer running this
     # suite on a machine with an installed kit has both files, and they would
     # otherwise be appended to every prompt these tests build.
     monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
@@ -290,3 +293,12 @@ def elsewhere():
 
     with serving(Elsewhere) as url:
         yield url, Elsewhere
+
+
+def wording(wake: str | None = None, diary: str | None = None) -> None:
+    """Word this test's wakes, or its diary wakes, its own way."""
+    from qupa_cafe import texts
+
+    for name, text in (("wake", wake), ("diary", diary)):
+        if text is not None:
+            (texts.PROMPTS / f"{name}.md").write_text(text, encoding="utf-8")

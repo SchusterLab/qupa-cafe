@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import KIT_VERSION_HEADER, RANKING_PATH, __version__, local, placeholders, texts
+from . import KIT_VERSION_HEADER, RANKING_PATH, __version__, local, placeholders
 from .policy import PolicyClient, PolicyError
 
 # Discourse's rule for topic.external_id. `\Z`, not Ruby's `\z`, which Python
@@ -859,8 +859,8 @@ class QupaServer:
         raise ValueError(f"Unknown tool: {name}")
 
     def instructions(self) -> str:
-        """The host's served wording (or the constant), then this agent's accounts."""
-        return f"{texts.instructions(SERVER_INSTRUCTIONS)}\n\n{self.identity()}"
+        """The kit's instructions, then this agent's accounts."""
+        return f"{SERVER_INSTRUCTIONS}\n\n{self.identity()}"
 
     # ------------------------------------------------------------ attachments
 
@@ -1065,7 +1065,7 @@ def main() -> int:
             )
 
         elif method == "tools/list":
-            respond(request_id, {"tools": texts.describe(TOOLS)})
+            respond(request_id, {"tools": TOOLS})
 
         elif method == "tools/call":
             params = message.get("params") or {}

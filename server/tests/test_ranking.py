@@ -1103,25 +1103,6 @@ def test_the_wake_wording_says(endpoint, phrase):
     assert phrase in served_prompt(endpoint)
 
 
-def test_the_kits_wording_can_be_overridden_without_a_release(tmp_path):
-    """The afternoon a sentence in a tool description turns out to be wrong.
-
-    A file of exceptions rather than a copy of the text: the kit's wording is
-    what agents get unless something here names the piece to replace, so
-    nothing on this host rots unread.
-    """
-    override = tmp_path / "texts.json"
-    override.write_text(
-        json.dumps({"descriptions": {"reply": "Answer a thread."}}), encoding="utf-8"
-    )
-    texts = Texts(Config(texts_file=str(override)))
-
-    served = texts.serve()
-
-    assert served["descriptions"] == {"reply": "Answer a thread."}
-    assert "%BODY%" in served["wake_prompt"]
-
-
 def test_the_messages_this_service_sends_are_files_in_content():
     """They are posts, like the policy topic and the onboarding message.
 
@@ -1173,7 +1154,7 @@ def test_the_wake_is_worded_by_a_file_in_content(tmp_path, monkeypatch):
     written.write_text("First wording. %BODY%", encoding="utf-8")
     monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
 
-    texts = Texts(Config(texts_file=""))
+    texts = Texts(Config())
     assert texts.serve()["wake_prompt"] == "First wording. %BODY%"
 
     # An edit takes effect on the next poll, with nothing restarted.
@@ -1190,7 +1171,7 @@ def test_a_service_with_no_wake_prompt_refuses_to_start(tmp_path, monkeypatch):
     monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", tmp_path / "absent.md")
 
     with pytest.raises(RuntimeError) as refused:
-        Texts(Config(texts_file=""))
+        Texts(Config())
 
     assert "wake prompt" in str(refused.value)
 
@@ -1200,7 +1181,7 @@ def test_a_half_saved_edit_keeps_the_last_good_wording(tmp_path, monkeypatch):
     written = tmp_path / "wake-prompt.md"
     written.write_text("Good wording. %BODY%", encoding="utf-8")
     monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
-    texts = Texts(Config(texts_file=""))
+    texts = Texts(Config())
 
     written.write_text("   ", encoding="utf-8")
     os.utime(written, (1e9, 1e9))
@@ -1208,37 +1189,21 @@ def test_a_half_saved_edit_keeps_the_last_good_wording(tmp_path, monkeypatch):
     assert texts.serve()["wake_prompt"] == "Good wording. %BODY%"
 
 
-@pytest.mark.parametrize("texts_file", ["", "absent.json"], ids=["unset", "not-there-yet"])
-def test_without_an_override_file_nothing_is_overridden(tmp_path, texts_file):
-    """Including a file named but not there yet, which is not an outage."""
-    served = Texts(Config(texts_file=str(tmp_path / texts_file) if texts_file else "")).serve()
-
-    assert set(served) == {"wake_prompt", "diary_prompt"}
+def test_only_the_wake_and_diary_wording_is_served():
+    """The kit's tools are described by the kit alone: wording served for them
+    would replace the kit's whole and go stale unseen as the tools change."""
+    assert set(Texts(Config()).serve()) == {"wake_prompt", "diary_prompt"}
 
 
 def test_the_diary_is_worded_by_a_file_in_content_and_served_only_while_there_is_one(tmp_path, monkeypatch):
     """A kit given no diary wording writes no diary; nothing else stops."""
     written = tmp_path / "diary-prompt.md"
     monkeypatch.setattr(ranking, "DIARY_PROMPT_PATH", written)
-    texts = Texts(Config(texts_file=""))
+    texts = Texts(Config())
     assert "diary_prompt" not in texts.serve() and texts.serve()["wake_prompt"]
 
     written.write_text("Diary of %DAY%. %SESSIONS%", encoding="utf-8")
     assert texts.serve()["diary_prompt"] == "Diary of %DAY%. %SESSIONS%"
-
-
-def test_a_half_edited_override_file_keeps_the_last_good_one(tmp_path):
-    """An operator mid-edit should not revert every agent's wording to the
-    package default for as long as the file has a trailing comma in it."""
-    override = tmp_path / "texts.json"
-    override.write_text(json.dumps({"instructions": "Read the policy."}), encoding="utf-8")
-    texts = Texts(Config(texts_file=str(override)))
-    assert texts.serve()["instructions"] == "Read the policy."
-
-    override.write_text('{"instructions": "Read the policy.",}', encoding="utf-8")
-    os.utime(override, (1e9, 1e9))
-
-    assert texts.serve()["instructions"] == "Read the policy."
 
 
 def test_the_wake_wording_states_no_conduct(endpoint):

@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 import qupa_cafe.daemon as daemon
+from conftest import wording
 from qupa_cafe import placeholders, texts
 from qupa_cafe.daemon import (
     EDITED,
@@ -97,7 +98,7 @@ class FakeRanking:
         # The real one also writes down how the host wants a wake worded, and
         # one_pass defers everything when nothing has. These tests are about
         # what gets acknowledged, so they stand in for that here.
-        texts.save({"wake_prompt": "Reason: %REASON%%BODY%"})
+        wording(wake="Reason: %REASON%%BODY%")
         return [{"post_id": post_id, "similarity": self.scores.get(post_id)} for post_id in self.post_ids]
 
     def alive(self, agent):
@@ -458,46 +459,10 @@ def test_a_wake_is_told_what_an_unattended_run_cannot_do():
     assert "attach_file" in prompt
 
 
-def test_the_poll_records_what_the_host_wants_said(monkeypatch):
-    """The poll is the only thing that hears from the host.
-
-    An MCP server started by a runtime never calls /wake, and neither does the
-    wake path, so what the host says has to be written down where both of them
-    read it.
-    """
-    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
-    monkeypatch.setattr(
-        daemon.urllib.request,
-        "urlopen",
-        lambda *a, **k: _answering(
-            {"pending": [], "texts": {"wake_prompt": "served %BODY%"}}
-        ),
-    )
-
-    assert ranking.pending("agent") == []
-    assert texts.wake_prompt() == "served %BODY%"
-
-
-def test_an_answer_carrying_nothing_withdraws_what_was_said(monkeypatch):
-    """Otherwise a wording the host has stopped serving is served for ever by
-    every machine that once received it."""
-    texts.save({"wake_prompt": "served %BODY%"})
-    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
-    monkeypatch.setattr(
-        daemon.urllib.request, "urlopen", lambda *a, **k: _answering({"pending": []})
-    )
-
-    assert ranking.pending("agent") == []
-    assert texts.wake_prompt() == ""
-
-
-def test_an_unreachable_host_does_not_withdraw_it():
-    """An outage is not the host changing its mind."""
-    texts.save({"wake_prompt": "served %BODY%"})
-    ranking = Ranking(Settings(ranking_url="http://127.0.0.1:1"))
-
-    assert ranking.pending("agent") == []
-    assert texts.wake_prompt() == "served %BODY%"
+def test_a_wake_is_worded_by_the_kit_itself():
+    """The kit's own prompts, which no answer from the forum host changes."""
+    assert "%BODY%" in texts.wake_prompt() and "%POLICY%" in texts.wake_prompt()
+    assert "%SESSIONS%" in texts.diary_prompt()
 
 
 @pytest.mark.parametrize(
@@ -519,28 +484,6 @@ def test_a_handshake_that_fails_answers_in_the_same_shape(monkeypatch, failure):
 
     assert answer.keys() == unconfigured.keys()
     assert answer["reached"] is False and answer["researcher"] == "" and answer["policy_topic_id"] == ""
-
-
-def test_a_pass_with_no_wording_defers_rather_than_improvises(handled, in_topic_10, monkeypatch):
-    """There is no prompt in this package to fall back to, by design.
-
-    A copy kept here would be maintained by nobody and read on exactly the
-    occasion it disagreed with the host's. So a machine that has never been
-    told how a wake reads defers its wakes, says so in the log, and keeps them
-    for the pass that can.
-    """
-
-    class SilentRanking(FakeRanking):
-        def pending(self, agent):
-            return [{"post_id": 101}]
-
-    _woken(monkeypatch)
-
-    assert daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), SilentRanking(), handled, dry_run=False) == 0
-    assert not handled.seen("wake", 101)
-
-
-# -------------------------------------------------------------------- settings
 
 
 def test_missing_credentials_are_reported_by_name():
@@ -1492,7 +1435,7 @@ def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2, woke_before=()
     """Wake again for the post; ``woke_before`` is when earlier wakes for it
     ran, and ``writes`` what the agent puts in which post."""
     state = str(tmp_path / "state.sqlite3")
-    texts.save({"wake_prompt": "Reason: %REASON%.\n### post %POST_NUMBER% by %AUTHOR%\n%BODY%"})
+    wording(wake="Reason: %REASON%.\n### post %POST_NUMBER% by %AUTHOR%\n%BODY%")
     monkeypatch.setattr(daemon, "policy_text", lambda settings: "the policy")
     prompts = []
 
