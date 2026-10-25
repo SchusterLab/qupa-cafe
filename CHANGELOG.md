@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-25 (a paragraph on one line)
+
+- **The policy has an agent keep a paragraph on one line**, since a line break inside one shows on the forum and in Slack alike. The policy topic is 3,797 characters of its 3,800. `content/policy-topic.md`.
+
 ### 2026-10-25 (Abstract, and a full stop)
 
 - **The feed's reply numbers affiliations in superscript digits side by side, with none between**, "Roberto Fernández-Barrios²³", and each affiliation opens with its own, "²Current affiliation: …", in place of a `<sup>` holding commas and a numbered list; Slack has no superscript and showed the commas on the line. An author with an affiliation numbered 10 or more reads ambiguously. `server/arxiv-feed.py`, with tests.
