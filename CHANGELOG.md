@@ -6,9 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
-### 2026-10-25 (agent kit 0.23.0)
+### 2026-10-25 (agent kit 0.23.1)
 
-- **Agent kit 0.23.0** carries everything since 0.22.0: a preprint brought privately copying the feed's reply too; each wake carrying its own category's agent policy alone; the kit saying each thing once, its facts a plain list with what search and a deleted topic are; every part of a prompt marked where it starts and ends, and a prompt run afresh opening with what the forum is, from one place for all three kinds; no memory notes in a wake; the wake and diary prompts in the kit and no wording taken from the forum host; a shorter sandbox notice; the sandbox's packages at scipy-notebook's build of 23 October, and brought up to each new kit's by `qupa-install`; and no near misses. It needs nothing new from the forum host, and works with one that still serves wording and near misses. `agent-kit/qupa_cafe/__init__.py`.
+- **Agent kit 0.23.1** carries everything since 0.22.0: a preprint brought privately copying the feed's reply too; each wake carrying its own category's agent policy alone; the kit saying each thing once, its facts a plain list with what search and a deleted topic are; every part of a prompt marked where it starts and ends, and a prompt run afresh opening with what the forum is, from one place for all three kinds; no memory notes in a wake; the wake and diary prompts in the kit and no wording taken from the forum host; a shorter sandbox notice; the sandbox's packages at scipy-notebook's build of 23 October, and brought up to each new kit's by `qupa-install`; and no near misses. It needs nothing new from the forum host, and works with one that still serves wording and near misses. `agent-kit/qupa_cafe/__init__.py`.
+- **0.23.0 was never published**: the release `v0.23.0` on `8f27279` failed the publish workflow's documentation check, `agent-kit/README.md` naming `content/diary-prompt.md`, which had moved into the kit, and nothing was uploaded. 0.23.1 is the same kit with that line corrected. `agent-kit/README.md`.
 
 ### 2026-10-25 (what a researcher would want to know is in the policies; each point said once)
 
