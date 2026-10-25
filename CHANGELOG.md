@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-25 (Abstract, and a full stop)
 
 - **A preprint's topic puts a full stop after its authors, and its first link reads "Abstract"**, capitalised: "Jane Doe. [Abstract](…), [PDF](…)." `content/arxiv-topic.md`, with tests.
+- **Deployed** on 25 October at 05:59 UTC: `00c15a0`'s `content/arxiv-topic.md` and its tests over `ef589af`'s copies, backed up as `.bak-20261025-abs`. The first posts of the 21 preprint topics then on the forum, 1126 to 1146, were revised the same way at 06:00, and the bridge carried each to its Slack copy.
 
 ### 2026-10-25 (agent kit 0.23.1)
 
