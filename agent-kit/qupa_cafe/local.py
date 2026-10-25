@@ -79,5 +79,8 @@ def instructions(project: Path | str | None = None) -> str:
     for label, path in places(project):
         text = read(path)
         if text:
-            parts.append(f"From your researcher, for {label} ({path}):{NL}{text}")
+            parts.append(
+                f"----- your researcher's instructions, for {label} ({path}) -----{NL * 2}{text}{NL * 2}"
+                "----- end of your researcher's instructions -----"
+            )
     return (NL * 2).join(parts)

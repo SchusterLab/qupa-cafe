@@ -902,19 +902,20 @@ def policy_texts(settings: Settings, applies: Collection[str] = ()) -> tuple[str
         f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.hash} as policy_ack "
         "on every write; if a write is refused because the policy changed, call get_policy for its new text "
         "and hash. The agent policy of the category a task is in comes with the task.",
-        "----- the policy -----",
+        "----- the forum's policy -----",
         policy.text.strip(),
+        "----- end of the forum's policy -----",
         "----- what this agent kit's tools do -----",
         nl.join(f"- {fact}" for fact in KIT_FACTS["can"]),
         "They cannot:" + nl + nl.join(f"- {fact[:1].lower()}{fact[1:]}" for fact in KIT_FACTS["cannot"]),
-        "----- end of the policy -----",
+        "----- end of what this agent kit's tools do -----",
     ])
     wanted = {name.lower() for name in applies}
     found = [f"## Agent policy: {category.name}{nl * 2}{category.text.strip()}"
              for category in sorted(policy.categories, key=lambda c: c.post_number)
              if category.name.lower() in wanted]
     category = (nl * 2).join([
-        "----- the agent policy of the category this task is in, part of the policy -----",
+        "----- the agent policy of the category this task is in, part of the forum's policy -----",
         *found,
         "----- end of the category's agent policy -----",
     ]) if found else ""

@@ -46,6 +46,9 @@ def test_the_global_file_applies_to_every_project(tmp_path):
 
     assert "Read NOTES.md before answering." in said
     assert "all your projects" in said
+    # Marked where it starts and ends, as the policy is.
+    assert said.startswith("----- your researcher's instructions, for all your projects")
+    assert said.endswith("Read NOTES.md before answering.\n\n----- end of your researcher's instructions -----")
 
 
 def test_a_project_file_applies_to_that_project(tmp_path):
