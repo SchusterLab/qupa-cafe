@@ -181,7 +181,7 @@ def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -
         f"other wake's.{prompt_md}",
         "Since QUPA.md reaches every wake, put what is for the diary alone under a heading that says so, "
         "such as \"## The diary only\". A file that does not exist yet may be created.",
-        "Call get_policy and read the Diary category's agent policy. Then propose the smallest change to "
+        "Call get_policy for the policy as it stands now and read the Diary category's agent policy. Then propose the smallest change to "
         "QUPA.md that would make you write as your researcher wants, and show them the exact new text. "
         "If a rule of the policy forbids what they want, say so rather than propose it. Change nothing until "
         "they agree.",

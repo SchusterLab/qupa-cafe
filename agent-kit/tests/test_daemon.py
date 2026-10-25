@@ -77,6 +77,10 @@ class FakeForum:
     def delete_post(self, post_id):
         self.deleted.append(post_id)
 
+    def _get(self, path):
+        assert path == "/site.json", path
+        return {"categories": []}
+
 
 class FakeRanking:
     """The ranking endpoint, sending relevance wakes and recording what the
@@ -1161,6 +1165,33 @@ def test_a_wake_s_prompt_carries_the_policy_and_its_hash_as_they_stand(forum):
     assert appended.count(policy) == 1 and appended.index("text") < appended.index(policy)
 
 
+def test_a_wake_carries_only_the_agent_policy_of_its_topic_s_category(forum):
+    """The Diary's agent policy is no use to a wake on a preprint, nor the
+    arXiv one to a mention in another category."""
+    from conftest import POLICY_TOPIC_ID, StubForum
+
+    def reply(post_number, name, rule):
+        return {"id": 100 + post_number, "post_number": post_number, "raw": f"## Agent policy: {name}\n\n{rule}",
+                "wiki": True, "staff": True}
+
+    StubForum.policy_replies = [reply(2, "arXiv quant-ph", "ARXIV RULE"), reply(3, "Diary", "DIARY RULE")]
+    url, _ = forum
+    settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
+    listed = [{"id": 8, "name": "arXiv quant-ph"}, {"id": 9, "name": "a", "parent_category_id": 8},
+              {"id": 1, "name": "Research"}]
+
+    assert daemon.category_names(listed, 9) == {"a", "arxiv quant-ph"}
+    shared, category = daemon.policy_texts(settings, daemon.category_names(listed, 9))
+    assert "ARXIV RULE" in category and "DIARY RULE" not in category
+    assert "RULE" not in shared
+    assert daemon.policy_texts(settings, daemon.category_names(listed, 1))[1] == ""
+    assert "DIARY RULE" in daemon.policy_text(settings, {"Diary"})
+
+    forked = build_prompt(settings, "you were mentioned", _topic(10), "%POLICY%\n%BODY%", shared, forked=True,
+                          category_policy=category)
+    assert daemon.IN_PARENT in forked and "ARXIV RULE" in forked and shared not in forked
+
+
 def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
     policy = daemon.policy_text(Settings(forum_url="http://127.0.0.1:9", api_key="k", api_username="u", policy_topic_id=42))
     assert policy.startswith("Call get_policy before you write anything")
@@ -1415,7 +1446,9 @@ def test_the_parent_carries_the_agent_s_memory_notes(tmp_path, monkeypatch):
     (folder / "who.md").write_text("The researcher builds qubits.", encoding="utf-8")
     settings = Settings(api_username="a-agent", agent_dir=str(agent_dir))
     prompt = daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
-    assert "The researcher builds qubits." in prompt and prompt.index("### MEMORY.md") < prompt.index("### who.md")
+    assert "The researcher builds qubits." in prompt and "### who.md" in prompt
+    # The index Claude Code puts in every session itself.
+    assert "### MEMORY.md" not in prompt
     (folder / "big.md").write_text("x" * daemon.MEMORY_NOTES_CHARS, encoding="utf-8")
     assert daemon.memory_notes(settings) == ""
 
@@ -1454,6 +1487,8 @@ class PostsForum(FakeForum):
         self.actions, self.raws = list(actions), dict(raws or {})
 
     def _get(self, path):
+        if path == "/site.json":
+            return FakeForum._get(self, path)
         assert path.startswith("/user_actions.json")
         offset = int(path.rsplit("offset=", 1)[1])
         return {"user_actions": self.actions[offset:offset + 30]}

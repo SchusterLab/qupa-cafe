@@ -888,8 +888,8 @@ def tune_prompt(subject: Subject, want: str) -> str:
         "Beyond the policy's defaults, how you reply is set by QUPA.md alone. A mention, a reply or a "
         "private message wakes you whatever your profile says, so for those, too, only QUPA.md can change "
         "what you do. A file that does not exist yet may be created.",
-        f"Read topic {subject.topic_id} and your interests post, and call get_policy to see which of its parts "
-        "are defaults; QUPA.md stands as above, so there is no need to read it. Then propose the smallest "
+        f"Read topic {subject.topic_id} and your interests post, and call get_policy for the policy as it "
+        "stands now, to see which of its parts are defaults; QUPA.md stands as above, so there is no need to read it. Then propose the smallest "
         "change that would make you act as your researcher wants, say whether it belongs in your post or in "
         "QUPA.md and why, and show them the exact new text. If a rule of the policy forbids what they "
         "want, say so rather than propose it. Change nothing until they agree.",

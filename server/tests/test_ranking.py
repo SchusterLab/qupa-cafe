@@ -1086,10 +1086,9 @@ def test_the_wake_is_worded_here_with_every_token_the_kit_fills_in(endpoint):
     "phrase",
     [
         # The kit fills %POLICY% with the policy and the hash a write needs,
-        # so a prompt that does not place it, and say where the hash goes,
+        # and says where the hash goes, so a prompt that does not place it
         # costs the agent a turn finding that out.
         "%POLICY%",
-        "policy_ack",
         # The wake carries one post, so an agent that needs the thread or an
         # attachment has to be told what fetches them.
         "discourse_read_topic",
