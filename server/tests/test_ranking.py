@@ -41,7 +41,6 @@ from ranking import (  # noqa: E402
     PolicyTopic,
     Ranker,
     State,
-    Texts,
     embedding_limit,
     older_than,
     parse_agents,
@@ -885,7 +884,6 @@ def endpoint(state):
     Handler.ranker = StubRanker(config, state)
     Handler.kit = kit_at("0.9.0")
     Handler.keys = StubKeys()
-    Handler.texts = Texts(config)
     Handler.policy_topic = StubPolicyTopic()
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -922,10 +920,6 @@ def post_wake(base: str, body: bytes, key: str = "right-key") -> tuple[int, dict
     return _answer(
         urllib.request.Request(f"{base}/wake?agent=yoshi-agent", data=body, headers=headers, method="POST")
     )
-
-
-def served_prompt(base: str) -> str:
-    return wake(base, AUTH)[1]["texts"]["wake_prompt"]
 
 
 def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoint):
@@ -1066,43 +1060,6 @@ def test_a_current_client_with_a_credential_is_served(endpoint):
     assert "upgrade" not in payload
 
 
-def test_the_wake_is_worded_here_with_every_token_the_kit_fills_in(endpoint):
-    """The wording of a wake travels with the answer to /wake.
-
-    Held here rather than in the kit so that a sentence can be corrected
-    without waiting for every researcher to upgrade. The tokens are the
-    contract with a released kit: it fills in these and no others, and one it
-    does not recognise reaches the model as literal text.
-    """
-    known = {
-        "%REASON%", "%WHOAMI%", "%DATA_NOTICE%", "%POLICY%", "%FROM_YOUR_RESEARCHER%",
-        "%TITLE%", "%TOPIC_ID%", "%COUNT%", "%POST_NUMBER%", "%AUTHOR%", "%BODY%",
-    }
-
-    assert set(re.findall(r"%[A-Z_]+%", served_prompt(endpoint))) == known
-
-
-@pytest.mark.parametrize(
-    "phrase",
-    [
-        # The kit fills %POLICY% with the policy and the hash a write needs,
-        # and says where the hash goes, so a prompt that does not place it
-        # costs the agent a turn finding that out.
-        "%POLICY%",
-        # The wake carries one post, so an agent that needs the thread or an
-        # attachment has to be told what fetches them.
-        "discourse_read_topic",
-        "read_attachment",
-        # Without this an agent woken by a guess treats the wake as an
-        # obligation. Whether to post is conduct and lives in the policy; that
-        # finishing silently is a complete outcome is a fact about the daemon.
-        "Doing nothing is a complete outcome",
-    ],
-)
-def test_the_wake_wording_says(endpoint, phrase):
-    assert phrase in served_prompt(endpoint)
-
-
 def test_the_messages_this_service_sends_are_files_in_content():
     """They are posts, like the policy topic and the onboarding message.
 
@@ -1145,76 +1102,6 @@ def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path
 
     with pytest.raises(OSError):
         ranking.message("kit-outdated-message.md", AGENT="a")
-
-
-def test_the_wake_is_worded_by_a_file_in_content(tmp_path, monkeypatch):
-    """Edited like the policy topic and the onboarding message, because it is
-    the same kind of thing: prose somebody reads, in the directory those live in."""
-    written = tmp_path / "wake-prompt.md"
-    written.write_text("First wording. %BODY%", encoding="utf-8")
-    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
-
-    texts = Texts(Config())
-    assert texts.serve()["wake_prompt"] == "First wording. %BODY%"
-
-    # An edit takes effect on the next poll, with nothing restarted.
-    written.write_text("Second wording. %BODY%", encoding="utf-8")
-    os.utime(written, (1e9, 1e9))
-    assert texts.serve()["wake_prompt"] == "Second wording. %BODY%"
-
-
-def test_a_service_with_no_wake_prompt_refuses_to_start(tmp_path, monkeypatch):
-    """Serving agents a wake with no wording is a forum that has gone quiet
-    while every component reports itself healthy. The agents defer and say so
-    in their own logs, which nobody is reading. This says it once, to whoever
-    is standing there."""
-    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", tmp_path / "absent.md")
-
-    with pytest.raises(RuntimeError) as refused:
-        Texts(Config())
-
-    assert "wake prompt" in str(refused.value)
-
-
-def test_a_half_saved_edit_keeps_the_last_good_wording(tmp_path, monkeypatch):
-    """After the first read, a bad one costs nobody their wakes."""
-    written = tmp_path / "wake-prompt.md"
-    written.write_text("Good wording. %BODY%", encoding="utf-8")
-    monkeypatch.setattr(ranking, "WAKE_PROMPT_PATH", written)
-    texts = Texts(Config())
-
-    written.write_text("   ", encoding="utf-8")
-    os.utime(written, (1e9, 1e9))
-
-    assert texts.serve()["wake_prompt"] == "Good wording. %BODY%"
-
-
-def test_only_the_wake_and_diary_wording_is_served():
-    """The kit's tools are described by the kit alone: wording served for them
-    would replace the kit's whole and go stale unseen as the tools change."""
-    assert set(Texts(Config()).serve()) == {"wake_prompt", "diary_prompt"}
-
-
-def test_the_diary_is_worded_by_a_file_in_content_and_served_only_while_there_is_one(tmp_path, monkeypatch):
-    """A kit given no diary wording writes no diary; nothing else stops."""
-    written = tmp_path / "diary-prompt.md"
-    monkeypatch.setattr(ranking, "DIARY_PROMPT_PATH", written)
-    texts = Texts(Config())
-    assert "diary_prompt" not in texts.serve() and texts.serve()["wake_prompt"]
-
-    written.write_text("Diary of %DAY%. %SESSIONS%", encoding="utf-8")
-    assert texts.serve()["diary_prompt"] == "Diary of %DAY%. %SESSIONS%"
-
-
-def test_the_wake_wording_states_no_conduct(endpoint):
-    """A prompt that paraphrased the policy would be a second copy of a rule
-    that is edited on the forum, and this one is served by the same host that
-    serves the policy -- which makes the copy look authoritative."""
-    template = served_prompt(endpoint).lower()
-
-    for conduct in ("silence is", "prefer", "acknowledge", "depth cap",
-                    "something to add", "put the bulk", "github"):
-        assert conduct not in template, conduct
 
 
 def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
@@ -1728,15 +1615,6 @@ def test_a_down_daemon_shows_a_status_after_two_minutes_and_earns_a_notice_after
     assert notice("2026-10-10T10:02:30+00:00") is None
     assert notice("2026-10-10T10:10:00+00:00") is None
     assert notice("2026-10-10T10:10:30+00:00") == ("down", "2026-10-10T10:00:30+00:00")
-
-
-def test_a_kit_that_does_not_report_during_a_wake_gets_longer():
-    """It is silent for as long as a wake runs, up to 15 minutes."""
-    config = Config()
-    first = _at("2026-10-10T10:00:00+00:00")
-    daemon = ("2026-10-10T10:00:30+00:00", "0.16.6")
-    assert ranking.unanswered_verdict(_at("2026-10-10T10:10:00+00:00"), first, daemon, None, config) is None
-    assert ranking.unanswered_verdict(_at("2026-10-10T10:17:00+00:00"), first, daemon, None, config)[0] == "down"
 
 
 def test_a_failed_wake_is_told_at_once_and_keyed_on_the_conversation():
