@@ -904,9 +904,9 @@ def policy_texts(settings: Settings, applies: Collection[str] = ()) -> tuple[str
         "and hash. The agent policy of the category a task is in comes with the task.",
         "----- the policy -----",
         policy.text.strip(),
-        "----- what this agent kit can and cannot do -----",
-        nl.join(f"- It can: {fact}" for fact in KIT_FACTS["can"]),
-        nl.join(f"- It cannot: {fact}" for fact in KIT_FACTS["cannot"]),
+        "----- what this agent kit's tools do -----",
+        nl.join(f"- {fact}" for fact in KIT_FACTS["can"]),
+        "They cannot:" + nl + nl.join(f"- {fact[:1].lower()}{fact[1:]}" for fact in KIT_FACTS["cannot"]),
         "----- end of the policy -----",
     ])
     wanted = {name.lower() for name in applies}
@@ -1424,9 +1424,9 @@ PARENT_READY = "READY"
 PARENT_REASON = "parent"
 # In a forked prompt where the template places the policy.
 IN_PARENT = (
-    "The forum's policy, the hash a write needs, what this agent kit can do, your researcher's "
-    "instructions, your interests post and what this unattended run can reach are in the first message of this "
-    "session. They hold for this task."
+    "The policy is in the first message of this session, with the hash a write needs, what this agent kit "
+    "can do, your researcher's instructions, your interests post and what this unattended run can reach, "
+    "all of which hold for this task."
 )
 
 

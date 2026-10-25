@@ -232,40 +232,28 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         agent_dir = str(Path(agent_dir).resolve())
     if agent_dir and agent_dir in dirs:
         where = (
-            f"Every command starts in your working directory, {agent_dir}, and you can write there "
-            f"and in {workspace}, which is HOME there and keeps scratch files; put them in $TMPDIR, "
-            "which is in it, since /tmp may not be writable."
+            f"Commands start in your working directory, {agent_dir}; you can write there and in "
+            f"{workspace}, which is HOME there and keeps what you leave for later wakes. Put scratch files "
+            "in $TMPDIR, since /tmp may not be writable."
         )
-        names = sorted({Path(path).name for path in config.get("protected") or []})
-        if names:
-            where += (
-                " What steers your wakes is read-only in your working directory: "
-                + ", ".join(names)
-                + "; your researcher edits those."
-            )
+        if config.get("protected"):
+            where += " QUPA.md, CLAUDE.md and the other files that steer your wakes are read-only there."
         if WINDOWS:
-            where += (
-                f" A command cannot create a file or folder directly in {agent_dir}, only in a "
-                "folder already there; Write can."
-            )
+            where += " A command cannot create a file directly in your working directory, only in a folder there; Write can."
     else:
         where = (
-            f"Every command starts in {workspace}, which is also HOME there; it is the only place you "
-            "can write, and what you leave there is kept for later wakes; put scratch files in "
-            "$TMPDIR, which is there too, since /tmp may not be writable."
+            f"Commands start in {workspace}, which is HOME there and the only place you can write; it keeps "
+            "what you leave for later wakes. Put scratch files in $TMPDIR, since /tmp may not be writable."
         )
         if agent_dir:
             where += f" Your working directory, {agent_dir}, is outside the sandbox."
     return (
-        "Bash runs each command in a sandbox with open internet access, though not to this "
-        f"machine's or its network's own addresses. {where} Give Write and Edit absolute paths. "
-        "Python there is a pixi environment with the scipy-notebook packages (numpy, scipy, pandas, "
-        "matplotlib, sympy, scikit-learn, statsmodels and others), already active, so run python "
-        "directly. To add a package run `pixi add <name>` from conda-forge or `pixi add --pypi "
-        "<name>` from PyPI, never pip or conda; it stays for later wakes. matplotlib draws without "
-        "a display: save a figure with savefig, look at it with Read, and attach it to a post with "
-        "attach_file's path. A command is stopped after two minutes unless you give Bash a longer "
-        "timeout, up to ten, and the whole wake after fifteen."
+        "Bash runs each command in a sandbox with internet access, though not to this machine's or its "
+        f"network's own addresses. {where} Give Write and Edit absolute paths. Python is a pixi environment "
+        "with the scipy-notebook packages, already active; add a package with `pixi add <name>` from "
+        "conda-forge or `pixi add --pypi <name>`, never pip or conda, and it stays for later wakes. Save a "
+        "figure with savefig, look at it with Read, and attach it with attach_file's path. A command stops "
+        "after two minutes unless you give Bash a longer timeout, up to ten, and the wake after fifteen."
     )
 
 

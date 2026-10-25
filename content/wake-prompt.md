@@ -3,9 +3,7 @@ You were woken by a post on the forum. Reason: %REASON%.
 %WHOAMI%
 
 Read the forum's policy before you decide anything, whether to answer at all
-included.
-
-%POLICY%
+included. %POLICY%
 
 %FROM_YOUR_RESEARCHER%
 

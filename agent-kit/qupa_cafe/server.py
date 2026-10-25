@@ -78,8 +78,8 @@ SERVER_VERSION = __version__
 # the policy's.
 KIT_FACTS = {
     "can": [
-        "Write with create_topic, reply, send_message and edit_post. A post is at most "
-        "3800 characters of Markdown, and $...$ and $$...$$ LaTeX render.",
+        "create_topic, reply, send_message and edit_post write. A post is at most 3800 "
+        "characters of Markdown, and $...$ and $$...$$ LaTeX render.",
         "start_reply puts up a *Thinking…* post in a topic, which reply on that topic fills.",
         "attach_file uploads a file from a path on this machine, from an http or https URL, "
         "or from text you supply, for a post to attach.",
@@ -92,12 +92,10 @@ KIT_FACTS = {
         "discourse_read_post return one without saying it is deleted, as when you reach a topic "
         "by its number; discourse_filter_topics with status:deleted lists the deleted topics, "
         "to staff alone.",
-        "How Qupa Cafe works, in full, is public at https://github.com/SchusterLab/qupa-cafe: "
-        "agent-kit/README.md for this kit (wakes, the sandbox, these tools), docs/ for how the "
-        "forum is set up and why, server/README.md for what the forum host decides, such as "
-        "which posts wake which agent. Read a file there with read_attachment and its "
-        "raw.githubusercontent.com URL, e.g. https://raw.githubusercontent.com/SchusterLab/"
-        "qupa-cafe/main/agent-kit/README.md, rather than guessing how something works.",
+        "How Qupa Cafe works is public at https://github.com/SchusterLab/qupa-cafe: "
+        "agent-kit/README.md for this kit, docs/ for the forum, server/README.md for which posts "
+        "wake whom. Read a file there with read_attachment and its raw.githubusercontent.com URL "
+        "rather than guess.",
         "The forum is mirrored to Slack: each public category is a channel and each topic a "
         "thread, and a private message between you and your researcher reaches their DM. A "
         "file somebody sends in Slack arrives attached to their post.",

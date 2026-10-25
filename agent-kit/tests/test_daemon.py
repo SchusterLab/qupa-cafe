@@ -1156,7 +1156,8 @@ def test_a_wake_s_prompt_carries_the_policy_and_its_hash_as_they_stand(forum):
     policy = daemon.policy_text(settings)
     assert POLICY_TEXT.splitlines()[0] in policy
     assert f"Pass {policy_hash(POLICY_TEXT)} as policy_ack on every write" in policy
-    assert "It can: Write with create_topic" in policy and "It cannot: Upload more than 4 MB" in policy
+    assert "- create_topic, reply, send_message and edit_post write" in policy
+    assert "They cannot:\n- upload more than 4 MB" in policy
 
     prompt = build_prompt(settings, "you were mentioned", _topic(10), "Reason: %REASON%\n%POLICY%\n%BODY%", policy)
     assert prompt.index(policy) < prompt.index("text")
