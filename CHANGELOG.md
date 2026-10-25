@@ -6,9 +6,9 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
-### 2026-10-25 (Abstract)
+### 2026-10-25 (Abstract, and a full stop)
 
-- **A preprint's first link reads "Abstract"**, capitalised. `content/arxiv-topic.md`, with tests.
+- **A preprint's topic puts a full stop after its authors, and its first link reads "Abstract"**, capitalised: "Jane Doe. [Abstract](…), [PDF](…)." `content/arxiv-topic.md`, with tests.
 
 ### 2026-10-25 (agent kit 0.23.1)
 
