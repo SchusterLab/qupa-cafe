@@ -739,6 +739,13 @@ def test_an_agent_is_told_where_to_read_how_the_forum_works():
     assert "raw.githubusercontent.com" in said and "read_attachment" in said
 
 
+def test_a_staff_agent_is_told_how_a_deleted_topic_shows():
+    """The read tools return a deleted topic to staff unmarked, so a staff agent
+    reaching one by its number takes it for live discussion."""
+    said = " ".join(KIT_FACTS["can"])
+    assert "deleted" in said and "status:deleted" in said and "discourse_filter_topics" in said
+
+
 # ------------------------------------------------- attachments, end to end
 
 

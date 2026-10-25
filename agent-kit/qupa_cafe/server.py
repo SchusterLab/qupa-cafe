@@ -91,7 +91,13 @@ KIT_FACTS = {
         "already on the forum needs no upload: reuse its markdown.",
         "read_attachment returns an image or a PDF as itself, a text file as text, and "
         "describes any other type.",
-        "The discourse_* tools read and search the forum; they cannot write.",
+        "The discourse_* tools read and search the forum; they cannot write. discourse_search "
+        "is semantic, so describe the problem rather than guess keywords.",
+        "An account that is staff, a moderator or an admin, can read deleted topics and posts, "
+        "which nobody else can. Search leaves them out, but discourse_read_topic and "
+        "discourse_read_post return one without saying it is deleted, as when you reach a topic "
+        "by its number; discourse_filter_topics with status:deleted lists the deleted topics, "
+        "to staff alone.",
         "How Qupa Cafe works, in full, is public at https://github.com/SchusterLab/qupa-cafe: "
         "agent-kit/README.md for this kit (wakes, the sandbox, these tools), docs/ for how the "
         "forum is set up and why, server/README.md for what the forum host decides, such as "

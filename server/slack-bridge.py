@@ -525,6 +525,10 @@ _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
 _HTML_LINK = re.compile(r"""<a\s[^>]*?href\s*=\s*(["'])([^"'\s]+)\1[^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# Slack has no superscript, so the digits of one become superscript digits and
+# anything else in it, such as the commas between them, stays as it is.
+_HTML_SUP = re.compile(r"<sup>([^<]*)</sup>", re.IGNORECASE)
+SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 # A mention as Discourse finds one: not inside a word or an address, and a
 # username ends in a letter, digit or underscore, so a full stop after it is
 # the sentence's. The first group is what to step over: code, and the tokens
@@ -654,8 +658,8 @@ def slack_mentions(text: str, mention_for: Callable[[str], str | None]) -> str:
 def to_slack(
     raw: str, link: str, codes: bool = False, mention_for: Callable[[str], str | None] | None = None,
 ) -> str:
-    """Forum markdown, readable in a thread: links, bold, images and, with
-    ``mention_for``, mentions converted, and the rest as written, in full.
+    """Forum markdown, readable in a thread: links, bold, superscripts, images
+    and, with ``mention_for``, mentions converted, and the rest as written, in full.
     ``link`` is the post's address, against which a relative one is resolved;
     ``codes`` is ``redact``'s. A post is at
     most `max_post_length` (3,800) characters, which with a title and a closing
@@ -666,6 +670,7 @@ def to_slack(
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
+    text = _HTML_SUP.sub(lambda m: m.group(1).translate(SUPERSCRIPT_DIGITS), text)
     text = slack_escape(text)
     # Links after escaping, so their angle brackets are the only live ones.
     text = _MD_LINK.sub(lambda m: md_link(m, link), text)

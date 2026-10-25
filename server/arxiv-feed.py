@@ -390,30 +390,24 @@ def fill(template: str, values: dict[str, str]) -> str:
 def topic_body(paper: Paper, template: str) -> str:
     """The topic's first post: the first and last authors and how many
     authors come between."""
-    def named(n: int) -> str:
-        return f"**{paper.authors[n]}**"
-
-    count = len(paper.authors)
+    authors = paper.authors
+    count = len(authors)
     if count == 0:
-        names = "**Authors not listed**"
+        names = "Authors not listed"
     elif count == 1:
-        names = named(0)
+        names = authors[0]
     elif count == 2:
-        names = f"{named(0)} and {named(1)}"
+        names = f"{authors[0]} and {authors[1]}"
     else:
         between = count - 2
         others = f"{between} other author" + ("s" if between > 1 else "")
-        names = f"{named(0)}, {others}, and {named(count - 1)}"
+        names = f"{authors[0]}, {others}, and {authors[-1]}"
 
     return fill(template, {
         "AUTHORS": names,
-        "ARXIV_ID": paper.arxiv_id,
         "ABS_URL": paper.abs_url,
         "PDF_URL": paper.pdf_url,
     })
-
-
-SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
 def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) -> tuple[str, str]:
@@ -427,7 +421,7 @@ def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) ->
         marked = []
         for name, own in zip(authors, affs):
             marks = [str(numbers.setdefault(a, len(numbers) + 1)) for a in own]
-            marked.append(name + ",".join(marks).translate(SUPERSCRIPT))
+            marked.append(f"{name}<sup>{','.join(marks)}</sup>" if marks else name)
         names = ", ".join(marked)
         listed = "\n".join(f"{n}. {a}" for a, n in numbers.items())
     if more:

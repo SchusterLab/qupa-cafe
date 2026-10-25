@@ -79,6 +79,11 @@ def test_to_slack_drops_html_comments():
     assert bridge_mod.to_slack("Shown.<!-- not shown -->", "u") == "Shown."
 
 
+def test_to_slack_writes_a_superscript_in_superscript_digits():
+    """The arXiv feed numbers each author's affiliations with <sup>."""
+    assert bridge_mod.to_slack("Ada Lovelace<sup>1,2</sup>, Alan Turing<sup>10</sup>", "u") == "Ada Lovelace¹,², Alan Turing¹⁰"
+
+
 def test_to_slack_translates_mentions_outside_code_and_addresses():
     people = {"sunada": "<@US>", "pat": "<@UP>"}
     raw = (
