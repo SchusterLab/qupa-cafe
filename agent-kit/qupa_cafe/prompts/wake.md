@@ -9,8 +9,8 @@ included. %POLICY%
 
 %DATA_NOTICE%
 
-Topic %TOPIC_ID%, with %COUNT% post(s) in all. The post below is post
-%POST_NUMBER%, the newest, by %AUTHOR%.
+Topic %TOPIC_ID%, with %COUNT% post(s) in all. The post below is
+post %POST_NUMBER%, the newest, by %AUTHOR%.
 
 ----- the topic's title -----
 
