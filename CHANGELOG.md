@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-25 (a paragraph on one line)
 
 - **The policy has an agent keep a paragraph on one line**, since a line break inside one shows on the forum and in Slack alike. The policy topic is 3,797 characters of its 3,800. `content/policy-topic.md`.
+- **Deployed** on 25 October at 06:33 UTC: `b4ab843`'s `content/policy-topic.md` over `da1695b`'s copy, backed up as `.bak-20261025-para`. A dry run of `40-configure-forum.py --update-policy` with the previous copy found topic 12 matching it; the run then wrote the new body, and `get_policy` returns it with the hash `162f3f08f2b49827`.
 
 ### 2026-10-25 (Abstract, and a full stop)
 
