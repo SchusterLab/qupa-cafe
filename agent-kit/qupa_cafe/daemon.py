@@ -1451,7 +1451,6 @@ def parent_prompt(settings: Settings, policy: str, config: dict) -> str:
         policy,
         from_researcher,
         interests_text(settings),
-        memory_notes(settings),
         wake_notice(settings, config),
         f"There is no task yet. Call no tools and answer with just {PARENT_READY}.",
     ]
@@ -1502,43 +1501,6 @@ def interests_text(settings: Settings) -> str:
         body,
         "----- end of your interests post -----",
     ])
-
-
-# Larger notes stay in their files, for a wake to read when it needs them.
-MEMORY_NOTES_CHARS = 20000
-
-
-def claude_project_dir(directory: str) -> Path:
-    """Where Claude Code keeps a working directory's sessions and memory:
-    the path with every character but a letter or digit made a hyphen."""
-    from . import wakes  # wakes imports this module
-
-    return wakes.claude_home() / "projects" / re.sub(r"[^A-Za-z0-9]", "-", directory)
-
-
-def memory_notes(settings: Settings) -> str:
-    """The notes the agent kept in Claude Code's memory for its working
-    directory, which nearly every wake would otherwise spend a request
-    reading; "" when there are none, or too many to carry."""
-    if not settings.agent_dir:
-        return ""
-    folder = claude_project_dir(settings.agent_dir) / "memory"
-    # MEMORY.md, the index, is one Claude Code puts in every session itself.
-    files = sorted(path for path in folder.glob("*.md") if path.name != "MEMORY.md")
-    notes = []
-    for path in files:
-        try:
-            notes.append(f"### {path.name}" + chr(10) + path.read_text(encoding="utf-8").strip())
-        except OSError:
-            continue
-    text = (chr(10) * 2).join(notes)
-    if not text or len(text) > MEMORY_NOTES_CHARS:
-        return ""
-    return (
-        f"Your notes from earlier sessions, in Claude Code's memory for your working directory ({folder}), "
-        "as they stand now. There is no need to read these files again; a note you write or change there "
-        "reaches later tasks once the kit starts a new session from here." + chr(10) * 2 + text
-    )
 
 
 def steering_files(settings: Settings) -> list[str]:

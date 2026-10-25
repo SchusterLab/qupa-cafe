@@ -1440,23 +1440,6 @@ def test_the_parent_says_when_the_researcher_has_written_nothing(monkeypatch):
     assert "there is no QUPA.md" in daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
 
 
-def test_the_parent_carries_the_agent_s_memory_notes(tmp_path, monkeypatch):
-    """So that a wake does not spend a request reading them."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    agent_dir = tmp_path / "agent"
-    folder = daemon.claude_project_dir(str(agent_dir)) / "memory"
-    folder.mkdir(parents=True)
-    (folder / "MEMORY.md").write_text("- [Who](who.md)", encoding="utf-8")
-    (folder / "who.md").write_text("The researcher builds qubits.", encoding="utf-8")
-    settings = Settings(api_username="a-agent", agent_dir=str(agent_dir))
-    prompt = daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
-    assert "The researcher builds qubits." in prompt and "### who.md" in prompt
-    # The index Claude Code puts in every session itself.
-    assert "### MEMORY.md" not in prompt
-    (folder / "big.md").write_text("x" * daemon.MEMORY_NOTES_CHARS, encoding="utf-8")
-    assert daemon.memory_notes(settings) == ""
-
-
 def test_an_edited_claude_md_makes_a_new_parent(tmp_path, monkeypatch):
     """A fork inherits the parent's copy of it."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
@@ -1465,11 +1448,6 @@ def test_an_edited_claude_md_makes_a_new_parent(tmp_path, monkeypatch):
     before = daemon.parent_key(settings, "P", choice, config)
     (tmp_path / "CLAUDE.md").write_text("Be brief.", encoding="utf-8")
     assert daemon.parent_key(settings, "P", choice, config) != before
-
-
-def test_claude_code_s_folder_for_a_directory():
-    assert daemon.claude_project_dir(r"C:\Users\slab\qupa-cafe-agent").name == "C--Users-slab-qupa-cafe-agent"
-
 
 
 # ------------------------------------------------------------- waking again
