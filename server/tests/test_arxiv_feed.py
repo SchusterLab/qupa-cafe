@@ -128,7 +128,7 @@ def test_a_long_author_list_is_cut_to_fit_the_reply():
     body = feed.details_body(many, DETAILS, affs)
 
     assert len(body) <= feed.MAX_POST_LENGTH
-    assert "University of Place 0" in body and "Department of Physics" not in body
+    assert "Department of Physics, University of Place 0, Somewhere 12345, Country" in body
     assert re.search(r"and \d+ more", body)
     assert body.endswith(paper.abstract)
 
@@ -142,7 +142,7 @@ def test_text_that_looks_like_a_placeholder_is_copied():
 
 def test_no_placeholder_is_left_unfilled():
     for paper in papers():
-        for body in (feed.topic_body(paper, TEMPLATE, None), feed.details_body(paper, DETAILS, None)):
+        for body in (feed.topic_body(paper, TEMPLATE), feed.details_body(paper, DETAILS, None)):
             assert "%" not in body.replace("50%", "")
 
 
@@ -229,51 +229,6 @@ def test_the_affiliations_arxiv_lists_with_the_names_are_used_when_the_html_give
                                               ["Argonne National Laboratory (ANL), Lemont"]]
 
 
-@pytest.mark.parametrize(
-    "affiliation, name",
-    [
-        ("Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada", "University of Ottawa"),
-        ("Institut für Theoretische Physik, Leibniz Universität Hannover, Hannover, Germany", "Leibniz Universität Hannover"),
-        ("Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark", "Sparrow Quantum"),
-        ("Center for Hybrid Quantum Networks (Hy-Q), Niels Bohr Institute, University of Copenhagen, Blegdamsvej 17",
-         "University of Copenhagen"),
-        ("Wyant College of Optical Sciences, The University of Arizona, Tucson, Arizona 85721, USA", "The University of Arizona"),
-        ("Leinweber Institute for Theoretical Physics, University of California, Berkeley, CA 94720, USA",
-         "University of California, Berkeley"),
-        ("Quantum Performance Laboratory, Sandia National Laboratories, Livermore, California 94550, USA",
-         "Sandia National Laboratories"),
-        ("National Key Laboratory of Materials, Shanghai Institute of Microsystem, Chinese Academy of Sciences, Shanghai",
-         "Chinese Academy of Sciences"),
-        ("Max Planck Institute for the Physics of Complex Systems, Nöthnitzerstr. 38, 01187 Dresden, Germany",
-         "Max Planck Institute for the Physics of Complex Systems"),
-        ("QudeLeap Research, Shanghai 200030, China", "QudeLeap Research"),
-        ("Phasecraft Ltd., Colston Street, Bristol BS1 4XE, United Kingdom", "Phasecraft Ltd"),
-        ("Laboratoire de Physique, (ESPCI - CNRS - Sorbonne Université), Paris", "ESPCI - CNRS - Sorbonne Université"),
-        ("School of Electrical and Computer Engineering", "School of Electrical and Computer Engineering"),
-        ("IBM Quantum, T. J. Watson Research Center, Yorktown Heights, NY 10598, USA",
-         "IBM Quantum"),
-        ("Physics Division, National Center for Theoretical Sciences, Taipei", "National Center for Theoretical Sciences"),
-        ("QuEL, Inc., Hachioji, Tokyo, Japan", "QuEL, Inc"),
-        ("Department of Physics and Center for Theoretical Physics, National, Taiwan University, Taipei 10617, Taiwan",
-         "National Taiwan University"),
-        ("Research Center for Materials Nanoarchitectonics, National Institute for Materials Science1-1 Namiki, Tsukuba, Japan",
-         "National Institute for Materials Science"),
-        ("Beijing National Laboratory for Condensed Matter Physics, Institute of Physics, Chinese Academy of Sciences, Beijing",
-         "Chinese Academy of Sciences"),
-        ("Departamento de Física, Centro Universitario de Ciencias Exactas e Ingeniería, Universidad de Guadalajara, México",
-         "Universidad de Guadalajara"),
-    ],
-)
-def test_the_institution_is_what_an_affiliation_is_stripped_to(affiliation, name):
-    assert feed.institution(affiliation) == name
-
-
-def test_a_department_given_on_its_own_is_left_out_beside_an_institution():
-    assert feed.institutions(["School of Electrical and Computer Engineering", "Cornell University, Ithaca, New York"]) == [
-        "Cornell University"]
-    assert feed.institutions(["School of Electrical and Computer Engineering"]) == ["School of Electrical and Computer Engineering"]
-
-
 def test_a_footnote_among_the_affiliations_is_no_affiliation():
     html = PER_AUTHOR.replace("Department of Physics, <br class=\"ltx_break\">University of Ottawa",
                               "These two authors contributed equally to this work</span>"
@@ -289,60 +244,40 @@ def test_a_footnote_among_the_affiliations_is_no_affiliation():
 # ----------------------------------------------------------------- the posts
 
 
-def test_the_topic_names_the_first_and_last_authors_and_their_institutions():
-    paper = papers()[0]
-    body = feed.topic_body(paper, TEMPLATE, feed.affiliations(paper, PER_AUTHOR))
-
-    assert body.startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** "
-                           "(University of Ottawa; Stanford University) [arXiv:2610.00129]")
-    assert "Fernández-Barrios" not in body
-    assert paper.abstract not in body
-
-
-def test_a_topic_without_affiliations_names_the_authors_alone():
+def test_the_topic_names_the_first_and_last_authors_and_no_affiliations():
     paper = papers()[0]
     two = feed.Paper(**{**paper.__dict__, "authors": paper.authors[:2]})
-
     many = feed.Paper(**{**paper.__dict__, "authors": [*paper.authors, "Ada Lovelace"]})
 
-    assert feed.topic_body(paper, TEMPLATE, None).startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** [arXiv:")
-    assert feed.topic_body(many, TEMPLATE, None).startswith("**Lukas Ebner**, 2 other authors, and **Ada Lovelace** [arXiv:")
-    assert feed.topic_body(two, TEMPLATE, None).startswith("**Lukas Ebner** and **Roberto Fernández-Barrios** [arXiv:")
-    assert feed.topic_body(papers()[1], TEMPLATE, None).startswith("**Jane Doe** [arXiv:")
+    assert feed.topic_body(paper, TEMPLATE).startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** [arXiv:")
+    assert feed.topic_body(many, TEMPLATE).startswith("**Lukas Ebner**, 2 other authors, and **Ada Lovelace** [arXiv:")
+    assert feed.topic_body(two, TEMPLATE).startswith("**Lukas Ebner** and **Roberto Fernández-Barrios** [arXiv:")
+    assert feed.topic_body(papers()[1], TEMPLATE).startswith("**Jane Doe** [arXiv:")
 
 
-def test_first_and_last_authors_who_share_an_institution_name_it_once():
-    paper = papers()[0]
-    affs = [["University of Ottawa"], ["Simula UiB"], ["Department of Physics, University of Ottawa, Canada"]]
-
-    assert feed.topic_body(paper, TEMPLATE, affs).startswith(
-        "**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** (University of Ottawa) [arXiv:"
-    )
-
-
-def test_the_reply_lists_every_author_with_numbered_institutions_and_the_abstract():
+def test_the_reply_lists_every_author_with_numbered_affiliations_in_full_and_the_abstract():
     paper = papers()[0]
     body = feed.details_body(paper, DETAILS, feed.affiliations(paper, PER_AUTHOR))
 
     assert body.startswith(
         "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios²,³, Mercedes Martín-Benito⁴\n\n"
-        "1. University of Ottawa\n"
-        "2. Sparrow Quantum\n"
-        "3. Leibniz Universität Hannover\n"
-        "4. Stanford University\n\n"
+        "1. Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada\n"
+        "2. Current affiliation: Sparrow Quantum, Nordre Fasanvej 215, DK-2000 Frederiksberg, Denmark\n"
+        "3. Institute for Physics, Leibniz Universität Hannover, Hannover, Germany\n"
+        "4. Department of Physics, Stanford University, Stanford, CA 94305, USA\n\n"
     )
     assert body.endswith(f"**Abstract:** {paper.abstract}")
 
 
-def test_authors_who_share_their_institutions_need_no_numbers():
+def test_authors_who_share_their_affiliations_need_no_numbers():
     paper = papers()[0]
-    shared = [["Department of Physics, University of Bergen, Norway"], ["Simula UiB, Bergen, Norway"], ["University of Bergen"]]
+    bergen, simula = "Department of Physics, University of Bergen, Norway", "Simula UiB, Bergen, Norway"
 
-    assert feed.details_body(paper, DETAILS, shared).startswith(
-        "**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios², Mercedes Martín-Benito¹\n\n1. University of Bergen\n2. Simula UiB\n\n"
+    assert feed.details_body(paper, DETAILS, [[bergen], [simula], [bergen, bergen]]).startswith(
+        f"**Authors:** Lukas Ebner¹, Roberto Fernández-Barrios², Mercedes Martín-Benito¹\n\n1. {bergen}\n2. {simula}\n\n"
     )
-    assert feed.details_body(paper, DETAILS, [shared[0], shared[2], shared[0]]).startswith(
-        "**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\nUniversity of Bergen\n\n"
+    assert feed.details_body(paper, DETAILS, [[bergen]] * 3).startswith(
+        f"**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\n{bergen}\n\n"
     )
     assert feed.details_body(paper, DETAILS, None).startswith(
         "**Authors:** Lukas Ebner, Roberto Fernández-Barrios, Mercedes Martín-Benito\n\n**Abstract:**"
@@ -488,7 +423,7 @@ def test_a_run_opens_a_topic_per_paper_and_replies_with_the_details(forum):
     topic = forum.topics["arxiv-2610_00129"]
     assert topic["category"] == "7"
     assert topic["title"] == "Global and nonlocal magic of quantum many-body scars (arXiv:2610.00129)"
-    assert topic["raw"].startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** (University of Ottawa;")
+    assert topic["raw"].startswith("**Lukas Ebner**, 1 other author, and **Mercedes Martín-Benito** [arXiv:")
     (details,) = topic["replies"]
     assert "Roberto Fernández-Barrios²,³" in details and details.endswith(papers()[0].abstract)
 
@@ -525,7 +460,7 @@ def test_a_paper_whose_html_turns_up_is_posted_with_it(forum):
 
     forum.html["2610.00129"] = page
     feed.run(str(FIXTURE), dry_run=False)
-    assert "(University of Ottawa; Stanford University)" in forum.topics["arxiv-2610_00129"]["raw"]
+    assert "Stanford University, Stanford, CA 94305" in forum.topics["arxiv-2610_00129"]["replies"][0]
 
 
 def test_a_second_run_of_the_same_build_posts_and_deletes_nothing(forum):

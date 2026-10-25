@@ -2,9 +2,8 @@
 """Post every preprint arXiv announces in quant-ph to the forum, one topic each.
 
 Run every ten minutes by qupa-arxiv-feed.timer. A topic names the first and
-last authors with their institutions, read from the paper's HTML version, and
-the feed's own reply under it gives every author with their institutions, and
-the abstract. A paper waits in the state file's queue for its HTML version for
+last authors, and the feed's own reply under it gives every author with their
+affiliations in full, read from the paper's HTML version, and the abstract. A paper waits in the state file's queue for its HTML version for
 up to an hour, and is then posted without affiliations.
 
 Each topic carries the paper's id as its ``external_id``, which the forum holds
@@ -370,100 +369,6 @@ def html_affiliations(paper: Paper, html_text: str) -> list[list[str]] | None:
     return affs if any(affs) else None
 
 
-# A part of an affiliation that names where somebody works, best first. A
-# subunit, such as a department, is a last resort before any other part.
-INSTITUTION_TIERS = [
-    re.compile(r"\b(univ|college|polytechn|politecnic|école|ecole|hochschule|technion)|institute of technology", re.I),
-    re.compile(r"\b(academ|national laborator|inc\b|ltd\b|llc\b|gmbh\b|corporation\b)", re.I),
-    re.compile(r"\b(institut|istituto|research\b|technologies\b)", re.I),
-    re.compile(r"\b(laborat|labs?\b|cent(er|re)\b|centro\b|observatory|cnrs\b|agency\b|foundation\b|national\b)", re.I),
-]
-# From this tier on, an institution may be the site of an organisation.
-SITE_TIER = 2
-# A word that marks a part of an institution wherever it comes in a name.
-SUBUNIT_WORD = re.compile(
-    r"\b(department|departament|dept|school|faculty|division|group|program|chair|section|unit|team|cluster|campus|college)",
-    re.I,
-)
-# A street address or postcode, which no institution's name has.
-ADDRESS = re.compile(r"^\d|\d{3,}|@")
-SUBUNIT = re.compile(
-    r"^(the\s+)?(department|dept\b|school|faculty|division|group|program|chair|section|unit|team|(\S+\s+)?college\s+of\b)",
-    re.I,
-)
-ROLE_PREFIX = re.compile(
-    r"^(?:(?:current|present|permanent|new)\s+(?:affiliation|address)|also\s+(?:at|with)|on\s+leave\s+from|now\s+at)\b\s*:?\s*",
-    re.I,
-)
-# A name that is one campus of many, which the next part names.
-SYSTEM = re.compile(r"^(the\s+)?university\s+of\s+(california|wisconsin)$", re.I)
-# A company's legal form, which a comma sets after its name, as in "QuEL, Inc.".
-LEGAL_FORM = re.compile(r"^(inc|ltd|llc|gmbh|corp|co|plc|ag|s\.?a|b\.?v)\.?$", re.I)
-# A word that begins a name and is no name alone, as in "National, Taiwan University".
-NAME_START = re.compile(r"^(national|state|federal|royal|imperial)$", re.I)
-# A laboratory or centre, which names a part of an institution that a later
-# part of the same tier names in full.
-LAB = re.compile(r"\b(laborat|labs?\b|cent(er|re)\b|centro\b)", re.I)
-
-
-def affiliation_parts(affiliation: str) -> list[str]:
-    """An affiliation's comma-separated parts, with an address run into the
-    name before it split off, a legal form joined to its company's name, and
-    a name broken after its first word joined again."""
-    text = re.sub(r"(?<=[a-z])(?=\d)", ", ", ROLE_PREFIX.sub("", affiliation))
-    parts = [p.strip(" .") for p in re.split(r"[,;]", text)]
-    parts = [p[1:-1].strip() if p.startswith("(") and p.endswith(")") else p for p in parts if p]
-    joined: list[str] = []
-    for part in parts:
-        if joined and LEGAL_FORM.match(part):
-            joined[-1] += ", " + part
-        elif joined and NAME_START.match(joined[-1]):
-            joined[-1] += " " + part
-        else:
-            joined.append(part)
-    return joined
-
-
-def institution(affiliation: str) -> str:
-    """The institution an affiliation names, such as "University of Ottawa"
-    for "Department of Physics, University of Ottawa, Ontario, K1N 6N5, Canada"."""
-    parts = affiliation_parts(affiliation)
-    if not parts:
-        return affiliation
-    def plain(p: str) -> bool:
-        return not SUBUNIT.match(p) and not ADDRESS.search(p)
-
-    found = None
-    for rank, tier in enumerate(INSTITUTION_TIERS):
-        matches = [n for n, p in enumerate(parts) if tier.search(p) and plain(p)]
-        found = next((n for n in matches if not LAB.search(parts[n])), matches[0]) if matches else None
-        if found is not None:
-            break
-    if found is None:
-        found = next((n for n, p in enumerate(parts) if plain(p)), 0)
-    # An institute, laboratory or centre is often one site of an
-    # organisation named just before it in words no tier has, such as "IBM
-    # Quantum" before "T. J. Watson Research Center", which is named instead.
-    elif rank >= SITE_TIER and found > 0:
-        before = parts[found - 1]
-        if (plain(before) and before[:1].isupper() and not SUBUNIT_WORD.search(before)
-                and not any(t.search(before) for t in INSTITUTION_TIERS)):
-            found -= 1
-    name = parts[found]
-    if SYSTEM.match(name) and found + 1 < len(parts) and not ADDRESS.search(parts[found + 1]):
-        name += ", " + parts[found + 1]
-    return name
-
-
-def institutions(affs: list[str]) -> list[str]:
-    """The distinct institutions of one author, in order. A department or
-    school given as an affiliation of its own is left out when the author has
-    an institution besides."""
-    names = list(dict.fromkeys(institution(a) for a in affs))
-    whole = [name for name in names if not SUBUNIT.match(name)]
-    return whole or names
-
-
 # ---------------------------------------------------------------------- a topic
 
 
@@ -482,10 +387,9 @@ def fill(template: str, values: dict[str, str]) -> str:
     return re.sub(r"\n{3,}", "\n\n", filled).strip()
 
 
-def topic_body(paper: Paper, template: str, affs: list[list[str]] | None = None) -> str:
-    """The topic's first post: the first and last authors, how many authors
-    come between, and, when ``affs`` gives them, the institutions of the
-    first and last authors together after the names."""
+def topic_body(paper: Paper, template: str) -> str:
+    """The topic's first post: the first and last authors and how many
+    authors come between."""
     def named(n: int) -> str:
         return f"**{paper.authors[n]}**"
 
@@ -500,11 +404,6 @@ def topic_body(paper: Paper, template: str, affs: list[list[str]] | None = None)
         between = count - 2
         others = f"{between} other author" + ("s" if between > 1 else "")
         names = f"{named(0)}, {others}, and {named(count - 1)}"
-
-    ends = ([affs[0], affs[count - 1]] if count > 1 else affs[:1]) if affs else []
-    where = list(dict.fromkeys(name for aff in ends for name in institutions(aff)))
-    if where:
-        names += f" ({'; '.join(where)})"
 
     return fill(template, {
         "AUTHORS": names,
@@ -537,10 +436,11 @@ def author_lines(authors: list[str], affs: list[list[str]] | None, more: int) ->
 
 
 def details_body(paper: Paper, template: str, affs: list[list[str]] | None) -> str:
-    """The feed's reply: every author with their institutions, and the
-    abstract. Over ``MAX_POST_LENGTH``, the authors are cut, saying how many."""
+    """The feed's reply: every author with their affiliations as the paper
+    gives them, and the abstract. Over ``MAX_POST_LENGTH``, the authors are
+    cut, saying how many."""
     def body(shown: int) -> str:
-        own = None if affs is None else [institutions(a) for a in affs[:shown]]
+        own = None if affs is None else [list(dict.fromkeys(a)) for a in affs[:shown]]
         names, listed = author_lines(paper.authors[:shown], own, len(paper.authors) - shown)
         return fill(template, {
             "AUTHORS": names or "Authors not listed",
@@ -772,7 +672,7 @@ def post_paper(forum: Forum | None, paper: Paper, affs: list[list[str]] | None,
     "created", "exists" or "refused"; a transient failure is raised, and the
     next run posts what is missing."""
     title = topic_title(paper)
-    raw, details = topic_body(paper, templates[0], affs), details_body(paper, templates[1], affs)
+    raw, details = topic_body(paper, templates[0]), details_body(paper, templates[1], affs)
     if forum is None:
         print(f"--- {paper.external_id}\n{title}\n\n{raw}\n\n--- reply\n{details}\n")
         return "created"
