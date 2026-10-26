@@ -1,6 +1,6 @@
 # The Python environment of a woken agent's sandbox: the packages that
 # quay.io/jupyter/scipy-notebook installs with mamba, at the versions of its
-# build adb330e3127a (2026-10-23), from conda-forge as the image takes them.
+# build 4aa9f4159aaf (2026-10-26), from conda-forge as the image takes them.
 #
 # conda and mamba, which the image also installs, are left out: pixi manages
 # this environment, and a conda in it would invite the agent to install around
