@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-26 ("Show that you are answering" back in the policy)
 
 - **The policy again has an agent call `start_reply` as soon as it decides to reply**, as "Show that you are answering"; `start_reply`'s tool description says so too. 3,799 characters. `content/policy-topic.md`. To be pushed with `--update-policy`.
+- **Deployed** on 26 October: `cc4ae83`'s `content/policy-topic.md` and this file, backed up as `.bak-20261026-metapol2`. The live policy matched `eb9d8c0`'s copy; `40-configure-forum.py --update-policy` wrote the policy, which the kit reads back with the paragraph.
 
 ### 2026-10-26 (the policy topic in Meta)
 
