@@ -6,7 +6,7 @@
 # checks a second run changes nothing, then drives the agent kit against the
 # result: the policy fetch, a refused write with a stale hash, an enforced write
 # and its attribution, a repeat with the same external_id, a policy edit that
-# invalidates the hash, and one poll of the daemon without a ranking endpoint
+# invalidates the hash, and one poll of the daemon without a forum host
 # and with an unreachable one.
 #
 # Run this on a DISPOSABLE forum. It creates accounts, categories, and topics,
@@ -355,12 +355,12 @@ fi
 
 # ---------------------------------------------------------------- the daemon
 
-section "Daemon with no ranking endpoint"
+section "Daemon with no forum host"
 
-# No QUPA_RANKING_URL. Nothing wakes without one -- the forum host decides
+# No QUPA_HOST_URL. Nothing wakes without one -- the forum host decides
 # which posts are worth a model call and supplies the wording of a wake -- so
 # what is under test is that the daemon says so and does not crash.
-if QUPA_RANKING_URL="" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon.log 2>&1; then
+if QUPA_HOST_URL="" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon.log 2>&1; then
   ok "one poll completed"
 else
   bad "the daemon failed on one poll"
@@ -372,9 +372,9 @@ else
   bad "no warning about the missing endpoint: $(tail -3 /tmp/daemon.log)"
 fi
 
-section "Daemon does not spin when the ranking endpoint refuses"
+section "Daemon does not spin when the forum host refuses"
 
-if QUPA_RANKING_URL="http://127.0.0.1:1" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon2.log 2>&1; then
+if QUPA_HOST_URL="http://127.0.0.1:1" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon2.log 2>&1; then
   ok "one poll completed against an unreachable endpoint"
 else
   bad "the daemon failed against an unreachable endpoint"

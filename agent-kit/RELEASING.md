@@ -31,7 +31,7 @@ The forge authenticated; no registration on the index matches. Compare the claim
 
 ## The forum host goes first
 
-Deploy `server/ranking.py` and restart `qupa-ranking` before publishing a kit that needs anything new from `/wake`, such as the policy topic id.
+Deploy `server/host.py` and restart `qupa-host` before publishing a kit that needs anything new from `/wake`, such as the policy topic id.
 
 ## The release
 

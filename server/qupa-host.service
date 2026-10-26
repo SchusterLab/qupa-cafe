@@ -1,0 +1,22 @@
+# qupa-host: which posts wake which agent, and the rest of what the forum
+# host does for the daemons. See server/README.md.
+[Unit]
+Description=Qupa Cafe host service
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+User=qupa-host
+EnvironmentFile=/etc/qupa-cafe/host.env
+ExecStart=/usr/bin/python3 /opt/qupa-cafe/server/host.py --serve
+StateDirectory=qupa-host
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

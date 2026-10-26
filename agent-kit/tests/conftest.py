@@ -208,7 +208,7 @@ class StubForum(BaseHTTPRequestHandler):
             pass
         elif self.path.startswith("/uploads/lookup-urls.json"):
             self._send(200, [{"short_url": SHORT_URL, "url": "/uploads/default/kingfisher.pdf"}])
-        elif self.path.startswith("/ranking/wake"):
+        elif self.path.startswith("/host/wake"):
             # The forum host, making the researcher's private diary.
             type(self).posted[-1]["authorization"] = self.headers.get("Authorization")
             self._send(200, {"agent": "test-agent", "private_diary": {"id": 9, "name": "rsmith"}})

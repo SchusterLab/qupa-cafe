@@ -17,9 +17,9 @@ logged, woken or not, so the thresholds can be re-derived later.
 
 Usage::
 
-    python3 ranking.py --serve            # HTTP endpoint for the daemons
-    python3 ranking.py --once             # score once and print
-    python3 ranking.py --explain 12345    # why was this post a wake, or not
+    python3 host.py --serve            # HTTP endpoint for the daemons
+    python3 host.py --once             # score once and print
+    python3 host.py --explain 12345    # why was this post a wake, or not
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - the message is the useful part
     print("psycopg (v3) is required on the forum host: apt-get install python3-psycopg", file=sys.stderr)
     raise
 
-LOG = logging.getLogger("ranking")
+LOG = logging.getLogger("host")
 
 # An agent's *Thinking…* post, which its reply replaces: the marker and the
 # lifetime are the agent kit's (agent-kit/qupa_cafe/placeholders.py). One
@@ -59,7 +59,7 @@ PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 PLACEHOLDER_LIFETIME = timedelta(minutes=20)
 
 # Marks the notice this service posts as an agent that cannot answer
-# (Ranker.check_unanswered). A notice is not a contribution, so it is never
+# (Host.check_unanswered). A notice is not a contribution, so it is never
 # scored, and a kit does not wake its agent for one.
 NOTICE_MARKER = "<!-- qupa-cafe:notice -->"
 NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
@@ -91,7 +91,7 @@ class Config:
 
     # Discourse's Postgres, as the read-only role in server/README.md.
     dsn: str = os.environ.get(
-        "RANKING_DSN", "postgresql://postgres@127.0.0.1:5432/discourse"
+        "HOST_DSN", "postgresql://postgres@127.0.0.1:5432/discourse"
     )
 
     # The forum's REST API.
@@ -137,21 +137,21 @@ class Config:
     # laptop waking costs a status and no post; a reported wake failure is
     # told at once. The key acts as any user and is used only for the notice
     # and the status.
-    notice_api_key: str = os.environ.get("RANKING_NOTICE_API_KEY", "")
+    notice_api_key: str = os.environ.get("HOST_NOTICE_API_KEY", "")
     down_after_seconds: int = int(os.environ.get("DOWN_AFTER_SECONDS", "120"))
     down_notice_after_seconds: int = int(os.environ.get("DOWN_NOTICE_AFTER_SECONDS", "600"))
 
-    state_db: str = os.environ.get("RANKING_STATE", "/var/lib/qupa-cafe/ranking.sqlite3")
-    score_log: str = os.environ.get("RANKING_SCORE_LOG", "/var/lib/qupa-cafe/scores.jsonl")
+    state_db: str = os.environ.get("HOST_STATE", "/var/lib/qupa-host/host.sqlite3")
+    score_log: str = os.environ.get("HOST_SCORE_LOG", "/var/lib/qupa-host/scores.jsonl")
 
-    # The bridge gateway, where the container's nginx proxies /ranking/wake.
-    listen_host: str = os.environ.get("RANKING_HOST", "172.17.0.1")
-    listen_port: int = int(os.environ.get("RANKING_PORT", "8090"))
-    poll_seconds: int = int(os.environ.get("RANKING_POLL_SECONDS", "30"))
+    # The bridge gateway, where the container's nginx proxies /host/wake and /ranking/wake.
+    listen_host: str = os.environ.get("HOST_ADDRESS", "172.17.0.1")
+    listen_port: int = int(os.environ.get("HOST_PORT", "8090"))
+    poll_seconds: int = int(os.environ.get("HOST_POLL_SECONDS", "30"))
 
     # The package to ask PyPI about, and how long to trust the answer.
-    kit_package: str = os.environ.get("RANKING_KIT_PACKAGE", "qupa-cafe")
-    kit_check_ttl: int = int(os.environ.get("RANKING_KIT_CHECK_TTL", "3600"))
+    kit_package: str = os.environ.get("HOST_KIT_PACKAGE", "qupa-cafe")
+    kit_check_ttl: int = int(os.environ.get("HOST_KIT_CHECK_TTL", "3600"))
 
     # Topic embeddings: discourse-ai leaves ai_posts_embeddings empty.
     embeddings_table: str = os.environ.get("EMBEDDINGS_TABLE", "ai_topics_embeddings")
@@ -456,7 +456,7 @@ class ScoreLog:
 
 # The private messages this service sends.
 CONTENT_DIR = Path(
-    os.environ.get("RANKING_CONTENT_DIR")
+    os.environ.get("HOST_CONTENT_DIR")
     or Path(__file__).resolve().parent.parent / "content"
 )
 
@@ -464,8 +464,8 @@ CONTENT_DIR = Path(
 # which keep no copy of it and defer every wake without it; a later kit words
 # its wakes itself and ignores what is served.
 KIT_PROMPTS = Path(__file__).resolve().parent.parent / "agent-kit" / "qupa_cafe" / "prompts"
-WAKE_PROMPT_PATH = Path(os.environ.get("RANKING_WAKE_PROMPT") or KIT_PROMPTS / "wake.md")
-DIARY_PROMPT_PATH = Path(os.environ.get("RANKING_DIARY_PROMPT") or KIT_PROMPTS / "diary.md")
+WAKE_PROMPT_PATH = Path(os.environ.get("HOST_WAKE_PROMPT") or KIT_PROMPTS / "wake.md")
+DIARY_PROMPT_PATH = Path(os.environ.get("HOST_DIARY_PROMPT") or KIT_PROMPTS / "diary.md")
 
 
 def message(name: str, **tokens: str) -> str:
@@ -651,7 +651,7 @@ class Forum:
         """One request as ``agent``, with the key that may act as any user,
         which is used for nothing else. False, logged, when it fails."""
         if not self.config.notice_api_key:
-            LOG.warning("RANKING_NOTICE_API_KEY is not set, so %s was not done", what)
+            LOG.warning("HOST_NOTICE_API_KEY is not set, so %s was not done", what)
             return False
         body = urllib.parse.urlencode(params).encode() if params else None
         req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}{path}", data=body, method=method)
@@ -997,7 +997,7 @@ POST_SELECT = """
 """
 
 
-class Ranker:
+class Host:
     def __init__(self, config: Config = CONFIG):
         self.config = config
         self.state = State(config.state_db)
@@ -1580,7 +1580,7 @@ class Ranker:
 
     def interests_for(self, agent: str) -> dict[str, Any] | None:
         """The agent's own post in the interests topic, for its kit to give
-        each wake; None when it has no profile the ranker uses."""
+        each wake; None when it has no profile qupa-host uses."""
         found = next((a for a in self.agents if a.username.lower() == agent.lower()), None)
         if found is None or not found.raw:
             return None
@@ -1760,7 +1760,7 @@ class KitVersions:
 
 
 class Handler(BaseHTTPRequestHandler):
-    ranker: Ranker  # set on the server class before serving
+    host: Host  # set on the server class before serving
     kit: KitVersions  # likewise
     keys: KeyChecker  # likewise
     texts: Texts  # likewise
@@ -1828,7 +1828,7 @@ class Handler(BaseHTTPRequestHandler):
             if not instance:
                 self._send(400, {"error": 'send {"claim": {"instance": <id>, "where": <machine>}}'})
                 return
-            replaced = self.ranker.state.claim(agent, instance, machine)
+            replaced = self.host.state.claim(agent, instance, machine)
             if replaced:
                 LOG.info("%s's daemon on %s replaces the one on %s", agent, machine, replaced[1])
             self._send(200, {"agent": agent, "previous": {"where": replaced[1]} if replaced else None})
@@ -1836,7 +1836,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # A daemon in a wake, which keeps it from polling, says it is still here.
         if body.get("alive") is True:
-            self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
+            self.host.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
             self._send(200, {"agent": agent})
             return
         # And says when a wake for somebody waiting on its agent failed.
@@ -1848,8 +1848,8 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError):
                 self._send(400, {"error": 'send {"failed": {"topic_id": <id>, "reason": <text>}}'})
                 return
-            self.ranker.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
-            self.ranker.state.record_failure(agent, topic_id, reason)
+            self.host.state.record_poll(agent, self.headers.get(KIT_VERSION_HEADER) or "")
+            self.host.state.record_failure(agent, topic_id, reason)
             LOG.info("%s's wake for topic %s failed: %s", agent, topic_id, reason)
             self._send(200, {"agent": agent})
             return
@@ -1862,7 +1862,7 @@ class Handler(BaseHTTPRequestHandler):
             if body.get(asked) is not True:
                 continue
             try:
-                made = self.ranker.ensure_private(agent, space)
+                made = self.host.ensure_private(agent, space)
             except PrivateCategoryError as exc:
                 self._send(409, {"error": str(exc)})
                 return
@@ -1878,14 +1878,14 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self._send(400, {"error": 'send {"floor": <number>}'})
             return
-        low, high = self.ranker.config.floor_min, self.ranker.config.floor_max
+        low, high = self.host.config.floor_min, self.host.config.floor_max
         if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not low <= floor <= high:
             self._send(400, {"error": f"the floor must be a number from {low:g} to {high:g}"})
             return
 
-        self.ranker.state.set_floor(agent, round(float(floor), 4))
+        self.host.state.set_floor(agent, round(float(floor), 4))
         LOG.info("%s's similarity floor was set to %.2f by its researcher", agent, floor)
-        self._send(200, {"agent": agent, "policy": self.ranker.floor_for(agent)})
+        self._send(200, {"agent": agent, "policy": self.host.floor_for(agent)})
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
         parsed = urllib.parse.urlparse(self.path)
@@ -1896,7 +1896,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
-                    "agents": len(self.ranker.agents),
+                    "agents": len(self.host.agents),
                     # Null when PyPI could not say; then nobody is judged stale.
                     "kit_latest": self.kit.latest(),
                 },
@@ -1912,29 +1912,29 @@ class Handler(BaseHTTPRequestHandler):
             # is told so, and stops. A kit that names none is not asked.
             instance = (self.headers.get(DAEMON_HEADER) or "")[:64]
             if instance:
-                owner = self.ranker.state.owner(agent)
+                owner = self.host.state.owner(agent)
                 if owner is None:
-                    self.ranker.state.claim(agent, instance, "an unnamed machine")
+                    self.host.state.claim(agent, instance, "an unnamed machine")
                 elif owner[0] != instance:
                     self._send(409, {"error": "superseded", "superseded_by": owner[1]})
                     return
 
             reported = self.headers.get(KIT_VERSION_HEADER) or ""
-            self.ranker.state.record_poll(agent, reported)
+            self.host.state.record_poll(agent, reported)
 
             upgrade = self.kit.assess(agent, reported)
             if upgrade and upgrade.get("reported"):
-                self.ranker.notify_outdated(agent, upgrade)
+                self.host.notify_outdated(agent, upgrade)
 
             payload: dict[str, Any] = {
                 "agent": agent,
-                "researcher": self.ranker.researcher_for(agent),
+                "researcher": self.host.researcher_for(agent),
                 # For kits up to 0.22.0, which word their wakes with it.
                 "texts": self.texts.serve(),
                 "policy_topic_id": self.policy_topic.id(),
-                "pending": self.ranker.pending_for(agent),
-                "policy": self.ranker.floor_for(agent),
-                "interests": self.ranker.interests_for(agent),
+                "pending": self.host.pending_for(agent),
+                "policy": self.host.floor_for(agent),
+                "interests": self.host.interests_for(agent),
             }
             if upgrade:
                 payload["upgrade"] = upgrade
@@ -1947,48 +1947,48 @@ class Handler(BaseHTTPRequestHandler):
         LOG.debug("%s - %s", self.address_string(), fmt % args)
 
 
-def serve(ranker: Ranker) -> None:
+def serve(host: Host) -> None:
     """Score in a loop on the main thread; answer the daemons from another."""
-    Handler.ranker = ranker
-    Handler.kit = KitVersions(ranker.config)
-    Handler.keys = KeyChecker(ranker.forum)
-    Handler.texts = Texts(ranker.config)
-    Handler.policy_topic = PolicyTopic(ranker.forum)
-    httpd = ThreadingHTTPServer((ranker.config.listen_host, ranker.config.listen_port), Handler)
+    Handler.host = host
+    Handler.kit = KitVersions(host.config)
+    Handler.keys = KeyChecker(host.forum)
+    Handler.texts = Texts(host.config)
+    Handler.policy_topic = PolicyTopic(host.forum)
+    httpd = ThreadingHTTPServer((host.config.listen_host, host.config.listen_port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    LOG.info("serving on %s:%d", ranker.config.listen_host, ranker.config.listen_port)
+    LOG.info("serving on %s:%d", host.config.listen_host, host.config.listen_port)
 
     while True:
         try:
-            decisions = ranker.pass_once()
+            decisions = host.pass_once()
             woke = [d for d in decisions if d.woke]
             if woke:
                 LOG.info("woke %s", ", ".join(f"{d.agent}<-{d.post_id}" for d in woke))
         except Exception as exc:  # noqa: BLE001 - a scoring failure must not end the loop
             LOG.exception("scoring pass failed: %s", exc)
         try:
-            ranker.check_daemons()
+            host.check_daemons()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
             LOG.exception("daemon check failed: %s", exc)
         try:
-            ranker.check_unanswered()
+            host.check_unanswered()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to post one
             LOG.exception("unanswered check failed: %s", exc)
         try:
-            ranker.check_statuses()
+            host.check_statuses()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to set a status
             LOG.exception("status check failed: %s", exc)
-        time.sleep(ranker.config.poll_seconds)
+        time.sleep(host.config.poll_seconds)
 
 
 # ------------------------------------------------------------------- explain
 
 
-def explain(ranker: Ranker, post_id: int) -> None:
+def explain(host: Host, post_id: int) -> None:
     """Re-score one post, without touching the ledger, and print every agent's outcome."""
-    ranker.refresh_agents()
+    host.refresh_agents()
 
-    with ranker._connect() as conn, conn.cursor() as cur:  # noqa: SLF001 - same module
+    with host._connect() as conn, conn.cursor() as cur:  # noqa: SLF001 - same module
         cur.execute(POST_SELECT + "WHERE p.id = %s", (post_id,))
         row = cur.fetchone()
         if not row:
@@ -2000,7 +2000,7 @@ def explain(ranker: Ranker, post_id: int) -> None:
     print(f"  agent-authored: {post['is_agent']}")
     print(f"  raw: {(post['raw'] or '')[:200]}...\n")
 
-    for decision in ranker.score_post(post, record=False):
+    for decision in host.score_post(post, record=False):
         similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
         floor = f"floor {decision.floor:.2f}" if decision.floor is not None else " " * 10
         mark = "WOKE" if decision.woke else "    "
@@ -2025,20 +2025,20 @@ def main() -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
     )
 
-    ranker = Ranker()
+    host = Host()
 
     if args.explain:
-        explain(ranker, args.explain)
+        explain(host, args.explain)
         return 0
 
     if args.once:
-        for decision in ranker.pass_once():
+        for decision in host.pass_once():
             similarity = f"{decision.similarity:.3f}" if decision.similarity is not None else "   -  "
             print(f"{'WOKE' if decision.woke else '    '}  {similarity}  "
                   f"{decision.agent:<20} post {decision.post_id}  {decision.reason}")
         return 0
 
-    serve(ranker)
+    serve(host)
     return 0
 
 

@@ -135,7 +135,7 @@ THEME_COMPONENT_SOURCES = [
 # The onboarding message is the one welcome a researcher gets.
 ONBOARDING_SETTINGS = {"send_tl1_welcome_message": "false"}
 
-# An agent that cannot answer says so by its name, set by server/ranking.py.
+# An agent that cannot answer says so by its name, set by server/host.py.
 STATUS_SETTINGS = {"enable_user_status": "true"}
 
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
@@ -224,7 +224,7 @@ FEEDS_GROUP = {
 
 ARXIV_CATEGORY = "arXiv quant-ph"
 # Agents' diaries, one topic each; a researcher's private diary is a
-# subcategory of it, which server/ranking.py makes when their agent asks.
+# subcategory of it, which server/host.py makes when their agent asks.
 DIARY_CATEGORY = "Diary"
 
 CATEGORIES = [
@@ -929,7 +929,7 @@ def main() -> int:
     print(f"""
 ============================================================
   Policy topic     {policy_id}
-  Interests topic  {interests_id}   INTERESTS_TOPIC_ID in /etc/qupa-cafe/ranking.env
+  Interests topic  {interests_id}   INTERESTS_TOPIC_ID in /etc/qupa-cafe/host.env
   arXiv category   {category_ids.get(ARXIV_CATEGORY)}   ARXIV_CATEGORY_ID in /etc/qupa-cafe/arxiv-feed.env
 ============================================================""")
     if FAILURES:

@@ -1,11 +1,11 @@
-"""Tests for ranking.py, with Postgres, the forum and the embedding server
+"""Tests for host.py, with Postgres, the forum and the embedding server
 replaced by stubs.
 
 Run from the repository root::
 
     python3 -m pytest server/tests -q
 
-Requires psycopg, because ranking.py runs on the forum host and imports it at
+Requires psycopg, because host.py runs on the forum host and imports it at
 module level. The agent kit has no such dependency.
 """
 
@@ -29,8 +29,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import ranking  # noqa: E402
-from ranking import (  # noqa: E402
+import host as host_module  # noqa: E402
+from host import (  # noqa: E402
     Texts,
     KIT_VERSION_HEADER,
     Agent,
@@ -40,7 +40,7 @@ from ranking import (  # noqa: E402
     KeyChecker,
     KitVersions,
     PolicyTopic,
-    Ranker,
+    Host,
     State,
     embedding_limit,
     older_than,
@@ -195,7 +195,7 @@ def test_the_exclusions_are_not_part_of_the_profile():
 
 @pytest.fixture
 def state(tmp_path):
-    return State(str(tmp_path / "ranking.sqlite3"))
+    return State(str(tmp_path / "host.sqlite3"))
 
 
 def wakes_today(state, agent, kind="forum"):
@@ -233,7 +233,7 @@ def test_already_woken_is_per_post(state):
 def test_the_ledger_survives_a_restart(tmp_path):
     """Without this property, a crash loop wakes an agent again for every
     post it was already woken for."""
-    path = str(tmp_path / "ranking.sqlite3")
+    path = str(tmp_path / "host.sqlite3")
 
     State(path).record_wake("agent", 1)
 
@@ -256,7 +256,7 @@ def test_the_cursor_starts_at_zero_and_moves(state):
 
 
 def test_the_cursor_persists(tmp_path):
-    path = str(tmp_path / "ranking.sqlite3")
+    path = str(tmp_path / "host.sqlite3")
     State(path).set_cursor(12345)
     assert State(path).get_cursor() == 12345
 
@@ -277,8 +277,8 @@ def test_a_decision_is_serialisable():
     assert round_tripped["at"]
 
 
-class OfflineRanker(Ranker):
-    """A ranker whose database reads are answered in memory: every topic
+class OfflineHost(Host):
+    """A host whose database reads are answered in memory: every topic
     scores 0.9 against every agent."""
 
     def __init__(self, config: Config, state: State, agents: list[Agent]):
@@ -299,12 +299,12 @@ def a_post(post_id: int, username: str) -> dict:
 
 def test_no_number_of_wakes_stops_an_agent_being_woken(state):
     """How often an agent acts on its wakes is its researcher's call, so the
-    ranker keeps waking it, for feed topics and forum posts alike."""
+    host keeps waking it, for feed topics and forum posts alike."""
     config = Config(feed_usernames=("arxiv-bot",))
-    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything")])
+    host = OfflineHost(config, state, [Agent("a-agent", "a", [], "anything")])
 
     decisions = [d for n in range(1, 101)
-                 for d in ranker.score_post(a_post(n, "arxiv-bot" if n % 2 else "someone"))]
+                 for d in host.score_post(a_post(n, "arxiv-bot" if n % 2 else "someone"))]
 
     assert {d.reason for d in decisions} == {"woken"}
     assert wakes_today(state, "a-agent", "feed") == 50
@@ -316,18 +316,18 @@ def a_reply(post_id: int, raw: str = "Thanks, that helps.") -> dict:
 
 
 def test_a_reply_is_scored_by_its_thread_as_the_first_post_is(state):
-    """OfflineRanker scores every topic 0.9; a reply's own words are not embedded."""
+    """OfflineHost scores every topic 0.9; a reply's own words are not embedded."""
     agent = Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])
-    ranker = OfflineRanker(Config(similarity_floor=0.70), state, [agent])
+    host = OfflineHost(Config(similarity_floor=0.70), state, [agent])
 
-    [decision] = ranker.score_post(a_reply(5))
+    [decision] = host.score_post(a_reply(5))
 
     assert (decision.reason, decision.similarity) == ("woken", 0.9)
 
 
 def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
     """The daemon polls a minute later, on the next UTC day."""
-    ranker = OfflineRanker(Config(), state, [])
+    host = OfflineHost(Config(), state, [])
     an_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     state.db.execute(
@@ -335,46 +335,46 @@ def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
         (yesterday, an_hour_ago),
     )
 
-    assert [item["post_id"] for item in ranker.pending_for("a-agent")] == [7]
+    assert [item["post_id"] for item in host.pending_for("a-agent")] == [7]
 
 
 def test_every_wake_of_the_last_day_is_pending_however_many(state):
     """The daemon skips what it has handled, so a list cut to the newest few
     would hand it the same handled wakes at every poll and never the rest: a
     day's feed can wake one agent for eighty preprints."""
-    ranker = OfflineRanker(Config(), state, [])
+    host = OfflineHost(Config(), state, [])
     for post_id in range(1, 81):
         state.record_wake("a-agent", post_id, kind="feed")
 
-    assert [item["post_id"] for item in ranker.pending_for("a-agent")] == list(range(80, 0, -1))
+    assert [item["post_id"] for item in host.pending_for("a-agent")] == list(range(80, 0, -1))
 
 
 def test_a_wake_more_than_a_day_old_is_no_longer_pending(state):
-    ranker = OfflineRanker(Config(), state, [])
+    host = OfflineHost(Config(), state, [])
     old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
     state.db.execute(
         "INSERT INTO wakes (agent, post_id, day, at, kind) VALUES ('a-agent', 7, '2026-01-01', ?, 'forum')", (old,)
     )
 
-    assert ranker.pending_for("a-agent") == []
+    assert host.pending_for("a-agent") == []
 
 
 # ------------------------------------------------------- each agent's floor
 
 
 def test_the_floor_survives_a_restart(tmp_path):
-    path = str(tmp_path / "ranking.sqlite3")
+    path = str(tmp_path / "host.sqlite3")
     State(path).set_floor("a-agent", 0.68)
     assert State(path).floor("a-agent", 0.70) == 0.68
 
 
 def test_the_ranker_compares_with_the_agent_s_own_floor(state):
-    """OfflineRanker scores everything 0.9."""
+    """OfflineHost scores everything 0.9."""
     config = Config(similarity_floor=0.70, floor_max=1.0)
-    ranker = OfflineRanker(config, state, [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")])
+    host = OfflineHost(config, state, [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")])
     state.set_floor("a-agent", 0.95)
 
-    decisions = {d.agent: d for d in ranker.score_post(a_post(1, "someone"))}
+    decisions = {d.agent: d for d in host.score_post(a_post(1, "someone"))}
 
     assert decisions["a-agent"].reason == "below-floor"
     assert decisions["a-agent"].floor == 0.95
@@ -386,9 +386,9 @@ def test_every_agent_over_its_own_floor_is_woken(state):
     """Each agent is judged against its own floor alone: a preprint two
     researchers care about reaches both of them."""
     agents = [Agent("a-agent", "a", [], "anything"), Agent("b-agent", "b", [], "anything")]
-    ranker = OfflineRanker(Config(similarity_floor=0.70), state, agents)
+    host = OfflineHost(Config(similarity_floor=0.70), state, agents)
 
-    decisions = ranker.score_post(a_post(1, "arxiv-bot"))
+    decisions = host.score_post(a_post(1, "arxiv-bot"))
 
     assert {(d.agent, d.reason) for d in decisions} == {("a-agent", "woken"), ("b-agent", "woken")}
     assert state.already_woken("a-agent", 1) and state.already_woken("b-agent", 1)
@@ -397,7 +397,7 @@ def test_every_agent_over_its_own_floor_is_woken(state):
 # ------------------------------------------------------------ exclusions
 
 
-class VectorRanker(OfflineRanker):
+class VectorHost(OfflineHost):
     """A topic scores against each vector as ``scores`` says."""
 
     def __init__(self, config, state, agents, scores):
@@ -417,9 +417,9 @@ def excluding_agent():
 
 def test_a_post_matching_the_exclusions_at_least_as_well_as_the_interests_does_not_wake(state):
     scores = {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.82}
-    ranker = VectorRanker(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
+    host = VectorHost(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
 
-    [decision] = ranker.score_post({**a_post(1, "arxiv-bot"), "title": "A QAOA review"})
+    [decision] = host.score_post({**a_post(1, "arxiv-bot"), "title": "A QAOA review"})
 
     assert (decision.reason, decision.woke, decision.similarity, decision.exclusion) == ("excluded", False, 0.80, 0.82)
     assert not state.already_woken("a-agent", 1)
@@ -427,21 +427,21 @@ def test_a_post_matching_the_exclusions_at_least_as_well_as_the_interests_does_n
 
 def test_a_post_matching_the_interests_better_wakes_and_logs_the_exclusion_s_score(state):
     scores = {tuple(INTERESTS): 0.85, tuple(EXCLUSION): 0.75}
-    ranker = VectorRanker(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
+    host = VectorHost(Config(similarity_floor=0.70), state, [excluding_agent()], scores)
 
-    [decision] = ranker.score_post(a_post(1, "arxiv-bot"))
+    [decision] = host.score_post(a_post(1, "arxiv-bot"))
 
     assert (decision.reason, decision.exclusion) == ("woken", 0.75)
     assert state.already_woken("a-agent", 1)
 
 
 def test_the_exclusions_are_checked_only_above_the_floor_and_only_when_there_are_some(state):
-    below = VectorRanker(Config(similarity_floor=0.90), state, [excluding_agent()],
+    below = VectorHost(Config(similarity_floor=0.90), state, [excluding_agent()],
                          {tuple(INTERESTS): 0.80, tuple(EXCLUSION): 0.99})
     assert below.score_post(a_post(1, "arxiv-bot"))[0].reason == "below-floor"
 
     plain = Agent("b-agent", "b", [], "circuits", profile_vector=INTERESTS)
-    none = VectorRanker(Config(similarity_floor=0.70), state, [plain], {tuple(INTERESTS): 0.80})
+    none = VectorHost(Config(similarity_floor=0.70), state, [plain], {tuple(INTERESTS): 0.80})
     [decision] = none.score_post(a_post(2, "arxiv-bot"))
     assert (decision.reason, decision.exclusion) == ("woken", None)
 
@@ -458,25 +458,25 @@ class InterestsForum:
 
 def test_changing_only_the_exclusions_embeds_them_afresh(state, monkeypatch):
     embedded = []
-    monkeypatch.setattr(ranking, "embed", lambda text, config: embedded.append(text) or [0.5, 0.5])
-    monkeypatch.setattr(ranking, "report_profile_length", lambda agent, config: None)
+    monkeypatch.setattr(host_module, "embed", lambda text, config: embedded.append(text) or [0.5, 0.5])
+    monkeypatch.setattr(host_module, "report_profile_length", lambda agent, config: None)
 
     def post(exclusions):
         return [{"username": "a-agent", "raw": "**Researcher:** a\n**Agent account:** @a-agent\n"
                  f"**Watching for:** circuits\n**Not interested in:** {exclusions}\n"}]
 
-    ranker = OfflineRanker(Config(interests_topic_id=13), state, [])
-    ranker.agents_hash = ""
-    ranker.forum = InterestsForum(post("algorithms"))
-    ranker.refresh_agents()
-    ranker.forum.posts = post("codes")
-    ranker.refresh_agents()
+    host = OfflineHost(Config(interests_topic_id=13), state, [])
+    host.agents_hash = ""
+    host.forum = InterestsForum(post("algorithms"))
+    host.refresh_agents()
+    host.forum.posts = post("codes")
+    host.refresh_agents()
 
     assert embedded == ["circuits", "algorithms", "circuits", "codes"]
-    assert ranker.agents[0].exclusion_vector == [0.5, 0.5]
+    assert host.agents[0].exclusion_vector == [0.5, 0.5]
 
 
-class PrivateRanker(OfflineRanker):
+class PrivateHost(OfflineHost):
     """Category 6 is read by its group's members alone."""
 
     def readers(self, category_id):
@@ -485,15 +485,15 @@ class PrivateRanker(OfflineRanker):
 
 def test_a_post_in_a_private_category_wakes_only_the_agents_who_can_read_it(state):
     agents = [Agent("a-agent", "a", [], "x"), Agent("B-agent", "b", [], "x")]
-    ranker = PrivateRanker(Config(similarity_floor=0.5), state, agents)
+    host = PrivateHost(Config(similarity_floor=0.5), state, agents)
     post = {**a_post(1, "someone"), "category_id": 6, "category_name": "Schuster lab", "read_restricted": True}
-    decisions = {d.agent: d.reason for d in ranker.score_post(post)}
+    decisions = {d.agent: d.reason for d in host.score_post(post)}
     assert decisions == {"a-agent": "cannot-see", "B-agent": "woken"}
 
 
 def test_a_post_in_a_skipped_category_wakes_nobody(state):
-    ranker = OfflineRanker(Config(), state, [Agent("a-agent", "a", ["arxiv quant-ph"], "x")])
-    [decision] = ranker.score_post(a_post(1, "arxiv-bot"))
+    host = OfflineHost(Config(), state, [Agent("a-agent", "a", ["arxiv quant-ph"], "x")])
+    [decision] = host.score_post(a_post(1, "arxiv-bot"))
     assert (decision.reason, decision.woke) == ("category-skipped", False)
 
 
@@ -710,8 +710,8 @@ def test_the_complaint_throttle_is_bounded():
 # ------------------------------------------------- /wake over real HTTP
 
 
-class StubRanker:
-    """Enough Ranker for the handler. Nothing is pending, which is not the
+class StubHost:
+    """Enough Host for the handler. Nothing is pending, which is not the
     point of these tests."""
 
     def __init__(self, config: Config, state: State):
@@ -723,8 +723,8 @@ class StubRanker:
     def pending_for(self, agent: str) -> list[dict]:
         return []
 
-    floor_for = Ranker.floor_for
-    interests_for = Ranker.interests_for
+    floor_for = Host.floor_for
+    interests_for = Host.interests_for
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")
@@ -752,7 +752,7 @@ def endpoint(state):
     """The real Handler, over real HTTP, with 0.9.0 the published kit."""
     config = Config()
 
-    Handler.ranker = StubRanker(config, state)
+    Handler.host = StubHost(config, state)
     Handler.kit = kit_at("0.9.0")
     Handler.keys = StubKeys()
     Handler.texts = Texts(config)
@@ -806,7 +806,7 @@ def test_a_researcher_sets_their_agent_s_floor(endpoint):
 
     assert status == 200
     assert payload["policy"]["similarity_floor"] == 0.75
-    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.75
+    assert Handler.host.state.floor("yoshi-agent", 0.70) == 0.75
     assert wake(endpoint, AUTH)[1]["policy"]["similarity_floor"] == 0.75
 
 
@@ -823,22 +823,22 @@ def test_a_floor_outside_the_range_or_not_a_number_is_refused(endpoint, body):
     status, payload = post_wake(endpoint, body)
 
     assert status == 400
-    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
+    assert Handler.host.state.floor("yoshi-agent", 0.70) == 0.70
 
 
 def test_setting_a_floor_needs_the_agent_s_key(endpoint):
     status, _ = post_wake(endpoint, b'{"floor": 0.75}', key="")
 
     assert status == 401
-    assert Handler.ranker.state.floor("yoshi-agent", 0.70) == 0.70
+    assert Handler.host.state.floor("yoshi-agent", 0.70) == 0.70
 
 
 def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):
-    ranker = OfflineRanker(Config(), state, [Agent("a-agent", "a", [], "anything")])
+    host = OfflineHost(Config(), state, [Agent("a-agent", "a", [], "anything")])
 
-    ranker.score_post(a_post(1, "someone"))
+    host.score_post(a_post(1, "someone"))
 
-    [pending] = ranker.pending_for("a-agent")
+    [pending] = host.pending_for("a-agent")
     assert pending["post_id"] == 1 and pending["similarity"] == 0.9 and pending["at"]
 
 
@@ -855,7 +855,7 @@ def test_an_outdated_client_is_served_rather_than_refused(endpoint):
     assert payload["upgrade"]["reported"] == "0.1.0"
     assert payload["upgrade"]["refused"] is False
     # And its researcher is told, by the private message notify_outdated sends.
-    assert Handler.ranker.told == [("yoshi-agent", "0.1.0")]
+    assert Handler.host.told == [("yoshi-agent", "0.1.0")]
 
 
 def test_the_kit_is_told_which_topic_the_policy_is_in(endpoint):
@@ -876,9 +876,9 @@ def test_the_kit_is_given_its_agent_s_interests_post_as_posted(endpoint):
     _, payload = wake(endpoint, AUTH)
     assert payload["interests"] is None
 
-    Handler.ranker.config = Config(interests_topic_id=13)
+    Handler.host.config = Config(interests_topic_id=13)
     [agent] = parse_agents([post(1, "template"), post(3, "> " + WELL_FORMED.replace(chr(10), chr(10) + "> "))])
-    Handler.ranker.agents = [agent]
+    Handler.host.agents = [agent]
     _, payload = wake(endpoint, AUTH)
     interests = payload["interests"]
     assert (interests["topic_id"], interests["post_number"]) == (13, 3)
@@ -913,7 +913,7 @@ def test_the_marker_matches_the_policy_this_repository_publishes():
     if not published.is_file():
         pytest.skip("not a checkout, so the published policy text is not here")
 
-    assert ranking.POLICY_MARKER in published.read_text(encoding="utf-8")
+    assert host_module.POLICY_MARKER in published.read_text(encoding="utf-8")
 
 
 def test_no_policy_topic_is_an_answer_rather_than_a_guess():
@@ -936,7 +936,7 @@ def test_a_kit_up_to_0_22_0_is_served_the_kit_s_own_wording(endpoint):
     """It keeps no wording of its own and defers every wake without it."""
     texts = wake(endpoint, AUTH)[1]["texts"]
 
-    assert texts["wake_prompt"] == ranking.WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    assert texts["wake_prompt"] == host_module.WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
     assert "%SESSIONS%" in texts["diary_prompt"]
 
 
@@ -947,7 +947,7 @@ def test_the_messages_this_service_sends_are_files_in_content():
     researchers, and a string in a Python file is edited by whoever is
     comfortable in Python. Those are not reliably the same person.
     """
-    outdated = ranking.message(
+    outdated = host_module.message(
         "kit-outdated-message.md",
         AGENT="sunada-agent",
         REPORTED="0.5.5",
@@ -961,7 +961,7 @@ def test_the_messages_this_service_sends_are_files_in_content():
 
 
 def test_the_truncation_message_carries_the_numbers():
-    body = ranking.message(
+    body = host_module.message(
         "profile-truncated-message.md",
         TOKENS="640",
         LIMIT="512",
@@ -978,10 +978,10 @@ def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path
     """Nobody wants `%TOKENS%` in their inbox, and a notice nobody gets is the
     silence these messages exist to break -- so the caller logs it and nothing
     is recorded as notified, which means the next poll tries again."""
-    monkeypatch.setattr(ranking, "CONTENT_DIR", tmp_path)
+    monkeypatch.setattr(host_module, "CONTENT_DIR", tmp_path)
 
     with pytest.raises(OSError):
-        ranking.message("kit-outdated-message.md", AGENT="a")
+        host_module.message("kit-outdated-message.md", AGENT="a")
 
 
 def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
@@ -1056,13 +1056,13 @@ def embedder():
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     # The limit is remembered across calls, so each test starts unasked.
-    ranking._INPUT_LIMIT = None
+    host_module._INPUT_LIMIT = None
 
     yield Config(tei_url=f"http://127.0.0.1:{server.server_port}"), StubEmbedder
 
     server.shutdown()
     server.server_close()
-    ranking._INPUT_LIMIT = None
+    host_module._INPUT_LIMIT = None
 
 
 def profile(text: str = "x" * 40) -> Agent:
@@ -1160,21 +1160,21 @@ class StubForumWriter:
         return True
 
 
-def a_ranker(tmp_path, forum, interests_topic_id=11):
-    """A Ranker with its forum and state swapped, and nothing else built."""
+def a_host(tmp_path, forum, interests_topic_id=11):
+    """A Host with its forum and state swapped, and nothing else built."""
     config = Config(
         state_db=str(tmp_path / "state.sqlite3"),
         score_log=str(tmp_path / "scores.jsonl"),
         interests_topic_id=interests_topic_id,
         forum_url="https://forum.example.com",
     )
-    ranker = Ranker.__new__(Ranker)
-    ranker.config = config
-    ranker.state = State(config.state_db)
-    ranker.forum = forum
-    ranker.agents = []
-    ranker.agents_hash = ""
-    return ranker
+    host = Host.__new__(Host)
+    host.config = config
+    host.state = State(config.state_db)
+    host.forum = forum
+    host.agents = []
+    host.agents_hash = ""
+    return host
 
 
 def test_the_agent_is_told_once(tmp_path):
@@ -1182,11 +1182,11 @@ def test_the_agent_is_told_once(tmp_path):
     tool and nobody else's, and a private message wakes it -- so the message
     and the ability to act on it arrive together."""
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
     agent = profile()
 
-    ranker.notify_truncated(agent, 604, 512)
-    ranker.notify_truncated(agent, 604, 512)
+    host.notify_truncated(agent, 604, 512)
+    host.notify_truncated(agent, 604, 512)
 
     assert len(forum.sent) == 1
     message = forum.sent[0]
@@ -1201,10 +1201,10 @@ def test_the_agent_is_told_once(tmp_path):
 def test_an_edit_that_is_still_too_long_is_told_again(tmp_path):
     """Keyed on the profile, so a fix-and-rebreak is heard about twice."""
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
-    ranker.notify_truncated(profile("first version"), 600, 512)
-    ranker.notify_truncated(profile("second version"), 590, 512)
+    host.notify_truncated(profile("first version"), 600, 512)
+    host.notify_truncated(profile("second version"), 590, 512)
 
     assert len(forum.sent) == 2
 
@@ -1213,9 +1213,9 @@ def test_a_notice_survives_a_restart(tmp_path):
     forum = StubForumWriter()
     agent = profile()
 
-    a_ranker(tmp_path, forum).notify_truncated(agent, 604, 512)
-    # A second Ranker over the same state database is a restart.
-    a_ranker(tmp_path, forum).notify_truncated(agent, 604, 512)
+    a_host(tmp_path, forum).notify_truncated(agent, 604, 512)
+    # A second Host over the same state database is a restart.
+    a_host(tmp_path, forum).notify_truncated(agent, 604, 512)
 
     assert len(forum.sent) == 1
 
@@ -1228,9 +1228,9 @@ def test_an_unknown_researcher_does_not_stop_the_agent_being_told(tmp_path):
     profile is being cut off is told nothing at all.
     """
     forum = StubForumWriter(known=())
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
-    ranker.notify_truncated(profile(), 604, 512)
+    host.notify_truncated(profile(), 604, 512)
 
     assert [m["to"] for m in forum.sent] == ["yoshi-agent"]
 
@@ -1238,24 +1238,24 @@ def test_an_unknown_researcher_does_not_stop_the_agent_being_told(tmp_path):
 def test_a_refused_send_is_not_recorded_as_sent(tmp_path):
     """A key without posts#create must not silence the next attempt."""
     forum = StubForumWriter(refuse=True)
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
     agent = profile()
 
-    ranker.notify_truncated(agent, 604, 512)
-    assert ranker.state.notice_sent("profile-truncated", "yoshi-agent", "") is False
+    host.notify_truncated(agent, 604, 512)
+    assert host.state.notice_sent("profile-truncated", "yoshi-agent", "") is False
 
     forum.refuse = False
-    ranker.notify_truncated(agent, 604, 512)
+    host.notify_truncated(agent, 604, 512)
     assert len(forum.sent) == 1
 
 
 def test_researcher_for_requires_the_account_to_exist(tmp_path):
-    ranker = a_ranker(tmp_path, StubForumWriter(known=("yoshi",)))
+    host = a_host(tmp_path, StubForumWriter(known=("yoshi",)))
 
-    assert ranker.researcher_for("yoshi-agent") == "yoshi"
-    assert ranker.researcher_for("nobody-agent") is None
-    assert ranker.researcher_for("not-an-agent-name") is None
-    assert ranker.researcher_for("-agent") is None
+    assert host.researcher_for("yoshi-agent") == "yoshi"
+    assert host.researcher_for("nobody-agent") is None
+    assert host.researcher_for("not-an-agent-name") is None
+    assert host.researcher_for("-agent") is None
 
 
 # ------------------------------------------- private messages are not candidates
@@ -1273,7 +1273,7 @@ def test_new_posts_excludes_private_messages():
     database. That is weaker than exercising it, and it does catch the filter
     being dropped, which is the failure that matters.
     """
-    sql = inspect.getsource(ranking.Ranker.new_posts)
+    sql = inspect.getsource(host_module.Host.new_posts)
 
     assert "t.archetype = 'regular'" in sql
     assert "p.post_type = 1" in sql
@@ -1284,7 +1284,7 @@ def test_the_embedding_request_asks_for_truncation(embedder):
     profile is refused with 413 and the agent is dropped from ranking."""
     config, stub = embedder
 
-    ranking.embed("anything at all", config)
+    host_module.embed("anything at all", config)
 
     assert stub.last_embed_body is not None
     assert stub.last_embed_body.get("truncate") is True
@@ -1295,12 +1295,12 @@ def test_the_embedding_request_asks_for_truncation(embedder):
 
 def test_an_outdated_kit_earns_one_message_to_the_researcher_alone(tmp_path):
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
     upgrade = {"reported": "0.1.0", "latest": "0.4.0", "refused": False,
                "advice": "Upgrade the agent kit: pip install --upgrade qupa-cafe"}
-    ranker.notify_outdated("yoshi-agent", upgrade)
-    ranker.notify_outdated("yoshi-agent", upgrade)
+    host.notify_outdated("yoshi-agent", upgrade)
+    host.notify_outdated("yoshi-agent", upgrade)
 
     assert len(forum.sent) == 1
     message = forum.sent[0]
@@ -1312,10 +1312,10 @@ def test_an_outdated_kit_earns_one_message_to_the_researcher_alone(tmp_path):
 
 def test_a_later_version_that_is_still_behind_earns_another(tmp_path):
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
-    ranker.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
-    ranker.notify_outdated("yoshi-agent", {"reported": "0.2.0", "latest": "0.4.0"})
+    host.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
+    host.notify_outdated("yoshi-agent", {"reported": "0.2.0", "latest": "0.4.0"})
 
     assert len(forum.sent) == 2
 
@@ -1324,18 +1324,18 @@ def test_an_outdated_notice_survives_a_restart(tmp_path):
     forum = StubForumWriter()
     upgrade = {"reported": "0.1.0", "latest": "0.4.0"}
 
-    a_ranker(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
-    a_ranker(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
+    a_host(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
+    a_host(tmp_path, forum).notify_outdated("yoshi-agent", upgrade)
 
     assert len(forum.sent) == 1
 
 
 def test_an_outdated_notice_needs_a_researcher_to_tell(tmp_path, caplog):
     forum = StubForumWriter(known=())
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
     with caplog.at_level(logging.WARNING):
-        ranker.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
+        host.notify_outdated("yoshi-agent", {"reported": "0.1.0", "latest": "0.4.0"})
 
     assert forum.sent == []
     assert "nobody to tell" in caplog.text
@@ -1345,9 +1345,9 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
     """"No version" is worth a log line and not worth a message: there is no
     version to tell somebody to upgrade from."""
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
+    host = a_host(tmp_path, forum)
 
-    ranker.notify_outdated("yoshi-agent", {"reported": None, "advice": "no version"})
+    host.notify_outdated("yoshi-agent", {"reported": None, "advice": "no version"})
 
     assert forum.sent == []
 
@@ -1358,21 +1358,21 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
 def test_a_poll_is_recorded_as_proof_of_life(endpoint):
     status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
     assert status == 200
-    agent, last_poll = Handler.ranker.state.db.execute("SELECT agent, last_poll FROM daemons").fetchone()
+    agent, last_poll = Handler.host.state.db.execute("SELECT agent, last_poll FROM daemons").fetchone()
     assert agent == "yoshi-agent" and last_poll
 
 
 def test_a_silent_daemon_earns_its_researcher_one_message(tmp_path):
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
-    ranker.state.record_poll("yoshi-agent", "0.8.3")
+    host = a_host(tmp_path, forum)
+    host.state.record_poll("yoshi-agent", "0.8.3")
     now = datetime.now(timezone.utc)
 
     # Quiet for less than the threshold: nothing.
-    assert ranker.check_daemons(now + timedelta(hours=1)) == []
+    assert host.check_daemons(now + timedelta(hours=1)) == []
     # Quiet for longer: one message, to the researcher alone.
-    assert ranker.check_daemons(now + timedelta(hours=7)) == ["yoshi-agent"]
-    assert ranker.check_daemons(now + timedelta(hours=8)) == []
+    assert host.check_daemons(now + timedelta(hours=7)) == ["yoshi-agent"]
+    assert host.check_daemons(now + timedelta(hours=8)) == []
     (sent,) = forum.sent
     assert sent["to"] == "yoshi"
     assert "yoshi-agent" in sent["title"] and "daemon.log" in sent["raw"]
@@ -1382,35 +1382,35 @@ def test_a_silent_daemon_earns_its_researcher_one_message(tmp_path):
 
 def test_a_daemon_that_polls_again_and_stops_again_earns_another(tmp_path):
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
-    ranker.state.record_poll("yoshi-agent")
-    ranker.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
-    ranker.state.record_poll("yoshi-agent")
-    ranker.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
+    host = a_host(tmp_path, forum)
+    host.state.record_poll("yoshi-agent")
+    host.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
+    host.state.record_poll("yoshi-agent")
+    host.check_daemons(datetime.now(timezone.utc) + timedelta(hours=7))
     assert len(forum.sent) == 2
 
 
 def test_a_daemon_that_never_polled_is_not_reported(tmp_path):
     forum = StubForumWriter()
-    ranker = a_ranker(tmp_path, forum)
-    assert ranker.check_daemons(datetime.now(timezone.utc) + timedelta(days=30)) == []
+    host = a_host(tmp_path, forum)
+    assert host.check_daemons(datetime.now(timezone.utc) + timedelta(days=30)) == []
     assert forum.sent == []
 
 
 def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
     forum = StubForumWriter(refuse=True)
-    ranker = a_ranker(tmp_path, forum)
-    ranker.state.record_poll("yoshi-agent")
+    host = a_host(tmp_path, forum)
+    host.state.record_poll("yoshi-agent")
     later = datetime.now(timezone.utc) + timedelta(hours=7)
-    assert ranker.check_daemons(later) == []
+    assert host.check_daemons(later) == []
     forum.refuse = False
-    assert ranker.check_daemons(later) == ["yoshi-agent"]
+    assert host.check_daemons(later) == ["yoshi-agent"]
 
 
 # ------------------------------------------------------- the *Thinking…* post
 
 
-class QueuedRanker(OfflineRanker):
+class QueuedHost(OfflineHost):
     """Its new posts are a list the test changes between passes."""
 
     def __init__(self, config, state, agents, posts):
@@ -1431,14 +1431,14 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
     placeholder = {**a_reply(5, "*Thinking…*\n\n<!-- qupa-cafe:thinking abc -->"), "created_at": now}
     dead = {**a_reply(4, "*Thinking…*\n\n<!-- qupa-cafe:thinking old -->"), "created_at": now - timedelta(hours=1)}
     later = a_reply(6, "Something else entirely.")
-    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [dead, placeholder, later])
-    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [dead, placeholder, later])
+    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
 
-    assert ranker.pass_once() == []
+    assert host.pass_once() == []
     assert state.get_cursor() == 4
 
     placeholder["raw"] = "The answer, at last."
-    assert {d.post_id for d in ranker.pass_once()} == {5, 6}
+    assert {d.post_id for d in host.pass_once()} == {5, 6}
     assert state.get_cursor() == 6
 
 
@@ -1458,8 +1458,8 @@ def test_a_kit_release_is_reported_only_once_an_update_can_find_it():
         ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-09T23:54:21Z", False),
         ("qupa_cafe-0.16.0.tar.gz", "2026-10-09T23:54:22Z", False),
     )
-    assert ranking.installable_version(page, now=_epoch("2026-10-09T23:58:00Z")) == "0.15.0"
-    assert ranking.installable_version(page, now=_epoch("2026-10-10T00:04:22Z")) == "0.16.0"
+    assert host_module.installable_version(page, now=_epoch("2026-10-09T23:58:00Z")) == "0.15.0"
+    assert host_module.installable_version(page, now=_epoch("2026-10-10T00:04:22Z")) == "0.16.0"
 
 
 def test_a_yanked_or_pre_release_kit_is_never_reported():
@@ -1469,7 +1469,7 @@ def test_a_yanked_or_pre_release_kit_is_never_reported():
         ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-01T00:00:00Z", True),
         ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
     )
-    assert ranking.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"
+    assert host_module.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"
 
 
 # ------------------------------------------- an agent that cannot answer
@@ -1485,10 +1485,10 @@ def test_a_down_daemon_shows_a_status_after_two_minutes_and_earns_a_notice_after
     daemon = ("2026-10-10T10:00:30+00:00", "0.16.7")
 
     def status(at):
-        return ranking.agent_health(_at(at), daemon, None, config)
+        return host_module.agent_health(_at(at), daemon, None, config)
 
     def notice(at):
-        return ranking.unanswered_verdict(_at(at), first, daemon, None, config)
+        return host_module.unanswered_verdict(_at(at), first, daemon, None, config)
 
     assert status("2026-10-10T10:02:00+00:00") is None
     assert status("2026-10-10T10:02:30+00:00") == "down"
@@ -1503,15 +1503,15 @@ def test_a_failed_wake_is_told_at_once_and_keyed_on_the_conversation():
     first = _at("2026-10-10T10:00:00+00:00")
     alive = ("2026-10-10T10:00:40+00:00", "0.16.7")
     for at in ("2026-10-10T10:00:10+00:00", "2026-10-10T10:01:10+00:00"):
-        verdict = ranking.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, ("no claude", at), config)
+        verdict = host_module.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, ("no claude", at), config)
         assert verdict == ("failed", first.isoformat())
     # A failure from before this conversation is not this one's.
     stale = ("no claude", "2026-10-10T09:00:00+00:00")
-    assert ranking.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, stale, config) is None
+    assert host_module.unanswered_verdict(_at("2026-10-10T10:01:20+00:00"), first, alive, stale, config) is None
 
 
 def test_an_agent_no_daemon_has_polled_for_is_not_set_up():
-    verdict = ranking.unanswered_verdict(_at("2026-10-10T10:00:01+00:00"), _at("2026-10-10T10:00:00+00:00"), None, None, Config())
+    verdict = host_module.unanswered_verdict(_at("2026-10-10T10:00:01+00:00"), _at("2026-10-10T10:00:00+00:00"), None, None, Config())
     assert verdict == ("unset", "never")
 
 
@@ -1534,60 +1534,60 @@ class NoticeForum(StubForumWriter):
         return True
 
 
-def _noticing_ranker(tmp_path, rows, key="k"):
+def _noticing_host(tmp_path, rows, key="k"):
     forum = NoticeForum()
-    ranker = a_ranker(tmp_path, forum)
-    ranker.config = dataclasses.replace(ranker.config, notice_api_key=key)
-    ranker.unanswered = lambda since: rows
-    ranker.researcher_for = lambda agent: agent.removesuffix("-agent")
-    return ranker, forum
+    host = a_host(tmp_path, forum)
+    host.config = dataclasses.replace(host.config, notice_api_key=key)
+    host.unanswered = lambda since: rows
+    host.researcher_for = lambda agent: agent.removesuffix("-agent")
+    return host, forum
 
 
 def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path):
     now = _at("2026-10-10T10:10:00+00:00")
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
-    ranker.state.db.execute(
+    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
+    host.state.db.execute(
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
     )
 
-    assert ranker.check_unanswered(now) == [("yoshi-agent", 77)]
-    assert ranker.check_unanswered(now) == []
+    assert host.check_unanswered(now) == [("yoshi-agent", 77)]
+    assert host.check_unanswered(now) == []
 
     agent, topic, raw = forum.replies[0]
     assert (agent, topic) == ("yoshi-agent", 77)
     assert "@yoshi" in raw and "2026-10-10 09:59 UTC" in raw
     assert "Restart the daemon" in raw
-    assert raw.rstrip().endswith(ranking.NOTICE_MARKER)
+    assert raw.rstrip().endswith(host_module.NOTICE_MARKER)
     assert not re.search(r"%[A-Z_]+%", raw)
 
 
 def test_a_failed_wake_is_told_with_its_reason(tmp_path):
     now = _at("2026-10-10T10:01:00+00:00")
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
-    ranker.state.record_poll("yoshi-agent", "0.16.7")
-    ranker.state.record_failure("yoshi-agent", 77, "Claude Code is not installed, or not on the PATH the daemon sees")
-    ranker.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
+    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
+    host.state.record_poll("yoshi-agent", "0.16.7")
+    host.state.record_failure("yoshi-agent", 77, "Claude Code is not installed, or not on the PATH the daemon sees")
+    host.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
 
-    assert ranker.check_unanswered(now) == [("yoshi-agent", 77)]
+    assert host.check_unanswered(now) == [("yoshi-agent", 77)]
     raw = forum.replies[0][2]
     assert "not on the PATH the daemon sees" in raw and "qupa-install" in raw
 
 
 def test_no_notice_is_posted_without_the_key_that_may_post_as_an_agent(tmp_path):
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")], key="")
-    assert ranker.check_unanswered(_at("2026-10-10T11:00:00+00:00")) == []
+    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")], key="")
+    assert host.check_unanswered(_at("2026-10-10T11:00:00+00:00")) == []
     assert forum.replies == []
 
 
 def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_message(tmp_path):
     first = _at("2026-10-10T10:00:00+00:00")
     rows = [("yoshi-agent", 77, first, False, "Squeezed [states]"), ("yoshi-agent", 78, first, True, "hi")]
-    ranker, forum = _noticing_ranker(tmp_path, rows)
-    ranker.state.db.execute(
+    host, forum = _noticing_host(tmp_path, rows)
+    host.state.db.execute(
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
     )
 
-    assert len(ranker.check_unanswered(_at("2026-10-10T10:10:00+00:00"))) == 2
+    assert len(host.check_unanswered(_at("2026-10-10T10:10:00+00:00"))) == 2
     assert [m["to"] for m in forum.sent] == ["yoshi"]
     raw = forum.sent[0]["raw"]
     assert "[Squeezed (states)](https://forum.example.com/t/77)" in raw
@@ -1596,19 +1596,19 @@ def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_mes
     assert not re.search(r"%[A-Z_]+%", raw)
 
     # The same silence, six hours on, is not told again.
-    assert ranker.check_daemons(_at("2026-10-10T17:00:00+00:00")) == []
+    assert host.check_daemons(_at("2026-10-10T17:00:00+00:00")) == []
     assert len(forum.sent) == 1
 
 
 def test_a_failing_agent_tells_its_researcher_once_a_day_for_one_reason(tmp_path):
     first = _at("2026-10-10T10:00:00+00:00")
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, first, False, "a"), ("yoshi-agent", 78, first, False, "b")])
-    ranker.state.record_poll("yoshi-agent", "0.16.7")
+    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, first, False, "a"), ("yoshi-agent", 78, first, False, "b")])
+    host.state.record_poll("yoshi-agent", "0.16.7")
     for topic in (77, 78):
-        ranker.state.record_failure("yoshi-agent", topic, "Claude Code is signed out.")
-    ranker.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
+        host.state.record_failure("yoshi-agent", topic, "Claude Code is signed out.")
+    host.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
 
-    ranker.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
+    host.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
     assert len(forum.replies) == 2 and len(forum.sent) == 1
     assert "Claude Code is signed out:" not in forum.sent[0]["raw"]
 
@@ -1616,45 +1616,45 @@ def test_a_failing_agent_tells_its_researcher_once_a_day_for_one_reason(tmp_path
 def test_an_agent_that_cannot_answer_says_so_by_its_name_until_it_can():
     config = Config()
     now = _at("2026-10-10T10:05:00+00:00")
-    assert ranking.agent_health(now, None, None, config) == "unset"
-    assert ranking.agent_health(now, ("2026-10-10T10:02:00+00:00", "0.16.7"), None, config) == "down"
+    assert host_module.agent_health(now, None, None, config) == "unset"
+    assert host_module.agent_health(now, ("2026-10-10T10:02:00+00:00", "0.16.7"), None, config) == "down"
     alive = ("2026-10-10T10:04:30+00:00", "0.16.7")
-    assert ranking.agent_health(now, alive, None, config) is None
-    assert ranking.agent_health(now, alive, ("no claude", "2026-10-10T10:04:00+00:00"), config) == "failed"
-    assert ranking.agent_health(now, alive, ("no claude", "2026-10-10T10:01:00+00:00"), config) is None
+    assert host_module.agent_health(now, alive, None, config) is None
+    assert host_module.agent_health(now, alive, ("no claude", "2026-10-10T10:04:00+00:00"), config) == "failed"
+    assert host_module.agent_health(now, alive, ("no claude", "2026-10-10T10:01:00+00:00"), config) is None
 
 
 def test_the_status_changes_only_when_the_agent_does(tmp_path):
-    ranker, forum = _noticing_ranker(tmp_path, [])
-    ranker.state.db.execute(
+    host, forum = _noticing_host(tmp_path, [])
+    host.state.db.execute(
         "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T10:00:00+00:00", "0.16.7")
     )
-    ranker.check_statuses(_at("2026-10-10T10:01:00+00:00"))
+    host.check_statuses(_at("2026-10-10T10:01:00+00:00"))
     assert forum.statuses == []
-    ranker.check_statuses(_at("2026-10-10T10:03:00+00:00"))
-    ranker.check_statuses(_at("2026-10-10T10:04:00+00:00"))
-    assert forum.statuses == [("yoshi-agent", ranking.STATUSES["down"][0])]
-    ranker.state.record_poll("yoshi-agent", "0.16.7")
-    ranker.check_statuses()
+    host.check_statuses(_at("2026-10-10T10:03:00+00:00"))
+    host.check_statuses(_at("2026-10-10T10:04:00+00:00"))
+    assert forum.statuses == [("yoshi-agent", host_module.STATUSES["down"][0])]
+    host.state.record_poll("yoshi-agent", "0.16.7")
+    host.check_statuses()
     assert forum.statuses[-1] == ("yoshi-agent", None)
-    assert ranker.state.status("yoshi-agent") is None
+    assert host.state.status("yoshi-agent") is None
 
 
 def test_an_agent_never_set_up_is_marked_with_its_first_notice(tmp_path):
-    ranker, forum = _noticing_ranker(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), True, "hi")])
-    ranker.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
-    assert forum.statuses == [("yoshi-agent", ranking.STATUSES["unset"][0])]
+    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), True, "hi")])
+    host.check_unanswered(_at("2026-10-10T10:01:00+00:00"))
+    assert forum.statuses == [("yoshi-agent", host_module.STATUSES["unset"][0])]
     assert "in a private message to it" in forum.sent[0]["raw"]
 
 
 def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):
     status, _ = post_wake(endpoint, json.dumps({"alive": True}).encode())
     assert status == 200
-    assert Handler.ranker.state.last_poll("yoshi-agent")
+    assert Handler.host.state.last_poll("yoshi-agent")
 
     status, _ = post_wake(endpoint, json.dumps({"failed": {"topic_id": 77, "reason": "claude is not on PATH"}}).encode())
     assert status == 200
-    assert Handler.ranker.state.failure("yoshi-agent", 77)[0] == "claude is not on PATH"
+    assert Handler.host.state.failure("yoshi-agent", 77)[0] == "claude is not on PATH"
 
     status, _ = post_wake(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
     assert status == 400
@@ -1665,10 +1665,10 @@ def test_a_feeds_reply_is_never_scored(state, tmp_path):
     scored by, so scoring it would wake an agent twice for one preprint."""
     details = {**a_reply(5, "**Authors:** A, B\n\n**Abstract:** Magic."), "username": "arxiv-bot"}
     later = a_reply(6, "Something else entirely.")
-    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [details, later])
-    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [details, later])
+    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
 
-    assert {d.post_id for d in ranker.pass_once()} == {6}
+    assert {d.post_id for d in host.pass_once()} == {6}
     assert state.get_cursor() == 6
 
 
@@ -1677,20 +1677,20 @@ def test_a_feed_topic_waits_until_its_embedding_covers_the_feeds_reply(state, tm
     authors, without the abstract."""
     topic = a_post(5, "arxiv-bot")
     later = a_reply(6, "Something else entirely.")
-    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [topic, later])
-    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [topic, later])
+    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
     embedded = []
-    ranker.reply_embedded = lambda post: post["id"] in embedded
+    host.reply_embedded = lambda post: post["id"] in embedded
 
-    assert ranker.pass_once() == []
+    assert host.pass_once() == []
     assert state.get_cursor() == 0
 
     embedded.append(5)
-    assert {d.post_id for d in ranker.pass_once()} == {5, 6}
+    assert {d.post_id for d in host.pass_once()} == {5, 6}
     assert state.get_cursor() == 6
 
 
-class RepliedRanker(Ranker):
+class RepliedHost(Host):
     """Answers reply_embedded's one query with when the reply and the
     embedding were made."""
 
@@ -1719,23 +1719,23 @@ def test_a_feed_topic_is_scored_on_an_embedding_made_after_its_reply():
     replied = (now - timedelta(minutes=5)).replace(tzinfo=None)
 
     def embedded(**delta):
-        return RepliedRanker(Config(feed_reply_wait_minutes=20), replied, replied + timedelta(**delta)).reply_embedded(topic, now)
+        return RepliedHost(Config(feed_reply_wait_minutes=20), replied, replied + timedelta(**delta)).reply_embedded(topic, now)
 
     assert embedded(minutes=2)
     assert not embedded(seconds=-1)
-    assert not RepliedRanker(Config(feed_reply_wait_minutes=20), None, replied).reply_embedded(topic, now)
+    assert not RepliedHost(Config(feed_reply_wait_minutes=20), None, replied).reply_embedded(topic, now)
     # A reply the forum never took holds nothing past the wait.
-    assert RepliedRanker(Config(feed_reply_wait_minutes=20), None, None).reply_embedded(topic, now + timedelta(minutes=16))
+    assert RepliedHost(Config(feed_reply_wait_minutes=20), None, None).reply_embedded(topic, now + timedelta(minutes=16))
 
 
 def test_the_notice_is_never_scored(state, tmp_path):
     """It is not a contribution, so it wakes no other agent."""
-    notice = a_reply(5, f"*An automatic notice from the forum.*\n\n{ranking.NOTICE_MARKER}")
+    notice = a_reply(5, f"*An automatic notice from the forum.*\n\n{host_module.NOTICE_MARKER}")
     later = a_reply(6, "Something else entirely.")
-    ranker = QueuedRanker(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [notice, later])
-    ranker.log = ranking.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [notice, later])
+    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
 
-    assert {d.post_id for d in ranker.pass_once()} == {6}
+    assert {d.post_id for d in host.pass_once()} == {6}
     assert state.get_cursor() == 6
 
 
@@ -1761,9 +1761,9 @@ class DiaryForum:
             return {"categories": self.site}
         # The policy topic, as PolicyTopic finds it.
         if path.startswith("/search.json"):
-            return {"topics": [{"id": 12, "title": ranking.POLICY_TOPIC_TITLE}]}
+            return {"topics": [{"id": 12, "title": host_module.POLICY_TOPIC_TITLE}]}
         if path == "/t/12.json?include_raw=true":
-            return {"post_stream": {"posts": [{"raw": f"This topic is the {ranking.POLICY_MARKER}."}]}}
+            return {"post_stream": {"posts": [{"raw": f"This topic is the {host_module.POLICY_MARKER}."}]}}
         if path.startswith("/groups/") and path.endswith(".json") and "/members" not in path:
             name = path[len("/groups/"):-len(".json")]
             if name not in self.groups:
@@ -1793,14 +1793,14 @@ class DiaryForum:
         return {}
 
 
-class DiaryRanker(Ranker):
+class DiaryHost(Host):
     def __init__(self, forum):
         self.forum = forum
 
 
 def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     forum = DiaryForum()
-    made = DiaryRanker(forum).ensure_private_diary("a-agent")
+    made = DiaryHost(forum).ensure_private_diary("a-agent")
     assert made == {"id": 71, "name": "a"}
     category = next(params for method, path, params in forum.writes if path == "/categories")
     # Granted to the researcher's group and nobody else, under Diary.
@@ -1813,7 +1813,7 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     assert forum.owners["diary-a"] == ["a"]
 
     writes = len(forum.writes)
-    assert DiaryRanker(forum).ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert DiaryHost(forum).ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
     assert len(forum.writes) == writes
 
 
@@ -1821,9 +1821,9 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     """Under arXiv quant-ph, granted to a group of its own, so that preprints
     the agent brings its researcher privately are read by them alone."""
     forum = DiaryForum(site=[{"id": 5, "name": "Diary"}, {"id": 8, "name": "arXiv quant-ph", "color": "B31B1B"}])
-    ranker = DiaryRanker(forum)
-    assert ranker.ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
-    assert ranker.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
+    host = DiaryHost(forum)
+    assert host.ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert host.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
     arxiv = [params for method, path, params in forum.writes if path == "/categories"][-1]
     assert arxiv["parent_category_id"] == "8" and arxiv["color"] == "B31B1B"
     assert [k for k in arxiv if k.startswith("permissions[")] == ["permissions[arxiv-a]"]
@@ -1832,7 +1832,7 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     assert forum.groups["arxiv-a"]["full_name"] == "Private preprints of a"
     assert forum.members["arxiv-a"] == ["a", "a-agent"]
     writes = len(forum.writes)
-    assert ranker.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
+    assert host.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
     assert len(forum.writes) == writes
 
 
@@ -1845,8 +1845,8 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
      "everyone can read it"),
 ], ids=["no researcher", "no Diary", "a group of somebody else's", "a public category of that name"])
 def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
-    with pytest.raises(ranking.PrivateCategoryError) as refused:
-        DiaryRanker(forum).ensure_private_diary("a-agent")
+    with pytest.raises(host_module.PrivateCategoryError) as refused:
+        DiaryHost(forum).ensure_private_diary("a-agent")
     assert reason in str(refused.value)
     # Nothing half made: no category, and no group, member or owner added to
     # one that is somebody else's.

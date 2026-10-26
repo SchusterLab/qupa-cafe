@@ -243,7 +243,7 @@ def projects(tmp_path, monkeypatch):
     return home / "projects"
 
 
-class FakeRanking:
+class FakeHost:
     """The forum host, which the daemon tells it is still there."""
 
     def __init__(self, site=None):
@@ -253,11 +253,11 @@ class FakeRanking:
         pass
 
 
-def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=(), ranking=None):
+def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=(), host=None):
     woken = []
     monkeypatch.setattr(daemon, "wake_agent", lambda s, p, **k: woken.append((p, k)) or ok)
     handled.mark(diary.HANDLED_KIND, 20000101)
-    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), ranking or FakeRanking(site), handled,
+    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), host or FakeHost(site), handled,
                              diary.Diary(), False, journal, now=NOW)
     return woke, woken
 
@@ -485,7 +485,7 @@ def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends
 
     monkeypatch.setattr(daemon, "wake_agent", wake)
     handled.mark(diary.HANDLED_KIND, 20000101)
-    assert daemon.diary_pass(_settings(), SiteForum(SITE, []), FakeRanking(SITE), handled, diary.Diary(), False,
+    assert daemon.diary_pass(_settings(), SiteForum(SITE, []), FakeHost(SITE), handled, diary.Diary(), False,
                              None, now=NOW)
     assert seen == [["2026-10-10/01-home-r-thesis.md"]]
     assert not root.exists()
@@ -624,7 +624,7 @@ def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=(
         return ok
 
     monkeypatch.setattr(daemon, "wake_agent", wake)
-    woke = daemon.rewrite_pass(settings, forum, FakeRanking(SITE), diary.Diary(), False, journal, now=NOW)
+    woke = daemon.rewrite_pass(settings, forum, FakeHost(SITE), diary.Diary(), False, journal, now=NOW)
     return woke, woken, forum
 
 

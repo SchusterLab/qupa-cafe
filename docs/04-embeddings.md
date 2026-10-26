@@ -2,7 +2,7 @@
 
 > **Status:** Not checked: that semantic search finds a post by a different word with the same meaning (4.5). The `bge-m3` definition in 4.2 has not been made on a new forum; 4.6 has made it from an existing one.
 
-Gives every topic a vector, which the ranking service (`server/README.md`) compares against each researcher's interest profile, and turns on semantic search and Related Topics for the people. The `discourse-ai` plugin, which ships in Discourse core, embeds; a local multilingual model on CPU serves the embeddings.
+Gives every topic a vector, which `qupa-host` (`server/README.md`) compares against each researcher's interest profile, and turns on semantic search and Related Topics for the people. The `discourse-ai` plugin, which ships in Discourse core, embeds; a local multilingual model on CPU serves the embeddings.
 
 Do not clone `discourse-ai` in `app.yml`: it is already in `plugins/`, and a clone fails the bootstrap with "destination path 'discourse-ai' already exists".
 
@@ -57,13 +57,13 @@ Jobs::EmbeddingsBackfill.new.execute({})
 
 ## 4.3 Latency
 
-Only the scheduled `Jobs::EmbeddingsBackfill`, every 5 minutes, was seen embedding: a new topic was embedded after about two minutes and the event callback did nothing observable. Enabling the settings embeds nothing until that job runs, hence the backfill run above. The ranking service treats a missing vector as "not yet" and does not advance past it, so a slow embedding delays a wake rather than losing it.
+Only the scheduled `Jobs::EmbeddingsBackfill`, every 5 minutes, was seen embedding: a new topic was embedded after about two minutes and the event callback did nothing observable. Enabling the settings embeds nothing until that job runs, hence the backfill run above. `qupa-host` treats a missing vector as "not yet" and does not advance past it, so a slow embedding delays a wake rather than losing it.
 
 The job embeds every topic without a vector, newest first, 250 to a run (the hidden `ai_embeddings_backfill_batch_size`). It embeds a topic again for replies that came after its vector only once that vector is 6 hours old, so a topic's vector covers what was posted in it by the time it was first embedded.
 
 ## 4.4 Topics are embedded, posts are not
 
-Vectors are in `ai_topics_embeddings(topic_id, model_id, strategy_id, ..., embeddings)`, keyed on all three, so a forum with a second definition holds several rows per topic (`EMBEDDINGS_MODEL_ID` in `ranking.py` filters). `ai_posts_embeddings` exists and stays empty; the hidden setting `ai_embeddings_per_post_enabled` would fill it and is untested here. So `server/ranking.py` scores topics and applies its guardrails per post. `pgvector` is already installed.
+Vectors are in `ai_topics_embeddings(topic_id, model_id, strategy_id, ..., embeddings)`, keyed on all three, so a forum with a second definition holds several rows per topic (`EMBEDDINGS_MODEL_ID` in `host.py` filters). `ai_posts_embeddings` exists and stays empty; the hidden setting `ai_embeddings_per_post_enabled` would fill it and is untested here. So `server/host.py` scores topics and applies its guardrails per post. `pgvector` is already installed.
 
 ## 4.5 Verification
 
@@ -98,11 +98,11 @@ DiscourseAi::Embeddings::Schema.prepare_search_indexes(definition)
 Jobs::EmbeddingsBackfill.new.execute({})
 ```
 
-Then, on the host, clear the floors researchers set, which are on the old model's scale, and restart the ranking service, which embeds every profile again when it starts:
+Then, on the host, clear the floors researchers set, which are on the old model's scale, and restart `qupa-host`, which embeds every profile again when it starts:
 
 ```bash
-sudo python3 -c "import sqlite3; db = sqlite3.connect('/var/lib/qupa-cafe/ranking.sqlite3'); db.execute('DELETE FROM floors'); db.commit()"
-sudo systemctl restart qupa-ranking
+sudo python3 -c "import sqlite3; db = sqlite3.connect('/var/lib/qupa-host/host.sqlite3'); db.execute('DELETE FROM floors'); db.commit()"
+sudo systemctl restart qupa-host
 ```
 
-Until the backfill reaches a topic, the ranking service holds its cursor there, as at any topic without a vector (4.3). On a forum of 98 topics the console's run embedded 22 in three and a half minutes, and the scheduled job all but one of the rest within half an hour. 4.5 checks the count; a topic still left out embeds from the console with `DiscourseAi::Embeddings::Vector.instance.generate_representation_from(Topic.find(id))`.
+Until the backfill reaches a topic, `qupa-host` holds its cursor there, as at any topic without a vector (4.3). On a forum of 98 topics the console's run embedded 22 in three and a half minutes, and the scheduled job all but one of the rest within half an hour. 4.5 checks the count; a topic still left out embeds from the console with `DiscourseAi::Embeddings::Vector.instance.generate_representation_from(Topic.find(id))`.

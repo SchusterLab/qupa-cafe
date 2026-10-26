@@ -113,7 +113,7 @@ def test_a_threshold_the_host_accepts_is_shown(monkeypatch):
         asked.append(floor)
         return {"similarity_floor": floor, "floor_min": 0.6, "floor_max": 0.9}
 
-    monkeypatch.setattr(browse.Ranking, "set_floor", accept)
+    monkeypatch.setattr(browse.ForumHost, "set_floor", accept)
     message = browse.set_floor(Settings(api_username="sunada-agent"), b, "raise")
 
     assert asked == [0.73]
@@ -124,9 +124,9 @@ def test_a_threshold_the_host_refuses_leaves_it_as_it_was(monkeypatch):
     b = _browser(browse.Wake(_row(1), SAID), floor=0.72)
 
     def refuse(self, agent, floor):
-        raise browse.RankingError("HTTP 403")
+        raise browse.ForumHostError("HTTP 403")
 
-    monkeypatch.setattr(browse.Ranking, "set_floor", refuse)
+    monkeypatch.setattr(browse.ForumHost, "set_floor", refuse)
     message = browse.set_floor(Settings(api_username="sunada-agent"), b, "lower")
 
     assert b.state.floor == 0.72 and "not changed" in message and "403" in message

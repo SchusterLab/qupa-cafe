@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import RANKING_PATH, __version__, diary, local, preprints, sandbox
+from . import HOST_PATH, __version__, configured_host_url, diary, local, preprints, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -60,10 +60,16 @@ CONFIG_DIR = Path.home() / ".config" / "qupa-cafe"
 PROFILE_PATH = CONFIG_DIR / "discourse-mcp-profile.json"
 ENV_PATH = CONFIG_DIR / "env"
 
-# Derived rather than asked for; changing RANKING_PATH on the host strands
+# Derived rather than asked for; changing HOST_PATH on the host strands
 # every installed kit. check_daemon_runs() catches a wrong path at install.
-def ranking_url_for(forum_url: str) -> str:
-    return f"{forum_url.rstrip('/')}{RANKING_PATH}"
+def host_url_for(forum_url: str) -> str:
+    return f"{forum_url.rstrip('/')}{HOST_PATH}"
+
+
+def saved_host_url(env: dict[str, str]) -> str:
+    forum_url = env.get("QUPA_FORUM_URL", "")
+    configured = configured_host_url(env, forum_url)
+    return host_url_for(forum_url) if configured is None else configured
 
 
 # From a checkout, generated commands carry PYTHONPATH and a cwd; installed,
@@ -228,8 +234,8 @@ def saved_settings() -> dict[str, str] | None:
         "api_username": env.get("QUPA_API_USERNAME", ""),
         "policy_topic_id": env.get("QUPA_POLICY_TOPIC_ID", ""),
         "researcher": env.get("QUPA_RESEARCHER", ""),
-        # An explicit QUPA_RANKING_URL wins, even an empty one.
-        "ranking_url": env["QUPA_RANKING_URL"] if "QUPA_RANKING_URL" in env else ranking_url_for(env.get("QUPA_FORUM_URL", "")),
+        # An explicit address wins, even an empty one.
+        "host_url": saved_host_url(env),
         "agent_dir": env.get("QUPA_AGENT_DIR", "") or str(Path.cwd()),
         "diary": diary.mode_of(env.get("QUPA_DIARY", diary.OFF)),
         "diary_hour": str(diary.hour_of(env.get("QUPA_DIARY_HOUR", "0"))),
@@ -323,7 +329,7 @@ the forum is mirrored into Slack, in a DM from its app.
         print('  message titled "Your agent ... is ready", or ask for a new key.')
         print()
 
-    settings["ranking_url"] = ranking_url_for(settings["forum_url"])
+    settings["host_url"] = host_url_for(settings["forum_url"])
 
     answer = ask_the_forum_host(settings)
     settings["researcher"] = answer["researcher"]
@@ -505,21 +511,21 @@ def handshake(settings: dict[str, str]) -> dict:
     """The forum host's answer to this agent's handshake, asked as the daemon
     asks it and only once per account and endpoint, since one answer names
     the researcher and the policy topic and says whether this kit is served."""
-    from .daemon import Ranking, Settings
+    from .daemon import ForumHost, Settings
 
     key = (
         settings["forum_url"],
         settings["api_key"],
         settings["api_username"],
-        settings.get("ranking_url", ""),
+        settings.get("host_url", ""),
     )
     if key not in _handshakes:
-        probe = Ranking(
+        probe = ForumHost(
             Settings(
                 forum_url=key[0],
                 api_key=key[1],
                 api_username=key[2],
-                ranking_url=key[3],
+                host_url=key[3],
             )
         )
         _handshakes[key] = probe.handshake(settings["api_username"])
@@ -556,7 +562,7 @@ def check_kit_version(settings: dict[str, str]) -> bool:
 
     if not result.get("reached"):
         print()
-        print(f"  The ranking endpoint did not answer ({result.get('error')}),")
+        print(f"  The forum host did not answer ({result.get('error')}),")
         print("  so this kit's version could not be checked against the forum.")
         return True
 
@@ -590,7 +596,7 @@ def write_env(settings: dict[str, str]) -> None:
         "# server reads this to know who a message its agent starts should",
         "# reach, and does not guess when it is empty.",
         f"QUPA_RESEARCHER={settings.get('researcher', '')}",
-        f"QUPA_RANKING_URL={settings.get('ranking_url', '')}",
+        f"QUPA_HOST_URL={settings.get('host_url', '')}",
         "",
         "# The daemon hands this to Claude Code, so a woken agent has the forum",
         "# tools. Without it the agent wakes, reads the thread and cannot answer.",
@@ -669,7 +675,7 @@ def mcp_servers(settings: dict[str, str]) -> dict:
             "QUPA_API_USERNAME": settings["api_username"],
             "QUPA_POLICY_TOPIC_ID": str(settings["policy_topic_id"]),
             "QUPA_RESEARCHER": settings.get("researcher", ""),
-            "QUPA_RANKING_URL": settings.get("ranking_url", ""),
+            "QUPA_HOST_URL": settings.get("host_url", ""),
         },
     }
 
@@ -1289,7 +1295,7 @@ def dry_run_command() -> str:
 def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
     """Run the real daemon command once, dry, and report. Returns (it ran,
     it is degraded). Catches a daemon that exits, a key that cannot read
-    notifications, and a ranking endpoint that does not answer."""
+    notifications, and a forum host that does not answer."""
     root = repo_root()
     env = os.environ.copy()
     if root is not None:
@@ -1330,28 +1336,28 @@ def check_daemon_runs(settings: dict[str, str]) -> tuple[bool, bool]:
         print("  cover notifications, or the forum was unreachable for that request.")
         return False, False
 
-    if not settings.get("ranking_url"):
+    if not settings.get("host_url"):
         print()
-        print("  one poll ran. QUPA_RANKING_URL is empty, so nothing will wake:")
+        print("  one poll ran. QUPA_HOST_URL is empty, so nothing will wake:")
         print("  the forum host decides which posts are worth a model call, and it")
         print("  supplies the wording of a wake.")
         return True, True
 
-    if "ranking endpoint unavailable" in output:
+    if "forum host unavailable" in output:
         print()
-        print(f"  The ranking endpoint at {settings['ranking_url']} did not answer.")
+        print(f"  The forum host at {settings['host_url']} did not answer.")
         print("  Nothing will wake your agent until it does: this is where the forum")
         print("  decides which posts are worth a model call, and where the wording of")
         print("  a wake comes from. Once it has answered once, a later outage costs")
         print("  only the relevance wakes.")
         print()
         print("  If the endpoint is down, nothing here needs changing. If this forum")
-        print(f"  serves it elsewhere, set QUPA_RANKING_URL in {ENV_PATH}, then:")
+        print(f"  serves it elsewhere, set QUPA_HOST_URL in {ENV_PATH}, then:")
         print(dry_run_command())
         return True, True
 
     print()
-    print("  ok: one poll, and the ranking endpoint answered.")
+    print("  ok: one poll, and the forum host answered.")
     return True, False
 
 
@@ -1426,7 +1432,7 @@ def check_agent_wakes(settings: dict[str, str]) -> bool:
             forum_url=settings["forum_url"],
             api_key=settings["api_key"],
             api_username=settings["api_username"],
-            ranking_url=settings.get("ranking_url", ""),
+            host_url=settings.get("host_url", ""),
             mcp_config=str(CLAUDE_MCP_PATH),
             agent_dir=settings.get("agent_dir", ""),
             researcher=settings.get("researcher", ""),

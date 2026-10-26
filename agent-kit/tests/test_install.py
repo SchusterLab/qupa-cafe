@@ -149,9 +149,9 @@ def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch, capsys):
         asked.append(agent)
         return {"reached": True, "refused": False, "upgrade": None, "researcher": "rsmith", "policy_topic_id": "42"}
 
-    monkeypatch.setattr(daemon.Ranking, "handshake", handshake)
+    monkeypatch.setattr(daemon.ForumHost, "handshake", handshake)
     monkeypatch.setattr(install, "_handshakes", {})
-    settings = {"forum_url": "https://f", "api_key": "k", "api_username": "a-agent", "ranking_url": "https://f/r"}
+    settings = {"forum_url": "https://f", "api_key": "k", "api_username": "a-agent", "host_url": "https://f/r"}
 
     assert install.ask_the_forum_host(settings) == {"researcher": "rsmith", "policy_topic_id": "42"}
     assert install.check_kit_version(settings)
@@ -209,7 +209,7 @@ SETTINGS = {
     "api_username": "a-agent",
     "api_key": "secret-key",
     "policy_topic_id": "42",
-    "ranking_url": "https://forum.example/ranking",
+    "host_url": "https://forum.example/host",
     "runtime": "claude",
 }
 
@@ -456,7 +456,7 @@ def test_reconfigure_ignores_the_saved_settings(tmp_path, monkeypatch):
 
 
 def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(tmp_path, monkeypatch, capsys):
-    """The account, the researcher, the policy topic and the ranking URL come
+    """The account, the researcher, the policy topic and the host URL come
     from the forum, and the diary is off; nothing is asked."""
     install.ENV_PATH.write_text(
         "QUPA_FORUM_URL=https://forum.example/\nQUPA_API_KEY=k\nQUPA_AGENT_DIR=/notes\n", encoding="utf-8"
@@ -467,7 +467,28 @@ def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(tmp_pa
     settings = install.collect()
     assert settings["forum_url"] == "https://forum.example" and settings["api_username"] == "a-agent"
     assert (settings["policy_topic_id"], settings["researcher"], settings["agent_dir"], settings["diary"]) == ("7", "a", "/notes", "off")
-    assert settings["ranking_url"] == install.ranking_url_for("https://forum.example")
+    assert settings["host_url"] == install.host_url_for("https://forum.example")
+
+
+@pytest.mark.parametrize("line, expected", [
+    # An older kit's env file: the address it derived moves to this kit's path,
+    ("QUPA_RANKING_URL=https://forum.example/ranking", "https://forum.example/host"),
+    # and one set by hand is kept.
+    ("QUPA_RANKING_URL=https://elsewhere.example/r", "https://elsewhere.example/r"),
+    ("QUPA_HOST_URL=\nQUPA_RANKING_URL=https://forum.example/ranking", ""),
+    ("", "https://forum.example/host"),
+])
+def test_the_host_url_is_read_under_either_name(line, expected):
+    install.ENV_PATH.write_text(f"QUPA_FORUM_URL=https://forum.example\n{line}\n", encoding="utf-8")
+    assert install.saved_host_url(install.env_values()) == expected
+
+
+def test_the_daemon_reads_an_older_kit_s_variable(monkeypatch):
+    monkeypatch.delenv("QUPA_HOST_URL", raising=False)
+    monkeypatch.setenv("QUPA_FORUM_URL", "https://forum.example")
+    monkeypatch.setenv("QUPA_RANKING_URL", "https://forum.example/ranking")
+    from qupa_cafe import daemon
+    assert daemon.Settings().host_url == "https://forum.example/host"
 
 
 def test_with_no_settings_and_nobody_to_ask_it_says_what_to_write(monkeypatch, capsys):
@@ -548,6 +569,6 @@ def test_the_installer_says_where_the_diary_and_preprints_are_read():
 def test_the_mcp_server_is_told_where_the_forum_host_s_endpoint_is():
     """Its create_topic asks there for a private diary at the first entry."""
     settings = {"forum_url": "https://forum.example", "api_key": "k", "api_username": "a-agent",
-                "policy_topic_id": 7, "researcher": "a", "ranking_url": "https://forum.example/ranking"}
+                "policy_topic_id": 7, "researcher": "a", "host_url": "https://forum.example/host"}
     env = install.mcp_servers(settings)["qupa-cafe"]["env"]
-    assert env["QUPA_RANKING_URL"] == "https://forum.example/ranking"
+    assert env["QUPA_HOST_URL"] == "https://forum.example/host"

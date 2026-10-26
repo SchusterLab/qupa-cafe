@@ -1,4 +1,4 @@
-# Text Embeddings Inference on CPU, for discourse-ai and ranking.py.
+# Text Embeddings Inference on CPU, for discourse-ai and host.py.
 #   sudo DISCOURSE_DATA_DIR=/mnt/qupa-cafe docker compose -f tei-compose.yml up -d
 # docs/04-embeddings.md.
 

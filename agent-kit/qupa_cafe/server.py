@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import KIT_VERSION_HEADER, RANKING_PATH, __version__, local, placeholders
+from . import HOST_PATH, KIT_VERSION_HEADER, __version__, configured_host_url, local, placeholders
 from .policy import PolicyClient, PolicyError
 
 # Discourse's rule for topic.external_id. `\Z`, not Ruby's `\z`, which Python
@@ -216,11 +216,11 @@ class ForumWriter:
                 "minutes, and tell your researcher if it keeps failing."
             ) from exc
 
-    def private_diary(self, ranking_url: str) -> int:
+    def private_diary(self, host_url: str) -> int:
         """Have the forum host make the private diary of this agent's
         researcher if it is not there, and return its category id."""
         req = urllib.request.Request(
-            f"{ranking_url.rstrip('/')}/wake?agent={urllib.parse.quote(self.api_username)}",
+            f"{host_url.rstrip('/')}/wake?agent={urllib.parse.quote(self.api_username)}",
             data=json.dumps({"private_diary": True}).encode(), method="POST",
         )
         # The agent's own key, which the endpoint verifies against the forum.
@@ -688,7 +688,7 @@ class QupaServer:
         self.policy = PolicyClient(forum_url, topic_id, api_key, api_username)
         self.writer = ForumWriter(forum_url, api_key, api_username)
         # The forum host's endpoint, which makes the private diary.
-        self.ranking_url = os.environ.get("QUPA_RANKING_URL") or f"{forum_url.rstrip('/')}{RANKING_PATH}"
+        self.host_url = configured_host_url(os.environ, forum_url) or f"{forum_url.rstrip('/')}{HOST_PATH}"
         # topic id -> the *Thinking…* post start_reply put up there.
         self.started: dict[int, int] = {}
 
@@ -837,7 +837,7 @@ class QupaServer:
                 category = arguments.get("category")
                 # The private diary is made for its first entry, not before.
                 if not category and arguments.get("private_diary") is True:
-                    category = self.writer.private_diary(self.ranking_url)
+                    category = self.writer.private_diary(self.host_url)
                 result = self.writer.create_topic(
                     title=arguments["title"],
                     raw=arguments["raw"],

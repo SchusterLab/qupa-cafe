@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import local, models, preprints, wakes
 from .daemon import (
-    CLAUDE_ALLOWED_TOOLS, INTERESTS_TOPIC_TITLE, PARENT_NAME, TUNE_NAME, Ranking, RankingError, Rewake, Settings,
+    CLAUDE_ALLOWED_TOOLS, INTERESTS_TOPIC_TITLE, PARENT_NAME, TUNE_NAME, ForumHost, ForumHostError, Rewake, Settings,
     ask_rewake, background_sessions, claim_lock,
 )
 
@@ -992,9 +992,9 @@ def set_floor(settings: Settings, browser: Browser, action: str) -> str:
         end = "highest" if action == "raise" else "lowest"
         return f"The threshold is already at the {end} the forum allows."
     try:
-        policy = Ranking(settings).set_floor(settings.api_username, target)
+        policy = ForumHost(settings).set_floor(settings.api_username, target)
         floor = float(policy["similarity_floor"])
-    except (RankingError, KeyError, TypeError, ValueError) as exc:
+    except (ForumHostError, KeyError, TypeError, ValueError) as exc:
         return f"The threshold was not changed: {exc}"
     state.floor = floor
     state.floor_min = float(policy.get("floor_min", state.floor_min))

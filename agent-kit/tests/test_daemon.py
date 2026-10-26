@@ -30,7 +30,7 @@ from qupa_cafe.daemon import (
     WAKE_TYPES,
     WATCHING_FIRST_POST,
     Handled,
-    Ranking,
+    ForumHost,
     Settings,
     build_prompt,
     load_env_file,
@@ -83,8 +83,8 @@ class FakeForum:
         return {"categories": []}
 
 
-class FakeRanking:
-    """The ranking endpoint, sending relevance wakes and recording what the
+class FakeHost:
+    """The forum host, sending relevance wakes and recording what the
     daemon tells it."""
 
     def __init__(self, post_ids=(), scores=None, policy=None):
@@ -137,7 +137,7 @@ def test_a_new_post_in_a_watched_thread_wakes_as_being_addressed_does():
 
 def _collect(handled, notes, totals=None):
     settings = _settings(api_username="sunada-agent")
-    return daemon.collect(settings, FakeForum({}, notes, totals), FakeRanking(), handled)
+    return daemon.collect(settings, FakeForum({}, notes, totals), FakeHost(), handled)
 
 
 def test_a_post_in_a_watched_thread_wakes_the_agent_and_says_so(handled):
@@ -185,21 +185,21 @@ def test_what_was_handled_is_remembered_by_kind_across_a_restart(tmp_path):
 # ------------------------------------------------------------ degraded mode
 
 
-def test_no_ranking_url_means_no_wakes_and_no_crash():
-    ranking = Ranking(Settings(ranking_url=""))
-    assert ranking.pending("agent") == []
+def test_no_host_url_means_no_wakes_and_no_crash():
+    host = ForumHost(Settings(host_url=""))
+    assert host.pending("agent") == []
 
 
 def test_an_unreachable_endpoint_degrades_quietly_and_warns_once(caplog):
     """Port 1 on loopback: connection refused, immediately. A day of downtime
     at a 60-second interval would otherwise be 1,440 lines."""
-    ranking = Ranking(Settings(ranking_url="http://127.0.0.1:1"))
+    host = ForumHost(Settings(host_url="http://127.0.0.1:1"))
 
-    assert ranking.pending("agent") == []
-    assert ranking.pending("agent") == []
+    assert host.pending("agent") == []
+    assert host.pending("agent") == []
 
-    assert ranking.available is False
-    assert caplog.text.count("ranking endpoint unavailable") == 1
+    assert host.available is False
+    assert caplog.text.count("forum host unavailable") == 1
 
 
 # --------------------------------------------------------------------- waking
@@ -324,7 +324,7 @@ class _answering:
 # A template of the shape the forum host serves. Written out here rather than
 # imported from the host, because what these tests cover is the filling: which
 # facts reach the model, in what order, and what cannot be left out. What the
-# wording itself says is the host's, and server/tests/test_ranking.py asserts
+# wording itself says is the host's, and server/tests/test_host.py asserts
 # it there.
 TEMPLATE = """You were woken by a post on the forum. Reason: %REASON%.
 
@@ -468,7 +468,7 @@ def test_a_wake_is_worded_by_the_kit_itself():
     "failure",
     [
         urllib.error.URLError("connection refused"),
-        urllib.error.HTTPError("http://ranking.invalid/wake", 500, "Server Error", {}, None),
+        urllib.error.HTTPError("http://host.invalid/wake", 500, "Server Error", {}, None),
     ],
     ids=["unreachable", "http-error"],
 )
@@ -478,8 +478,8 @@ def test_a_handshake_that_fails_answers_in_the_same_shape(monkeypatch, failure):
         raise failure
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", fail)
-    answer = Ranking(Settings(ranking_url="http://ranking.invalid")).handshake("agent")
-    unconfigured = Ranking(Settings(ranking_url="")).handshake("agent")
+    answer = ForumHost(Settings(host_url="http://host.invalid")).handshake("agent")
+    unconfigured = ForumHost(Settings(host_url="")).handshake("agent")
 
     assert answer.keys() == unconfigured.keys()
     assert answer["reached"] is False and answer["researcher"] == "" and answer["policy_topic_id"] == ""
@@ -499,18 +499,18 @@ def test_a_deferred_topic_is_not_acknowledged(handled, monkeypatch):
     a backlog would be lost rather than delayed."""
     settings = _settings(max_wakes_per_pass=1)
     forum = FakeForum({10: _topic(10), 20: _topic(20)})
-    ranking = FakeRanking([101, 201])
+    host = FakeHost([101, 201])
 
     monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10 if post_id == 101 else 20)
     _woken(monkeypatch)
 
-    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 1
+    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 1
 
     acknowledged = [post_id for post_id in (101, 201) if handled.seen("wake", post_id)]
     assert len(acknowledged) == 1, "exactly one post should be acknowledged"
 
     # The deferred one comes back.
-    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 1
+    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 1
     assert handled.seen("wake", 101) and handled.seen("wake", 201)
 
 
@@ -518,7 +518,7 @@ def test_a_failed_wake_is_retried(handled, in_topic_10, monkeypatch):
     """A wake that failed is not a wake that happened."""
     _woken(monkeypatch, ok=False)
 
-    assert daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), FakeRanking([101]), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), FakeHost([101]), handled, dry_run=False) == 0
     assert not handled.seen("wake", 101)
 
 
@@ -529,7 +529,7 @@ def test_a_dry_run_acknowledges_and_journals_nothing(tmp_path, in_topic_10, monk
     forum = FakeForum({10: _topic(10)}, notes=[{"id": 5, "notification_type": MENTIONED, "topic_id": 10}])
     _woken(monkeypatch)
 
-    daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=True, journal=journal)
+    daemon.one_pass(_settings(), forum, FakeHost([101]), handled, dry_run=True, journal=journal)
 
     assert not handled.seen("wake", 101) and not handled.seen("notification", 5)
     assert forum.marked_read == []
@@ -537,7 +537,7 @@ def test_a_dry_run_acknowledges_and_journals_nothing(tmp_path, in_topic_10, monk
 
 
 def test_nothing_pending_means_no_wakes(handled):
-    assert daemon.one_pass(_settings(), FakeForum({}), FakeRanking(), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), FakeForum({}), FakeHost(), handled, dry_run=False) == 0
 
 
 # ------------------------------------------------------ waking the runtime
@@ -745,10 +745,10 @@ def test_each_wake_is_journalled_with_how_it_ended(tmp_path, in_topic_10, monkey
         return False
 
     monkeypatch.setattr(daemon, "wake_agent", fake_wake)
-    daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
+    daemon.one_pass(settings, forum, FakeHost([101]), Handled(state), dry_run=False, journal=journal)
 
     _woken(monkeypatch)
-    daemon.one_pass(settings, forum, FakeRanking([101]), Handled(state), dry_run=False, journal=journal)
+    daemon.one_pass(settings, forum, FakeHost([101]), Handled(state), dry_run=False, journal=journal)
 
     rows = journal.db.execute("SELECT status, session, topic_id, finished FROM wakes ORDER BY id").fetchall()
     assert seen["status"] == "running"
@@ -763,8 +763,8 @@ def test_a_relevance_wake_journals_its_best_score_and_the_floor(tmp_path, in_top
     policy = {"similarity_floor": 0.72, "floor_min": 0.6, "floor_max": 0.9}
     _woken(monkeypatch)
 
-    ranking = FakeRanking([101, 102], scores={101: 0.74, 102: 0.81}, policy=policy)
-    daemon.one_pass(_settings(max_wakes_per_pass=5), FakeForum({10: _topic(10)}), ranking, Handled(state), dry_run=False, journal=journal)
+    host = FakeHost([101, 102], scores={101: 0.74, 102: 0.81}, policy=policy)
+    daemon.one_pass(_settings(max_wakes_per_pass=5), FakeForum({10: _topic(10)}), host, Handled(state), dry_run=False, journal=journal)
 
     assert journal.db.execute("SELECT score FROM wakes").fetchall() == [(0.81,)]
     assert journal.db.execute("SELECT floor, floor_min, floor_max FROM floor").fetchall() == [(0.72, 0.6, 0.9)]
@@ -801,14 +801,14 @@ def test_setting_the_floor_posts_it_with_the_agent_s_key():
     server = HTTPServer(("127.0.0.1", 0), Host)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        settings = Settings(api_key="the-key", ranking_url=f"http://127.0.0.1:{server.server_port}/ranking")
-        ranking = daemon.Ranking(settings)
+        settings = Settings(api_key="the-key", host_url=f"http://127.0.0.1:{server.server_port}/host")
+        host = daemon.ForumHost(settings)
 
-        assert ranking.set_floor("u-agent", 0.734)["similarity_floor"] == 0.73
-        assert heard["path"] == "/ranking/wake?agent=u-agent"
+        assert host.set_floor("u-agent", 0.734)["similarity_floor"] == 0.73
+        assert heard["path"] == "/host/wake?agent=u-agent"
         assert heard["key"] == "Bearer the-key"
-        with pytest.raises(daemon.RankingError, match="from 0.6 to 0.9"):
-            ranking.set_floor("u-agent", 0.95)
+        with pytest.raises(daemon.ForumHostError, match="from 0.6 to 0.9"):
+            host.set_floor("u-agent", 0.95)
     finally:
         server.shutdown()
         server.server_close()
@@ -832,11 +832,11 @@ def test_a_wake_waits_while_the_newest_post_is_still_thinking(handled, in_topic_
     forum = FakeForum({10: _thinking_topic(10, age_seconds=30)})
     woken = _woken(monkeypatch)
 
-    assert daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, FakeHost([101]), handled, dry_run=False) == 0
     assert woken == [] and not handled.seen("wake", 101)
 
     forum.topics[10]["post_stream"]["posts"][-1]["raw"] = "The answer."
-    assert daemon.one_pass(_settings(), forum, FakeRanking([101]), handled, dry_run=False) == 1
+    assert daemon.one_pass(_settings(), forum, FakeHost([101]), handled, dry_run=False) == 1
 
 
 def test_a_placeholder_older_than_any_wake_holds_none_up():
@@ -987,26 +987,26 @@ MENTION = {"id": 7, "notification_type": MENTIONED, "topic_id": 10, "post_number
 
 
 def test_a_failed_wake_somebody_waits_on_is_reported_with_its_reason(handled, monkeypatch):
-    ranking = FakeRanking()
+    host = FakeHost()
 
     def failing_wake(*args, on_failure=None, **kwargs):
         on_failure("Claude Code is not installed, or not on the PATH the daemon sees")
         return False
 
     monkeypatch.setattr(daemon, "wake_agent", failing_wake)
-    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}, [MENTION]), ranking, handled, dry_run=False)
+    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}, [MENTION]), host, handled, dry_run=False)
 
-    assert ranking.told == [("failed", "u", 10, "Claude Code is not installed, or not on the PATH the daemon sees")]
+    assert host.told == [("failed", "u", 10, "Claude Code is not installed, or not on the PATH the daemon sees")]
 
 
 def test_a_relevance_wake_that_fails_is_not_reported(handled, in_topic_10, monkeypatch):
     """Nobody waits on it."""
-    ranking = FakeRanking([101])
+    host = FakeHost([101])
     woken = _woken(monkeypatch, ok=False)
 
-    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), ranking, handled, dry_run=False)
+    daemon.one_pass(_settings(), FakeForum({10: _topic(10)}), host, handled, dry_run=False)
 
-    assert woken[0]["on_failure"] is None and ranking.told == []
+    assert woken[0]["on_failure"] is None and host.told == []
 
 
 def test_a_long_background_wake_says_it_is_alive(monkeypatch, tmp_path):
@@ -1039,7 +1039,7 @@ def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(handled, monke
     forum = FakeForum({10: topic}, [{"id": 8, "notification_type": POSTED, "topic_id": 10, "post_number": 2}])
     monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
 
-    assert daemon.one_pass(_settings(), forum, FakeRanking(), handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, FakeHost(), handled, dry_run=False) == 0
     assert forum.marked_read == [8]
 
 
@@ -1059,14 +1059,14 @@ def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path,
             return [{"id": 8, "notification_type": daemon.POSTED, "topic_id": 10, "post_number": 2}]
 
     forum = WatchedForum({10: topic})
-    ranking = FakeRanking([101], scores={101: 0.9})
+    host = FakeHost([101], scores={101: 0.9})
     handled = Handled(str(tmp_path / "s.sqlite3"))
     monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
     monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
     settings = Settings(forum_url="http://x", api_key="k", api_username="u")
 
-    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
-    assert daemon.one_pass(settings, forum, ranking, handled, dry_run=False) == 0
+    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 0
+    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 0
     assert handled.seen("wake", 101)
 
 
@@ -1130,20 +1130,20 @@ def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
 def test_a_resident_daemon_names_its_run_once_it_has_claimed_the_agent(monkeypatch):
     sent = []
     monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, **k: sent.append(request) or _answering({"previous": {"where": "laptop (Linux)"}}))
-    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
-    assert ranking.claim("agent", "aaa", "desk (Windows)") == "laptop (Linux)"
+    host = ForumHost(Settings(host_url="http://host.invalid"))
+    assert host.claim("agent", "aaa", "desk (Windows)") == "laptop (Linux)"
     assert json.loads(sent[0].data) == {"claim": {"instance": "aaa", "where": "desk (Windows)"}}
-    assert ranking._wake_request("agent").get_header(daemon.DAEMON_HEADER.capitalize()) == "aaa"
+    assert host._wake_request("agent").get_header(daemon.DAEMON_HEADER.capitalize()) == "aaa"
 
 
 def test_a_host_that_cannot_take_a_claim_costs_nothing_but_the_claim(monkeypatch):
     """A host from before claims answers 400, which is no reason not to poll."""
     def refuse(*args, **kwargs):
-        raise urllib.error.HTTPError("http://ranking.invalid/wake", 400, "Bad Request", {}, None)
+        raise urllib.error.HTTPError("http://host.invalid/wake", 400, "Bad Request", {}, None)
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", refuse)
-    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
-    assert ranking.claim("agent", "aaa", "desk") is None and ranking.instance == "aaa"
+    host = ForumHost(Settings(host_url="http://host.invalid"))
+    assert host.claim("agent", "aaa", "desk") is None and host.instance == "aaa"
 
 
 def test_a_superseded_daemon_learns_where_the_agent_went(monkeypatch):
@@ -1151,11 +1151,11 @@ def test_a_superseded_daemon_learns_where_the_agent_went(monkeypatch):
 
     def superseded(*args, **kwargs):
         body = io.BytesIO(json.dumps({"error": "superseded", "superseded_by": "desk (Windows)"}).encode())
-        raise urllib.error.HTTPError("http://ranking.invalid/wake", 409, "Conflict", {}, body)
+        raise urllib.error.HTTPError("http://host.invalid/wake", 409, "Conflict", {}, body)
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", superseded)
-    ranking = Ranking(Settings(ranking_url="http://ranking.invalid"))
-    assert ranking.pending("agent") == [] and ranking.superseded_by == "desk (Windows)"
+    host = ForumHost(Settings(host_url="http://host.invalid"))
+    assert host.pending("agent") == [] and host.superseded_by == "desk (Windows)"
 
 
 def test_one_superseded_from_another_machine_retires_and_says_where(tmp_path, monkeypatch):
@@ -1282,7 +1282,7 @@ def test_the_parent_holds_the_interests_post_the_host_served(tmp_path):
 
 def test_each_poll_keeps_the_interests_post_and_an_older_host_leaves_it(tmp_path, monkeypatch):
     settings = _settings(api_username="a-agent", state_path=str(tmp_path / "state.sqlite3"),
-                         ranking_url="http://host/ranking/wake")
+                         host_url="http://host/host/wake")
     served = {"interests": {"topic_id": 13, "post_number": 3, "raw": "Flux noise."}, "pending": []}
 
     class Answer:
@@ -1299,11 +1299,11 @@ def test_each_poll_keeps_the_interests_post_and_an_older_host_leaves_it(tmp_path
             return self.body
 
     monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, timeout=None: Answer(served))
-    ranking = daemon.Ranking(settings)
-    ranking.pending("a-agent")
+    host = daemon.ForumHost(settings)
+    host.pending("a-agent")
     assert daemon.interests_path(settings).read_text(encoding="utf-8") == "post 3 of topic 13\n\nFlux noise."
     served = {"pending": []}
-    ranking.pending("a-agent")
+    host.pending("a-agent")
     assert "Flux noise." in daemon.interests_path(settings).read_text(encoding="utf-8")
 
 
@@ -1413,7 +1413,7 @@ class PostsForum(FakeForum):
 
 
 def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2, woke_before=(), writes=None, reason="you were mentioned",
-            ranking=None):
+            host=None):
     """Wake again for the post; ``woke_before`` is when earlier wakes for it
     ran, and ``writes`` what the agent puts in which post."""
     state = str(tmp_path / "state.sqlite3")
@@ -1434,7 +1434,7 @@ def _rewake(tmp_path, monkeypatch, forum, ok=True, post_number=2, woke_before=()
                            " post_number, title, reason) VALUES (?, ?, 'finished', 'claude', 's', '', 10, ?, 't', 'r')",
                            (started, finished, post_number))
     journal.db.commit()
-    woke = daemon.rewake_pass(_settings(state_path=state), forum, ranking or FakeRanking(), False, journal)
+    woke = daemon.rewake_pass(_settings(state_path=state), forum, host or FakeHost(), False, journal)
     return woke, prompts, state, journal
 
 
@@ -1474,7 +1474,7 @@ def test_a_failed_wake_again_waits_for_the_next_poll_and_a_post_gone_is_dropped(
 
     down = urllib.error.URLError("refused")
     daemon.ask_rewake(state, daemon.Rewake(10, 2, "you were mentioned"))
-    assert not daemon.rewake_pass(_settings(state_path=state), PostsForum({}, error=down), FakeRanking(), False)
+    assert not daemon.rewake_pass(_settings(state_path=state), PostsForum({}, error=down), FakeHost(), False)
     assert len(daemon.rewakes(state)) == 1
 
 
@@ -1535,14 +1535,14 @@ class ArxivForum(FakeForum):
                                {"id": 1, "name": "Research"}]}
 
 
-class ArxivRanking(FakeRanking):
+class ArxivHost(FakeHost):
     def __init__(self, *args, refuse=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.refuse = refuse
 
     def private_arxiv(self, agent):
         if self.refuse:
-            raise daemon.RankingError("the forum has no arXiv quant-ph category")
+            raise daemon.ForumHostError("the forum has no arXiv quant-ph category")
         self.told.append(("private_arxiv", agent))
         return {"id": 9, "name": "a"}
 
@@ -1558,8 +1558,8 @@ def test_a_preprint_goes_as_qupa_arxiv_says(mode, handled, in_topic_10, monkeypa
     if mode != "public":
         preprints.write(mode)
     woken = _woken(monkeypatch)
-    ranking = ArxivRanking([101])
-    woke = daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ranking, handled, dry_run=False)
+    host = ArxivHost([101])
+    woke = daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), host, handled, dry_run=False)
     # Handled either way, so off does not bring it back at every poll.
     assert handled.seen("wake", 101)
     if mode == "off":
@@ -1567,7 +1567,7 @@ def test_a_preprint_goes_as_qupa_arxiv_says(mode, handled, in_topic_10, monkeypa
         return
     assert woke == 1 and woken[0]["wake"].reason == daemon.RELEVANT
     # Only the private one asks the host for the subcategory.
-    assert (("private_arxiv", "u") in ranking.told) == (mode == "private")
+    assert (("private_arxiv", "u") in host.told) == (mode == "private")
 
 
 def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_topic_10, monkeypatch):
@@ -1576,12 +1576,12 @@ def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_to
     preprints.write(preprints.PRIVATE)
     prompts = []
     monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
-    ranking = ArxivRanking([101])
-    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ranking, handled, dry_run=False) == 1
+    host = ArxivHost([101])
+    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), host, handled, dry_run=False) == 1
     (prompt,) = prompts
     assert "brought to them privately, as the arXiv quant-ph agent policy describes" in prompt
     assert '"arXiv quant-ph / a" (category=9)' in prompt
-    assert ("private_arxiv", "u") in ranking.told
+    assert ("private_arxiv", "u") in host.told
 
 
 def test_a_preprint_elsewhere_a_mention_or_a_refusal_is_not_brought_privately(handled, in_topic_10, monkeypatch):
@@ -1591,15 +1591,15 @@ def test_a_preprint_elsewhere_a_mention_or_a_refusal_is_not_brought_privately(ha
     prompts = []
     monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
     # Not in arXiv quant-ph: as any relevance wake.
-    daemon.one_pass(_settings(), ArxivForum({10: _preprint(category_id=1)}), ArxivRanking([101]), handled, dry_run=False)
+    daemon.one_pass(_settings(), ArxivForum({10: _preprint(category_id=1)}), ArxivHost([101]), handled, dry_run=False)
     assert prompts and "privately" not in prompts[-1]
     # A mention in a preprint's topic is answered there.
     note = {"id": 7, "notification_type": MENTIONED, "topic_id": 10}
     forum = ArxivForum({10: _preprint()}, notes=[note])
-    daemon.one_pass(_settings(), forum, ArxivRanking([102]), handled, dry_run=False)
+    daemon.one_pass(_settings(), forum, ArxivHost([102]), handled, dry_run=False)
     assert len(prompts) == 2 and "privately" not in prompts[-1]
     # The host cannot make the subcategory: the preprint waits.
-    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ArxivRanking([103], refuse=True),
+    assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), ArxivHost([103], refuse=True),
                            handled, dry_run=False) == 0
     assert not handled.seen("wake", 103)
 
@@ -1642,7 +1642,7 @@ def test_waking_again_for_a_private_preprint_takes_back_its_private_topic(tmp_pa
         action["category_id"] = 9
     forum = PrivatePostsForum({10: topic}, actions=actions, raws={91: "Read the abstract.", 80: "Public reply."})
     woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=1, woke_before=[FIRST_WAKE],
-                                        reason=daemon.RELEVANT, ranking=ArxivRanking())
+                                        reason=daemon.RELEVANT, host=ArxivHost())
     assert woke
     assert "taking back what you wrote for it, post 2 (post_id=91)" in prompt and "post_id=91" in prompt
     assert "write again there and start no other topic" in prompt and "create_topic" not in prompt
@@ -1657,5 +1657,5 @@ def test_waking_again_for_a_private_preprint_with_nothing_there_starts_one(tmp_p
     preprints.write(preprints.PRIVATE)
     forum = PrivatePostsForum({10: {**_thread("arxiv-bot"), "category_id": 8}})
     woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=1, reason=daemon.RELEVANT,
-                                        ranking=ArxivRanking())
+                                        host=ArxivHost())
     assert woke and "create_topic" in prompt and '(category=9)' in prompt and "taking back" not in prompt

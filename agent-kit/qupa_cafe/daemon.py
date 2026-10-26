@@ -8,9 +8,9 @@ Two sources of hits, in order of reliability:
 
 *Direct mentions*, from Discourse's notifications endpoint. Always polled. If
 someone addresses your agent by name it should answer, regardless of what any
-ranking thinks.
+host thinks.
 
-*Relevance wakes*, from the forum host's ranking endpoint. This is where the
+*Relevance wakes*, from the forum host's qupa-host service. This is where the
 category skip list and the similarity floor are applied -- all server-side,
 so there is nothing here to accidentally disable.
 
@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, diary, local, models, opening, placeholders, preprints, sandbox, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, sandbox, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -89,8 +89,8 @@ WATCHING_CATEGORY_OR_TAG = 36
 # with the reason the wake gives, most direct first: a topic with several
 # notifications is woken for the first of them here. Likes, badges, edits and
 # reminders are notifications too, and wake nobody. Posts the forum does not
-# notify the agent of are the ranking endpoint's, with its guardrails. The
-# forum host's list of these is ranking.WAKE_NOTIFICATION_TYPES.
+# notify the agent of are qupa-host's, with its guardrails. The
+# forum host's list of these is host.WAKE_NOTIFICATION_TYPES.
 WAKE_TYPES = {
     PRIVATE_MESSAGE: "you were sent a private message",
     INVITED_TO_PRIVATE_MESSAGE: "you were invited to a private message",
@@ -146,7 +146,7 @@ class Settings:
     api_username: str = field(default_factory=lambda: _env("QUPA_API_USERNAME"))
 
     # Nothing wakes without it: it serves the wakes.
-    ranking_url: str = field(default_factory=lambda: _env("QUPA_RANKING_URL"))
+    host_url: str = field(default_factory=lambda: configured_host_url(os.environ, _env("QUPA_FORUM_URL")) or "")
 
     # Also a batching window: a burst in one thread becomes one wake.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
@@ -554,19 +554,19 @@ class Forum:
         self._request("DELETE", f"/posts/{post_id}.json")
 
 
-# -------------------------------------------------------------------- ranking
+# --------------------------------------------------------------- forum host
 
 
-class RankingError(Exception):
+class ForumHostError(Exception):
     """The forum host refused a request, or could not be reached."""
 
 
-class Ranking:
-    """The forum host's relevance endpoint, with graceful degradation."""
+class ForumHost:
+    """The forum host's qupa-host service, with graceful degradation."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.available = bool(settings.ranking_url)
+        self.available = bool(settings.host_url)
         self._warned = False
         self._told_about_upgrade = False
         # The agent's floor and its range, from the last poll.
@@ -580,7 +580,7 @@ class Ranking:
 
     def _wake_request(self, agent: str) -> urllib.request.Request:
         """The /wake request every call to the host starts from."""
-        url = f"{self.settings.ranking_url.rstrip('/')}/wake?agent={urllib.parse.quote(agent)}"
+        url = f"{self.settings.host_url.rstrip('/')}/wake?agent={urllib.parse.quote(agent)}"
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/json")
         # Self-reported, so the host can say when this kit is behind.
@@ -614,8 +614,8 @@ class Ranking:
                 "error": error,
             }
 
-        if not self.settings.ranking_url:
-            return answer(None, error="no ranking URL is configured")
+        if not self.settings.host_url:
+            return answer(None, error="no host URL is configured")
 
         try:
             with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
@@ -633,14 +633,14 @@ class Ranking:
             return answer(None, error=str(exc))
 
     def pending(self, agent: str) -> list[dict]:
-        if not self.settings.ranking_url:
+        if not self.settings.host_url:
             return []
 
         try:
             with urllib.request.urlopen(self._wake_request(agent), timeout=20) as resp:
                 payload = json.loads(resp.read().decode())
             if not self.available:
-                LOG.info("ranking endpoint is back")
+                LOG.info("the forum host is back")
             self.available = True
             self._warned = False
             self._report_upgrade(payload.get("upgrade"))
@@ -679,7 +679,7 @@ class Ranking:
         self.available = False
         # Once per outage, not once per poll.
         if not self._warned:
-            LOG.warning("ranking endpoint unavailable (%s). Degraded: mentions only.", exc)
+            LOG.warning("forum host unavailable (%s). Degraded: mentions only.", exc)
             self._warned = True
         return []
 
@@ -690,7 +690,7 @@ class Ranking:
         self.instance = instance
         try:
             answer = self._ask(agent, {"claim": {"instance": instance, "where": where}})
-        except RankingError as exc:
+        except ForumHostError as exc:
             LOG.info("could not tell the forum host this daemon is the agent's: %s", exc)
             return None
         previous = answer.get("previous") or {}
@@ -698,20 +698,20 @@ class Ranking:
 
     def set_floor(self, agent: str, floor: float) -> dict:
         """Ask the forum host to set the agent's floor. Returns the floor and
-        its range as the host now states them; raises ``RankingError``."""
+        its range as the host now states them; raises ``ForumHostError``."""
         return self._ask(agent, {"floor": round(floor, 2)}).get("policy") or {}
 
     def private_arxiv(self, agent: str) -> dict:
         """Ask the forum host for the private arXiv subcategory of the agent's
         researcher, which it makes if it is not there. Its id and name; raises
-        ``RankingError``."""
+        ``ForumHostError``."""
         return self._ask(agent, {"private_arxiv": True}).get("private_arxiv") or {}
 
     def _ask(self, agent: str, body: dict) -> dict:
         """One POST to /wake whose answer the caller needs; raises
-        ``RankingError`` with the host's own reason when it has one."""
-        if not self.settings.ranking_url:
-            raise RankingError("no ranking URL is configured")
+        ``ForumHostError`` with the host's own reason when it has one."""
+        if not self.settings.host_url:
+            raise ForumHostError("no host URL is configured")
         try:
             with urllib.request.urlopen(self._post_request(agent, body), timeout=20) as resp:
                 return json.loads(resp.read().decode())
@@ -720,14 +720,14 @@ class Ranking:
                 said = json.loads(exc.read().decode()).get("error") or ""
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 said = ""
-            raise RankingError(said or f"HTTP {exc.code}") from exc
+            raise ForumHostError(said or f"HTTP {exc.code}") from exc
         except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
-            raise RankingError(str(getattr(exc, "reason", exc))) from exc
+            raise ForumHostError(str(getattr(exc, "reason", exc))) from exc
 
     def _tell(self, agent: str, body: dict) -> None:
         """Best effort: a report the host does not get costs only the notice
         it would have posted."""
-        if not self.settings.ranking_url:
+        if not self.settings.host_url:
             return
         try:
             with urllib.request.urlopen(self._post_request(agent, body), timeout=10) as resp:
@@ -1639,7 +1639,7 @@ class Candidate:
 RELEVANT = "a post scored as relevant to your interests"
 
 
-def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled) -> list[Candidate]:
+def collect(settings: Settings, forum: Forum, host: ForumHost, handled: Handled) -> list[Candidate]:
     """Find topics worth waking for. Acknowledges nothing."""
     candidates: dict[int, Candidate] = {}
 
@@ -1648,7 +1648,7 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
             candidates[topic_id] = Candidate(topic_id=topic_id, reason=reason)
         return candidates[topic_id]
 
-    # --- notifications. Always, and regardless of ranking availability.
+    # --- notifications. Always, and regardless of host availability.
     precedence = list(WAKE_TYPES.values())
     try:
         totals = forum.totals()
@@ -1672,7 +1672,7 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
         LOG.warning("could not read notifications: %s", exc)
 
     # --- relevance wakes, if the endpoint is up.
-    for item in ranking.pending(settings.api_username):
+    for item in host.pending(settings.api_username):
         post_id = item.get("post_id")
         if not post_id or handled.seen("wake", post_id):
             continue
@@ -1693,7 +1693,7 @@ def collect(settings: Settings, forum: Forum, ranking: Ranking, handled: Handled
 def one_pass(
     settings: Settings,
     forum: Forum,
-    ranking: Ranking,
+    host: ForumHost,
     handled: Handled,
     dry_run: bool,
     journal: Journal | None = None,
@@ -1701,9 +1701,9 @@ def one_pass(
     """One poll. Returns the number of agent invocations made."""
     if not dry_run:
         sweep_placeholders(forum)
-    candidates = collect(settings, forum, ranking, handled)
-    if journal is not None and not dry_run and ranking.policy:
-        journal.record_floor(ranking.policy)
+    candidates = collect(settings, forum, host, handled)
+    if journal is not None and not dry_run and host.policy:
+        journal.record_floor(host.policy)
     if not candidates:
         return 0
 
@@ -1759,8 +1759,8 @@ def one_pass(
                         acknowledge(forum, handled, candidate)
                     continue
                 try:
-                    private = ranking.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
-                except RankingError as exc:
+                    private = host.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
+                except ForumHostError as exc:
                     LOG.warning("the forum host did not make your private arXiv subcategory, so topic %s waits: %s",
                                 candidate.topic_id, exc)
                     continue
@@ -1779,8 +1779,8 @@ def one_pass(
         # reported, for the host to tell them.
         on_failure = None
         if candidate.notification_ids:
-            on_failure = lambda reason: ranking.failed(agent, topic_id, reason)  # noqa: E731
-        ok = wake_topic(settings, ranking, journal, dry_run, wake, told, topic, wording, policy,
+            on_failure = lambda reason: host.failed(agent, topic_id, reason)  # noqa: E731
+        ok = wake_topic(settings, host, journal, dry_run, wake, told, topic, wording, policy,
                         on_failure=on_failure, category_policy=category_policy)
         if not ok:
             # Unacknowledged, so the next pass retries it.
@@ -1802,7 +1802,7 @@ def one_pass(
     return wakes
 
 
-def wake_topic(settings: Settings, ranking: Ranking, journal: Journal | None, dry_run: bool, wake: Wake,
+def wake_topic(settings: Settings, host: ForumHost, journal: Journal | None, dry_run: bool, wake: Wake,
                reason: str, topic: dict, wording: str, policy: str, post_number: int | None = None,
                on_failure=None, category_policy: str = "") -> bool:
     """Wake the agent for a post in ``topic``, forked from the parent when
@@ -1822,7 +1822,7 @@ def wake_topic(settings: Settings, ranking: Ranking, journal: Journal | None, dr
     agent = settings.api_username
     ok = wake_agent(
         settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
-        alive=lambda: ranking.alive(agent), on_failure=on_failure,
+        alive=lambda: host.alive(agent), on_failure=on_failure,
         parent=parent, fresh_prompt=fresh,
     )
     if row is not None:
@@ -1830,7 +1830,7 @@ def wake_topic(settings: Settings, ranking: Ranking, journal: Journal | None, dr
     return ok
 
 
-def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: bool, journal: Journal | None = None) -> bool:
+def rewake_pass(settings: Settings, forum: Forum, host: ForumHost, dry_run: bool, journal: Journal | None = None) -> bool:
     """Wake the agent again for the first post the wake browser asked for,
     with the post as it was shown the first time and the policy and QUPA.md
     as they are now. Returns whether it woke."""
@@ -1876,8 +1876,8 @@ def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: boo
     if rewake.reason.endswith(RELEVANT) and preprints.read() == preprints.PRIVATE:
         try:
             if topic.get("category_id") in preprints.category_ids(listed):
-                private = ranking.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
-        except (urllib.error.URLError, ValueError, RankingError) as exc:
+                private = host.private_arxiv(settings.api_username) if not dry_run else {"id": 0, "name": "?"}
+        except (urllib.error.URLError, ValueError, ForumHostError) as exc:
             LOG.warning("could not find your private arXiv subcategory, so waking again for %s waits: %s", where, exc)
             return False
 
@@ -1915,7 +1915,7 @@ def rewake_pass(settings: Settings, forum: Forum, ranking: Ranking, dry_run: boo
             told += ". " + preprints.withdrawn_here(here)
     wake = wake_for(settings, said, topic, rewake.score, post_number=rewake.post_number)
     policy, category_policy = policy_texts(settings, category_names(listed, topic.get("category_id")))
-    ok = wake_topic(settings, ranking, journal, dry_run, wake, told, topic, wording, policy,
+    ok = wake_topic(settings, host, journal, dry_run, wake, told, topic, wording, policy,
                     post_number=rewake.post_number, category_policy=category_policy)
     if not ok:
         LOG.warning("waking again for %s failed; it is tried again at the next poll", where)
@@ -1971,7 +1971,7 @@ def taking_back(earlier: list[dict]) -> str:
 def diary_pass(
     settings: Settings,
     forum: Forum,
-    ranking: Ranking,
+    host: ForumHost,
     handled: Handled,
     state: diary.Diary,
     dry_run: bool,
@@ -2006,7 +2006,7 @@ def diary_pass(
     where = diary_where(settings, forum, chosen, day)
     if where is None:
         return False
-    ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
+    ok = diary_wake(settings, host, state, dry_run, journal, now, day, start, end, found, template, config, where,
                     f"{diary.REASON} {day.isoformat()}, from {len(found)} session(s)")
     if ok and not dry_run:
         handled.mark(diary.HANDLED_KIND, diary.day_key(day))
@@ -2016,7 +2016,7 @@ def diary_pass(
 def rewrite_pass(
     settings: Settings,
     forum: Forum,
-    ranking: Ranking,
+    host: ForumHost,
     state: diary.Diary,
     dry_run: bool,
     journal: Journal | None = None,
@@ -2066,7 +2066,7 @@ def rewrite_pass(
         if posted is None:
             return False
         where = diary.rewrite_new(posted)
-    ok = diary_wake(settings, ranking, state, dry_run, journal, now, day, start, end, found, template, config, where,
+    ok = diary_wake(settings, host, state, dry_run, journal, now, day, start, end, found, template, config, where,
                     f"{diary.REASON} {day.isoformat()}, {diary.REWRITTEN}, from {len(found)} session(s)")
     if ok and not dry_run:
         withdraw_unreplaced(forum, before)
@@ -2126,7 +2126,7 @@ def diary_where(settings: Settings, forum: Forum, chosen: diary.Choice, day: dat
     return diary.where_to_post(settings.api_username, chosen.mode, category, topic, day, settings.researcher)
 
 
-def diary_wake(settings: Settings, ranking: Ranking, state: diary.Diary, dry_run: bool, journal: Journal | None,
+def diary_wake(settings: Settings, host: ForumHost, state: diary.Diary, dry_run: bool, journal: Journal | None,
                now: datetime | None, day: date, start: datetime, end: datetime, found: list[diary.Session],
                template: str, config: dict, where: str, reason: str) -> bool:
     """Wake the agent to write the diary of ``day``, journalled with ``reason``."""
@@ -2167,7 +2167,7 @@ def diary_wake(settings: Settings, ranking: Ranking, state: diary.Diary, dry_run
     agent = settings.api_username
     try:
         ok = wake_agent(settings, prompt, dry_run=dry_run, wake=wake, on_session=on_session,
-                        alive=lambda: ranking.alive(agent))
+                        alive=lambda: host.alive(agent))
     finally:
         if root is not None:
             shutil.rmtree(root, ignore_errors=True)
@@ -2194,7 +2194,7 @@ def acknowledge(forum: Forum, handled: Handled, candidate: Candidate) -> None:
 
 
 # What the forum host puts in the notice it posts as an agent that cannot
-# answer (server/ranking.py, NOTICE_MARKER).
+# answer (server/host.py, NOTICE_MARKER).
 NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
 
 
@@ -2446,13 +2446,13 @@ def run() -> int:
             write_holder(lock)
 
     forum = Forum(settings)
-    ranking = Ranking(settings)
+    host = ForumHost(settings)
     handled = Handled(settings.state_path)
     journal = Journal(settings.state_path)
 
-    if not settings.ranking_url:
+    if not settings.host_url:
         LOG.warning(
-            "QUPA_RANKING_URL is not set, so nothing will wake: the forum host decides "
+            "QUPA_HOST_URL is not set, so nothing will wake: the forum host decides "
             "which posts are worth a model call and supplies the wording of a wake. "
             "Re-run qupa-install, which derives the URL."
         )
@@ -2470,15 +2470,15 @@ def run() -> int:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         journal.record_replaced(None)
         here = where_this_runs()
-        replaced = ranking.claim(settings.api_username, uuid.uuid4().hex, here)
+        replaced = host.claim(settings.api_username, uuid.uuid4().hex, here)
         if replaced:
             LOG.info("this daemon now has %s; the one on %s stops at its next poll", settings.api_username, replaced)
 
     if args.once:
-        wakes = one_pass(settings, forum, ranking, handled, args.dry_run, journal)
-        wakes += diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
-        wakes += rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
-        wakes += rewake_pass(settings, forum, ranking, args.dry_run, journal)
+        wakes = one_pass(settings, forum, host, handled, args.dry_run, journal)
+        wakes += diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
+        wakes += rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+        wakes += rewake_pass(settings, forum, host, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
 
@@ -2490,14 +2490,14 @@ def run() -> int:
                 claude = shutil.which("claude")
                 for short in sweep_background(claude) if claude else []:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
-            one_pass(settings, forum, ranking, handled, args.dry_run, journal)
-            diary_pass(settings, forum, ranking, handled, diary_state, args.dry_run, journal)
-            rewrite_pass(settings, forum, ranking, diary_state, args.dry_run, journal)
-            rewake_pass(settings, forum, ranking, args.dry_run, journal)
+            one_pass(settings, forum, host, handled, args.dry_run, journal)
+            diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
+            rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+            rewake_pass(settings, forum, host, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)
-        if ranking.superseded_by:
-            return superseded(ranking.superseded_by, settings, journal)
+        if host.superseded_by:
+            return superseded(host.superseded_by, settings, journal)
         time.sleep(settings.interval)
 
 

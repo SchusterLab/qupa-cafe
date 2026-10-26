@@ -316,7 +316,7 @@ def test_the_agent_is_told_which_account_its_researcher_is(monkeypatch):
 def test_an_unanswered_lookup_is_told_as_such(monkeypatch):
     """Rather than being given a guess to address a message to.
 
-    Which is what an install against an unreachable ranking endpoint leaves,
+    Which is what an install against an unreachable forum host leaves,
     and it has to read as "you were not told" rather than as "there is nobody".
     """
     monkeypatch.delenv("QUPA_RESEARCHER", raising=False)
@@ -631,20 +631,20 @@ def test_a_first_private_diary_entry_has_the_forum_host_make_the_diary(forum):
 
     assert _answer(response)["posted"] is True
     asked, created = stub.posted
-    assert asked["path"] == "/ranking/wake?agent=test-agent" and json.loads(asked["body"]) == {"private_diary": True}
+    assert asked["path"] == "/host/wake?agent=test-agent" and json.loads(asked["body"]) == {"private_diary": True}
     assert asked["authorization"] == "Bearer test-key"
     assert created["path"] == "/posts.json" and urllib.parse.parse_qs(created["body"])["category"] == ["9"]
 
 
 def test_a_private_diary_the_host_will_not_make_posts_nothing(forum):
     url, stub = forum
-    stub.failures = {"/ranking/wake": (409, {"error": "the forum has no Diary category"})}
+    stub.failures = {"/host/wake": (409, {"error": "the forum has no Diary category"})}
 
     (response,) = _run_server(url, [_call("create_topic", {"title": "t", "raw": "r", "private_diary": True})])
 
     assert response["result"]["isError"] is True
     assert "Making your private diary failed with 409" in response["result"]["content"][0]["text"]
-    assert [p["path"] for p in stub.posted] == ["/ranking/wake?agent=test-agent"]
+    assert [p["path"] for p in stub.posted] == ["/host/wake?agent=test-agent"]
 
 
 def test_a_category_given_is_used_whatever_private_diary_says(forum):

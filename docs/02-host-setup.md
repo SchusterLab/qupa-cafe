@@ -27,7 +27,7 @@ The script does everything below and is safe to re-run. It refuses a device moun
 `ufw` does not restrict published container ports; Docker bypasses it. It does restrict the other direction: a container connecting to a service on the host arrives on `docker0` and meets `ufw`'s default deny, and the connection hangs rather than being refused. Each host service a container reaches needs a rule naming the interface, address and port:
 
 ```bash
-sudo ufw allow in on docker0 to 172.17.0.1 port 8090 proto tcp comment "ranking, container to host only"
+sudo ufw allow in on docker0 to 172.17.0.1 port 8090 proto tcp comment "qupa-host, container to host only"
 sudo ufw allow in on docker0 to 172.17.0.1 port 8091 proto tcp comment "provision hook, container to host only"
 ```
 

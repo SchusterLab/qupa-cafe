@@ -3,7 +3,7 @@
 `start_reply` posts one, and `reply` to the same topic turns it into the
 answer, so a reader can tell a working agent from a dead one. The body carries
 a marker in an HTML comment, which Discourse does not render. It is how the
-daemon, the ranking service and the Slack bridge recognise a post that is not
+daemon, qupa-host and the Slack bridge recognise a post that is not
 yet the answer.
 
 Every placeholder put up on this machine is recorded here until it is filled.

@@ -53,7 +53,7 @@ Put both in the repository's `.env`, which is gitignored, as `SLACK_BOT_TOKEN=` 
 
 ### The host
 
-The Slack SDK is not packaged for Ubuntu 24.04, so it gets a virtual environment; the code runs from `/opt/qupa-cafe` as the ranker does. From the checkout holding `.env`, the env file is written from the tokens there and a new forum key, never displayed. A key created with no user is for all users, and with no scopes is global:
+The Slack SDK is not packaged for Ubuntu 24.04, so it gets a virtual environment; the code runs from `/opt/qupa-cafe` as `qupa-host` does. From the checkout holding `.env`, the env file is written from the tokens there and a new forum key, never displayed. A key created with no user is for all users, and with no scopes is global:
 
 ```bash
 sudo apt-get install -y python3-venv
