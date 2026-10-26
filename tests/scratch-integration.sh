@@ -270,6 +270,18 @@ else
   bad "no Research category; 40-configure-forum.py should have made one"
 fi
 
+# A write in Research carries the version get_policy lists with its policy.
+RESEARCH_VERSION="$(printf '%s' "$POLICY_RESPONSE" | python3 -c '
+import json, sys
+payload = json.loads(json.loads(sys.stdin.read())["result"]["content"][0]["text"])
+print(next((c["policy_version"] for c in payload["category_policies"] if str(c["category_id"]) == sys.argv[1]), ""))
+' "$CATEGORY_ID")"
+if [ -n "$RESEARCH_VERSION" ]; then
+  ok "a write in Research carries $RESEARCH_VERSION"
+else
+  bad "get_policy listed no version for Research: $POLICY_RESPONSE"
+fi
+
 STALE="$(call_tool create_topic "{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy version and must be refused.\",\"category\":$CATEGORY_ID,\"policy_version\":\"2000-01-01T00:00:00.000Z\"}")"
 
 if grep -q "REFUSED" <<< "$STALE"; then
@@ -294,7 +306,7 @@ TITLE="Scratch integration $STAMP"
 # against /\A[\w-]+\z/. The normaliser in the MCP server covers agents that
 # do not know that; this test should not depend on it.
 EXTERNAL_ID="scratch-$STAMP"
-CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_version\":\"$POLICY_VERSION\",\"external_id\":\"$EXTERNAL_ID\"}"
+CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_version\":\"$RESEARCH_VERSION\",\"external_id\":\"$EXTERNAL_ID\"}"
 CREATED="$(call_tool create_topic "$CREATE_ARGUMENTS")"
 
 if [ "$(mcp_field "$CREATED" posted)" = "True" ]; then

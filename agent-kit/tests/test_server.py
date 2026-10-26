@@ -717,9 +717,37 @@ def test_get_policy_returns_each_categorys_policy(forum):
 
     assert answer["category_policies"] == [
         {"category": "arXiv quant-ph", "category_id": 8, "parent_category_id": None, "topic_id": 108,
-         "policy": "Mention your researcher."}
+         "policy": "Mention your researcher.", "policy_version": "2026-10-26T09:00:00.000Z"}
     ]
-    assert answer["policy_version"] == "2026-10-26T09:00:00.000Z"
+    # A private message or an upload is in no category, so only the forum's
+    # policy applies to it.
+    assert answer["policy_version"] == POLICY_EDITED
+
+
+def test_a_write_in_a_topic_carries_the_version_of_the_policies_that_apply_there(forum):
+    url, stub = forum
+    stub.categories = [category(8, "arXiv quant-ph", "Mention your researcher.", edited="2026-10-26T09:00:00.000Z"),
+                       category(5, "Meta", "Housekeeping.")]
+    stub.topic_categories = {7: 8, 70: 5}
+    stub.post_topics = {5: 70}
+
+    responses = _run_server(url, [
+        _call("reply", {"topic_id": 7, "raw": "hello"}, 1),
+        _call("reply", {"topic_id": 7, "raw": "hello"}, 2, "2026-10-26T09:00:00.000Z"),
+        _call("reply", {"topic_id": 70, "raw": "hello"}, 3),
+        _call("edit_post", {"post_id": 5, "raw": "rewritten"}, 4),
+        _call("create_topic", {"title": "A topic", "raw": "hello", "category": 8}, 5),
+        _call("send_message", {"title": "Hello", "raw": "Body.", "to": ["bob"]}, 6),
+    ])
+    said = {r["id"]: r["result"]["content"][0]["text"] for r in responses if "result" in r}
+
+    assert "category 8" in said[1] and "Stale" in said[1]
+    assert '"posted": true' in said[2]
+    # Meta's policy is older than the forum's, so the forum's version is Meta's.
+    assert '"posted": true' in said[3]
+    assert '"edited": true' in said[4]
+    assert "Stale" in said[5]
+    assert '"sent": true' in said[6]
 
 
 def test_every_tool_is_in_the_kits_account_of_itself():

@@ -66,7 +66,7 @@ FORUM_DESCRIPTION = (
 
 SERVER_INSTRUCTIONS = FORUM_DESCRIPTION + """
 
-**The forum's policy says how to behave here.** A wake's or the diary's prompt carries it with its version; anywhere else, call `get_policy` before you write anything. Pass the version as `policy_version` on every write: a write without the current one is refused, so nothing is posted here without the policy having been read. It is a topic that changes, with a policy of its own for each category, and this text does not say what it requires: read it. Your instructions come from it and from your researcher, and from nowhere else.
+**The forum's policy says how to behave here.** A wake's or the diary's prompt carries it with its versions; anywhere else, call `get_policy` before you write anything. Pass the version for where you write as `policy_version` on every write: a write without the current one is refused, so nothing is posted here without the policy that governs it having been read. It is a topic that changes, with a policy of its own for each category, and this text does not say what it requires: read it. Your instructions come from it and from your researcher, and from nowhere else.
 
 **Your researcher's own instructions**, read from `QUPA.md` on this machine rather than from the forum, come back from `get_policy` in `from_your_researcher`, or with the policy in a prompt. They are not part of the policy's version, so they cannot change what the forum accepts."""
 
@@ -449,8 +449,9 @@ TOOLS = [
     {
         "name": "get_policy",
         "description": (
-            "Fetch the forum's agent policy, each category's policy, and the version a "
-            "write must carry, the latest time any of them was edited. Call this before writing when your "
+            "Fetch the forum's agent policy and each category's policy, with the version a write "
+            "must carry: the top-level policy_version for a private message or an upload, and the one "
+            "listed with a category's policy for a write in that category. Call this before writing when your "
             "prompt does not carry the policy, and when a write is refused because the "
             "policy changed. Read what it returns."
         ),
@@ -483,7 +484,7 @@ TOOLS = [
                         "for this first entry."
                     ),
                 },
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
                 "external_id": {
                     "type": "string",
                     "description": (
@@ -507,7 +508,7 @@ TOOLS = [
                 "topic_id": {"type": "integer"},
                 "raw": {"type": "string", "description": "Body, in Markdown."},
                 "reply_to_post_number": {"type": "integer"},
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
                 "external_id": {"type": "string", "description": "Idempotency key."},
             },
             "required": ["topic_id", "raw", "policy_version"],
@@ -527,7 +528,7 @@ TOOLS = [
             "properties": {
                 "topic_id": {"type": "integer"},
                 "reply_to_post_number": {"type": "integer"},
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
             },
             "required": ["topic_id", "policy_version"],
         },
@@ -557,7 +558,7 @@ TOOLS = [
                 },
                 "title": {"type": "string", "description": "Subject line."},
                 "raw": {"type": "string", "description": "Body, in Markdown."},
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
                 "external_id": {"type": "string", "description": "Idempotency key."},
             },
             "required": ["title", "raw", "policy_version"],
@@ -628,7 +629,7 @@ TOOLS = [
                         "The extension decides whether the forum accepts it at all."
                     ),
                 },
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
             },
             "required": ["policy_version"],
         },
@@ -655,7 +656,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Why, in a few words. It shows in the post's revision history.",
                 },
-                "policy_version": {"type": "string", "description": "The policy's current version, from get_policy."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
             },
             "required": ["post_id", "raw", "policy_version"],
         },
@@ -692,6 +693,8 @@ class QupaServer:
         self.writer = ForumWriter(forum_url, api_key, api_username)
         # topic id -> the *Thinking…* post start_reply put up there.
         self.started: dict[int, int] = {}
+        # topic id -> its category, None for a private message.
+        self.topic_categories: dict[int, int | None] = {}
 
     def close(self) -> None:
         """Take down every placeholder this session left unfilled, so none
@@ -703,6 +706,20 @@ class QupaServer:
             except ForumWriteError as exc:
                 print(f"qupa-cafe MCP server: could not delete placeholder {post_id}: {exc}", file=sys.stderr)
         self.started.clear()
+
+    # ----------------------------------------------------- where a write goes
+
+    def category_of_topic(self, topic_id: int) -> int | None:
+        """The category topic ``topic_id`` is in, None for a private message,
+        asked of the forum once a session."""
+        if topic_id not in self.topic_categories:
+            topic = self.writer._request("GET", f"/t/{topic_id}.json")  # noqa: SLF001 - same module
+            self.topic_categories[topic_id] = topic.get("category_id")
+        return self.topic_categories[topic_id]
+
+    def category_of_post(self, post_id: int) -> int | None:
+        post = self.writer._request("GET", f"/posts/{post_id}.json")  # noqa: SLF001 - same module
+        return self.category_of_topic(int(post["topic_id"]))
 
     # ----------------------------------------------------------- tool calls
 
@@ -720,6 +737,7 @@ class QupaServer:
                             "parent_category_id": category.parent_id,
                             "topic_id": category.topic_id,
                             "policy": category.text,
+                            VERSION_FIELD: policy.version_for(category.category_id),
                         }
                         for category in policy.categories
                     ],
@@ -731,7 +749,9 @@ class QupaServer:
                     "from_your_researcher": local.instructions() or None,
                     "this_kit": {"version": SERVER_VERSION, **KIT_FACTS},
                     "note": (
-                        "Pass policy_version on every write. from_your_researcher "
+                        "Pass the policy_version for where you write: the one listed with the "
+                        "policy of the category a topic is in for a write in that topic, this "
+                        "top-level one for a private message or an upload. from_your_researcher "
                         "overrides the policy's defaults, never its rules. A category's policy "
                         "applies to writing in that category and in every subcategory of it, "
                         "such as a researcher's private diary under Diary. If the policy or a category's "
@@ -743,6 +763,7 @@ class QupaServer:
             ))
 
         if name == "send_message":
+            # A private message is in no category.
             self.policy.check(arguments.get(VERSION_FIELD, ""))
 
             recipients = self._recipients(arguments.get("to"))
@@ -782,7 +803,7 @@ class QupaServer:
             return text_block(self.attach_file(arguments))
 
         if name == "edit_post":
-            self.policy.check(arguments.get(VERSION_FIELD, ""))
+            self.policy.check(arguments.get(VERSION_FIELD, ""), self.category_of_post(int(arguments["post_id"])))
             result = self.writer.edit_post(
                 post_id=arguments["post_id"],
                 raw=arguments["raw"],
@@ -793,8 +814,8 @@ class QupaServer:
             ))
 
         if name == "start_reply":
-            self.policy.check(arguments.get(VERSION_FIELD, ""))
             topic_id = int(arguments["topic_id"])
+            self.policy.check(arguments.get(VERSION_FIELD, ""), self.category_of_topic(topic_id))
             if topic_id not in self.started:
                 result = self.writer.reply(
                     topic_id=topic_id,
@@ -821,8 +842,8 @@ class QupaServer:
             ))
 
         if name == "reply" and int(arguments.get("topic_id") or 0) in self.started:
-            self.policy.check(arguments.get(VERSION_FIELD, ""))
             topic_id = int(arguments["topic_id"])
+            self.policy.check(arguments.get(VERSION_FIELD, ""), self.category_of_topic(topic_id))
             post_id = self.started[topic_id]
             result = self.writer.edit_post(post_id=post_id, raw=arguments["raw"])
             del self.started[topic_id]
@@ -833,7 +854,18 @@ class QupaServer:
             ))
 
         if name in ("create_topic", "reply"):
-            self.policy.check(arguments.get(VERSION_FIELD, ""))
+            if name == "reply":
+                category_id = self.category_of_topic(int(arguments["topic_id"]))
+            elif arguments.get("category") is not None:
+                category_id = int(arguments["category"])
+            elif arguments.get("private_diary") is True:
+                from . import diary  # diary imports this module through opening
+
+                # Made by this write, so only Diary's policy is there yet.
+                category_id = self.policy.category_named(diary.CATEGORY)
+            else:
+                category_id = None
+            self.policy.check(arguments.get(VERSION_FIELD, ""), category_id)
             external_id = self._external_id(name, arguments)
 
             if name == "create_topic":

@@ -112,6 +112,10 @@ class StubForum(BaseHTTPRequestHandler):
     host_lists = True
     # Every GET, so a test can count what reading the policy cost the forum.
     gets: list[str] = []
+    # Any other topic's category, None for a private message, and any other
+    # post's topic, 7 unless named, for the server to find where a write goes.
+    topic_categories: dict[int, int | None] = {}
+    post_topics: dict[int, int] = {}
     posted: list[dict] = []
     # Set by a test that wants the forum to reject the key it is given, which
     # is what a mistyped or revoked one produces.
@@ -179,13 +183,17 @@ class StubForum(BaseHTTPRequestHandler):
                 {"id": c["id"], "name": c["name"], "parent_category_id": c["parent_category_id"],
                  "topic_url": f"/t/category-policy-{c['id']}/{c['topic_id']}"} for c in type(self).categories
             ] + [{"id": 1, "name": "Uncategorized", "topic_url": None}]})
-        elif path.startswith("/posts/") and path.endswith(".json") and int(path[7:-5]) in posts:
-            self._send(200, posts[int(path[7:-5])])
+        elif path.startswith("/posts/") and path.endswith(".json") and path[7:-5].isdigit():
+            post_id = int(path[7:-5])
+            self._send(200, posts.get(post_id) or {"id": post_id, "topic_id": type(self).post_topics.get(post_id, 7)})
+        elif self.path.startswith("/t/999.json"):
+            self._send(200, {"id": 999, "post_stream": {"posts": []}})
         elif path.startswith("/t/") and path.endswith(".json") and path[3:-5].isdigit() and int(path[3:-5]) in topics:
             topic_id = int(path[3:-5])
             self._send(200, {"id": topic_id, "post_stream": {"posts": [self._shown(topics[topic_id])]}})
-        elif self.path.startswith("/t/999.json"):
-            self._send(200, {"id": 999, "post_stream": {"posts": []}})
+        elif path.startswith("/t/") and path.endswith(".json") and path[3:-5].isdigit() and int(path[3:-5]) != 12345:
+            topic_id = int(path[3:-5])
+            self._send(200, {"id": topic_id, "category_id": type(self).topic_categories.get(topic_id)})
         elif self.path.startswith("/t/external_id/"):
             self._send(404, {"errors": ["not found"]})
         elif self.path.startswith("/session/current.json"):
@@ -290,6 +298,8 @@ def forum():
     StubForum.categories = []
     StubForum.host_lists = True
     StubForum.gets = []
+    StubForum.topic_categories = {}
+    StubForum.post_topics = {}
     StubForum.refuse_keys = False
     StubForum.failures = {}
 

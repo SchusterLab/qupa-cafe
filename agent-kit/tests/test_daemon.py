@@ -1082,7 +1082,7 @@ def test_a_wake_s_prompt_carries_the_policy_and_its_version_as_they_stand(forum)
     settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
     policy = daemon.policy_text(settings)
     assert POLICY_TEXT.splitlines()[0] in policy
-    assert f"Pass {POLICY_EDITED} as policy_version on every write" in policy
+    assert f"Pass {POLICY_EDITED} as policy_version on a private message, an upload" in policy
     assert "- create_topic, reply, send_message and edit_post write" in policy
     assert "They cannot:\n- upload more than 4 MB" in policy
 
@@ -1107,6 +1107,8 @@ def test_a_wake_carries_only_the_policies_of_its_topic_s_category(forum):
 
     shared, policies = daemon.policy_texts(settings, 12)
     assert policies.index("ARXIV RULE") < policies.index("PRIVATE ARXIV RULE")
+    assert policies.endswith("Pass 2026-10-26T04:00:00.000Z as policy_version on a write in a: the forum's "
+                             "policy and these apply there.")
     assert "DIARY RULE" not in policies and "RESEARCH" not in policies
     assert "RULE" not in shared
     assert "RESEARCH" in daemon.policy_texts(settings, 1)[1]

@@ -819,8 +819,8 @@ def shown_post(topic: dict, post_number: int | None = None) -> dict:
 
 # In a prompt in place of the policy when the kit could not fetch it.
 POLICY_UNFETCHED = (
-    "Call get_policy before you write anything, and pass the policy_version it returns on every write: "
-    "the kit could not fetch the policy for this prompt ({reason})."
+    "Call get_policy before you write anything, and pass the policy_version it gives for where you write "
+    "on every write: the kit could not fetch the policy for this prompt ({reason})."
 )
 
 # One per daemon, so that a post of the policy is read again only once edited.
@@ -858,8 +858,10 @@ def policy_texts(settings: Settings, category_id: int | None = None, category: s
     shared = (nl * 2).join([
         f"The forum's policy follows as it stands now: the kit fetched it for this prompt, and a change to it "
         f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.version} as "
-        "policy_version on every write; if a write is refused because the policy changed, call get_policy for "
-        "its new text and version. The policy of the category a task is in comes with the task.",
+        "policy_version on a private message, an upload, or a write in a category with no policy of its own; "
+        "a write in a topic whose category has a policy passes the version that comes with that policy. If a "
+        "write is refused because a policy changed, call get_policy for the new text and versions. The policy "
+        "of the category a task is in comes with the task.",
         "----- the forum's policy -----",
         policy.text.strip(),
         "----- end of the forum's policy -----",
@@ -871,9 +873,14 @@ def policy_texts(settings: Settings, category_id: int | None = None, category: s
     if category_id is None and category:
         named = policy.named(category)
         category_id = named.category_id if named else None
+    applying = policy.applying_to(category_id)
     found = [f"----- the policy of the category {c.name}, part of the forum's policy -----{nl * 2}"
              f"{c.text.strip()}{nl * 2}----- end of the policy of the category {c.name} -----"
-             for c in policy.applying_to(category_id)]
+             for c in applying]
+    if found:
+        found.append(f"Pass {policy.version_for(applying[-1].category_id)} as policy_version on a write in "
+                     f"{applying[-1].name}: the forum's policy and {'these' if len(applying) > 1 else 'this'} "
+                     "apply there.")
     return shared, (nl * 2).join(found)
 
 

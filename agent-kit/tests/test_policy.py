@@ -110,7 +110,7 @@ def test_an_edit_is_read_again_and_nothing_else(forum):
 
     assert forum_reads(stub) == ["/posts/1008.json"]
     assert policy.categories[0].text.endswith("Mention them.")
-    assert policy.version == "2026-10-26T06:00:00.000Z"
+    assert policy.version_for(8) == "2026-10-26T06:00:00.000Z"
 
 
 def test_without_the_forum_host_everything_is_read_from_the_forum(forum):
@@ -130,11 +130,11 @@ def test_both_ways_agree_on_the_version(forum):
     """A version read through the forum host passes a check made without it."""
     url, stub = forum
     stub.categories = [category(8, "arXiv quant-ph", ARXIV_RULE, edited="2026-10-26T07:00:00.000Z")]
-    held = client(url).fetch().version
+    held = client(url).fetch().version_for(8)
 
     stub.host_lists = False
 
-    assert client(url).check(held) == held == "2026-10-26T07:00:00.000Z"
+    assert client(url).check(held, 8) == held == "2026-10-26T07:00:00.000Z"
 
 
 # ----------------------------------------------------------------- enforcement
@@ -177,16 +177,45 @@ def test_an_edit_invalidates_an_outstanding_version(forum, host):
         reader.check(held)
 
 
-def test_an_edited_category_policy_refuses_the_old_version(forum):
+@pytest.mark.parametrize("host", [True, False])
+def test_a_version_covers_only_the_policies_that_apply_where_it_is_written(forum, host):
+    """The forum's policy and the policies of the category written in and of
+    each one above it; nothing else."""
     url, stub = forum
-    stub.categories = [category(8, "arXiv quant-ph", ARXIV_RULE)]
+    stub.categories = [category(9, "Diary", "DIARY RULE", edited="2026-10-26T06:00:00.000Z"),
+                       category(12, "rsmith", "PRIVATE", parent=9, edited="2026-10-25T00:00:00.000Z"),
+                       category(8, "arXiv quant-ph", ARXIV_RULE, edited="2026-10-26T07:00:00.000Z")]
+    policy = client(url, host).fetch()
+
+    assert policy.version == POLICY_EDITED
+    assert policy.version_for(9) == policy.version_for(12) == "2026-10-26T06:00:00.000Z"
+    assert policy.version_for(8) == "2026-10-26T07:00:00.000Z"
+    assert client(url, host).version(12) == "2026-10-26T06:00:00.000Z"
+
+
+def test_an_edited_category_policy_refuses_the_old_version_there_and_nowhere_else(forum):
+    url, stub = forum
+    stub.categories = [category(8, "arXiv quant-ph", ARXIV_RULE), category(5, "Meta", "META")]
     reader = client(url)
-    held = reader.fetch().version
+    policy = reader.fetch()
+    held_arxiv, held_meta, held_message = policy.version_for(8), policy.version_for(5), policy.version
 
     stub.categories[0]["updated_at"] = "2026-10-26T08:00:00.000Z"
 
-    with pytest.raises(PolicyError, match="edited"):
-        reader.check(held)
+    with pytest.raises(PolicyError, match="edited") as refused:
+        reader.check(held_arxiv, 8)
+    assert "category 8" in str(refused.value)
+    assert reader.check(held_meta, 5) == held_meta
+    assert reader.check(held_message) == held_message
+
+
+def test_a_version_for_another_category_is_refused(forum):
+    url, stub = forum
+    stub.categories = [category(8, "arXiv quant-ph", ARXIV_RULE, edited="2026-10-26T07:00:00.000Z"),
+                       category(5, "Meta", "META")]
+    reader = client(url)
+    with pytest.raises(PolicyError, match="another category"):
+        reader.check(reader.fetch().version_for(8), 5)
 
 
 def test_an_edit_is_adopted_rather_than_refused(forum):

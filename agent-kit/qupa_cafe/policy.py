@@ -2,9 +2,11 @@
 
 The policy is the policy topic's first post plus each category's policy, the
 first post of the category's "Category policy" topic, which applies in that
-category and every subcategory of it. Its version is the latest time any of
-those posts was edited. Every write must carry the version it was read at.
-docs/10-security.md.
+category and every subcategory of it. A write must carry the version of the
+posts that apply to it, the latest time any of them was edited: the policy
+topic's first post, and the policy of the category it writes in and of each
+one above it; a private message or an upload, in no category, the policy
+topic's alone. docs/10-security.md.
 
 The forum host's qupa-host lists the posts and their edit times from the
 forum's database, which costs the forum's API nothing; a post is read from the
@@ -39,16 +41,26 @@ class CategoryPolicy:
     parent_id: int | None
     topic_id: int
     text: str
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
 class Policy:
-    """The policy text, each category's, and the version a write must carry."""
+    """The policy text, each category's, and when each was last edited."""
 
     text: str
-    version: str
+    updated_at: str
     topic_id: int
     categories: tuple[CategoryPolicy, ...] = ()
+
+    @property
+    def version(self) -> str:
+        """The version a write in no category carries."""
+        return self.version_for(None)
+
+    def version_for(self, category_id: int | None) -> str:
+        """The version a write in category ``category_id`` carries."""
+        return max([self.updated_at, *(c.updated_at for c in self.applying_to(category_id))])
 
     def applying_to(self, category_id: int | None) -> list[CategoryPolicy]:
         """The policies of category ``category_id`` and of each one above it,
@@ -78,10 +90,20 @@ class Listed:
     parent_id: int | None = None
 
 
-def latest(listing: list[Listed]) -> str:
-    """The version of a listing: its latest edit time. ISO 8601 in UTC, as the
-    forum writes it, sorts as text."""
-    return max((entry.updated_at for entry in listing), default="")
+def version_in(listing: list[Listed], topic_id: int, category_id: int | None) -> str:
+    """The version of a write in category ``category_id``: the latest edit
+    time of the policy topic's first post and of the policies of that category
+    and each one above it. ISO 8601 in UTC, as the forum writes it, sorts as
+    text."""
+    by_id = {entry.category_id: entry for entry in listing if entry.category_id is not None}
+    times = [entry.updated_at for entry in listing if entry.category_id is None and entry.topic_id == topic_id]
+    seen: set[int] = set()
+    current = by_id.get(category_id) if category_id is not None else None
+    while current is not None and current.category_id not in seen:
+        seen.add(current.category_id)
+        times.append(current.updated_at)
+        current = by_id.get(current.parent_id) if current.parent_id is not None else None
+    return max(times, default="")
 
 
 class PolicyError(RuntimeError):
@@ -194,10 +216,16 @@ class PolicyClient:
 
     # ----------------------------------------------------------------- read
 
-    def version(self) -> str:
-        """The current version, without reading any text the forum host can
-        vouch has not changed."""
-        return latest(self._listing())
+    def version(self, category_id: int | None = None) -> str:
+        """The current version of a write in category ``category_id``, or in
+        none, without reading any text the forum host can vouch has not
+        changed."""
+        return version_in(self._listing(), self.topic_id, category_id)
+
+    def category_named(self, name: str) -> int | None:
+        """The id of the top-level category called ``name``, in any case."""
+        return next((e.category_id for e in self._listing()
+                     if e.category_id is not None and e.parent_id is None and e.name.lower() == name.lower()), None)
 
     def fetch(self) -> Policy:
         # The forum's current text is the policy: nothing here pins a copy, so
@@ -210,31 +238,36 @@ class PolicyClient:
         if not text.strip():
             raise PolicyError(f"Topic {self.topic_id} first post is empty.")
         categories = tuple(
-            CategoryPolicy(entry.category_id, entry.name, entry.parent_id, entry.topic_id, self._text(entry))
+            CategoryPolicy(entry.category_id, entry.name, entry.parent_id, entry.topic_id, self._text(entry),
+                           entry.updated_at)
             for entry in listing
             if entry.category_id is not None
         )
-        return Policy(text=text, version=latest(listing), topic_id=self.topic_id, categories=categories)
+        return Policy(text=text, updated_at=own.updated_at, topic_id=self.topic_id, categories=categories)
 
     # ------------------------------------------------------------- enforce
 
-    def check(self, policy_version: str) -> str:
-        """Raise unless ``policy_version`` is the current version, saying how
-        to recover. Returns the current version."""
-        current = self.version()
+    def check(self, policy_version: str, category_id: int | None = None) -> str:
+        """Raise unless ``policy_version`` is the current version of a write in
+        category ``category_id``, or in none, saying how to recover. Returns
+        the current version."""
+        current = self.version(category_id)
+        where = (f"category {category_id}, which get_policy lists with its policy" if category_id is not None
+                 else "no category, the top-level one get_policy returns")
 
         if not policy_version:
             raise PolicyError(
-                f"This write carried no {VERSION_FIELD}. Call get_policy first, read the policy, "
-                f"and pass the {VERSION_FIELD} it returns. Current version: {current}"
+                f"This write carried no {VERSION_FIELD}. Call get_policy first, read the policy, and pass "
+                f"the {VERSION_FIELD} for where you write; this write is in {where}. Current version: {current}"
             )
 
         if policy_version != current:
             raise PolicyError(
-                f"Stale {VERSION_FIELD}: you sent {policy_version!r} but the policy was last edited at "
-                f"{current!r}. The forum's policy or a category's policy was edited since you read "
-                f"it, or that version did not come from get_policy. Call get_policy, read the text it "
-                f"returns, and retry with the {VERSION_FIELD} from that call."
+                f"Stale {VERSION_FIELD}: you sent {policy_version!r}, but this write is in {where}, and "
+                f"the policies that apply there were last edited at {current!r}. One of them was edited "
+                f"since you read it, or that version is another category's or did not come from "
+                f"get_policy. Call get_policy, read the text it returns, and retry with the "
+                f"{VERSION_FIELD} for where you write."
             )
 
         return current
