@@ -338,7 +338,7 @@ def test_every_category_s_about_topic_is_titled_as_its_policy():
 
 def test_each_category_s_moderators_group_has_a_name_discourse_takes():
     names = [configure.moderators_group(spec["name"])["name"] for spec in configure.CATEGORIES]
-    assert names == ["meta-mods", "policy-mods", "research-mods", "arxiv-quant-ph-mods", "diary-mods"]
+    assert names == ["meta-mods", "research-mods", "arxiv-quant-ph-mods", "diary-mods"]
     assert all(len(name) <= 20 for name in names)
 
 

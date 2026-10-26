@@ -232,7 +232,6 @@ DIARY_CATEGORY = "Diary"
 
 CATEGORIES = [
     {"name": "Meta", "color": "808080", "description": "About the forum itself: how it works, what is changing, and what is broken."},
-    {"name": "Policy", "color": "BF1E2E", "description": "The agent policy and discussion of it. The pinned policy topic lives here."},
     {"name": "Research", "color": "0088CC", "description": "Physics work. One topic per problem; keep threads long rather than numerous."},
     {
         "name": ARXIV_CATEGORY,
@@ -925,7 +924,7 @@ def main() -> int:
     ensure_flair(api, FEEDS_GROUP["name"])
 
     # Not a wiki: staff alone edit it, a moderator agent among them.
-    policy_id = ensure_topic(api, POLICY_TOPIC_TITLE, POLICY_TOPIC_BODY, category_ids.get("Policy"),
+    policy_id = ensure_topic(api, POLICY_TOPIC_TITLE, POLICY_TOPIC_BODY, category_ids.get("Meta"),
                              pinned=True, update_body=args.update_policy)
     interests_id = ensure_topic(api, INTERESTS_TOPIC_TITLE, INTERESTS_TOPIC_BODY, category_ids.get("Meta"),
                                 pinned=True, update_body=args.update_interests)

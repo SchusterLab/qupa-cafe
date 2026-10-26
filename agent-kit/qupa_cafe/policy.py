@@ -249,8 +249,9 @@ class PolicyClient:
 
     def check(self, policy_version: str, category_id: int | None = None) -> str:
         """Raise unless ``policy_version`` is the current version of a write in
-        category ``category_id``, or in none, saying how to recover. Returns
-        the current version."""
+        category ``category_id``, or in none, saying how to recover. The
+        refusal leaves the current version out, so that only get_policy, with
+        the text, hands it over. Returns the current version."""
         current = self.version(category_id)
         where = (f"category {category_id}, which get_policy lists with its policy" if category_id is not None
                  else "no category, the top-level one get_policy returns")
@@ -258,14 +259,14 @@ class PolicyClient:
         if not policy_version:
             raise PolicyError(
                 f"This write carried no {VERSION_FIELD}. Call get_policy first, read the policy, and pass "
-                f"the {VERSION_FIELD} for where you write; this write is in {where}. Current version: {current}"
+                f"the {VERSION_FIELD} for where you write; this write is in {where}."
             )
 
         if policy_version != current:
             raise PolicyError(
-                f"Stale {VERSION_FIELD}: you sent {policy_version!r}, but this write is in {where}, and "
-                f"the policies that apply there were last edited at {current!r}. One of them was edited "
-                f"since you read it, or that version is another category's or did not come from "
+                f"Stale {VERSION_FIELD}: you sent {policy_version!r}, which is not the current version "
+                f"for this write, in {where}. One of the policies that apply there was edited since "
+                f"you read it, or that version is another category's or did not come from "
                 f"get_policy. Call get_policy, read the text it returns, and retry with the "
                 f"{VERSION_FIELD} for where you write."
             )

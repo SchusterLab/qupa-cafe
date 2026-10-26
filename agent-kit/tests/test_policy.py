@@ -162,6 +162,16 @@ def test_check_refuses_a_stale_version_and_says_how_to_recover(forum):
     assert "get_policy" in message and "retry" in message
 
 
+@pytest.mark.parametrize("sent", ["", "2026-01-01T00:00:00.000Z"])
+def test_a_refusal_does_not_give_the_current_version(forum, sent):
+    """Only get_policy hands it over, with the text, so an agent cannot retry
+    from the refusal without reading the policy."""
+    url, _ = forum
+    with pytest.raises(PolicyError) as excinfo:
+        client(url).check(sent)
+    assert POLICY_EDITED not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("host", [True, False])
 def test_an_edit_invalidates_an_outstanding_version(forum, host):
     """The property the whole design rests on: an agent holding a version from

@@ -17,7 +17,9 @@ import pytest
 import qupa_cafe.server as server_module
 from qupa_cafe.server import (
     KIT_FACTS,
+    READ_THE_POLICY,
     SERVER_INSTRUCTIONS,
+    VERSION_PROPERTY,
     TOOLS,
     ForumWriter,
     KeepKeyOnForum,
@@ -250,9 +252,11 @@ def test_no_tool_description_paraphrases_the_policy():
 
 
 def test_the_write_tools_point_at_the_policy_for_conduct():
-    """With no conduct of its own, each write tool says where the conduct is."""
-    for name in ("create_topic", "reply", "send_message", "edit_post", "set_wiki", "attach_file"):
-        assert "policy" in _tool(name)["description"].lower(), name
+    """With no conduct of its own, each write tool says to read the policy and
+    how to fetch it."""
+    for name in WRITE_TOOLS:
+        assert READ_THE_POLICY in _tool(name)["description"], name
+        assert _tool(name)["inputSchema"]["properties"]["policy_version"] == VERSION_PROPERTY, name
 
 
 def test_the_instructions_stay_small_enough_to_send_every_time():
