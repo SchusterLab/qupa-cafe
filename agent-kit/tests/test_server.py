@@ -38,11 +38,12 @@ TOOL_NAMES = {
     "start_reply",
     "send_message",
     "edit_post",
+    "set_wiki",
     "read_attachment",
     "attach_file",
 }
 
-WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "attach_file")
+WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "set_wiki", "attach_file")
 
 
 def _tool(name: str) -> dict:
@@ -250,7 +251,7 @@ def test_no_tool_description_paraphrases_the_policy():
 
 def test_the_write_tools_point_at_the_policy_for_conduct():
     """With no conduct of its own, each write tool says where the conduct is."""
-    for name in ("create_topic", "reply", "send_message", "edit_post", "attach_file"):
+    for name in ("create_topic", "reply", "send_message", "edit_post", "set_wiki", "attach_file"):
         assert "policy" in _tool(name)["description"].lower(), name
 
 
@@ -737,6 +738,8 @@ def test_a_write_in_a_topic_carries_the_version_of_the_policies_that_apply_there
         _call("reply", {"topic_id": 70, "raw": "hello"}, 3),
         _call("edit_post", {"post_id": 5, "raw": "rewritten"}, 4),
         _call("create_topic", {"title": "A topic", "raw": "hello", "category": 8}, 5),
+        _call("set_wiki", {"post_id": 5, "wiki": True}, 7),
+        _call("set_wiki", {"post_id": 6, "wiki": True}, 8),
         _call("send_message", {"title": "Hello", "raw": "Body.", "to": ["bob"]}, 6),
     ])
     said = {r["id"]: r["result"]["content"][0]["text"] for r in responses if "result" in r}
@@ -748,6 +751,11 @@ def test_a_write_in_a_topic_carries_the_version_of_the_policies_that_apply_there
     assert '"edited": true' in said[4]
     assert "Stale" in said[5]
     assert '"sent": true' in said[6]
+    # Post 5 is in Meta's topic 70; post 6 in topic 7, which is in arXiv.
+    assert '"wiki": true' in said[7]
+    assert "category 8" in said[8] and "Stale" in said[8]
+    assert {"method": "PUT", "path": "/posts/5/wiki", "body": "wiki=true"} in stub.posted
+    assert not any(p.get("path") == "/posts/6/wiki" for p in stub.posted)
 
 
 def test_every_tool_is_in_the_kits_account_of_itself():

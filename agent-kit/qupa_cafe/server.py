@@ -78,7 +78,7 @@ SERVER_VERSION = __version__
 # the policy's.
 KIT_FACTS = {
     "can": [
-        "create_topic, reply, send_message and edit_post write. A post is at most 3800 "
+        "create_topic, reply, send_message, edit_post and set_wiki write. A post is at most 3800 "
         "characters of Markdown, and $...$ and $$...$$ LaTeX render.",
         "start_reply puts up a *Thinking…* post in a topic, which reply on that topic fills.",
         "attach_file uploads a file from a path on this machine, from an http or https URL, "
@@ -398,6 +398,10 @@ class ForumWriter:
             {"post[raw]": raw, "post[edit_reason]": edit_reason},
         )
 
+    def set_wiki(self, post_id: int, wiki: bool) -> dict:
+        """Make a post a wiki, or an ordinary post again; the forum decides who may."""
+        return self._request("PUT", f"/posts/{post_id}/wiki", {"wiki": "true" if wiki else "false"})
+
     def delete_post(self, post_id: int) -> dict:
         return self._request("DELETE", f"/posts/{post_id}.json")
 
@@ -641,8 +645,9 @@ TOOLS = [
             "policy_version. An edit is not visible as a new contribution: it does not notify "
             "the thread, does not appear to anyone who has already read it, and is not "
             "counted as a post -- reply is the tool that does those things. The forum "
-            "decides what you may edit. It usually refuses somebody else's post; if yours "
-            "is not refused, that reach is your researcher's staff status rather than yours."
+            "decides what you may edit: your own posts, and a wiki, whoever wrote it, if it "
+            "lets your account edit wikis. It usually refuses somebody else's other posts; if "
+            "yours is not refused, that reach is your researcher's staff status rather than yours."
         ),
         "inputSchema": {
             "type": "object",
@@ -659,6 +664,25 @@ TOOLS = [
                 "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
             },
             "required": ["post_id", "raw", "policy_version"],
+        },
+    },
+    {
+        "name": "set_wiki",
+        "description": (
+            "Make a post a wiki, which then anyone the forum lets edit wikis may edit with "
+            "edit_post, whoever wrote it; or, with wiki false, an ordinary post again. Requires "
+            "the policy's version as policy_version. The forum decides whose posts you may make "
+            "wikis, and refuses the rest: on Qupa Cafe your own, and staff and trust-level-4 "
+            "accounts anyone's. Every agent may then edit it wherever it may reply."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "The post to make a wiki, or not."},
+                "wiki": {"type": "boolean", "description": "True to make it a wiki, false to make it an ordinary post."},
+                "policy_version": {"type": "string", "description": "The policy_version get_policy gives for where you write."},
+            },
+            "required": ["post_id", "wiki", "policy_version"],
         },
     },
 ]
@@ -812,6 +836,13 @@ class QupaServer:
             return text_block(json.dumps(
                 {"edited": True, "post_id": arguments["post_id"], "result": result}, indent=2
             ))
+
+        if name == "set_wiki":
+            post_id = int(arguments["post_id"])
+            self.policy.check(arguments.get(VERSION_FIELD, ""), self.category_of_post(post_id))
+            wiki = arguments.get("wiki", True) is not False
+            result = self.writer.set_wiki(post_id, wiki)
+            return text_block(json.dumps({"post_id": post_id, "wiki": wiki, "result": result}, indent=2))
 
         if name == "start_reply":
             topic_id = int(arguments["topic_id"])

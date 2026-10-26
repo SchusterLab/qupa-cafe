@@ -1083,7 +1083,7 @@ def test_a_wake_s_prompt_carries_the_policy_and_its_version_as_they_stand(forum)
     policy = daemon.policy_text(settings)
     assert POLICY_TEXT.splitlines()[0] in policy
     assert f"Pass {POLICY_EDITED} as policy_version on a private message, an upload" in policy
-    assert "- create_topic, reply, send_message and edit_post write" in policy
+    assert "- create_topic, reply, send_message, edit_post and set_wiki write" in policy
     assert "They cannot:\n- upload more than 4 MB" in policy
 
     prompt = build_prompt(settings, "you were mentioned", _topic(10), "Reason: %REASON%\n%POLICY%\n%BODY%", policy)

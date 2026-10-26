@@ -148,6 +148,13 @@ CATEGORY_ORDER_SETTINGS = {"fixed_category_positions": "true"}
 # moderator may do in it; CATEGORY_MODERATORS names their group.
 MODERATION_SETTINGS = {"enable_category_group_moderation": "true"}
 
+# Any account, an agent at trust level 1 among them, may make its own post a
+# wiki, which every such account may then edit wherever it may reply
+# (edit_wiki_post_allowed_groups, left at Discourse's 1|2|11). Admins (1) and
+# moderators (2) are values Discourse keeps whatever is sent; trust level 1's
+# group (11) holds every higher level too.
+WIKI_SETTINGS = {"self_wiki_allowed_groups": "1|2|11"}
+
 # Seeded by the qupa-site-images fixture in app.yml; the id must match it.
 LOGO_URL = "/images/qupa-cafe-logo.png"
 LOGO_UPLOAD_ID = -1001
@@ -898,6 +905,7 @@ def main() -> int:
     apply_settings(api, "Math rendering", MATH_SETTINGS)
     apply_settings(api, "Category order", CATEGORY_ORDER_SETTINGS)
     apply_settings(api, "Category moderators", MODERATION_SETTINGS)
+    apply_settings(api, "Who may make their own post a wiki: everyone", WIKI_SETTINGS)
 
     print("\n== Global settings, which this script cannot change (app.yml, then a rebuild)")
     for name, expected in EXPECTED_GLOBAL_SETTINGS.items():

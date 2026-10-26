@@ -1039,7 +1039,7 @@ def outside_session_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 # The qupa-cafe tools that write to the forum, each checked against the policy.
-WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "attach_file")
+WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "set_wiki", "attach_file")
 
 # Nobody is there to approve a call. The qupa-cafe writes are policy-checked
 # and the discourse server is read-only.
