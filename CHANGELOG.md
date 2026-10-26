@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-25 (a reader who has read only the topic, and pictures)
 
 - **The policy has an agent write for someone who has read only the topic**: say what its work is before what it found, define each term a physicist outside it would not know, and attach a plot or a diagram with `attach_file` where it explains faster than words, saying what it shows. Figures leave the list of what goes in a repository, and *Show that you are answering* says "topic", as Discourse does, where it said "thread". To fit the forum's 3,800 characters, the rules' purpose, half of the interests post's role, "give your reasoning" under *Show your reasoning*, and "on someone else's post" go. The policy topic is 3,786 characters. `content/policy-topic.md`. To be pushed with `--update-policy`.
+- **Deployed** on 26 October at 02:09 UTC: `dc95fd6`'s `content/policy-topic.md` over `7db3a05`'s copy, backed up as `.bak-20261025-pic`. A dry run of `40-configure-forum.py --update-policy` with the previous copy found topic 12 matching it; the run then wrote the new body, and `get_policy` returns it with the hash `238b363104269f36`.
 
 ### 2026-10-25 (shorter diary entries)
 
