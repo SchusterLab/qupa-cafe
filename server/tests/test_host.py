@@ -732,6 +732,10 @@ class StubHost:
     def notify_outdated(self, agent, upgrade):
         self.told.append((agent, upgrade.get("reported")))
 
+    def policy_posts(self, agent, policy_topic_id):
+        return [{"post_id": 13, "topic_id": policy_topic_id, "updated_at": "2026-10-26T02:09:42.955Z",
+                 "category_id": None, "category": None, "parent_category_id": None}]
+
 
 class StubPolicyTopic:
     """The forum search is not what these tests are about."""
@@ -888,13 +892,13 @@ def test_the_kit_is_given_its_agent_s_interests_post_as_posted(endpoint):
 
 def test_the_policy_topic_is_confirmed_rather_than_matched_on_its_title():
     """A search for the title also returns the category's "About" topic, and an
-    agent pinned to that would hold a hash for text nobody wrote as policy."""
+    agent pinned to that would hold a version of text nobody wrote as policy."""
 
     class SearchStub:
         def get(self, path):
             if path.startswith("/search.json"):
                 return {"topics": [{"id": 5, "title": "About the Agent policy category"},
-                                   {"id": 9, "title": "Agent policy (pinned, wiki)"}]}
+                                   {"id": 9, "title": "Agent policy"}]}
             if path.startswith("/t/5."):
                 return {"post_stream": {"posts": [{"raw": "Discuss the policy here."}]}}
             return {"post_stream": {"posts": [{"raw": "This topic is the only authority on how agents behave."}]}}
@@ -1355,6 +1359,18 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
 # ------------------------------------- telling a researcher their daemon stopped
 
 
+def test_the_kit_is_given_the_policy_s_posts_without_it_counting_as_a_poll(endpoint):
+    status, payload = _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1", headers=AUTH))
+
+    assert status == 200
+    assert payload["policy_posts"][0] == {"post_id": 13, "topic_id": 42, "updated_at": "2026-10-26T02:09:42.955Z",
+                                          "category_id": None, "category": None, "parent_category_id": None}
+    assert set(payload) == {"agent", "policy_posts"}
+    assert Handler.host.state.db.execute("SELECT count(*) FROM daemons").fetchone()[0] == 0
+    # The agent's own key, as for a poll.
+    assert _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1"))[0] == 401
+
+
 def test_a_poll_is_recorded_as_proof_of_life(endpoint):
     status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
     assert status == 200
@@ -1739,6 +1755,61 @@ def test_the_notice_is_never_scored(state, tmp_path):
     assert state.get_cursor() == 6
 
 
+# ------------------------------------------------------------ the policy's posts
+
+
+def test_a_time_is_written_as_the_forum_s_api_writes_it():
+    """Cut to the millisecond, so the kit, comparing it with what the forum
+    serves for the same post, finds them equal."""
+    assert host_module.forum_time(datetime(2026, 10, 26, 4, 57, 23, 955751)) == "2026-10-26T04:57:23.955Z"
+    assert host_module.forum_time(datetime(2026, 10, 26, 4, 57, 23, 999999, tzinfo=timezone.utc)) == \
+        "2026-10-26T04:57:23.999Z"
+
+
+class ListingHost(OfflineHost):
+    """The rows the query returns for the policy topic's first post and the
+    first posts of two categories' topics, recording what it was asked."""
+
+    ROWS = [
+        (13, 12, datetime(2026, 10, 26, 2, 9, 42, 955000), None, None, None),
+        (11, 10, datetime(2026, 10, 12, 21, 22, 0), 8, "arXiv quant-ph", None),
+        (30, 29, datetime(2026, 10, 25, 6, 37, 0, 1500), 9, "Diary", None),
+    ]
+
+    def __init__(self):
+        self.asked = []
+
+    def _connect(self):
+        host = self
+
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def execute(self, sql, parameters): host.asked.append((sql, parameters))
+            def fetchall(self): return ListingHost.ROWS
+
+        class Connection(Cursor):
+            def cursor(self): return Cursor()
+
+        return Connection()
+
+
+def test_the_policy_is_listed_by_post_and_edit_time_in_one_query_reading_no_text():
+    host = ListingHost()
+
+    listed = host.policy_posts("a-agent", 12)
+
+    [(sql, parameters)] = host.asked
+    assert parameters == (12, "a-agent")
+    assert "raw" not in sql and "cooked" not in sql
+    # Who reads a read-restricted category, as readers() has it.
+    assert "category_groups" in sql and "u.admin" in sql
+    assert [(p["post_id"], p["category_id"]) for p in listed] == [(13, None), (11, 8), (30, 9)]
+    assert listed[0]["updated_at"] == "2026-10-26T02:09:42.955Z"
+    assert listed[2] == {"post_id": 30, "topic_id": 29, "updated_at": "2026-10-25T06:37:00.001Z",
+                         "category_id": 9, "category": "Diary", "parent_category_id": None}
+
+
 # ------------------------------------------------------------ private diaries
 
 
@@ -1747,7 +1818,8 @@ class DiaryForum:
 
     def __init__(self, users=("a", "a-agent"), site=None, groups=None):
         self.users = set(users)
-        self.site = site if site is not None else [{"id": 5, "name": "Diary", "color": "8C6D46"}]
+        self.site = site if site is not None else [{"id": 5, "name": "Diary", "color": "8C6D46",
+                                                    "topic_url": "/t/category-policy-diary/30"}]
         self.groups = groups if groups is not None else {}
         self.members: dict[str, list[str]] = {}
         self.owners: dict[str, list[str]] = {}
@@ -1783,7 +1855,7 @@ class DiaryForum:
             made = 71 + sum(1 for c in self.site if c.get("parent_category_id"))
             self.site.append({"id": made, "name": params["name"], "parent_category_id": int(params["parent_category_id"]),
                               "read_restricted": True})
-            return {"category": {"id": made}}
+            return {"category": {"id": made, "topic_url": f"/t/about-the-{params['name']}-category/{made + 100}"}}
         if path.endswith("/members.json"):
             name = next(n for n, g in self.groups.items() if f"/groups/{g['id']}/" in path)
             self.members.setdefault(name, []).extend(params["usernames"].split(","))
@@ -1806,8 +1878,11 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     # Granted to the researcher's group and nobody else, under Diary.
     assert category["permissions[diary-a]"] == "1" and category["parent_category_id"] == "5"
     assert not [k for k in category if k.startswith("permissions[") and k != "permissions[diary-a]"]
-    # Its About post names the rules that apply there.
-    assert "[agent policy](/t/12) and its rules for Diary" in category["description"]
+    # Its About post names the policies that apply there, and is titled as
+    # every category's is.
+    assert ("[agent policy](/t/12), this category's policy and [that of Diary](/t/category-policy-diary/30)."
+            in category["description"])
+    assert ("PUT", "/t/-/171.json", {"title": "Category policy: Diary / a"}) in forum.writes
     assert forum.members["diary-a"] == ["a", "a-agent"]
     # The researcher owns it, to let somebody else read it.
     assert forum.owners["diary-a"] == ["a"]
@@ -1820,7 +1895,8 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
 def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     """Under arXiv quant-ph, granted to a group of its own, so that preprints
     the agent brings its researcher privately are read by them alone."""
-    forum = DiaryForum(site=[{"id": 5, "name": "Diary"}, {"id": 8, "name": "arXiv quant-ph", "color": "B31B1B"}])
+    forum = DiaryForum(site=[{"id": 5, "name": "Diary"},
+                             {"id": 8, "name": "arXiv quant-ph", "color": "B31B1B", "topic_url": "/t/x/31"}])
     host = DiaryHost(forum)
     assert host.ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
     assert host.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
@@ -1828,7 +1904,8 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     assert arxiv["parent_category_id"] == "8" and arxiv["color"] == "B31B1B"
     assert [k for k in arxiv if k.startswith("permissions[")] == ["permissions[arxiv-a]"]
     assert "a-agent brings to a privately" in arxiv["description"]
-    assert "its rules for arXiv quant-ph, which apply in every subcategory of arXiv quant-ph" in arxiv["description"]
+    assert "this category's policy and [that of arXiv quant-ph](/t/x/31)." in arxiv["description"]
+    assert ("PUT", "/t/-/172.json", {"title": "Category policy: arXiv quant-ph / a"}) in forum.writes
     assert forum.groups["arxiv-a"]["full_name"] == "Private preprints of a"
     assert forum.members["arxiv-a"] == ["a", "a-agent"]
     writes = len(forum.writes)

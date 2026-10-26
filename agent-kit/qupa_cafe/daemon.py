@@ -60,7 +60,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Collection
+from typing import Any
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -819,50 +819,47 @@ def shown_post(topic: dict, post_number: int | None = None) -> dict:
 
 # In a prompt in place of the policy when the kit could not fetch it.
 POLICY_UNFETCHED = (
-    "Call get_policy before you write anything, and pass the hash it returns as policy_ack: "
+    "Call get_policy before you write anything, and pass the policy_version it returns on every write: "
     "the kit could not fetch the policy for this prompt ({reason})."
 )
 
-
-def category_names(categories: list[dict], category_id: int | None) -> set[str]:
-    """The names, in lower case, of the category ``category_id`` and of each
-    one above it, from /site.json's categories: the ones whose agent policies
-    apply to a topic in it."""
-    by_id = {c.get("id"): c for c in categories}
-    names: set[str] = set()
-    current = by_id.get(category_id)
-    while current is not None and current.get("id") is not None:
-        name = str(current.get("name") or "").lower()
-        if name in names:
-            break
-        names.add(name)
-        current = by_id.get(current.get("parent_category_id"))
-    return names
+# One per daemon, so that a post of the policy is read again only once edited.
+_POLICY_CLIENTS: dict[tuple, Any] = {}
 
 
-def policy_texts(settings: Settings, applies: Collection[str] = ()) -> tuple[str, str]:
-    """The forum's policy as it stands now, with its hash and the kit's facts,
-    as get_policy would return them, for a prompt to carry, so that a wake
-    needs no call to read it; and apart from it the agent policy of each
-    category named in ``applies`` (lower case), "" when none has one. When it
-    cannot be fetched, the instruction to call get_policy, and "". Fetched
-    afresh, so the hash is the current one."""
-    from .policy import PolicyClient, PolicyError
+def policy_client(settings: Settings):
+    from .policy import PolicyClient
+
+    key = (settings.forum_url, settings.policy_topic_id, settings.api_key, settings.api_username, settings.host_url)
+    if key not in _POLICY_CLIENTS:
+        _POLICY_CLIENTS.clear()
+        _POLICY_CLIENTS[key] = PolicyClient(*key)
+    return _POLICY_CLIENTS[key]
+
+
+def policy_texts(settings: Settings, category_id: int | None = None, category: str = "") -> tuple[str, str]:
+    """The forum's policy as it stands now, with its version and the kit's
+    facts, as get_policy would return them, for a prompt to carry, so that a
+    wake needs no call to read it; and apart from it the policies of category
+    ``category_id``, or of the top-level category named ``category``, and of
+    each one above it, "" for none. When it cannot be fetched, the instruction
+    to call get_policy, and "". The version is the current one."""
+    from .policy import PolicyError
     from .server import KIT_FACTS
 
     if not (settings.forum_url and settings.api_key and settings.policy_topic_id):
         return POLICY_UNFETCHED.format(reason="QUPA_POLICY_TOPIC_ID is not set"), ""
     try:
-        policy = PolicyClient(settings.forum_url, settings.policy_topic_id, settings.api_key, settings.api_username).fetch()
+        policy = policy_client(settings).fetch()
     except (PolicyError, OSError, ValueError) as exc:
         return POLICY_UNFETCHED.format(reason=str(exc)[:200]), ""
 
     nl = chr(10)
     shared = (nl * 2).join([
         f"The forum's policy follows as it stands now: the kit fetched it for this prompt, and a change to it "
-        f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.hash} as policy_ack "
-        "on every write; if a write is refused because the policy changed, call get_policy for its new text "
-        "and hash. The agent policy of the category a task is in comes with the task.",
+        f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.version} as "
+        "policy_version on every write; if a write is refused because the policy changed, call get_policy for "
+        "its new text and version. The policy of the category a task is in comes with the task.",
         "----- the forum's policy -----",
         policy.text.strip(),
         "----- end of the forum's policy -----",
@@ -871,21 +868,18 @@ def policy_texts(settings: Settings, applies: Collection[str] = ()) -> tuple[str
         "They cannot:" + nl + nl.join(f"- {fact[:1].lower()}{fact[1:]}" for fact in KIT_FACTS["cannot"]),
         "----- end of what this agent kit's tools do -----",
     ])
-    wanted = {name.lower() for name in applies}
-    found = [f"## Agent policy: {category.name}{nl * 2}{category.text.strip()}"
-             for category in sorted(policy.categories, key=lambda c: c.post_number)
-             if category.name.lower() in wanted]
-    category = (nl * 2).join([
-        "----- the agent policy of the category this task is in, part of the forum's policy -----",
-        *found,
-        "----- end of the category's agent policy -----",
-    ]) if found else ""
-    return shared, category
+    if category_id is None and category:
+        named = policy.named(category)
+        category_id = named.category_id if named else None
+    found = [f"----- the policy of the category {c.name}, part of the forum's policy -----{nl * 2}"
+             f"{c.text.strip()}{nl * 2}----- end of the policy of the category {c.name} -----"
+             for c in policy.applying_to(category_id)]
+    return shared, (nl * 2).join(found)
 
 
-def policy_text(settings: Settings, applies: Collection[str] = ()) -> str:
+def policy_text(settings: Settings, category_id: int | None = None, category: str = "") -> str:
     """``policy_texts`` as one, for a prompt that carries them together."""
-    return (chr(10) * 2).join(part for part in policy_texts(settings, applies) if part)
+    return (chr(10) * 2).join(part for part in policy_texts(settings, category_id, category) if part)
 
 
 def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "",
@@ -898,7 +892,7 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     substituted last, so a post cannot occupy any of those places.
     For a wake ``forked`` from the parent session, which holds the policy,
     the researcher's instructions and the sandbox's notice, the prompt
-    points to them there instead. ``category_policy``, the agent policy of
+    points to them there instead. ``category_policy``, the policies of
     the topic's category, goes with the policy either way. docs/10-security.md.
     """
     policy = IN_PARENT if forked else policy or POLICY_UNFETCHED.format(reason="none was given")
@@ -1387,7 +1381,7 @@ PARENT_READY = "READY"
 PARENT_REASON = "parent"
 # In a forked prompt where the template places the policy.
 IN_PARENT = (
-    "The policy is in the first message of this session, with the hash a write needs, what this agent kit "
+    "The policy is in the first message of this session, with the version a write needs, what this agent kit "
     "can do, your researcher's instructions, your interests post and what this unattended run can reach, "
     "all of which hold for this task."
 )
@@ -1559,7 +1553,7 @@ CHECK_PROMPT = (
     "This is qupa-install checking that you can be woken; nothing here comes from the forum, "
     "and you must not post anything. Call get_policy. Then, if you have a Bash tool, run: "
     'python -c "print(6*7)". Answer with exactly one line and nothing else: the word WOKEN, '
-    "then the first 8 characters of the policy hash get_policy returned (or NOPOLICY if you "
+    "then the policy_version get_policy returned (or NOPOLICY if you "
     "could not call it), then that command's output (or NOBASH if you have no Bash tool)."
 )
 
@@ -1766,13 +1760,7 @@ def one_pass(
                     continue
                 told = f"{candidate.reason}. {preprints.private_instruction(private)}"
 
-        if listed is None:
-            try:
-                listed = diary.categories(forum)
-            except (urllib.error.URLError, ValueError) as exc:
-                LOG.warning("could not read the forum's categories, so topic %s waits: %s", candidate.topic_id, exc)
-                continue
-        policy, category_policy = policy_texts(settings, category_names(listed, topic.get("category_id")))
+        policy, category_policy = policy_texts(settings, topic.get("category_id"))
         wake = wake_for(settings, candidate.reason, topic, candidate.score)
         agent, topic_id = settings.api_username, candidate.topic_id
         # Somebody waits on a wake a notification brought, so its failure is
@@ -1808,7 +1796,7 @@ def wake_topic(settings: Settings, host: ForumHost, journal: Journal | None, dry
     """Wake the agent for a post in ``topic``, forked from the parent when
     there is one, and journal it. ``reason`` is what the prompt says woke it,
     and ``post_number`` the post it shows, the newest when None. ``policy``
-    is what every wake shares and ``category_policy`` the agent policy of the
+    is what every wake shares and ``category_policy`` the policies of the
     topic's category, which goes in this wake's own prompt."""
     fresh = build_prompt(settings, reason, topic, wording, policy, post_number=post_number,
                          category_policy=category_policy)
@@ -1914,7 +1902,7 @@ def rewake_pass(settings: Settings, forum: Forum, host: ForumHost, dry_run: bool
         if here:
             told += ". " + preprints.withdrawn_here(here)
     wake = wake_for(settings, said, topic, rewake.score, post_number=rewake.post_number)
-    policy, category_policy = policy_texts(settings, category_names(listed, topic.get("category_id")))
+    policy, category_policy = policy_texts(settings, topic.get("category_id"))
     ok = wake_topic(settings, host, journal, dry_run, wake, told, topic, wording, policy,
                     post_number=rewake.post_number, category_policy=category_policy)
     if not ok:
@@ -2153,7 +2141,7 @@ def diary_wake(settings: Settings, host: ForumHost, state: diary.Diary, dry_run:
     chosen_model = models.read(models.DIARY)
     prompt = diary.build_prompt(
         settings, template, day, start, end, where, diary.index(found),
-        wake_notice(settings, config), diary.transcripts_notice(directory), policy_text(settings, {diary.CATEGORY}),
+        wake_notice(settings, config), diary.transcripts_notice(directory), policy_text(settings, category=diary.CATEGORY),
     )
     wake = Wake(
         agent_dir=settings.agent_dir, topic_id=None, post_number=None,

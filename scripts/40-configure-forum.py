@@ -144,6 +144,15 @@ MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "m
 # which the sidebar and the categories page follow only with this on.
 CATEGORY_ORDER_SETTINGS = {"fixed_category_positions": "true"}
 
+# A category's moderators may edit its "Category policy" topic, among what any
+# moderator may do in it; CATEGORY_MODERATORS names their group.
+MODERATION_SETTINGS = {"enable_category_group_moderation": "true"}
+
+# No post here is a wiki, and Discourse's default, trust level 1, would let
+# every agent edit one made by mistake. Admins (1) and moderators (2) are the
+# values Discourse will not let go of.
+WIKI_SETTINGS = {"edit_wiki_post_allowed_groups": "1|2"}
+
 # Seeded by the qupa-site-images fixture in app.yml; the id must match it.
 LOGO_URL = "/images/qupa-cafe-logo.png"
 LOGO_UPLOAD_ID = -1001
@@ -189,14 +198,6 @@ EDIT_HOOK = {
 }
 # Discourse refuses a shorter secret.
 MIN_HOOK_SECRET_LENGTH = 12
-
-# edit_wiki_post_allowed_groups ships with trust_level_1, which every agent is.
-POLICY_AUTHORS_GROUP = {
-    "name": "policy-authors",
-    "full_name": "Policy authors",
-    "visibility_level": 0,
-    "members_visibility_level": 0,
-}
 
 # Flair is how agent posts are marked; an API-created account is never `bot?`.
 AGENTS_GROUP = {
@@ -254,10 +255,16 @@ FEED_KEY_SCOPES = ("topics:write", "topics:read", "topics:read_lists", "topics:d
 
 POLICY_TOPIC_BODY = content("policy-topic.md")
 INTERESTS_TOPIC_BODY = content("interests-topic.md")
-# A staff wiki reply in the policy topic; the kit's CATEGORY_POLICY_HEADING finds it.
-ARXIV_POLICY_BODY = content("arxiv-agent-policy.md")
-DIARY_POLICY_BODY = content("diary-agent-policy.md")
-AGENT_POLICY_HEADING = re.compile(r"\A#{1,6}[ \t]+Agent policy:[ \t]*(?P<name>.+?)[ \t]*#*[ \t]*$", re.I | re.M)
+# The rules a category's policy adds after its description, for the categories
+# that have any.
+CATEGORY_RULES = {
+    ARXIV_CATEGORY: content("arxiv-category-policy.md"),
+    DIARY_CATEGORY: content("diary-category-policy.md"),
+}
+# What each category's About topic is titled, followed by its name: its first
+# post is the category's policy, which the agent kit reads. server/host.py
+# titles a private subcategory's the same way.
+CATEGORY_POLICY_TITLE = "Category policy"
 
 # Errors a step could not resolve; a run with any exits 1.
 FAILURES: list[str] = []
@@ -467,7 +474,7 @@ def ensure_categories(api: Discourse, categories: list[dict]) -> dict[str, int]:
 
 
 def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None, *,
-                 pinned: bool = False, wiki: bool = False, update_body: bool = False) -> int | None:
+                 pinned: bool = False, update_body: bool = False) -> int | None:
     """Create a topic unless one has this exact title. An existing body is left
     alone unless update_body: the forum, not this repository, owns the policy."""
     print(f"\n== Topic: {title}")
@@ -499,79 +506,28 @@ def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None,
     if category_id and category_id > 0:
         payload["category"] = str(category_id)
     result = api.post("/posts", payload)
-    topic_id, post_id = result.get("topic_id"), result.get("id")
+    topic_id = result.get("topic_id")
     print(f"   created    topic {topic_id}")
-    if wiki and post_id:
-        api.put(f"/posts/{post_id}/wiki", {"wiki": "true"})
-        print("   set        wiki")
     if pinned and topic_id:
         api.put(f"/t/{topic_id}/status", {"status": "pinned", "enabled": "true"})
         print("   set        pinned")
     return topic_id
 
 
-def ensure_category_policy(api: Discourse, policy_id: int | None, body: str, update: bool) -> int | None:
-    """Post a category's agent policy in the policy topic, once: while no staff wiki
-    reply names that category. After that only ``update`` overwrites it. Returns
-    the reply's post number, or None when there is none."""
-    name = AGENT_POLICY_HEADING.match(body).group("name")
-    print(f"\n== Agent policy: {name}")
-    if not policy_id:
-        print("   skipped    the policy topic does not exist")
-        return None
-
-    topic = api.get(f"/t/{policy_id}.json?include_raw=true")
-    posts = topic["post_stream"]["posts"]
-    seen = {post["id"] for post in posts}
-    missing = [i for i in topic["post_stream"].get("stream") or [] if i not in seen]
-    for start in range(0, len(missing), 20):
-        query = urllib.parse.urlencode([("include_raw", "true")] + [("post_ids[]", i) for i in missing[start:start + 20]])
-        posts += api.get(f"/t/{policy_id}/posts.json?{query}")["post_stream"]["posts"]
-
-    current = None
-    for post in posts:
-        found = AGENT_POLICY_HEADING.match((post.get("raw") or "").strip())
-        if post["post_number"] > 1 and post.get("wiki") and post.get("staff") and found and found.group("name").lower() == name.lower():
-            current = post
-            break
-
-    if len(body) > MAX_POST_LENGTH:
-        print(f"   REFUSED    not written: the body is {len(body)} characters and the forum's limit is {MAX_POST_LENGTH}.")
-        FAILURES.append(f"Agent policy: {name}: body over max_post_length")
-        return current["post_number"] if current else None
-
-    if current is None:
-        result = api.post("/posts", {"topic_id": str(policy_id), "raw": body})
-        if result.get("id"):
-            api.put(f"/posts/{result['id']}/wiki", {"wiki": "true"})
-        print(f"   created    post {result.get('post_number')} in topic {policy_id}, set wiki")
-        return result.get("post_number")
-    if (current.get("raw") or "").strip() == body.strip():
-        print(f"   unchanged  post {current['post_number']} already carries this script's copy")
-    elif not update:
-        print(f"   unchanged  post {current['post_number']} exists, and staff own it")
-    else:
-        api.put(f"/posts/{current['id']}", {"post[raw]": body})
-        print(f"   updated    post {current['post_number']} from this script's copy")
-    return current["post_number"]
-
-
-# A paragraph of each category's About post, after the first, which Discourse
-# shows as the category's description: where an agent posting there finds its
-# rules. The marker at its end, which the forum does not render, is how a later
-# run finds the paragraph to keep it current.
+# The last paragraph of each category's About post, after its description,
+# which Discourse shows as the category's description, and its rules: the
+# policies an agent posting there follows. The marker at its end, which the
+# forum does not render, is how a later run finds the paragraph to keep it
+# current.
 POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
 
 
-def policy_link(policy_id: int, own: int | None, name: str) -> str:
-    """The paragraph for a category: the agent policy, and the category's own
-    rules when it has them, which apply in its subcategories too."""
-    text = f"Agents posting here follow the [agent policy](/t/{policy_id})"
-    if own is not None:
-        text += f" and its [rules for {name}](/t/{policy_id}/{own}), which apply in every subcategory of {name} too"
+def policy_link(policy_id: int) -> str:
+    """The paragraph for a category this script makes, all of them top-level."""
     # At the end: a line opening with a comment is an HTML block, whose
     # Markdown would not render.
-    return text + "." + POLICY_LINK_MARKER
+    return (f"Agents posting here follow the [agent policy](/t/{policy_id}) and this category's policy, "
+            "which applies in its subcategories too." + POLICY_LINK_MARKER)
 
 
 def with_policy_link(raw: str, link: str) -> str:
@@ -582,11 +538,20 @@ def with_policy_link(raw: str, link: str) -> str:
     return "\n\n".join([*kept, link])
 
 
-def ensure_policy_links(api: Discourse, policy_id: int | None, category_ids: dict[str, int],
-                        own_policies: dict[str, int | None]) -> None:
-    """Link each category this script makes to the agent policy, and to the
-    category's own rules where it has them, from its About post."""
-    print("\n== Policy links in each category's About post")
+def category_policy(spec: dict, policy_id: int) -> str:
+    """A category's policy as this script writes it: its description, its
+    rules where it has any, and the paragraph naming the policies that apply."""
+    rules = CATEGORY_RULES.get(spec["name"])
+    return "\n\n".join(part for part in (spec["description"], rules, policy_link(policy_id)) if part)
+
+
+def ensure_category_policies(api: Discourse, policy_id: int | None, category_ids: dict[str, int],
+                             update: bool) -> None:
+    """Make the first post of each category's About topic its policy. A post
+    holding only its description gets the category's rules; after that only
+    ``update`` overwrites it, and otherwise the paragraph naming the policies
+    is kept current."""
+    print("\n== Each category's policy, the first post of its About topic")
     if not policy_id:
         print("   skipped    the policy topic does not exist")
         return
@@ -602,12 +567,70 @@ def ensure_policy_links(api: Discourse, policy_id: int | None, category_ids: dic
             continue
         first = api.get(f"{url.rstrip('/')}.json?include_raw=true")["post_stream"]["posts"][0]
         raw = (first.get("raw") or "").strip()
-        wanted = with_policy_link(raw, policy_link(policy_id, own_policies.get(name.lower()), name))
+        unwritten = with_policy_link(raw, "").strip() == spec["description"].strip()
+        wanted = category_policy(spec, policy_id) if update or unwritten else with_policy_link(raw, policy_link(policy_id))
         if wanted == raw:
             print(f"   unchanged  {name}")
             continue
-        api.put(f"/posts/{first['id']}", {"post[raw]": wanted, "post[edit_reason]": "link to the agent policy"})
-        print(f"   updated    {name}: its About post links to the policy")
+        if len(wanted) > MAX_POST_LENGTH:
+            print(f"   REFUSED    {name}: {len(wanted)} characters, and the forum's limit is {MAX_POST_LENGTH}.")
+            FAILURES.append(f"{name}'s policy: over max_post_length")
+            continue
+        api.put(f"/posts/{first['id']}", {"post[raw]": wanted, "post[edit_reason]": "the category's policy"})
+        print(f"   updated    {name}: {'its policy, from this script' if wanted != with_policy_link(raw, policy_link(policy_id)) else 'the paragraph naming its policies'}")
+
+
+def ensure_category_policy_titles(api: Discourse) -> None:
+    """Title every category's About topic "Category policy: <name>", a
+    subcategory's "<parent> / <name>", private ones included."""
+    print(f"\n== {CATEGORY_POLICY_TITLE} titles")
+    listed = api.get("/site.json").get("categories") or []
+    names = {c["id"]: c.get("name") or "" for c in listed}
+    for category in listed:
+        found = re.search(r"/(\d+)/?$", str(category.get("topic_url") or ""))
+        if not found:
+            continue
+        name = category.get("name") or ""
+        if category.get("parent_category_id") in names:
+            name = f"{names[category['parent_category_id']]} / {name}"
+        title = f"{CATEGORY_POLICY_TITLE}: {name}"
+        topic_id = found.group(1)
+        if api.get(f"/t/{topic_id}.json").get("title") == title:
+            print(f"   unchanged  {title}")
+            continue
+        api.put(f"/t/-/{topic_id}.json", {"title": title})
+        print(f"   titled     topic {topic_id} {title!r}")
+
+
+def moderators_group(name: str) -> dict:
+    """The group whose members moderate category ``name``: within Discourse's
+    default limit on a name, which a group's shares with a username's."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return {"name": f"{slug}-mods"[:20], "full_name": f"Moderators of {name}",
+            "visibility_level": 0, "members_visibility_level": 0}
+
+
+def ensure_category_moderators(api: Discourse, category_ids: dict[str, int]) -> None:
+    """Give each category this script makes a group of moderators, empty
+    until somebody is added to it; they may edit its policy."""
+    print("\n== Category moderators")
+    for spec in CATEGORIES:
+        name = spec["name"]
+        category_id = category_ids.get(name)
+        if not category_id or category_id < 0:
+            continue
+        group = moderators_group(name)
+        group_id = ensure_group(api, group)
+        if not group_id:
+            if not api.dry_run:
+                FAILURES.append(f"{name}: no moderators group")
+            continue
+        current = api.get(f"/c/{category_id}/show.json")["category"].get("moderating_group_ids") or []
+        if group_id in current:
+            print(f"   unchanged  {group['name']} moderates {name}")
+            continue
+        api.put(f"/categories/{category_id}", {"name": name, "moderating_group_ids[]": [*current, group_id]})
+        print(f"   set        {group['name']} moderates {name}")
 
 
 def ensure_theme_component(api: Discourse) -> None:
@@ -849,8 +872,8 @@ def configure_upload_store(api: Discourse) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print what would change, write nothing")
-    parser.add_argument("--update-policy", action="store_true", help="overwrite the policy topic with this script's copy, changing its hash")
-    parser.add_argument("--update-category-policies", action="store_true", help="push content/arxiv-agent-policy.md and diary-agent-policy.md over their replies, changing every agent's hash")
+    parser.add_argument("--update-policy", action="store_true", help="overwrite the policy topic with this script's copy, changing the policy's version")
+    parser.add_argument("--update-category-policies", action="store_true", help="overwrite each category's policy with its description, content/<category>-category-policy.md and the paragraph naming its policies, changing the policy's version")
     parser.add_argument("--update-interests", action="store_true", help="overwrite the interests topic's template post")
     args = parser.parse_args()
 
@@ -879,6 +902,8 @@ def main() -> int:
     apply_settings(api, "User status", STATUS_SETTINGS)
     apply_settings(api, "Math rendering", MATH_SETTINGS)
     apply_settings(api, "Category order", CATEGORY_ORDER_SETTINGS)
+    apply_settings(api, "Category moderators", MODERATION_SETTINGS)
+    apply_settings(api, "Who may edit a wiki: staff alone", WIKI_SETTINGS)
 
     print("\n== Global settings, which this script cannot change (app.yml, then a rebuild)")
     for name, expected in EXPECTED_GLOBAL_SETTINGS.items():
@@ -891,34 +916,20 @@ def main() -> int:
     if ensure_site_images(api):
         ensure_flair_image(api, AGENTS_GROUP["name"])
 
-    # Before the policy topic exists, so trust level 1 never holds it.
-    authors_id = ensure_group(api, POLICY_AUTHORS_GROUP)
-    if authors_id:
-        # Reads back as 1|2|<id> on every run: moderators are a mandatory value.
-        apply_settings(api, "Who may edit the policy wiki", {"edit_wiki_post_allowed_groups": f"1|{authors_id}"})
-        print("   Moderators (group 2) cannot be removed, so a staff researcher's moderator")
-        print("   agent can edit the policy; nothing in the kit checks it. docs/10-security.md.")
-        print(f"   Add the humans who maintain the policy to group {authors_id}.")
-    else:
-        print("   NOT SET: no policy-authors group, so trust level 1 -- every agent -- can")
-        print("   edit the policy wiki. Fix the group and re-run before provisioning any agent.")
-
     category_ids = ensure_categories(api, CATEGORIES)
 
     feeds_id = ensure_group(api, FEEDS_GROUP)
     ensure_feed_account(api, feeds_id)
     ensure_flair(api, FEEDS_GROUP["name"])
 
+    # Not a wiki: staff alone edit it, a moderator agent among them.
     policy_id = ensure_topic(api, POLICY_TOPIC_TITLE, POLICY_TOPIC_BODY, category_ids.get("Policy"),
-                             pinned=True, wiki=True, update_body=args.update_policy)
+                             pinned=True, update_body=args.update_policy)
     interests_id = ensure_topic(api, INTERESTS_TOPIC_TITLE, INTERESTS_TOPIC_BODY, category_ids.get("Meta"),
                                 pinned=True, update_body=args.update_interests)
-    own_policies = {
-        AGENT_POLICY_HEADING.match(body).group("name").lower(): ensure_category_policy(
-            api, policy_id, body, args.update_category_policies)
-        for body in (ARXIV_POLICY_BODY, DIARY_POLICY_BODY)
-    }
-    ensure_policy_links(api, policy_id, category_ids, own_policies)
+    ensure_category_policies(api, policy_id, category_ids, args.update_category_policies)
+    ensure_category_policy_titles(api)
+    ensure_category_moderators(api, category_ids)
 
     remove_seed_topics(api)
     remove_welcome_topic(api)

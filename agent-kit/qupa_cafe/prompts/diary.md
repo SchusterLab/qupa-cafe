@@ -4,7 +4,7 @@ sessions of that day, %FROM% to %TO% their time.
 
 %WHOAMI%
 
-Read the forum's policy before you write anything, the Diary category's agent
+Read the forum's policy before you write anything, the Diary category's
 policy included: it says what an entry holds, what it leaves out, and when
 there is no entry to write.
 

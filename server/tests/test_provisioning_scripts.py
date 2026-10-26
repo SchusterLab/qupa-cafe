@@ -239,22 +239,107 @@ def test_a_dry_run_names_the_step_and_not_the_secret(monkeypatch, capsys):
     assert secret not in out
 
 
-def test_a_category_s_about_post_links_to_the_policy_after_its_description():
-    """The first paragraph is the category's description, so the link goes
-    after it; a run with new wording replaces the link rather than adding one."""
-    link = configure.policy_link(12, 4, "Diary")
-    assert "[agent policy](/t/12)" in link and "[rules for Diary](/t/12/4)" in link
-    assert "every subcategory of Diary" in link
+def test_a_category_s_policy_is_its_description_its_rules_and_the_policies_that_apply():
+    """The first paragraph is the category's description, so the rules and the
+    paragraph naming the policies go after it; a run with new wording replaces
+    that paragraph rather than adding one."""
+    link = configure.policy_link(12)
+    assert "[agent policy](/t/12) and this category's policy" in link
     # A comment opening a line would make it an HTML block, unrendered.
     assert not link.startswith("<!--") and link.endswith(configure.POLICY_LINK_MARKER)
-    assert "rules for" not in configure.policy_link(12, None, "Research")
 
-    about = "Each agent's diary of its researcher's work."
-    once = configure.with_policy_link(about, link)
-    assert once == about + "\n\n" + link
-    newer = configure.policy_link(12, 5, "Diary")
-    assert configure.with_policy_link(once, newer) == about + "\n\n" + newer
+    diary = next(spec for spec in configure.CATEGORIES if spec["name"] == configure.DIARY_CATEGORY)
+    policy = configure.category_policy(diary, 12)
+    assert policy.startswith(diary["description"] + "\n\n**Rule: one topic per agent in Diary.**")
+    assert policy.endswith("\n\n" + link)
+    research = next(spec for spec in configure.CATEGORIES if spec["name"] == "Research")
+    assert configure.category_policy(research, 12) == research["description"] + "\n\n" + link
+
+    once = configure.with_policy_link(diary["description"], link)
+    assert once == diary["description"] + "\n\n" + link
     assert configure.with_policy_link(once, link) == once
+
+
+class AboutForum:
+    """Each category this script makes, with the first post of its About topic
+    as given, recording writes."""
+
+    def __init__(self, raws: dict[str, str]):
+        self.raws = raws
+        self.ids = {name: n for n, name in enumerate(raws, start=20)}
+        self.writes: list[tuple[str, str, dict]] = []
+        self.dry_run = False
+
+    def get(self, path):
+        if path.startswith("/c/"):
+            category_id = int(path.split("/")[2])
+            return {"category": {"topic_url": f"/t/about/{category_id + 100}"}}
+        topic_id = int(path.split("/")[-1].split(".")[0])
+        name = next(n for n, i in self.ids.items() if i + 100 == topic_id)
+        return {"post_stream": {"posts": [{"id": topic_id + 1000, "raw": self.raws[name]}]}}
+
+    def put(self, path, data=None):
+        self.writes.append(("PUT", path, data))
+        return {}
+
+
+def test_a_category_s_rules_are_written_once_and_then_left_to_its_moderators():
+    descriptions = {spec["name"]: spec["description"] for spec in configure.CATEGORIES}
+    link = configure.policy_link(12)
+    edited = descriptions["arXiv quant-ph"] + "\n\nA moderator's own rule.\n\n" + link
+    forum = AboutForum({**descriptions, "arXiv quant-ph": edited})
+
+    configure.ensure_category_policies(forum, 12, forum.ids, update=False)
+
+    written = {path: data["post[raw]"] for _, path, data in forum.writes}
+    # Diary held only its description, so it gets its rules; arXiv's, edited
+    # on the forum, is left as it is.
+    diary = next(s for s in configure.CATEGORIES if s["name"] == "Diary")
+    assert written[f"/posts/{forum.ids['Diary'] + 1100}"] == configure.category_policy(diary, 12)
+    assert f"/posts/{forum.ids['arXiv quant-ph'] + 1100}" not in written
+
+    forum.writes.clear()
+    configure.ensure_category_policies(forum, 12, forum.ids, update=True)
+    arxiv = next(s for s in configure.CATEGORIES if s["name"] == "arXiv quant-ph")
+    assert {path: data["post[raw]"] for _, path, data in forum.writes}[
+        f"/posts/{forum.ids['arXiv quant-ph'] + 1100}"] == configure.category_policy(arxiv, 12)
+
+
+class TitledForum:
+    """/site.json and each About topic's title, recording writes."""
+
+    def __init__(self):
+        self.titles = {30: "About the Diary category", 31: "Category policy: Meta",
+                       32: "About the rsmith category"}
+        self.writes: list[tuple[str, str, dict]] = []
+
+    def get(self, path):
+        if path == "/site.json":
+            return {"categories": [
+                {"id": 5, "name": "Diary", "topic_url": "/t/about-the-diary-category/30"},
+                {"id": 6, "name": "Meta", "topic_url": "/t/category-policy-meta/31"},
+                {"id": 9, "name": "rsmith", "parent_category_id": 5, "topic_url": "/t/x/32"},
+                {"id": 1, "name": "Uncategorized", "topic_url": None},
+            ]}
+        return {"title": self.titles[int(path.split("/")[2].split(".")[0])]}
+
+    def put(self, path, data=None):
+        self.writes.append(("PUT", path, data))
+
+
+def test_every_category_s_about_topic_is_titled_as_its_policy():
+    forum = TitledForum()
+
+    configure.ensure_category_policy_titles(forum)
+
+    assert forum.writes == [("PUT", "/t/-/30.json", {"title": "Category policy: Diary"}),
+                            ("PUT", "/t/-/32.json", {"title": "Category policy: Diary / rsmith"})]
+
+
+def test_each_category_s_moderators_group_has_a_name_discourse_takes():
+    names = [configure.moderators_group(spec["name"])["name"] for spec in configure.CATEGORIES]
+    assert names == ["meta-mods", "policy-mods", "research-mods", "arxiv-quant-ph-mods", "diary-mods"]
+    assert all(len(name) <= 20 for name in names)
 
 
 def test_the_edit_webhook_goes_to_the_bridge_beside_the_provisioning_one(monkeypatch, capsys):

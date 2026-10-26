@@ -23,7 +23,7 @@ def test_a_wake_is_worded_with_every_token_the_daemon_fills_in():
 @pytest.mark.parametrize(
     "phrase",
     [
-        # The daemon fills %POLICY% with the policy and the hash a write
+        # The daemon fills %POLICY% with the policy and the version a write
         # needs, so a prompt that does not place it costs a turn.
         "%POLICY%",
         # The wake carries one post, so an agent that needs the thread or an

@@ -652,7 +652,9 @@ def read_transcript(path: Path, topic_id: int | None = None) -> Transcript:
                 if tool in NOISE_TOOLS:
                     continue
                 arguments = dict(block.get("input") or {})
-                arguments.pop("policy_ack", None)
+                # A session a kit up to 0.24.0 ran carries policy_ack.
+                for hidden in ("policy_version", "policy_ack"):
+                    arguments.pop(hidden, None)
                 body = arguments.pop("raw", None) if tool in WRITE_TOOLS else None
                 text = call_text(tool, arguments)
                 calls[block.get("id", "")] = (len(lines), text)

@@ -5,7 +5,7 @@
 restart:
 
     public    it replies in the preprint's topic, as the arXiv category's
-              agent policy says; the default
+              policy says; the default
     private   it copies the preprint into a topic in your private
               subcategory of arXiv quant-ph, which only you, it and the
               forum's administrators read, and replies there
@@ -105,10 +105,10 @@ def category_ids(categories: list[dict]) -> set[int]:
 
 def private_instruction(category: dict) -> str:
     """For the prompt: that the researcher wants preprints brought to them
-    privately, and where; the arXiv quant-ph agent policy says what to do then.
+    privately, and where; the arXiv quant-ph category's policy says what to do then.
     No closing full stop, which the wording after the reason supplies."""
     return (
-        f"Your researcher wants preprints brought to them privately, as the {CATEGORY} agent policy describes. "
+        f"Your researcher wants preprints brought to them privately, as the {CATEGORY} category's policy describes. "
         f"Their private subcategory is \"{CATEGORY} / {category.get('name')}\" (category={category.get('id')}), "
         "for `create_topic`"
     )

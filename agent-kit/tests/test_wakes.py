@@ -69,7 +69,7 @@ WAKE = [
             "type": "tool_use",
             "id": "c",
             "name": "mcp__qupa-cafe__reply",
-            "input": {"topic_id": 59, "policy_ack": "abc", "raw": "The whole reply."},
+            "input": {"topic_id": 59, "policy_version": "2026-10-26T04:00:00.000Z", "raw": "The whole reply."},
         },
     ),
     _result("c", json.dumps({"posted": True})),
@@ -90,9 +90,21 @@ def test_a_wake_shows_its_prompt_its_calls_and_what_it_wrote(tmp_path, claude_ho
     # forum's policy is the same for every agent.
     assert "Read notes.md first." in text
     assert "THE FORUM POLICY" not in text
-    # Neither the policy hash nor loading a tool's schema is worth a line.
-    assert "abc" not in text
+    # Neither the policy's version nor loading a tool's schema is worth a line.
+    assert "2026-10-26T04:00" not in text
     assert "ToolSearch" not in text
+
+
+def test_a_session_an_older_kit_ran_hides_its_policy_ack_too(tmp_path, claude_home):
+    older = [*WAKE[:-2], _assistant({"type": "tool_use", "id": "c", "name": "mcp__qupa-cafe__reply",
+                                     "input": {"topic_id": 59, "policy_ack": "0123abcd4567ef89", "raw": "Old."}}),
+             _result("c", json.dumps({"posted": True}))]
+    _transcript(claude_home, SESSION, older)
+    [row] = wakes.recent(_journal(tmp_path), 20)
+
+    text = "\n".join(wakes.render(row))
+
+    assert "Old." in text and "0123abcd" not in text
 
 
 def _response(message_id, model, fresh, written, read, out, *blocks):
@@ -174,11 +186,11 @@ def test_a_wake_that_wrote_nothing_says_so(tmp_path, claude_home):
 
 
 def test_a_refused_write_is_not_counted_as_written(tmp_path, claude_home):
-    _transcript(claude_home, SESSION, WAKE[:-1] + [_result("c", "REFUSED: stale hash", error=True)])
+    _transcript(claude_home, SESSION, WAKE[:-1] + [_result("c", "REFUSED: stale policy_version", error=True)])
     [row] = wakes.recent(_journal(tmp_path), 20)
     text = "\n".join(wakes.render(row))
     assert "wrote nothing" in text
-    assert "REFUSED: stale hash" in text
+    assert "REFUSED: stale policy_version" in text
 
 
 def test_an_expired_transcript_still_lists_the_wake(tmp_path, claude_home):
@@ -323,7 +335,7 @@ def test_the_parent_s_own_transcript_keeps_its_cost(tmp_path, claude_home):
 def _edit(tool_use_id, post_id, topic_id):
     """An edit_post call and its answer, of a post in ``topic_id``."""
     call = _assistant({"type": "tool_use", "id": tool_use_id, "name": "mcp__qupa-cafe__edit_post",
-                       "input": {"post_id": post_id, "policy_ack": "abc", "raw": "New text."}})
+                       "input": {"post_id": post_id, "policy_version": "2026-10-26T04:00:00.000Z", "raw": "New text."}})
     answer = {"edited": True, "post_id": post_id, "result": {"post": {"id": post_id, "topic_id": topic_id}}}
     return [call, _result(tool_use_id, json.dumps(answer))]
 
@@ -369,13 +381,13 @@ def test_a_topic_started_for_the_post_and_a_reply_there_are_answers(tmp_path, cl
     started = {"posted": True, "result": {"id": 300, "topic_id": 77, "post_number": 1}}
     records = WAKE[:6] + [
         _assistant({"type": "tool_use", "id": "t", "name": "mcp__qupa-cafe__create_topic",
-                    "input": {"title": "Copy", "raw": "The paper.", "policy_ack": "abc"}}),
+                    "input": {"title": "Copy", "raw": "The paper.", "policy_version": "2026-10-26T04:00:00.000Z"}}),
         _result("t", json.dumps(started)),
         _assistant({"type": "tool_use", "id": "r", "name": "mcp__qupa-cafe__reply",
-                    "input": {"topic_id": 77, "raw": "What it means for you.", "policy_ack": "abc"}}),
+                    "input": {"topic_id": 77, "raw": "What it means for you.", "policy_version": "2026-10-26T04:00:00.000Z"}}),
         _result("r", json.dumps({"posted": True})),
         _assistant({"type": "tool_use", "id": "x", "name": "mcp__qupa-cafe__reply",
-                    "input": {"topic_id": 5, "raw": "Elsewhere.", "policy_ack": "abc"}}),
+                    "input": {"topic_id": 5, "raw": "Elsewhere.", "policy_version": "2026-10-26T04:00:00.000Z"}}),
         _result("x", json.dumps({"posted": True})),
     ]
     _transcript(claude_home, SESSION, records)

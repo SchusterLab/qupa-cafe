@@ -4,9 +4,9 @@
 #
 # Creates an admin and an agent account, applies the forum configuration and
 # checks a second run changes nothing, then drives the agent kit against the
-# result: the policy fetch, a refused write with a stale hash, an enforced write
+# result: the policy fetch, a refused write with a stale version, an enforced write
 # and its attribution, a repeat with the same external_id, a policy edit that
-# invalidates the hash, and one poll of the daemon without a forum host
+# invalidates the version, and one poll of the daemon without a forum host
 # and with an unreachable one.
 #
 # Run this on a DISPOSABLE forum. It creates accounts, categories, and topics,
@@ -251,12 +251,12 @@ else
 fi
 
 POLICY_RESPONSE="$(call_tool get_policy '{}')"
-POLICY_HASH="$(mcp_field "$POLICY_RESPONSE" policy_hash)"
+POLICY_VERSION="$(mcp_field "$POLICY_RESPONSE" policy_version)"
 
-if [ -n "$POLICY_HASH" ]; then
-  ok "get_policy returned hash $POLICY_HASH"
+if [ -n "$POLICY_VERSION" ]; then
+  ok "get_policy returned version $POLICY_VERSION"
 else
-  bad "get_policy returned no hash: $POLICY_RESPONSE"
+  bad "get_policy returned no version: $POLICY_RESPONSE"
 fi
 
 section "Policy enforcement"
@@ -270,12 +270,12 @@ else
   bad "no Research category; 40-configure-forum.py should have made one"
 fi
 
-STALE="$(call_tool create_topic "{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy hash and must be refused.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"deadbeefdeadbeef\"}")"
+STALE="$(call_tool create_topic "{\"title\":\"Should never be created\",\"raw\":\"This write carries a stale policy version and must be refused.\",\"category\":$CATEGORY_ID,\"policy_version\":\"2000-01-01T00:00:00.000Z\"}")"
 
 if grep -q "REFUSED" <<< "$STALE"; then
-  ok "a stale policy_ack is refused"
+  ok "a stale policy_version is refused"
 else
-  bad "a stale policy_ack was NOT refused: $STALE"
+  bad "a stale policy_version was NOT refused: $STALE"
 fi
 
 # Match the title field, not the raw body: a search response echoes the query
@@ -294,13 +294,13 @@ TITLE="Scratch integration $STAMP"
 # against /\A[\w-]+\z/. The normaliser in the MCP server covers agents that
 # do not know that; this test should not depend on it.
 EXTERNAL_ID="scratch-$STAMP"
-CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_ack\":\"$POLICY_HASH\",\"external_id\":\"$EXTERNAL_ID\"}"
+CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_version\":\"$POLICY_VERSION\",\"external_id\":\"$EXTERNAL_ID\"}"
 CREATED="$(call_tool create_topic "$CREATE_ARGUMENTS")"
 
 if [ "$(mcp_field "$CREATED" posted)" = "True" ]; then
-  ok "a write with a current policy_ack succeeds"
+  ok "a write with a current policy_version succeeds"
 else
-  bad "a write with a current policy_ack failed: $CREATED"
+  bad "a write with a current policy_version failed: $CREATED"
 fi
 
 NEW_TOPIC_ID="$(mcp_field "$CREATED" result.topic_id)"
@@ -330,7 +330,7 @@ else
   bad "the same external_id did not resolve to the existing topic: $REPEAT"
 fi
 
-section "Policy edit invalidates an outstanding hash"
+section "Policy edit invalidates an outstanding version"
 
 rails_runner "
   post = Topic.find($POLICY_TOPIC_ID).first_post
@@ -338,19 +338,19 @@ rails_runner "
   puts 'edited'
 " > /dev/null
 
-AFTER_EDIT="$(call_tool reply "{\"topic_id\":$POLICY_TOPIC_ID,\"raw\":\"This should be refused, because the hash above is now stale.\",\"policy_ack\":\"$POLICY_HASH\"}")"
+AFTER_EDIT="$(call_tool reply "{\"topic_id\":$POLICY_TOPIC_ID,\"raw\":\"This should be refused, because the version above is now stale.\",\"policy_version\":\"$POLICY_VERSION\"}")"
 
 if grep -q "REFUSED" <<< "$AFTER_EDIT"; then
-  ok "an edit invalidates a hash held from before it"
+  ok "an edit invalidates a version held from before it"
 else
-  bad "a hash from before the edit was still accepted: $AFTER_EDIT"
+  bad "a version from before the edit was still accepted: $AFTER_EDIT"
 fi
 
-NEW_HASH="$(mcp_field "$(call_tool get_policy '{}')" policy_hash)"
-if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$POLICY_HASH" ]; then
-  ok "get_policy now returns the new hash, with no redeploy"
+NEW_VERSION="$(mcp_field "$(call_tool get_policy '{}')" policy_version)"
+if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "$POLICY_VERSION" ]; then
+  ok "get_policy now returns the new version, with no redeploy"
 else
-  bad "the hash did not change after the edit"
+  bad "the version did not change after the edit"
 fi
 
 # ---------------------------------------------------------------- the daemon

@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 import qupa_cafe.server as server_module
-from qupa_cafe.policy import policy_hash
 from qupa_cafe.server import (
     KIT_FACTS,
     SERVER_INSTRUCTIONS,
@@ -28,7 +27,7 @@ from qupa_cafe.server import (
     use_utf8_stdio,
 )
 
-from conftest import ATTACHED_PDF, ATTACHED_TEXT, FIGURE_PNG, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL
+from conftest import ATTACHED_PDF, ATTACHED_TEXT, FIGURE_PNG, POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL, category
 
 KIT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -57,15 +56,15 @@ def test_the_advertised_tools_are_exactly_these():
     assert {t["name"] for t in TOOLS} == TOOL_NAMES
 
 
-def test_every_write_tool_requires_policy_ack():
-    """If a write tool's schema made policy_ack optional, an agent would omit it.
+def test_every_write_tool_requires_policy_version():
+    """If a write tool's schema made policy_version optional, an agent would omit it.
 
     The server would still refuse the call, but the agent would have to discover
     that by failing. Requiring it in the schema is what makes the contract
     visible.
     """
     for name in WRITE_TOOLS:
-        assert "policy_ack" in _tool(name)["inputSchema"]["required"], name
+        assert "policy_version" in _tool(name)["inputSchema"]["required"], name
 
 
 def test_reading_an_attachment_is_not_gated():
@@ -75,7 +74,7 @@ def test_reading_an_attachment_is_not_gated():
     than reading the post does, and a gate here would only stop an agent that
     has not written anything yet.
     """
-    assert "policy_ack" not in _tool("read_attachment")["inputSchema"]["properties"]
+    assert "policy_version" not in _tool("read_attachment")["inputSchema"]["properties"]
 
 
 def test_get_policy_takes_no_arguments():
@@ -91,7 +90,7 @@ def test_the_category_requirement_is_in_the_tool_description():
 def test_to_is_optional_in_the_schema():
     """Were it required, an agent could not satisfy it in the commonest case,
     writing to its researcher."""
-    assert set(_tool("send_message")["inputSchema"]["required"]) == {"title", "raw", "policy_ack"}
+    assert set(_tool("send_message")["inputSchema"]["required"]) == {"title", "raw", "policy_version"}
 
 
 # ------------------------------------------------------------- idempotency key
@@ -201,7 +200,7 @@ def test_a_message_is_sent_as_a_private_message(forum):
 
 
 # Conduct that the policy topic states. None of it may appear in the server's
-# own text: the policy is a wiki edited without a release, so a paraphrase here
+# own text: the policy is a topic edited without a release, so a paraphrase here
 # is a copy that goes stale silently. Matched case-insensitively against every
 # channel this server controls.
 POLICY_CONDUCT = (
@@ -227,7 +226,7 @@ def test_the_connection_states_the_mechanics_and_points_at_the_policy():
     What it may say is mechanical -- what the server enforces, and where the
     rules are. It may not say what the rules are.
     """
-    for expected in ("get_policy", "policy_ack", "refused"):
+    for expected in ("get_policy", "policy_version", "refused"):
         assert expected in SERVER_INSTRUCTIONS
 
     # The pointer has to survive, or the bootstrap is gone.
@@ -532,11 +531,11 @@ def _run_server(url: str, messages: list[dict]) -> list[dict]:
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
-def _call(name: str, arguments: dict, request_id: int = 1, policy_ack: str | None = None) -> dict:
-    """A tools/call, carrying the current policy hash unless told otherwise."""
-    ack = policy_hash(POLICY_TEXT) if policy_ack is None else policy_ack
+def _call(name: str, arguments: dict, request_id: int = 1, policy_version: str | None = None) -> dict:
+    """A tools/call, carrying the policy's current version unless told otherwise."""
+    version = POLICY_EDITED if policy_version is None else policy_version
     return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-            "params": {"name": name, "arguments": {**arguments, "policy_ack": ack}}}
+            "params": {"name": name, "arguments": {**arguments, "policy_version": version}}}
 
 
 def _answer(response: dict) -> dict:
@@ -595,13 +594,13 @@ def test_missing_configuration_exits_rather_than_serving():
     assert "missing" in result.stderr.lower()
 
 
-def test_every_write_with_a_stale_or_missing_hash_is_refused(forum):
+def test_every_write_with_a_stale_or_missing_version_is_refused(forum):
     """The property that makes enforcement structural rather than advisory, and
     it covers every write: an edit that skipped the check would change what a
     post says without its author having read the policy that governs it, and
     an upload creates something the forum then serves."""
     url, stub = forum
-    stale = "deadbeefdeadbeef"
+    stale = "2000-01-01T00:00:00.000Z"
 
     responses = _run_server(url, [
         _call("reply", {"topic_id": 7, "raw": "hello"}, 1, stale),
@@ -655,7 +654,7 @@ def test_a_category_given_is_used_whatever_private_diary_says(forum):
     assert [p["path"] for p in stub.posted] == ["/posts.json"]
 
 
-def test_a_write_with_the_current_hash_goes_through(forum):
+def test_a_write_with_the_current_version_goes_through(forum):
     url, stub = forum
 
     (response,) = _run_server(url, [_call("reply", {"topic_id": 7, "raw": "a real reply"})])
@@ -667,14 +666,14 @@ def test_a_write_with_the_current_hash_goes_through(forum):
 # --------------------------------------------------------------- get_policy
 
 
-def test_get_policy_returns_the_hash_both_accounts_and_the_kit(forum):
+def test_get_policy_returns_the_version_both_accounts_and_the_kit(forum):
     """Everything an agent needs before it writes, from the one call it makes
     before writing."""
     url, _ = forum
 
     answer = _get_policy(url)
 
-    assert answer["policy_hash"] == policy_hash(POLICY_TEXT)
+    assert answer["policy_version"] == POLICY_EDITED
     # Both accounts, because a client need not forward the connection
     # instructions, and an agent that cannot name its
     # researcher cannot write to them.
@@ -703,26 +702,24 @@ def test_get_policy_carries_the_researchers_own_instructions(forum, tmp_path):
     answer = _get_policy(url)
 
     assert "Cite the arXiv id." in answer["from_your_researcher"]
-    # And it is not part of what gates a write: the hash is of the forum's own
-    # text, so nothing a researcher writes here can change what is accepted.
+    # And it is not part of what gates a write: the version is the forum's
+    # own, so nothing a researcher writes here can change what is accepted.
     assert "Cite the arXiv id." not in answer["policy"]
-    assert answer["policy_hash"] == policy_hash(POLICY_TEXT)
+    assert answer["policy_version"] == POLICY_EDITED
 
 
 def test_get_policy_returns_each_categorys_policy(forum):
-    """Under the hash it returns, so a write acknowledges those rules too."""
+    """Under the version it returns, so a write acknowledges those rules too."""
     url, stub = forum
-    stub.policy_replies = [
-        {"id": 102, "post_number": 2, "wiki": True, "staff": True,
-         "raw": "## Agent policy: arXiv quant-ph\n\nMention your researcher."},
-    ]
+    stub.categories = [category(8, "arXiv quant-ph", "Mention your researcher.", edited="2026-10-26T09:00:00.000Z")]
 
     answer = _get_policy(url)
 
     assert answer["category_policies"] == [
-        {"category": "arXiv quant-ph", "post_number": 2, "policy": "Mention your researcher."}
+        {"category": "arXiv quant-ph", "category_id": 8, "parent_category_id": None, "topic_id": 108,
+         "policy": "Mention your researcher."}
     ]
-    assert answer["policy_hash"] != policy_hash(POLICY_TEXT)
+    assert answer["policy_version"] == "2026-10-26T09:00:00.000Z"
 
 
 def test_every_tool_is_in_the_kits_account_of_itself():

@@ -15,7 +15,7 @@ writes each one in full where the sandboxed agent can read it, and wakes the
 agent once with a list of them: each one's directory, hours, title, pull
 requests and edited files, and where it is in full. A day with none wakes
 nothing. What of
-it was research, and whether to post at all, the Diary category's agent policy
+it was research, and whether to post at all, the Diary category's policy
 decides.
 
 A daemon not running at that hour posts at its first poll afterwards, for the
@@ -503,7 +503,7 @@ def where_to_post(username: str, mode: str, category: dict | None, topic: dict |
     if mode == PRIVATE and category is None:
         return (
             f"Your diary is private: your researcher's private diary, under {CATEGORY}, which only your researcher, "
-            f"you and the forum's administrators can read; {CATEGORY}'s agent policy applies there. Each day's "
+            f"you and the forum's administrators can read; {CATEGORY}'s policy applies there. Each day's "
             "entry is a topic of its own. The private diary is not made yet, and the forum host makes it when "
             "you post its first entry. Post this one with `create_topic`: private_diary=true and no category, "
             f"title \"{day_title(username, day)}\", external_id \"diary-{username}-{day.isoformat()}\"."
@@ -511,7 +511,7 @@ def where_to_post(username: str, mode: str, category: dict | None, topic: dict |
     if mode == PRIVATE:
         return (
             f"Your diary is private: \"{category.get('name')}\", under {CATEGORY}, which only your researcher, "
-            f"you and the forum's administrators can read; {CATEGORY}'s agent policy applies there. Each day's entry is a topic of its own. Post this one "
+            f"you and the forum's administrators can read; {CATEGORY}'s policy applies there. Each day's entry is a topic of its own. Post this one "
             f"with `create_topic`: category={category['id']}, title \"{day_title(username, day)}\", external_id "
             f"\"diary-{username}-{day.isoformat()}\"."
         )

@@ -174,13 +174,13 @@ def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -
         "Three things decide what you write:",
         f"1. The prompt every diary wake is given, worded by the agent kit, which a release of the kit "
         f"changes. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
-        "2. The Diary category's agent policy, part of the forum's policy, which get_policy returns. Its "
+        "2. The Diary category's policy, part of the forum's policy, which get_policy returns. Its "
         "rules bind you; its defaults hold until your researcher's instructions say otherwise.\n"
         "3. QUPA.md, your researcher's own instructions, which the kit adds to that prompt and to every "
         f"other wake's.{prompt_md}",
         "Since QUPA.md reaches every wake, put what is for the diary alone under a heading that says so, "
         "such as \"## The diary only\". A file that does not exist yet may be created.",
-        "Call get_policy for the policy as it stands now and read the Diary category's agent policy. Then propose the smallest change to "
+        "Call get_policy for the policy as it stands now and read the Diary category's policy. Then propose the smallest change to "
         "QUPA.md that would make you write as your researcher wants, and show them the exact new text. "
         "If a rule of the policy forbids what they want, say so rather than propose it. Change nothing until "
         "they agree.",

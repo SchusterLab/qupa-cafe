@@ -1073,17 +1073,16 @@ def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path,
 # ------------------------------------------------------- the policy, in the prompt
 
 
-def test_a_wake_s_prompt_carries_the_policy_and_its_hash_as_they_stand(forum):
+def test_a_wake_s_prompt_carries_the_policy_and_its_version_as_they_stand(forum):
     """So the wake spends no call on get_policy, and its writes carry the
-    current hash."""
-    from conftest import POLICY_TEXT, POLICY_TOPIC_ID
-    from qupa_cafe.policy import policy_hash
+    current version."""
+    from conftest import POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID
 
     url, _ = forum
     settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
     policy = daemon.policy_text(settings)
     assert POLICY_TEXT.splitlines()[0] in policy
-    assert f"Pass {policy_hash(POLICY_TEXT)} as policy_ack on every write" in policy
+    assert f"Pass {POLICY_EDITED} as policy_version on every write" in policy
     assert "- create_topic, reply, send_message and edit_post write" in policy
     assert "They cannot:\n- upload more than 4 MB" in policy
 
@@ -1094,31 +1093,29 @@ def test_a_wake_s_prompt_carries_the_policy_and_its_hash_as_they_stand(forum):
     assert appended.count(policy) == 1 and appended.index("text") < appended.index(policy)
 
 
-def test_a_wake_carries_only_the_agent_policy_of_its_topic_s_category(forum):
-    """The Diary's agent policy is no use to a wake on a preprint, nor the
-    arXiv one to a mention in another category."""
-    from conftest import POLICY_TOPIC_ID, StubForum
+def test_a_wake_carries_only_the_policies_of_its_topic_s_category(forum):
+    """The Diary's policy is no use to a wake on a preprint, nor the arXiv
+    one to a mention in another category; a subcategory's comes with its
+    parent's."""
+    from conftest import POLICY_TOPIC_ID, StubForum, category
 
-    def reply(post_number, name, rule):
-        return {"id": 100 + post_number, "post_number": post_number, "raw": f"## Agent policy: {name}\n\n{rule}",
-                "wiki": True, "staff": True}
-
-    StubForum.policy_replies = [reply(2, "arXiv quant-ph", "ARXIV RULE"), reply(3, "Diary", "DIARY RULE")]
+    StubForum.categories = [category(8, "arXiv quant-ph", "ARXIV RULE"), category(9, "Diary", "DIARY RULE"),
+                            category(12, "a", "PRIVATE ARXIV RULE", parent=8), category(1, "Research", "RESEARCH")]
     url, _ = forum
-    settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
-    listed = [{"id": 8, "name": "arXiv quant-ph"}, {"id": 9, "name": "a", "parent_category_id": 8},
-              {"id": 1, "name": "Research"}]
+    settings = Settings(forum_url=url, api_key="test-key", api_username="test-agent",
+                        policy_topic_id=POLICY_TOPIC_ID, host_url=f"{url}/host")
 
-    assert daemon.category_names(listed, 9) == {"a", "arxiv quant-ph"}
-    shared, category = daemon.policy_texts(settings, daemon.category_names(listed, 9))
-    assert "ARXIV RULE" in category and "DIARY RULE" not in category
+    shared, policies = daemon.policy_texts(settings, 12)
+    assert policies.index("ARXIV RULE") < policies.index("PRIVATE ARXIV RULE")
+    assert "DIARY RULE" not in policies and "RESEARCH" not in policies
     assert "RULE" not in shared
-    assert daemon.policy_texts(settings, daemon.category_names(listed, 1))[1] == ""
-    assert "DIARY RULE" in daemon.policy_text(settings, {"Diary"})
+    assert "RESEARCH" in daemon.policy_texts(settings, 1)[1]
+    assert daemon.policy_texts(settings, 77)[1] == ""
+    assert "DIARY RULE" in daemon.policy_text(settings, category="Diary")
 
     forked = build_prompt(settings, "you were mentioned", _topic(10), "%POLICY%\n%BODY%", shared, forked=True,
-                          category_policy=category)
-    assert daemon.IN_PARENT in forked and "ARXIV RULE" in forked and shared not in forked
+                          category_policy=policies)
+    assert daemon.IN_PARENT in forked and "PRIVATE ARXIV RULE" in forked and shared not in forked
 
 
 def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
@@ -1579,7 +1576,7 @@ def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_to
     host = ArxivHost([101])
     assert daemon.one_pass(_settings(), ArxivForum({10: _preprint()}), host, handled, dry_run=False) == 1
     (prompt,) = prompts
-    assert "brought to them privately, as the arXiv quant-ph agent policy describes" in prompt
+    assert "brought to them privately, as the arXiv quant-ph category's policy describes" in prompt
     assert '"arXiv quant-ph / a" (category=9)' in prompt
     assert ("private_arxiv", "u") in host.told
 

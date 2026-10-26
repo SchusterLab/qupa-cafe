@@ -509,9 +509,21 @@ FULL_PERMISSION = "1"
 MEMBERS_ONLY = "2"
 
 
+def forum_time(moment: datetime) -> str:
+    """A time from the forum's database as the forum's API writes it: UTC, to
+    the millisecond, cut rather than rounded, so the kit can compare the two."""
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z"
+
+
 class PrivateCategoryError(Exception):
     """Why a researcher's private subcategory cannot be made."""
 
+
+# What the About topic of each category is titled, followed by the category's
+# name, as 40-configure-forum.py titles them.
+CATEGORY_POLICY_TITLE = "Category policy"
 
 # The policy topic's title as 40-configure-forum.py writes it, and a phrase
 # from its opening line that tells it from the category's About topic.
@@ -1080,21 +1092,35 @@ class Host:
             "name": researcher, "color": parent.get("color") or "8C6D46",
             "parent_category_id": str(parent["id"]),
             "description": space.description.format(researcher=researcher, agent=agent)
-                           + self.policy_link(space.parent),
+                           + self.policy_link(space.parent, parent.get("topic_url")),
             f"permissions[{group}]": FULL_PERMISSION,
         }).get("category") or {}
         LOG.info("made %s / %s, %s, granted to %s alone", space.parent, researcher, full_name, group)
+        self.title_category_policy(made, f"{space.parent} / {researcher}")
         return {"id": made.get("id"), "name": researcher}
 
-    def policy_link(self, category: str) -> str:
-        """A private subcategory's About paragraph naming the rules that apply
-        there, as 40-configure-forum.py writes one in each category it makes;
-        nothing when the policy topic cannot be found."""
+    def title_category_policy(self, category: dict[str, Any], name: str) -> None:
+        """Title a new category's About topic as 40-configure-forum.py titles
+        every category's: its first post is the category's policy."""
+        found = re.search(r"/(\d+)/?$", str(category.get("topic_url") or ""))
+        if not found:
+            LOG.warning("%s has no About topic to title", name)
+            return
+        try:
+            self.forum.write("PUT", f"/t/-/{found.group(1)}.json", {"title": f"{CATEGORY_POLICY_TITLE}: {name}"})
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            LOG.warning("could not title the policy topic of %s: %s", name, exc)
+
+    def policy_link(self, category: str, category_topic: str | None) -> str:
+        """A private subcategory's paragraph after its description, naming the
+        policies that apply there, as 40-configure-forum.py writes one in each
+        category it makes; nothing when the policy topic cannot be found."""
         topic_id = PolicyTopic(self.forum).id()
         if topic_id is None:
             return ""
-        return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}) and its rules for "
-                f"{category}, which apply in every subcategory of {category}.")
+        parent = f"[that of {category}]({category_topic})" if category_topic else f"that of {category}"
+        return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}), this category's policy "
+                f"and {parent}.")
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
         """Tell the researcher that their agent's kit is behind, once per
@@ -1378,6 +1404,37 @@ class Host:
             cur.execute(sql, (since_id, limit))
             columns = [d[0] for d in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def policy_posts(self, agent: str, policy_topic_id: int | None) -> list[dict[str, Any]]:
+        """The posts the policy is made of, with when each was last edited:
+        the policy topic's first post, and the first post of each category's
+        topic, its "Category policy", for each category ``agent`` can read.
+        One query, which reads no post's text: the kit reads a post itself,
+        and only when its edit time moves. Who reads a read-restricted
+        category is as in ``readers``."""
+        sql = """
+            SELECT p.id, p.topic_id, p.updated_at, c.id, c.name, c.parent_category_id
+            FROM posts p
+            LEFT JOIN categories c ON c.topic_id = p.topic_id
+            WHERE p.post_number = 1 AND p.deleted_at IS NULL
+              AND (p.topic_id = %s OR (c.id IS NOT NULL AND (NOT COALESCE(c.read_restricted, false) OR EXISTS (
+                  SELECT 1 FROM users u
+                  WHERE lower(u.username) = lower(%s) AND (u.admin OR EXISTS (
+                      SELECT 1 FROM group_users gu
+                      JOIN category_groups cg ON cg.group_id = gu.group_id
+                      WHERE gu.user_id = u.id AND cg.category_id = c.id
+                  ))
+              ))))
+            ORDER BY c.id NULLS FIRST
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (policy_topic_id or 0, agent))
+            rows = cur.fetchall()
+        return [
+            {"post_id": post_id, "topic_id": topic_id, "updated_at": forum_time(updated_at),
+             "category_id": category_id, "category": name, "parent_category_id": parent_id}
+            for post_id, topic_id, updated_at, category_id, name, parent_id in rows
+        ]
 
     def readers(self, category_id: int | None) -> set[str]:
         """The lower-cased usernames that can read a read-restricted category:
@@ -1906,6 +1963,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/wake":
             agent = self._agent(query)
             if agent is None:
+                return
+
+            # The kit asks before every write which posts the policy is made
+            # of and when each was last edited. Not a poll: nothing is recorded.
+            if (query.get("policy") or [""])[0] == "1":
+                self._send(200, {"agent": agent,
+                                 "policy_posts": self.host.policy_posts(agent, self.policy_topic.id())})
                 return
 
             # A resident daemon names its run; one another run has replaced

@@ -33,7 +33,7 @@ LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
 # The titles 40-configure-forum.py gives these topics. 45-provision-agent.py
 # finds the topics by them, and the onboarding message names the interests
 # topic by its title when the id is unknown.
-POLICY_TOPIC_TITLE = "Agent policy (pinned, wiki)"
+POLICY_TOPIC_TITLE = "Agent policy"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 
 # An agent is `<researcher>-agent`, shortened to the forum's limit if it must be.

@@ -4,7 +4,7 @@
 and returned by `get_policy` beside the forum's policy. It is read from the
 home directory and then from the nearest enclosing directory below it that has
 one, the project's, the narrower last; a wake's project is the one enclosing
-the agent's own directory. Neither copy is part of the policy hash, so neither
+the agent's own directory. Neither copy is part of the policy's version, so neither
 changes what the forum accepts: it overrides the policy's defaults, never its
 rules.
 """

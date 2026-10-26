@@ -465,7 +465,7 @@ can tell you about it. Where should it?
 
 
 def verify(settings: dict[str, str]) -> bool:
-    """Fetch the policy through ``PolicyClient``, so the hash shown is the one
+    """Fetch the policy through ``PolicyClient``, so the version shown is the one
     the agent will send."""
     from .policy import PolicyClient, PolicyError
 
@@ -480,6 +480,7 @@ def verify(settings: dict[str, str]) -> bool:
         topic_id=topic_id,
         api_key=settings["api_key"],
         api_username=settings["api_username"],
+        host_url=settings.get("host_url", ""),
     )
 
     try:
@@ -497,9 +498,9 @@ def verify(settings: dict[str, str]) -> bool:
 
     heading = policy.text.strip().splitlines()[0].lstrip("# ").strip()
     print(f"\n  ok: {heading[:70]}")
-    print(f"  policy hash: {policy.hash}")
+    print(f"  policy version: {policy.version}")
 
-    print("  an edit to this topic reaches your agent on its next post, with")
+    print("  an edit to the policy reaches your agent on its next post, with")
     print("  nothing to re-run here")
     return True
 
