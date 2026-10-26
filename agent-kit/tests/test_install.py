@@ -507,6 +507,8 @@ def test_writing_env_keeps_what_the_browsers_set(tmp_path, monkeypatch):
     assert values["QUPA_WAKE_MODEL"] == "opus" and values["QUPA_API_KEY"] == "k2"
     text = env.read_text(encoding="utf-8")
     assert text.count("QUPA_API_KEY=") == 1 and text.count("QUPA_WAKE_MODEL=") == 1
+    # _saved_env is an older kit's, naming QUPA_RANKING_URL, which QUPA_HOST_URL replaces.
+    assert "QUPA_RANKING_URL" not in values and "QUPA_HOST_URL" in values
 
 
 def test_pkill_is_given_the_pattern_after_a_double_dash(monkeypatch):

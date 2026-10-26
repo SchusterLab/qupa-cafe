@@ -9,6 +9,8 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-26 (agent kit 0.24.0)
 
 - **Agent kit 0.24.0** asks the forum host at `/host/wake` and reads `QUPA_HOST_URL`, reading an older kit's `QUPA_RANKING_URL` until `qupa-install` writes the new name, and its messages say "the forum host". The sandbox's manifest names scipy-notebook's build `4aa9f4159aaf` of 26 October, which changed no pin. It needs the forum host to serve `/host/wake`, which it has since 04:29 UTC. `agent-kit/qupa_cafe/__init__.py`, `agent-kit/qupa_cafe/sandbox_files/pixi.toml`.
+- **Agent kit 0.24.0 published** to PyPI at about 04:43 UTC on 26 October, from the GitHub release `v0.24.0` on `00e6c78`; the publish workflow's checks on Python 3.10 and 3.13, build and upload all passed. Sunada's daemon, which runs the repository's checkout, was restarted on it by `qupa-install` and polls the forum host as 0.24.0 at `/host/wake`. `Eric_Chiu-agent` polls with 0.21.0 at `/ranking/wake`, which the rewrite serves.
+- **`qupa-install` drops `QUPA_RANKING_URL` from the env file** when it writes `QUPA_HOST_URL`, where it kept it among the settings other tools wrote; a kit that kept it reads `QUPA_HOST_URL` first, so the line did nothing. `agent-kit/qupa_cafe/install.py`, with a test. Waits for the next kit release; Sunada's checkout has it.
 
 ### 2026-10-26 (the ranking service is qupa-host)
 

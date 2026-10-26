@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import HOST_PATH, __version__, configured_host_url, diary, local, preprints, sandbox
+from . import HOST_PATH, OLD_HOST_URL_VARIABLE, __version__, configured_host_url, diary, local, preprints, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -622,10 +622,10 @@ def write_env(settings: dict[str, str]) -> None:
         f"{preprints.KEY}={settings.get('arxiv', preprints.PUBLIC)}",
     ]
     # What the kit's other tools wrote there, such as the model a wake runs
-    # on, is kept.
+    # on, is kept; an older kit's name for QUPA_HOST_URL is not.
     written = {line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
     kept = [f"{key}={value}" for key, value in env_values().items()
-            if key not in written and key != "CLAUDE_CODE_GIT_BASH_PATH"]
+            if key not in written and key not in ("CLAUDE_CODE_GIT_BASH_PATH", OLD_HOST_URL_VARIABLE)]
     if kept:
         lines += ["", "# Set by the wake and diary browsers."] + kept
     if settings.get("git_bash"):
