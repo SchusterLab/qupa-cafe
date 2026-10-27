@@ -88,6 +88,8 @@ function sandboxConfig(config) {
         path.dirname(config.pixi),
         ...(config.programs ?? []),
         ...(config.agent_dirs ?? []),
+        // Projects the researcher let wakes read, and not change.
+        ...(config.read_dirs ?? []),
       ],
       allowWrite: [config.workspace, ...(config.agent_dirs ?? [])],
       denyWrite: config.protected ?? [],

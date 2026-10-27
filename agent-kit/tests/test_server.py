@@ -35,17 +35,24 @@ KIT_ROOT = Path(__file__).resolve().parent.parent
 
 TOOL_NAMES = {
     "get_policy",
+    "register_session",
     "create_topic",
     "reply",
     "start_reply",
     "send_message",
     "edit_post",
     "set_wiki",
+    "create_category",
     "read_attachment",
     "attach_file",
+    "slack_channels",
+    "slack_read",
+    "slack_post",
+    "slack_message",
 }
 
-WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "set_wiki", "attach_file")
+WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "set_wiki", "create_category",
+               "attach_file", "slack_post", "slack_message")
 
 
 def _tool(name: str) -> dict:
@@ -762,6 +769,83 @@ def test_a_write_in_a_topic_carries_the_version_of_the_policies_that_apply_there
     assert not any(p.get("path") == "/posts/6/wiki" for p in stub.posted)
 
 
+def test_every_write_returns_the_address_of_its_post(forum):
+    """So the agent can give its researcher the link to what it posted."""
+    url, stub = forum
+    stub.categories = [category(5, "Meta", "Housekeeping.")]
+    stub.topic_categories = {7: 5}
+
+    responses = _run_server(url, [
+        _call("create_topic", {"title": "A topic", "raw": "hello", "category": 5}, 1),
+        _call("reply", {"topic_id": 7, "raw": "hello"}, 2),
+        _call("edit_post", {"post_id": 5, "raw": "rewritten"}, 3),
+        _call("start_reply", {"topic_id": 7}, 4),
+        _call("reply", {"topic_id": 7, "raw": "the answer"}, 5),
+    ])
+    said = {r["id"]: _answer(r) for r in responses}
+
+    # The stub answers a post with topic 7's second post, and an edit with its third.
+    assert said[1]["url"] == f"{url}/t/-/7/2"
+    assert said[2]["url"] == f"{url}/t/-/7/2"
+    assert said[3]["url"] == f"{url}/t/a-topic/7/3"
+    assert said[5]["url"] == f"{url}/t/a-topic/7/3"
+
+
+def test_a_category_is_made_with_its_policy(forum):
+    """Under its parent, holding the description and the paragraph naming
+    the policies that apply, its About topic titled as the forum's own
+    scripts title one, and checked against the parent's policy."""
+    url, stub = forum
+    stub.categories = [category(5, "Research", "Research.", edited="2026-10-26T09:00:00.000Z")]
+
+    responses = _run_server(url, [
+        _call("create_category", {"name": "Lab infrastructure", "description": "Shared equipment.",
+                                  "parent_category": 5}, 1),
+        _call("create_category", {"name": "Lab infrastructure", "description": "Shared equipment.",
+                                  "parent_category": 5}, 2, "2026-10-26T09:00:00.000Z"),
+    ])
+    said = {r["id"]: r["result"]["content"][0]["text"] for r in responses}
+
+    assert "category 5" in said[1] and "Stale" in said[1]
+    answer = json.loads(said[2])
+    assert answer["category_id"] == 30 and answer["url"] == f"{url}/c/new-category/30"
+    made = urllib.parse.parse_qs(next(p for p in stub.posted if p["path"] == "/categories.json")["body"])
+    assert made["name"] == ["Lab infrastructure"] and made["parent_category_id"] == ["5"]
+    assert made["color"] == ["0088CC"]
+    assert made["description"] == [
+        f"Shared equipment.\n\nAgents posting here follow the [agent policy](/t/{POLICY_TOPIC_ID}), this "
+        "category's policy and [that of Research](/t/category-policy-5/105)."
+    ]
+    retitled = next(p for p in stub.posted if p["path"] == "/t/-/130.json")
+    assert urllib.parse.parse_qs(retitled["body"]) == {"title": ["Category policy: Research / Lab infrastructure"]}
+
+
+def test_a_top_level_category_carries_the_marker_the_forum_s_script_keeps_current(forum):
+    url, stub = forum
+
+    (response,) = _run_server(url, [_call("create_category", {"name": "Teaching", "description": "Courses."}, 1)])
+
+    assert _answer(response)["created"] is True
+    made = urllib.parse.parse_qs(next(p for p in stub.posted if p["path"] == "/categories.json")["body"])
+    assert "parent_category_id" not in made
+    assert made["description"][0].endswith(
+        "follow the [agent policy](/t/%d) and this category's policy, which applies in its subcategories too."
+        "<!-- qupa-cafe:policy-link -->" % POLICY_TOPIC_ID
+    )
+
+
+def test_an_agent_that_may_not_make_a_category_is_told_what_to_do_instead(forum):
+    url, stub = forum
+    stub.failures = {"/categories.json": (403, {"errors": ["You are not permitted to view the requested resource."]})}
+
+    (response,) = _run_server(url, [_call("create_category", {"name": "Teaching", "description": "Courses."}, 1)])
+
+    message = response["result"]["content"][0]["text"]
+    assert "failed with 403" in message
+    assert "Only a moderator may make a category" in message and "tell your researcher" in message
+    assert not any(p["path"].startswith("/t/-/") for p in stub.posted)
+
+
 def test_every_tool_is_in_the_kits_account_of_itself():
     """A tool the facts leave out is one the agent learns of only by chance."""
     facts = " ".join(KIT_FACTS["can"] + KIT_FACTS["cannot"])
@@ -941,3 +1025,28 @@ def test_a_placeholder_never_filled_is_deleted_when_the_session_ends(forum, tmp_
 
     assert [p["path"] for p in stub.posted if p.get("method") == "DELETE"] == ["/posts/101.json"]
     assert json.loads((tmp_path / "placeholders.json").read_text()) == {}
+
+
+def test_a_slack_write_goes_to_the_forum_host_with_the_policy_read(forum):
+    """The host passes it to its chat bridge; the policy's version is checked
+    here first and goes no further."""
+    url, stub = forum
+    responses = _run_server(url, [
+        _call("slack_message", {"person": "Pat Lee", "text": "Which fridge?", "topic_id": 7}, 1),
+        _call("slack_post", {"channel": "lab", "text": "Hello"}, 2, policy_version="stale"),
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "slack_channels", "arguments": {}}},
+    ])
+    said = {r["id"]: r for r in responses}
+    assert _answer(said[1])["slack"] == {"person": "Pat Lee", "text": "Which fridge?", "topic_id": 7, "action": "message"}
+    assert said[2]["result"]["isError"] is True
+    asked = [json.loads(p["body"]) for p in stub.posted if p["path"].startswith("/host/wake")]
+    assert asked == [{"slack": {"person": "Pat Lee", "text": "Which fridge?", "topic_id": 7, "action": "message"}},
+                     {"slack": {"action": "channels"}}]
+
+
+def test_the_bridges_refusal_reaches_the_agent(forum):
+    url, stub = forum
+    stub.failures = {"/host/wake": (422, {"error": "Pat Lee is on the forum as @pat: mention or message them there"})}
+    (response,) = _run_server(url, [_call("slack_message", {"person": "Pat Lee", "text": "Hi"})])
+    assert response["result"]["isError"] is True
+    assert "Slack: Pat Lee is on the forum as @pat" in response["result"]["content"][0]["text"]

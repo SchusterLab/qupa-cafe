@@ -19,7 +19,13 @@ leaves any other path to the researcher's own Claude Code settings.
 node, npm and pixi, or on Windows without the runtime's one-time elevated
 install, it reports what is missing. The daemon wakes nobody without it.
 
-    python -m qupa_cafe.sandbox check     # run a test command in the sandbox
+The researcher can also let wakes read a project of theirs, and not change
+it, which the qupa-cafe skill offers in their own sessions:
+
+    python -m qupa_cafe.sandbox check            # run a test command in the sandbox
+    python -m qupa_cafe.sandbox read <dir>       # let wakes read a project
+    python -m qupa_cafe.sandbox unread <dir>     # and stop
+    python -m qupa_cafe.sandbox projects         # list the projects wakes read
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ if __package__ in (None, ""):
     # that this is the same qupa_cafe the daemon imported.
     sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
-from qupa_cafe import pixi_advice
+from qupa_cafe import pixi_advice, sessions
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 FILES_DIR = PACKAGE_DIR / "sandbox_files"
@@ -157,6 +163,14 @@ def decide(event: dict, config: dict | None) -> dict | None:
             out["updatedInput"] = updated
         return {"hookSpecificOutput": out}
 
+    if tool == "SendMessage":
+        return handoff(arguments, answer)
+    if tool in SLACK_TOOLS:
+        return answer("deny", "A wake does not read or write in Slack: hand the post to one of your researcher's "
+                              "sessions, or tell them by private message.")
+    if tool == REGISTER_TOOL:
+        return answer("deny", "A wake is not a session with your researcher, so it does not register.")
+
     if tool == "Bash":
         if not ready(config):
             return answer("deny", "The sandbox is not set up on this machine, so no command can run. "
@@ -184,15 +198,50 @@ def decide(event: dict, config: dict | None) -> dict | None:
         return context(f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
     if tool in READ_TOOLS:
         path = arguments.get(READ_TOOLS[tool]) or cwd
-        if within(str(path), writable, cwd):
+        readable = [*writable, *read_dirs(config)]
+        if within(str(path), readable, cwd):
             return answer("allow", "Readable from the sandbox.")
-        return context(f"{path} is outside what the sandbox reads: {', '.join(writable)}.")
+        return context(f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
     return None
+
+
+# The qupa-cafe tool a session registers with, which a wake may not call.
+REGISTER_TOOL = "mcp__qupa-cafe__register_session"
+SLACK_TOOLS = tuple(f"mcp__qupa-cafe__slack_{name}" for name in ("channels", "read", "post", "message"))
+
+
+def handoff(arguments: dict, answer) -> dict:
+    """Let a wake message one of the researcher's registered sessions, and
+    only to hand it a post the first line names, once for each post; record
+    the handoff for the daemon. Anything else is refused, so that a post
+    cannot have a wake write to any other session on the machine."""
+    name = sessions.bare(arguments.get("to", ""))
+    message = str(arguments.get("message") or "")
+    open_now = sessions.live()
+    if name not in open_now:
+        listed = ", ".join(open_now) or "none is open now"
+        return answer("deny", f"A wake messages only your researcher's registered sessions ({listed}), "
+                              "to hand one a post.")
+    where = sessions.handoff_of(message)
+    if where is None:
+        return answer("deny", "A handoff's first line is exactly \"" + sessions.HANDOFF.format(
+            topic_id="<topic id>", post_number="<post number>") + "\".")
+    earlier = sessions.handed(*where)
+    if earlier is not None:
+        return answer("deny", f"This post was handed to {earlier['session']} already. Answer it from what "
+                              "you can read, or ask your researcher by private message for what would help.")
+    sessions.hand(*where, name)
+    return answer("allow", f"Hands topic {where[0]} post {where[1]} to {name}.")
 
 
 def agent_dirs(config: dict) -> list[str]:
     """The researcher's directories the sandbox reads and writes."""
     return list(config.get("agent_dirs") or [])
+
+
+def read_dirs(config: dict) -> list[str]:
+    """The researcher's projects the sandbox reads and cannot change."""
+    return list(config.get("read_dirs") or [])
 
 
 def context(text: str) -> dict:
@@ -218,7 +267,7 @@ def hook_command() -> str:
 
 def claude_settings() -> str:
     """The ``--settings`` a sandboxed wake gets, as JSON."""
-    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS])
+    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS, "SendMessage", REGISTER_TOOL, *SLACK_TOOLS])
     return json.dumps(
         {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]}]}}
     )
@@ -247,6 +296,12 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         )
         if agent_dir:
             where += f" Your working directory, {agent_dir}, is outside the sandbox."
+    projects = read_dirs(config)
+    if projects:
+        where += (
+            f" You can read, and not change, your researcher's {'project' if len(projects) == 1 else 'projects'} "
+            f"{', '.join(projects)}, to answer a post from what is there."
+        )
     return (
         "Bash runs each command in a sandbox with internet access, though not to this machine's or its "
         f"network's own addresses. {where} Give Write and Edit absolute paths. Python is a pixi environment "
@@ -822,6 +877,8 @@ def update_workspace(workspace: Path, pixi: str, env: dict) -> bool:
 def setup(agent_dir: str, interactive: bool) -> bool:
     """Install the runtime and the environment, and check a command runs.
     False, having said why, when the sandbox cannot be had here."""
+    # The projects the researcher let it read stay readable.
+    projects = read_dirs(load_config() or {})
     # Written again only once everything below has worked, so a setup that
     # fails part-way leaves no sandbox half replaced.
     config_path().unlink(missing_ok=True)
@@ -869,6 +926,8 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         for directory in writable:
             print(f"  Letting the sandbox work in {directory}...")
             granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)
+        for directory in projects:
+            granted = granted and windows_grant(Path(directory), "RX")
         if not granted:
             return False
 
@@ -887,6 +946,7 @@ def setup(agent_dir: str, interactive: bool) -> bool:
     config = {
         "workspace": str(workspace),
         "agent_dirs": writable,
+        "read_dirs": [d for d in projects if d not in writable],
         "protected": protected,
         "node": node,
         "run": str(runtime / "run.mjs"),
@@ -920,11 +980,87 @@ def check(config: dict | None = None) -> bool:
     return True
 
 
+def readable_project(directory: str) -> tuple[str, str]:
+    """``directory`` resolved, and why the sandbox may not read it, empty
+    when it may."""
+    path = Path(directory).expanduser()
+    if not path.is_dir():
+        return str(path), f"{path} is not a directory."
+    path = path.resolve()
+    if path == Path.home().resolve() or path in Path.home().resolve().parents:
+        return str(path), f"{path} is your home directory or above it, which holds your keys."
+    secret = secret_within(path)
+    if secret is not None:
+        return str(path), f"{path} holds {secret}, so the sandbox is not given it."
+    return str(path), ""
+
+
+def grant_read(directory: str) -> bool:
+    """Let wakes read ``directory``, a project of the researcher's, and not
+    change it, from the next command on. False, having said why, when it
+    cannot be."""
+    config = load_config()
+    if not ready(config):
+        print("The sandbox is not set up. Run qupa-install first.")
+        return False
+    path, refused = readable_project(directory)
+    if refused:
+        print(refused)
+        return False
+    if within(path, [config["workspace"], *agent_dirs(config)], path):
+        print(f"Your agent's wakes already read and write {path}.")
+        return True
+    if path in read_dirs(config):
+        print(f"Your agent's wakes already read {path}.")
+        return True
+    if WINDOWS:
+        print(f"Letting the sandbox read {path} (a large project takes a minute)...")
+        if not windows_grant(Path(path), "RX"):
+            return False
+    config["read_dirs"] = [*read_dirs(config), path]
+    config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
+    print(f"Your agent's wakes can now read {path}, and cannot change it.")
+    return True
+
+
+def forget_read(directory: str) -> bool:
+    """Stop wakes reading ``directory``."""
+    config = load_config()
+    if not config:
+        print("The sandbox is not set up.")
+        return False
+    path = str(Path(directory).expanduser().resolve())
+    if path not in read_dirs(config):
+        print(f"{path} is not among the projects your agent's wakes read.")
+        return False
+    if WINDOWS:
+        # The grant at its top alone, which takes what its folders inherited
+        # with it and leaves a grant of their own, such as the agent's
+        # directory's, in place.
+        result = _run(["icacls", path, "/remove:g", WINDOWS_USER, "/Q"])
+        if result.returncode != 0:
+            print(f"FAILED to take back the sandbox's reading of {path}")
+            print(_tail(result))
+            return False
+    config["read_dirs"] = [d for d in read_dirs(config) if d != path]
+    config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
+    print(f"Your agent's wakes no longer read {path}.")
+    return True
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["hook"]:
         return hook_main()
     if argv[:1] == ["check"]:
         return 0 if check() else 1
+    if argv[:1] == ["read"] and len(argv) == 2:
+        return 0 if grant_read(argv[1]) else 1
+    if argv[:1] == ["unread"] and len(argv) == 2:
+        return 0 if forget_read(argv[1]) else 1
+    if argv[:1] == ["projects"]:
+        for directory in read_dirs(load_config() or {}):
+            print(directory)
+        return 0
     print(__doc__)
     return 2
 

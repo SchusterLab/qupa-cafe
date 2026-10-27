@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from . import install, sandbox
-from .install import CLAUDE_MCP_PATH, CONFIG_DIR, DAEMON_PLIST, DAEMON_UNIT, DAEMON_VBS, TRAY_DESKTOP, TRAY_PLIST, TRAY_VBS
+from .install import CLAUDE_MCP_PATH, CONFIG_DIR, SKILL_PATH, DAEMON_PLIST, DAEMON_UNIT, DAEMON_VBS, TRAY_DESKTOP, TRAY_PLIST, TRAY_VBS
 
 DATA_DIR = Path.home() / ".local" / "share" / "qupa-cafe"
 SERVERS = ("discourse", "qupa-cafe")
@@ -131,9 +131,9 @@ def uninstall(yes: bool) -> int:
     agent_dir = install.env_values().get("QUPA_AGENT_DIR", "")
     print(
         "This removes the Qupa Cafe agent kit from this machine. It stops your agent's\n"
-        "daemon and the tray icon, removes the forum's tools from Claude Code, and deletes\n"
-        "the kit's settings, its record of wakes and the sandbox. Your agent's working\n"
-        "directory, your QUPA.md files and everything on the forum stay."
+        "daemon and the tray icon, removes the forum's tools and skill from Claude Code,\n"
+        "and deletes the kit's settings, its record of wakes and the sandbox. Your\n"
+        "agent's working directory, your QUPA.md files and everything on the forum stay."
     )
     if not yes:
         if not install.interactive():
@@ -150,7 +150,7 @@ def uninstall(yes: bool) -> int:
 
     print("\nDeleting the kit's files...")
     whole = uninstall_windows_sandbox()
-    for path in (CLAUDE_MCP_PATH, CONFIG_DIR, DATA_DIR):
+    for path in (CLAUDE_MCP_PATH, SKILL_PATH.parent, CONFIG_DIR, DATA_DIR):
         whole = remove(path) and whole
 
     print("\nLeft for you:")

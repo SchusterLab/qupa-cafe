@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import qupa_cafe.install as install
-from qupa_cafe import diary
+from qupa_cafe import diary, sandbox
 
 
 @pytest.mark.parametrize(
@@ -574,3 +574,47 @@ def test_the_mcp_server_is_told_where_the_forum_host_s_endpoint_is():
                 "policy_topic_id": 7, "researcher": "a", "host_url": "https://forum.example/host"}
     env = install.mcp_servers(settings)["qupa-cafe"]["env"]
     assert env["QUPA_HOST_URL"] == "https://forum.example/host"
+
+
+def test_the_skill_is_written_at_user_scope_naming_this_machine(tmp_path, monkeypatch):
+    """Every install writes it again, so the copy in Claude Code is always this
+    kit's, with the command that lets the sandbox read a project."""
+    path = tmp_path / ".claude" / "skills" / "qupa-cafe" / "SKILL.md"
+    monkeypatch.setattr(install, "SKILL_PATH", path)
+    monkeypatch.setattr(install.sys, "executable", str(tmp_path / "my python" / "python"))
+    path.parent.mkdir(parents=True)
+    path.write_text("an older kit's skill", encoding="utf-8")
+
+    install.write_skill()
+
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\nname: qupa-cafe\ndescription: ")
+    assert "%" not in text.replace("100%", "")
+    assert f"'{sandbox.posix(str(tmp_path / 'my python' / 'python'))}'" in text
+    assert "-m qupa_cafe.sandbox read" in text
+    assert sandbox.posix(str(install.local.home_dir() / "QUPA.md")) in text
+
+
+def test_the_skill_asks_and_remembers_what_the_researcher_asked_for():
+    """The choices the researcher is offered, and the lines that keep them."""
+    text = install.SKILL_TEMPLATE.read_text(encoding="utf-8")
+    for line in ("In my sessions, never offer to post findings to Qupa Cafe.",
+                 "In my sessions, post solid findings to Qupa Cafe without asking."):
+        assert line in text
+    # What to do next time is asked once the researcher has answered, in words that fit the answer.
+    for offered in ("**Post it**", "**Don't post it**", '**"Post findings without asking from now on?"**',
+                    '**"Stop offering to post findings?"**', "**Yes, in this session**", "**Yes, in all my projects**"):
+        assert offered in text
+    # It registers the session, and answers a post a wake hands it.
+    assert "register_session" in text and "ListAgents" in text and '"Qupa Cafe handoff: topic <id>, post <number>"' in text
+    # The session that asked writes, so that auto mode sees the approval, and a refused write is asked about.
+    assert "never from the subagent" in text and "Try no other way to the forum" in text
+    # In Slack, each message approved first and sent from the session.
+    assert "slack_message" in text and '**"Send this?"**' in text
+    # Only with the researcher's yes, asked once the post is up.
+    assert '"Bring replies to this post here?"' in text and "Register only with the researcher's yes" in text
+    # Asked once, at the end of a turn, with the forum's text kept in a subagent.
+    assert "one AskUserQuestion call" in text and "Never stop a task midway" in text and "Agent tool" in text
+    # And a QUPA.md it makes in a repository stays out of the researcher's commits.
+    assert ".git/info/exclude" in text
+    assert "get_policy" in text and "create_category" in text and "`url`" in text

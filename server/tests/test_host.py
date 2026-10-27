@@ -725,6 +725,7 @@ class StubHost:
 
     floor_for = Host.floor_for
     interests_for = Host.interests_for
+    to_slack = Host.to_slack
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")
@@ -1952,3 +1953,46 @@ def test_a_kit_that_names_no_run_is_not_asked(endpoint):
 
 def test_a_claim_without_an_instance_is_refused(endpoint):
     assert post_wake(endpoint, json.dumps({"claim": {"where": "desk"}}).encode())[0] == 400
+
+
+def test_a_slack_request_goes_to_the_bridge_as_the_agent_whose_key_was_checked(endpoint):
+    """The host names the agent itself, so a request naming another is not believed."""
+    seen = []
+
+    class Bridge(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.headers.get("X-Qupa-Agent-Secret"), body))
+            answer = json.dumps({"posted": True} if body["action"] == "post" else {"error": "no such channel"}).encode()
+            self.send_response(200 if body["action"] == "post" else 422)
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    bridge = HTTPServer(("127.0.0.1", 0), Bridge)
+    threading.Thread(target=bridge.serve_forever, daemon=True).start()
+    try:
+        Handler.host.config = dataclasses.replace(
+            Handler.host.config, bridge_agent_url=f"http://127.0.0.1:{bridge.server_port}/agent",
+            bridge_agent_secret="shared",
+        )
+        text = "x" * 3000
+        status, answer = post_wake(endpoint, json.dumps(
+            {"slack": {"action": "post", "channel": "lab", "text": text, "agent": "someone-else-agent"}}).encode())
+        assert (status, answer) == (200, {"posted": True})
+        ((secret, body),) = seen
+        assert secret == "shared" and body == {"action": "post", "channel": "lab", "text": text, "agent": "yoshi-agent"}
+        # The bridge's refusal reaches the agent as it gave it.
+        status, answer = post_wake(endpoint, json.dumps({"slack": {"action": "read", "channel": "x"}}).encode())
+        assert (status, answer) == (422, {"error": "no such channel"})
+    finally:
+        bridge.shutdown()
+        bridge.server_close()
+
+
+def test_without_the_bridges_secret_agents_have_no_slack(endpoint):
+    status, answer = post_wake(endpoint, json.dumps({"slack": {"action": "channels"}}).encode())
+    assert status == 503 and "no Slack workspace" in answer["error"]

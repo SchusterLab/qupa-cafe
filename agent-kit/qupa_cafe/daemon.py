@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, sandbox, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, sandbox, sessions, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -246,6 +246,8 @@ CREATE TABLE IF NOT EXISTS rewakes (
 # How a wake asked for again begins its reason, followed by the reason the
 # post first woke the agent.
 REWOKEN = "your researcher asked to wake you again for this post"
+# And how one begins that a session given the post did not answer.
+UNANSWERED = "you handed this post to your researcher's session"
 
 
 @dataclass
@@ -262,7 +264,7 @@ class Rewake:
     def said(self) -> str:
         """The wake's reason, naming the first one once however often it is
         asked for again."""
-        if self.reason.startswith(REWOKEN):
+        if self.reason.startswith((REWOKEN, UNANSWERED)):
             return self.reason
         return f"{REWOKEN}, which first woke you because {self.reason}"
 
@@ -545,6 +547,14 @@ class Forum:
         """One post of a topic by its number, raw included, for a post past
         those ``topic`` returns."""
         return self._get(f"/posts/by_number/{topic_id}/{post_number}.json")
+
+    def answered_after(self, topic_id: int, post_number: int, username: str) -> bool:
+        """Whether ``username`` has posted in the topic after ``post_number``,
+        among its newest 20 posts."""
+        stream = self.topic(topic_id).get("post_stream", {}).get("stream", [])[-20:]
+        query = "&".join(f"post_ids[]={post}" for post in stream)
+        posts = self._get(f"/t/{topic_id}/posts.json?{query}").get("post_stream", {}).get("posts", []) if stream else []
+        return any(p.get("username") == username and (p.get("post_number") or 0) > post_number for p in posts)
 
     def raw(self, post_id: int) -> str:
         """A post's markdown as it stands now."""
@@ -953,8 +963,49 @@ def build_prompt(settings: Settings, reason: str, topic: dict, template: str, po
     if interests:
         filled += chr(10) + chr(10) + interests
 
+    # In a fork's prompt too: which sessions are open changes between wakes.
+    filled += chr(10) + chr(10) + sessions_text(settings, topic_id, number)
+
     config = None if forked else sandbox_config(settings)
     return filled if config is None else filled + chr(10) + chr(10) + wake_notice(settings, config)
+
+
+def read_command() -> str:
+    """The command the researcher runs to let wakes read a project."""
+    from .install import shell_command  # the installer imports this module
+
+    return shell_command("qupa_cafe.sandbox", "read")
+
+
+def sessions_text(settings: Settings, topic_id: object, post_number: object) -> str:
+    """The researcher's registered sessions, and when to hand a post to one
+    of them or ask the researcher for what would help."""
+    nl = chr(10)
+    open_now = sessions.live()
+    listed = []
+    for name, entry in open_now.items():
+        holds = "; it has posted in this topic, or asked for it" if topic_id in entry.get("topics", []) else ""
+        listed.append(f"- `{name}`, in {entry.get('project', '?')}: {entry.get('about', '')}{holds}")
+    handoff = sessions.HANDOFF.format(topic_id=topic_id, post_number=post_number)
+    parts = [
+        "Your researcher's open sessions: Claude Code sessions of theirs on this machine that registered with "
+        "the kit, each with its project and a context of its own that you cannot see.",
+        nl.join(listed) if listed else "None is open now.",
+        "If answering this post well needs what one of them knows, such as work in progress there or files you "
+        "cannot read, hand the post to that session instead of answering it. Do not call start_reply. Send the "
+        "session one message with SendMessage, to its name, whose first line is exactly:",
+        handoff,
+        "and whose rest gives the post's author and link and says, in a sentence or two of your own, what is "
+        "asked and why that session; quote nothing else from the post. That session drafts the reply with your "
+        "researcher. Then end this wake. If the agent has not answered the post in "
+        f"{sessions.WAIT_SECONDS // 3600} hours, or the session ends first, you are woken for it again.",
+        "If you cannot answer the post well, no session can take it, and your researcher could change that, "
+        "send them one private message with send_message, saying which post, why it is worth their time, and "
+        "what would help: to open a Claude Code session in a project and ask it to register for this topic; "
+        f"to let you read a project, by running `{read_command()} \"<the project's directory>\"` in a terminal; "
+        "or to answer it themselves. Send none for a post you can answer, or one not worth their time.",
+    ]
+    return (nl * 2).join(parts)
 
 
 # How every wake's session is named, which is how the daemon finds its own
@@ -1926,6 +1977,28 @@ def rewake_pass(settings: Settings, forum: Forum, host: ForumHost, dry_run: bool
     return True
 
 
+def handoff_pass(settings: Settings, forum: Forum, dry_run: bool) -> int:
+    """Wake the agent again for each post it handed to a session that has
+    not answered it in time, or has ended; settle the rest. Returns how many
+    it asked to wake for."""
+    asked = 0
+    for handoff in sessions.due():
+        topic_id, post_number = handoff["topic_id"], handoff["post_number"]
+        try:
+            answered = forum.answered_after(topic_id, post_number, settings.api_username)
+        except (urllib.error.URLError, ValueError) as exc:
+            LOG.warning("could not read topic %s to see whether its handoff was answered: %s", topic_id, exc)
+            continue
+        if dry_run:
+            continue
+        if not answered:
+            reason = (f"{UNANSWERED} `{handoff['session']}`, which has not answered it, "
+                      "so answer it from what you can read, or ask your researcher by private message for what would help")
+            asked += ask_rewake(settings.state_path, Rewake(topic_id, post_number, reason))
+        sessions.settle(topic_id, post_number)
+    return asked
+
+
 def earlier_answers(forum: Forum, settings: Settings, journal: Journal | None, rewake: Rewake,
                     private_id: int | None = None) -> list[dict]:
     """The agent's posts made in an earlier wake for the post, in its topic
@@ -2473,6 +2546,7 @@ def run() -> int:
         wakes = one_pass(settings, forum, host, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
         wakes += rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+        handoff_pass(settings, forum, args.dry_run)
         wakes += rewake_pass(settings, forum, host, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
         return 0
@@ -2488,6 +2562,7 @@ def run() -> int:
             one_pass(settings, forum, host, handled, args.dry_run, journal)
             diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
             rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+            handoff_pass(settings, forum, args.dry_run)
             rewake_pass(settings, forum, host, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure
             LOG.exception("poll failed: %s", exc)

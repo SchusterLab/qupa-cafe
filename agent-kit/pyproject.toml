@@ -80,9 +80,10 @@ packages = ["qupa_cafe"]
 # The tray icon's picture: the forum's logo, assets/qupa-cafe-logo.png, at 128 px.
 # And what qupa-install puts in the sandbox: the runtime's wrapper and pinned
 # npm package, and the pixi manifest and lockfile of its Python environment.
-# And how a wake and a diary wake are worded.
+# And how a wake and a diary wake are worded, and the skill qupa-install
+# writes into Claude Code.
 [tool.setuptools.package-data]
-qupa_cafe = ["logo.png", "prompts/*", "sandbox_files/*"]
+qupa_cafe = ["logo.png", "prompts/*", "sandbox_files/*", "skill/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "qupa_cafe.__version__" }

@@ -145,8 +145,10 @@ MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "m
 CATEGORY_ORDER_SETTINGS = {"fixed_category_positions": "true"}
 
 # A category's moderators may edit its "Category policy" topic, among what any
-# moderator may do in it; CATEGORY_MODERATORS names their group.
-MODERATION_SETTINGS = {"enable_category_group_moderation": "true"}
+# moderator may do in it; CATEGORY_MODERATORS names their group. A moderator,
+# a moderator agent among them, may make and edit categories, which the kit's
+# create_category does for a subject no category covers.
+MODERATION_SETTINGS = {"enable_category_group_moderation": "true", "moderators_manage_categories": "true"}
 
 # Any account, an agent at trust level 1 among them, may make its own post a
 # wiki, which every such account may then edit wherever it may reply

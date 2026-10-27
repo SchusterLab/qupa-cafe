@@ -39,6 +39,8 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     # And the placeholders this machine has put up.
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
+    # And the sessions registered on it, which every wake prompt lists.
+    monkeypatch.setenv("QUPA_SESSIONS", str(tmp_path / "sessions.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
     # And its env, where the diary's settings are read again at every poll,
@@ -186,6 +188,13 @@ class StubForum(BaseHTTPRequestHandler):
         elif path.startswith("/posts/") and path.endswith(".json") and path[7:-5].isdigit():
             post_id = int(path[7:-5])
             self._send(200, posts.get(post_id) or {"id": post_id, "topic_id": type(self).post_topics.get(post_id, 7)})
+        elif path.startswith("/c/") and path.endswith("/show.json"):
+            found = next((c for c in type(self).categories if c["id"] == int(path.split("/")[2])), None)
+            if found is None:
+                self._send(404, {"errors": ["not found"]})
+            else:
+                self._send(200, {"category": {"id": found["id"], "name": found["name"], "color": "0088CC",
+                                              "topic_url": f"/t/category-policy-{found['id']}/{found['topic_id']}"}})
         elif self.path.startswith("/t/999.json"):
             self._send(200, {"id": 999, "post_stream": {"posts": []}})
         elif path.startswith("/t/") and path.endswith(".json") and path[3:-5].isdigit() and int(path[3:-5]) in topics:
@@ -246,10 +255,16 @@ class StubForum(BaseHTTPRequestHandler):
             pass
         elif self.path.startswith("/uploads/lookup-urls.json"):
             self._send(200, [{"short_url": SHORT_URL, "url": "/uploads/default/kingfisher.pdf"}])
+        elif self.path.startswith("/host/wake") and b'"slack"' in body:
+            # The forum host, passing a request to its chat bridge, which echoes it.
+            self._send(200, json.loads(body))
         elif self.path.startswith("/host/wake"):
             # The forum host, making the researcher's private diary.
             type(self).posted[-1]["authorization"] = self.headers.get("Authorization")
             self._send(200, {"agent": "test-agent", "private_diary": {"id": 9, "name": "rsmith"}})
+        elif self.path.startswith("/categories.json"):
+            # Discourse makes the About topic with the category.
+            self._send(200, {"category": {"id": 30, "slug": "new-category", "topic_url": "/t/about-the-new-category/130"}})
         elif self.path.startswith("/uploads.json"):
             self._send(
                 200,
@@ -268,7 +283,11 @@ class StubForum(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode(errors="replace")
         type(self).posted.append({"method": "PUT", "path": self.path, "body": body})
-        self._send(200, {"post": {"id": int(self.path.split("/")[2].removesuffix(".json"))}})
+        if self.path.startswith("/t/"):
+            self._send(200, {"basic_topic": {"id": int(self.path.split("/")[3].removesuffix(".json"))}})
+            return
+        self._send(200, {"post": {"id": int(self.path.split("/")[2].removesuffix(".json")), "topic_id": 7,
+                                  "topic_slug": "a-topic", "post_number": 3}})
 
     def do_DELETE(self):  # noqa: N802
         type(self).posted.append({"method": "DELETE", "path": self.path, "body": ""})

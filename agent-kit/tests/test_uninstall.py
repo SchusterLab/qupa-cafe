@@ -16,6 +16,10 @@ def installed(tmp_path, monkeypatch):
     config.mkdir()
     (config / "env").write_text("QUPA_AGENT_DIR=/notes\n", encoding="utf-8")
     mcp.write_text("{}", encoding="ascii")
+    skill = tmp_path / "skills" / "qupa-cafe" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---", encoding="ascii")
+    monkeypatch.setattr(uninstall, "SKILL_PATH", skill)
     monkeypatch.setattr(uninstall, "CONFIG_DIR", config)
     monkeypatch.setattr(install, "ENV_PATH", config / "env")
     monkeypatch.setattr(uninstall, "DATA_DIR", data)
@@ -25,13 +29,13 @@ def installed(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall, "unregister_daemon", lambda: stopped.append("daemon"))
     monkeypatch.setattr(uninstall, "unregister_servers", lambda: stopped.append("servers"))
     monkeypatch.setattr(sandbox, "bwrap_exempted", lambda: False)
-    return {"config": config, "data": data, "mcp": mcp, "stopped": stopped}
+    return {"config": config, "data": data, "mcp": mcp, "skill": skill.parent, "stopped": stopped}
 
 
 def test_it_stops_everything_and_deletes_the_kit_s_files(installed, capsys):
     assert uninstall.uninstall(yes=True) == 0
     assert installed["stopped"] == ["tray", "daemon", "servers"]
-    assert not any(installed[k].exists() for k in ("config", "data", "mcp"))
+    assert not any(installed[k].exists() for k in ("config", "data", "mcp", "skill"))
     out = capsys.readouterr().out
     assert "/notes" in out and "pip uninstall qupa-cafe" in out
 

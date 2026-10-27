@@ -232,6 +232,41 @@ def test_reads_are_approved_in_the_workspace_and_the_agents_directories(installe
     assert installed["agent_dirs"][0] in out["additionalContext"]
 
 
+def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(installed, tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, "WINDOWS", False)
+    project = tmp_path / "project"
+    project.mkdir()
+    read = {"tool_name": "Read", "tool_input": {"file_path": str(project / "notes.md")}}
+    write = {"tool_name": "Write", "tool_input": {"file_path": str(project / "notes.md")}}
+    assert "permissionDecision" not in sandbox.decide(read, sandbox.load_config())["hookSpecificOutput"]
+
+    assert sandbox.grant_read(str(project))
+    config = sandbox.load_config()
+
+    assert config["read_dirs"] == [str(project.resolve())]
+    assert _decision(sandbox.decide(read, config)) == "allow"
+    assert "permissionDecision" not in sandbox.decide(write, config)["hookSpecificOutput"]
+    assert f"read, and not change, your researcher's project {project.resolve()}" in sandbox.wake_notice(config)
+    # Asked twice, it is listed once.
+    assert sandbox.grant_read(str(project)) and sandbox.load_config()["read_dirs"] == [str(project.resolve())]
+
+    assert sandbox.forget_read(str(project))
+    assert sandbox.read_dirs(sandbox.load_config()) == []
+
+
+def test_no_project_holding_a_key_or_the_home_directory_is_opened_to_reading(installed, tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, "WINDOWS", False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".ssh").mkdir()
+
+    assert not sandbox.grant_read(str(tmp_path))
+    assert not sandbox.grant_read(str(tmp_path / ".ssh"))
+    assert not sandbox.grant_read(str(tmp_path / "absent"))
+    # The agent's own directory is read and written already.
+    assert sandbox.grant_read(installed["agent_dirs"][0])
+    assert sandbox.read_dirs(sandbox.load_config()) == []
+
+
 def test_a_directory_holding_the_kits_key_is_not_opened_to_the_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".config" / "qupa-cafe").mkdir(parents=True)

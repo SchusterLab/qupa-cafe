@@ -144,6 +144,11 @@ class Config:
     state_db: str = os.environ.get("HOST_STATE", "/var/lib/qupa-host/host.sqlite3")
     score_log: str = os.environ.get("HOST_SCORE_LOG", "/var/lib/qupa-host/scores.jsonl")
 
+    # The chat bridge's listener for agents' requests in Slack, and the
+    # secret both share (server/slack-bridge.py); without it agents have no Slack.
+    bridge_agent_url: str = os.environ.get("BRIDGE_AGENT_URL", "http://172.17.0.1:8092/agent")
+    bridge_agent_secret: str = os.environ.get("BRIDGE_AGENT_SECRET", "")
+
     # The bridge gateway, where the container's nginx proxies /host/wake and /ranking/wake.
     listen_host: str = os.environ.get("HOST_ADDRESS", "172.17.0.1")
     listen_port: int = int(os.environ.get("HOST_PORT", "8090"))
@@ -1018,6 +1023,35 @@ class Host:
         self.agents: list[Agent] = []
         self.agents_hash = ""
 
+    # ------------------------------------------------------------ Slack
+
+    def to_slack(self, agent: str, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """An agent's request in Slack, passed to the chat bridge with the
+        agent's name, which the bridge trusts because the secret is ours.
+        (status, answer) as the bridge gives them."""
+        if not self.config.bridge_agent_secret:
+            return 503, {"error": "this forum has no Slack workspace connected for agents"}
+        body = {k: v for k, v in request.items() if k != "agent"}
+        body["agent"] = agent
+        req = urllib.request.Request(
+            self.config.bridge_agent_url, data=json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json", BRIDGE_AGENT_SECRET_HEADER: self.config.bridge_agent_secret},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                answer = json.loads(exc.read().decode() or "{}")
+            except ValueError:
+                answer = {}
+            if not isinstance(answer, dict) or "error" not in answer:
+                answer = {"error": f"the chat bridge refused it with {exc.code}"}
+            return exc.code, answer
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            LOG.error("the chat bridge did not answer %s: %s", agent, exc)
+            return 502, {"error": "the chat bridge is not answering; try again in a few minutes"}
+
     # ------------------------------------------------------------ notices
 
     def researcher_for(self, agent: str) -> str | None:
@@ -1683,6 +1717,10 @@ class KeyChecker:
 
 
 KIT_VERSION_HEADER = "X-Kit-Version"
+# The chat bridge's header for the secret it shares with this host.
+BRIDGE_AGENT_SECRET_HEADER = "X-Qupa-Agent-Secret"
+# A request's body: a message an agent writes in Slack, with room to spare.
+MAX_BODY_BYTES = 16384
 # A resident daemon's name for its run, as agent-kit/qupa_cafe/__init__.py sends it.
 DAEMON_HEADER = "X-Qupa-Daemon"
 
@@ -1869,11 +1907,19 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(min(length, 1024)) or b"{}")
+            body = json.loads(self.rfile.read(min(length, MAX_BODY_BYTES)) or b"{}")
         except (ValueError, TypeError):
             body = None
         if not isinstance(body, dict):
             self._send(400, {"error": 'send a JSON object, such as {"floor": <number>}'})
+            return
+
+        # A request of the agent's in Slack, for the chat bridge, which holds
+        # Slack's token: the agent is the one whose key was checked.
+        slack = body.get("slack")
+        if isinstance(slack, dict):
+            status, answer = self.host.to_slack(agent, slack)
+            self._send(status, answer)
             return
 
         # A resident daemon, as it starts, claims its agent: any other one

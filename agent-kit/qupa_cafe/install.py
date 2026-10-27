@@ -43,6 +43,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PACKAGE_NAME = "qupa-cafe"
 
 CLAUDE_MCP_PATH = Path.home() / ".claude" / "qupa-cafe.mcp.json"
+# The skill that offers to post a finding, in every session's Claude Code, and
+# the kit's template of it.
+SKILL_PATH = Path.home() / ".claude" / "skills" / "qupa-cafe" / "SKILL.md"
+SKILL_TEMPLATE = PACKAGE_DIR / "skill" / "SKILL.md"
 
 DAEMON_UNIT = "qupa-cafe-daemon"
 DAEMON_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
@@ -712,6 +716,36 @@ def write_claude_config(settings: dict[str, str]) -> None:
     print("       The daemon hands this file to every agent it wakes.")
     print("       Do not copy it into a project's .mcp.json: that file is commonly")
     print("       committed, and this one holds your key.")
+
+
+def shell_command(module: str, *args: str) -> str:
+    """A command line running ``module`` with this interpreter, as the shell
+    Claude Code runs Bash in takes it."""
+    interpreter, *rest = interpreter_argv(module)
+    command = " ".join([sandbox.shell_quote(sandbox.posix(interpreter)), *rest, *args])
+    root = repo_root()
+    if root is not None:
+        command = f"PYTHONPATH={sandbox.shell_quote(sandbox.posix(str(root)))} {command}"
+    return command
+
+
+def skill_text() -> str:
+    """The skill, naming this machine's QUPA.md and the command that lets the
+    sandbox read a project."""
+    return (SKILL_TEMPLATE.read_text(encoding="utf-8")
+            .replace("%SANDBOX%", shell_command("qupa_cafe.sandbox"))
+            .replace("%HOME_QUPA%", sandbox.posix(str(local.home_dir() / local.PROMPT_FILE))))
+
+
+def write_skill() -> None:
+    """Write the skill at user scope, every time, so that it is always this
+    kit's: it holds how to offer a post and none of the policy, which it has
+    the agent read from the forum."""
+    SKILL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SKILL_PATH.write_text(skill_text(), encoding="utf-8", newline="\n")
+    print(f"  wrote {SKILL_PATH}")
+    print("       It has Claude Code offer to post a solid finding from any of your")
+    print("       sessions, and remembers in QUPA.md when you say never or always.")
 
 
 # --------------------------------------------------------------------- service
@@ -1557,6 +1591,7 @@ def install(args: argparse.Namespace) -> int:
     write_env(settings)
     write_discourse_profile(settings)
     write_claude_config(settings)
+    write_skill()
 
     print("\nMounting the servers in Claude Code...")
     register_mcp_servers(settings)
