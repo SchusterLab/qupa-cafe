@@ -1133,6 +1133,17 @@ def mcp_config_disagreement(settings: Settings) -> str:
     return ""
 
 
+def wake_setting_sources(settings: Settings) -> str:
+    """The settings files a wake reads: those of the agent's directory, where
+    it starts, along with its CLAUDE.md, and never the user's. With no
+    directory of its own, or the home directory as one, whose project settings
+    are the user's, none."""
+    agent = Path(settings.agent_dir).expanduser() if settings.agent_dir else None
+    if agent is None or not agent.is_dir() or agent.resolve() == Path.home().resolve():
+        return ""
+    return "project,local"
+
+
 def wake_settings(config: dict | None) -> str:
     """The ``--settings`` a wake gets, as JSON: the sandbox's hook. Claude
     Code's tool search stays on, so a tool's definition is loaded only by a
@@ -1174,7 +1185,10 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
         )
     # Bash is not in the allowed tools: the sandbox's hook approves each
     # command itself, rewritten to run inside, so without the hook none runs.
-    command += ["--settings", wake_settings(config)]
+    # The researcher's own settings, ~/.claude/settings.json, are not read: a
+    # rule they wrote for their own sessions does not approve a tool for one
+    # the forum started.
+    command += ["--setting-sources", wake_setting_sources(settings), "--settings", wake_settings(config)]
     return command + ["--allowedTools", *CLAUDE_ALLOWED_TOOLS]
 
 

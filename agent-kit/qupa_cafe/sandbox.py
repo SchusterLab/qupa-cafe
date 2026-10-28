@@ -3,9 +3,8 @@
 Every wake gets Bash, and every command it runs goes through Anthropic's
 sandbox-runtime (``sandbox_files/run.mjs``): open internet access; reads and
 writes in the sandbox's workspace and in the researcher's ``QUPA_AGENT_DIR``,
-except that what steers later wakes stays read-only; nothing else in the home
-directory but the programs it runs; and none of the variables that hold
-keys. Python there is a pixi workspace with the packages of Jupyter's
+except that what steers later wakes stays read-only; reads of nothing else but
+the system's and its own programs; and none of the variables that hold keys. Python there is a pixi workspace with the packages of Jupyter's
 scipy-notebook image (``sandbox_files/pixi.toml``), already active.
 
 The daemon hands the wake a ``PreToolUse`` hook, which is this module run as a
@@ -13,7 +12,7 @@ script. For Bash it approves the command rewritten to run inside the sandbox,
 or refuses a pip or conda install with the pixi command to run instead
 (``qupa_cafe.pixi_advice``). For the file tools (``READ_TOOLS`` and
 ``WRITE_TOOLS``) it approves a path the sandbox could reach the same way, and
-leaves any other path to the researcher's own Claude Code settings.
+refuses any other.
 
 ``qupa-install`` sets it up with ``setup``, and stops when it cannot: without
 node, npm and pixi, or on Windows without the runtime's one-time elevated
@@ -151,8 +150,8 @@ def within(path: str, roots: list[str], cwd: str) -> bool:
 
 
 def decide(event: dict, config: dict | None) -> dict | None:
-    """The hook's answer to one tool call, or None to leave it to the
-    researcher's own settings."""
+    """The hook's answer to one tool call, or None to leave it to Claude
+    Code's own permission rules."""
     tool = event.get("tool_name", "")
     arguments = dict(event.get("tool_input") or {})
     cwd = event.get("cwd") or os.getcwd()
@@ -189,22 +188,22 @@ def decide(event: dict, config: dict | None) -> dict | None:
         return None
     writable = [config["workspace"], *agent_dirs(config)]
     protected = list(config.get("protected") or [])
-    # Elsewhere the researcher's own settings decide, and an unattended run
-    # usually refuses; the context says where to go instead, since Claude
-    # Code's refusal names no alternative.
+    # Elsewhere the file tools are refused, whatever a settings file in the
+    # agent's directory approves, so that they reach what a command reaches
+    # and no more; the reason says where to go instead.
     if tool in WRITE_TOOLS:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), protected, cwd):
-            return context(f"{path} steers your wakes, so it is read-only here; your researcher edits it.")
+            return answer("deny", f"{path} steers your wakes, so it is read-only here; your researcher edits it.")
         if path and within(str(path), writable, cwd):
             return answer("allow", "Writable from the sandbox.")
-        return context(f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
+        return answer("deny", f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
     if tool in READ_TOOLS:
         path = arguments.get(READ_TOOLS[tool]) or cwd
         readable = [*writable, *read_dirs(config)]
         if within(str(path), readable, cwd):
             return answer("allow", "Readable from the sandbox.")
-        return context(f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
+        return answer("deny", f"{path} is outside what the sandbox reads: {', '.join(readable)}.")
     return None
 
 
@@ -247,11 +246,6 @@ def agent_dirs(config: dict) -> list[str]:
 def read_dirs(config: dict) -> list[str]:
     """The researcher's projects the sandbox reads and cannot change."""
     return list(config.get("read_dirs") or [])
-
-
-def context(text: str) -> dict:
-    """No decision, and a note for the model beside whatever happens."""
-    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
 
 
 def hook_main() -> int:

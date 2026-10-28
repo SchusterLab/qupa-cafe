@@ -14,8 +14,9 @@
 // The command runs in bash with the workspace's pixi environment activated,
 // the workspace as HOME, and the agent's directory (config.agent_dirs) as its
 // directory. It writes to those two, except the paths config.protected names,
-// which steer later wakes. Reads: on Linux and macOS the home directory is
-// denied apart from those and the program directories; on Windows the command
+// which steer later wakes. Reads: on Linux and macOS everything is denied
+// apart from those, the projects the researcher lets wakes read, the
+// program directories and the system's own (SYSTEM_READ); on Windows the command
 // runs as the runtime's `srt-sandbox` user, which reads and writes only what
 // qupa-install granted it. Variables that look like credentials are not
 // passed in.
@@ -24,8 +25,8 @@
 
 import { SandboxManager, VENDORED_SRT_WIN_EXE, checkWindowsSandboxStatus, resolveSrtWin } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const WINDOWS = process.platform === 'win32';
@@ -34,6 +35,13 @@ const PRIVATE_RANGES = [
   '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16',
   '127.0.0.0/8', '0.0.0.0/8', 'fc00::/7', 'fe80::/10', '::1/128',
 ];
+
+// What a command reads besides its own directories: the system's programs,
+// libraries and configuration, and none of the places people keep files.
+const SYSTEM_READ = {
+  linux: ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc'],
+  darwin: ['/usr', '/bin', '/sbin', '/System', '/Library', '/private/etc', '/private/var/db', '/opt/homebrew'],
+};
 
 // Removed from the command's environment by name.
 const SECRET = /^(QUPA_|ANTHROPIC_|CLAUDE|OPENAI_|CODEX_|AWS_|AZURE_|GOOGLE_|GCLOUD_|GH_|GITHUB_|HF_|HUGGING|NPM_|PYPI_|TWINE_|SSH_AUTH)|TOKEN|SECRET|PASSW|API_?KEY|CREDENTIAL|_KEY$/i;
@@ -57,7 +65,7 @@ function quote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-function sandboxConfig(config) {
+function sandboxConfig(config, bridge) {
   const network = { allowedDomains: [], deniedDomains: [], deniedResolvedAddresses: PRIVATE_RANGES };
   if (WINDOWS) {
     // The srt-sandbox user's reads and writes are the ACEs qupa-install
@@ -77,12 +85,13 @@ function sandboxConfig(config) {
   return {
     network,
     filesystem: {
-      denyRead: [homedir()],
+      denyRead: ['/'],
       // This directory too: the runtime's seccomp helper runs inside. And
       // the directories its programs come from (config.programs), which
       // include pixi's whole install, since a command pixi exposes is a
       // trampoline into an environment beside its bin directory.
       allowRead: [
+        ...(SYSTEM_READ[process.platform] ?? []),
         config.workspace,
         path.dirname(config.run),
         path.dirname(config.pixi),
@@ -90,6 +99,10 @@ function sandboxConfig(config) {
         ...(config.agent_dirs ?? []),
         // Projects the researcher let wakes read, and not change.
         ...(config.read_dirs ?? []),
+        // The runtime's own temporary directory, which holds the sockets its
+        // network bridge mounts inside: under the read deny of '/', the
+        // command would find an empty /tmp in its place and no internet.
+        bridge,
       ],
       allowWrite: [config.workspace, ...(config.agent_dirs ?? [])],
       denyWrite: config.protected ?? [],
@@ -129,7 +142,12 @@ async function run(config, command) {
   process.env.PATH = [...(config.path ?? []), process.env.PATH].join(path.delimiter);
   // The ask callback is the open internet: every host the allow list does not
   // name, which is every host, is approved.
-  await SandboxManager.initialize(sandboxConfig(config), async () => true);
+  let bridge;
+  if (!WINDOWS) {
+    bridge = mkdtempSync(path.join(tmpdir(), 'qupa-cafe-'));
+    process.env.TMPDIR = bridge;
+  }
+  await SandboxManager.initialize(sandboxConfig(config, bridge), async () => true);
 
   const script = `${prelude(config)}\n${command}`;
   const env = cleanEnv();
@@ -157,6 +175,7 @@ async function run(config, command) {
   });
   SandboxManager.cleanupAfterCommand?.();
   await SandboxManager.reset();
+  if (bridge) rmSync(bridge, { recursive: true, force: true });
   return code;
 }
 

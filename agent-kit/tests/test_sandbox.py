@@ -183,12 +183,11 @@ def test_writes_are_approved_in_the_workspace_and_the_agents_directory(installed
 
     assert _decision(sandbox.decide(write(workspace / "plot.py"), installed)) == "allow"
     assert _decision(sandbox.decide(write(research / "notes" / "run.md"), installed)) == "allow"
-    # Not refused: left to the researcher's own settings, which refuse it
-    # unless they say otherwise, with a note of where to write instead.
+    # Refused whatever a settings file approves, with where to write instead.
     for elsewhere in (tmp_path / "x", workspace / ".." / ".." / "x"):
         out = sandbox.decide(write(elsewhere), installed)["hookSpecificOutput"]
-        assert "permissionDecision" not in out
-        assert installed["workspace"] in out["additionalContext"]
+        assert out["permissionDecision"] == "deny"
+        assert installed["workspace"] in out["permissionDecisionReason"]
 
 
 @pytest.mark.parametrize("name", ["QUPA.md", "CLAUDE.md", "AGENTS.md", ".claude/settings.json", ".mcp.json", ".venv/x.py"])
@@ -197,8 +196,8 @@ def test_what_steers_later_wakes_is_never_approved_for_writing(installed, name):
     settings and hooks Claude Code runs outside the sandbox."""
     path = Path(installed["agent_dirs"][0]) / name
     out = sandbox.decide({"tool_name": "Edit", "tool_input": {"file_path": str(path)}}, installed)["hookSpecificOutput"]
-    assert "permissionDecision" not in out
-    assert "read-only" in out["additionalContext"]
+    assert out["permissionDecision"] == "deny"
+    assert "read-only" in out["permissionDecisionReason"]
 
 
 def test_the_kits_own_environment_is_protected_where_the_agents_directory_holds_it(monkeypatch, tmp_path):
@@ -218,7 +217,7 @@ def test_the_hook_approves_reads_only_where_the_sandbox_writes(installed, tmp_pa
     config = dict(installed, readable=[str(other)])
 
     out = sandbox.decide({"tool_name": "Read", "tool_input": {"file_path": str(other / "x")}}, config)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
+    assert _decision(out) == "deny"
     assert str(other) not in sandbox.wake_notice(config)
 
 
@@ -227,9 +226,10 @@ def test_reads_are_approved_in_the_workspace_and_the_agents_directories(installe
 
     assert _decision(sandbox.decide(read(Path(installed["agent_dirs"][0]) / "notes.md"), installed)) == "allow"
     assert _decision(sandbox.decide(read(Path(installed["workspace"]) / "out.png"), installed)) == "allow"
-    out = sandbox.decide(read(Path.home() / ".ssh" / "id_ed25519"), installed)["hookSpecificOutput"]
-    assert "permissionDecision" not in out
-    assert installed["agent_dirs"][0] in out["additionalContext"]
+    for elsewhere in (Path.home() / ".ssh" / "id_ed25519", Path(Path.home().anchor) / "data" / "notes.md"):
+        out = sandbox.decide(read(elsewhere), installed)["hookSpecificOutput"]
+        assert out["permissionDecision"] == "deny"
+        assert installed["agent_dirs"][0] in out["permissionDecisionReason"]
 
 
 def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(installed, tmp_path, monkeypatch):
@@ -238,14 +238,14 @@ def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(inst
     project.mkdir()
     read = {"tool_name": "Read", "tool_input": {"file_path": str(project / "notes.md")}}
     write = {"tool_name": "Write", "tool_input": {"file_path": str(project / "notes.md")}}
-    assert "permissionDecision" not in sandbox.decide(read, sandbox.load_config())["hookSpecificOutput"]
+    assert _decision(sandbox.decide(read, sandbox.load_config())) == "deny"
 
     assert sandbox.grant_read(str(project))
     config = sandbox.load_config()
 
     assert config["read_dirs"] == [str(project.resolve())]
     assert _decision(sandbox.decide(read, config)) == "allow"
-    assert "permissionDecision" not in sandbox.decide(write, config)["hookSpecificOutput"]
+    assert _decision(sandbox.decide(write, config)) == "deny"
     assert f"read, and not change, your researcher's project {project.resolve()}" in sandbox.wake_notice(config)
     # Asked twice, it is listed once.
     assert sandbox.grant_read(str(project)) and sandbox.load_config()["read_dirs"] == [str(project.resolve())]
@@ -302,6 +302,23 @@ def test_a_claude_wake_with_the_sandbox_gets_its_hook(installed, tmp_path):
     # Bash runs only through the hook's approval, so a hook that does not run
     # leaves no command running unsandboxed.
     assert not any(tool.startswith("Bash") for tool in command[command.index("--allowedTools") + 1 :])
+
+
+def test_a_wake_reads_the_agents_directorys_settings_and_never_the_users(tmp_path, monkeypatch):
+    """A rule the researcher wrote for their own sessions approves nothing
+    for one the forum started."""
+    home, agent = tmp_path / "home", tmp_path / "home" / "agent"
+    agent.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    def sources(agent_dir):
+        command = runtime_command(Settings(mcp_config=str(tmp_path / "absent.json"), agent_dir=agent_dir), "p")
+        return command[command.index("--setting-sources") + 1]
+
+    assert sources(str(agent)) == "project,local"
+    # The home directory's project settings are the user's own.
+    for elsewhere in (str(home), str(tmp_path / "absent"), ""):
+        assert sources(elsewhere) == ""
 
 
 def test_a_wake_without_the_sandbox_gets_no_hook(tmp_path):
