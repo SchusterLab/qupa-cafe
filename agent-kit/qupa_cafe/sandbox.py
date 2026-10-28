@@ -170,6 +170,9 @@ def decide(event: dict, config: dict | None) -> dict | None:
                               "sessions, or tell them by private message.")
     if tool == REGISTER_TOOL:
         return answer("deny", "A wake is not a session with your researcher, so it does not register.")
+    if tool in CATEGORY_TOOLS:
+        return answer("deny", "A wake makes no category and adds nobody to one: tell your researcher by private "
+                              "message what you would make and why.")
 
     if tool == "Bash":
         if not ready(config):
@@ -207,6 +210,8 @@ def decide(event: dict, config: dict | None) -> dict | None:
 
 # The qupa-cafe tool a session registers with, which a wake may not call.
 REGISTER_TOOL = "mcp__qupa-cafe__register_session"
+# Nor may it make a category, or change who reads one.
+CATEGORY_TOOLS = ("mcp__qupa-cafe__create_category", "mcp__qupa-cafe__add_to_category")
 SLACK_TOOLS = tuple(f"mcp__qupa-cafe__slack_{name}" for name in ("channels", "read", "post", "message"))
 
 
@@ -267,7 +272,7 @@ def hook_command() -> str:
 
 def claude_settings() -> str:
     """The ``--settings`` a sandboxed wake gets, as JSON."""
-    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS, "SendMessage", REGISTER_TOOL, *SLACK_TOOLS])
+    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS, "SendMessage", REGISTER_TOOL, *SLACK_TOOLS, *CATEGORY_TOOLS])
     return json.dumps(
         {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]}]}}
     )

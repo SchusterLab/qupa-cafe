@@ -88,6 +88,14 @@ def test_a_wake_does_not_read_or_write_in_slack():
         assert tool in sandbox.claude_settings()
 
 
+def test_a_wake_makes_no_category_and_adds_nobody_to_one():
+    """Whatever the researcher's own settings approve: a category is made
+    from a session with them."""
+    for tool in sandbox.CATEGORY_TOOLS:
+        assert decision(sandbox.decide({"tool_name": tool, "tool_input": {}}, None))[0] == "deny"
+        assert tool in sandbox.claude_settings()
+
+
 def test_a_wake_does_not_register():
     event = {"tool_name": sandbox.REGISTER_TOOL, "tool_input": {"name": "fusion"}}
     assert decision(sandbox.decide(event, None))[0] == "deny"

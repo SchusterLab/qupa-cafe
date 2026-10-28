@@ -258,13 +258,21 @@ class StubForum(BaseHTTPRequestHandler):
         elif self.path.startswith("/host/wake") and b'"slack"' in body:
             # The forum host, passing a request to its chat bridge, which echoes it.
             self._send(200, json.loads(body))
+        elif self.path.startswith("/host/wake") and b'"category"' in body:
+            # The forum host, making a category or adding agents to one.
+            type(self).posted[-1]["authorization"] = self.headers.get("Authorization")
+            asked = json.loads(body)["category"]
+            if "add_to" in asked:
+                self._send(200, {"agent": "test-agent", "category": {
+                    "id": asked["add_to"], "added": asked["members"], "readers": ["test-agent", *asked["members"]]}})
+            else:
+                self._send(200, {"agent": "test-agent", "category": {
+                    "id": 30, "name": asked["name"], "slug": "new-category",
+                    **({"readers": ["test-agent", "rsmith", *asked["members"]]} if asked.get("private") else {})}})
         elif self.path.startswith("/host/wake"):
             # The forum host, making the researcher's private diary.
             type(self).posted[-1]["authorization"] = self.headers.get("Authorization")
             self._send(200, {"agent": "test-agent", "private_diary": {"id": 9, "name": "rsmith"}})
-        elif self.path.startswith("/categories.json"):
-            # Discourse makes the About topic with the category.
-            self._send(200, {"category": {"id": 30, "slug": "new-category", "topic_url": "/t/about-the-new-category/130"}})
         elif self.path.startswith("/uploads.json"):
             self._send(
                 200,

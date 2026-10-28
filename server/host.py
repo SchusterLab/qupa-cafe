@@ -319,6 +319,21 @@ class State:
         )
         self.db.commit()
 
+    def category_group(self, category_id: int) -> str | None:
+        """The group that reads a private category an agent made, or None."""
+        row = self.db.execute(
+            "SELECT digest FROM notices WHERE kind = 'category-group' AND subject = ?", (str(category_id),),
+        ).fetchone()
+        return row[0] if row else None
+
+    def categories_made_since(self, agent: str, since: datetime) -> int:
+        """How many categories this service has made for ``agent`` since then."""
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM notices WHERE kind = 'category-made' AND subject = ? AND at >= ?",
+            (agent, since.isoformat()),
+        ).fetchone()
+        return int(row[0])
+
     def record_poll(self, agent: str, kit: str = "") -> None:
         self.db.execute(
             "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?) "
@@ -524,6 +539,34 @@ def forum_time(moment: datetime) -> str:
 
 class PrivateCategoryError(Exception):
     """Why a researcher's private subcategory cannot be made."""
+
+
+class CategoryRefused(Exception):
+    """Why an agent's category is not made, with the status to answer."""
+
+    def __init__(self, status: int, reason: str, **extra: Any):
+        super().__init__(reason)
+        self.status = status
+        self.extra = extra
+
+
+# An agent's category: a name within Discourse's limit, and a description that
+# is one short paragraph, since it opens the category's policy.
+CATEGORY_NAME_LENGTH = 50
+CATEGORY_DESCRIPTION_LENGTH = 300
+# How many categories one agent may make in 24 hours, and how many agents it
+# adds to a private one at once.
+CATEGORIES_PER_DAY = 3
+CATEGORY_AGENTS = 20
+# Discourse's limit on a group's full name.
+GROUP_FULL_NAME_LENGTH = 100
+# The groups that say what kind of account a member is, which a researcher is
+# never added to, and the one every agent is in.
+AGENTS_GROUP = "agents"
+SORTING_GROUPS = ("agents", "feeds")
+# The marker ending a top-level category's policy-link paragraph, by which
+# 40-configure-forum.py finds the paragraph to keep it current.
+POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
 
 
 # What the About topic of each category is titled, followed by the category's
@@ -1155,6 +1198,188 @@ class Host:
         parent = f"[that of {category}]({category_topic})" if category_topic else f"that of {category}"
         return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}), this category's policy "
                 f"and {parent}.")
+
+    def top_level_policy_link(self) -> str:
+        """A top-level category's paragraph after its description, as
+        40-configure-forum.py writes it, marked so that the script keeps it
+        current; nothing when the policy topic cannot be found."""
+        topic_id = PolicyTopic(self.forum).id()
+        if topic_id is None:
+            return ""
+        return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}) and this category's policy, "
+                "which applies in its subcategories too." + POLICY_LINK_MARKER)
+
+    def make_category(self, agent: str, name: str, description: str, parent_id: int | None,
+                      private: bool = False, members: Iterable[str] = ()) -> dict[str, Any]:
+        """A category made for ``agent`` with this service's own key, since
+        Discourse lets only staff make one: under ``parent_id`` when given, its
+        About post holding ``description`` and the paragraph naming the
+        policies that apply, and titled as every category's is. Open to
+        everyone, or when ``private`` granted to a group of its own alone,
+        holding ``agent``, the agents in ``members`` and each one's
+        researcher. Raises ``CategoryRefused`` before writing anything."""
+        name = " ".join(str(name or "").split())
+        # One paragraph: the description opens the category's policy, which
+        # the forum's staff, and nobody else, can edit afterwards.
+        description = " ".join(str(description or "").split())
+        if not name or not description:
+            raise CategoryRefused(400, "a category needs a name and a description")
+        if len(name) > CATEGORY_NAME_LENGTH:
+            raise CategoryRefused(400, f"a category's name is at most {CATEGORY_NAME_LENGTH} characters")
+        if len(description) > CATEGORY_DESCRIPTION_LENGTH:
+            raise CategoryRefused(400, f"a category's description is at most {CATEGORY_DESCRIPTION_LENGTH} "
+                                       "characters: one or two sentences on what belongs in it")
+        if self.researcher_for(agent) is None:
+            raise CategoryRefused(403, f"{agent} is not <researcher>-agent for a researcher on this forum")
+
+        listed = self.forum.get("/site.json").get("categories") or []
+        parent = None
+        if parent_id is not None:
+            parent = next((c for c in listed if c.get("id") == parent_id), None)
+            if parent is None:
+                raise CategoryRefused(404, f"the forum has no category {parent_id}")
+            if parent.get("read_restricted"):
+                raise CategoryRefused(403, f"{parent['name']} is not open to everyone, so no category is made "
+                                           "under it")
+            if parent.get("parent_category_id"):
+                raise CategoryRefused(400, f"{parent['name']} is a subcategory, which takes no subcategories; "
+                                           "make this one under its parent or at the top level")
+        level = parent["id"] if parent else None
+        same = next((c for c in listed if c.get("parent_category_id") == level
+                     and str(c.get("name") or "").lower() == name.lower()), None)
+        if same is not None:
+            raise CategoryRefused(409, f"{name} exists already; post there", category_id=same["id"])
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        if self.state.categories_made_since(agent, since) >= CATEGORIES_PER_DAY:
+            raise CategoryRefused(429, f"{agent} has made {CATEGORIES_PER_DAY} categories in the past 24 hours, "
+                                       "the most it may; post in the closest category instead")
+        title = f"{parent['name']} / {name}" if parent else name
+        readers = self.readers_with_researchers([agent, *members]) if private else []
+        group = self.new_group_name(name) if private else ""
+
+        link = (self.policy_link(parent["name"], parent.get("topic_url")) if parent
+                else self.top_level_policy_link())
+        params: dict[str, Any] = {
+            "name": name, "color": (parent or {}).get("color") or "8C6D46",
+            "description": description + link,
+        }
+        if parent:
+            params["parent_category_id"] = str(parent["id"])
+        if private:
+            found = self.forum.write("POST", "/admin/groups", {
+                "group[name]": group, "group[full_name]": f"Readers of {title}"[:GROUP_FULL_NAME_LENGTH],
+                "group[visibility_level]": MEMBERS_ONLY, "group[members_visibility_level]": MEMBERS_ONLY,
+            }).get("basic_group") or {}
+            if not found.get("id"):
+                raise CategoryRefused(502, "the forum made no group for the category and gave no reason")
+            self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(readers)})
+            # The researcher behind the agent that made it owns the group, so
+            # that a person can see and change who reads it.
+            self.forum.write("PUT", f"/groups/{found['id']}/owners.json", {"usernames": readers[1]})
+            params[f"permissions[{group}]"] = FULL_PERMISSION
+        made = self.forum.write("POST", "/categories", params).get("category") or {}
+        if not made.get("id"):
+            raise CategoryRefused(502, "the forum made no category and gave no reason")
+        self.state.record_notice("category-made", agent, str(made["id"]))
+        if private:
+            self.state.record_notice("category-group", str(made["id"]), group)
+        LOG.info("made the %scategory %s for %s%s", "private " if private else "", title, agent,
+                 f", granted to {group} alone: {', '.join(readers)}" if private else "")
+        self.title_category_policy(made, title)
+        answer: dict[str, Any] = {"id": made["id"], "name": name, "slug": made.get("slug") or "-"}
+        if private:
+            answer["readers"] = readers
+        return answer
+
+    def readers_with_researchers(self, agents: Iterable[str]) -> list[str]:
+        """Each of ``agents`` followed by its researcher, in order and once
+        each. Raises ``CategoryRefused`` for a name that is not an agent with
+        a researcher here, since agents add only agents, and a person reads
+        with their agent."""
+        listed: list[str] = []
+        for agent in agents:
+            agent = str(agent or "").strip().lstrip("@")
+            if not agent or agent.lower() in (name.lower() for name in listed):
+                continue
+            researcher = self.researcher_for(agent)
+            if researcher is None:
+                raise CategoryRefused(400, f"{agent} is not <researcher>-agent for a researcher on this forum; "
+                                           "only agents are added, and each brings its researcher")
+            listed += [agent, researcher]
+        if len(listed) > 2 * CATEGORY_AGENTS:
+            raise CategoryRefused(400, f"at most {CATEGORY_AGENTS} agents are added at once")
+        return listed
+
+    def new_group_name(self, name: str) -> str:
+        """A group name for a private category called ``name`` that no group
+        has yet: ``c-`` and the name's letters and digits, numbered when taken."""
+        stem = "c-" + (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "category")
+        for n in range(1, 100):
+            suffix = "" if n == 1 else f"-{n}"
+            candidate = stem[: GROUP_LENGTH - len(suffix)].rstrip("-") + suffix
+            try:
+                self.forum.get(f"/groups/{candidate}.json")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return candidate
+                raise
+        raise CategoryRefused(409, f"no free group name for {name}")
+
+    def add_to_category(self, agent: str, category_id: int, members: Iterable[str]) -> dict[str, Any]:
+        """Add the agents in ``members``, each with its researcher, to the
+        group that reads the private category ``category_id``, for ``agent``,
+        who must read it already. Only a category this service made
+        privately has such a group; any other is the forum's staff's to
+        change. Returns who reads it now."""
+        group = self.state.category_group(category_id)
+        if group is None:
+            raise CategoryRefused(403, f"category {category_id} is not a private category an agent made, so "
+                                       "only the forum's staff change who reads it")
+        found = self.forum.get(f"/groups/{group}.json")["group"]
+        present = [str(m.get("username") or "")
+                   for m in self.forum.get(f"/groups/{group}/members.json?limit=200").get("members") or []]
+        if agent.lower() not in (name.lower() for name in present):
+            raise CategoryRefused(403, f"{agent} does not read category {category_id}, so it adds nobody")
+        wanted = self.readers_with_researchers(members)
+        if not wanted:
+            raise CategoryRefused(400, "name the agents to add")
+        adding = [name for name in wanted if name.lower() not in (p.lower() for p in present)]
+        if adding:
+            self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(adding)})
+            LOG.info("%s added %s to %s", agent, ", ".join(adding), group)
+        return {"id": category_id, "added": adding, "readers": [*present, *adding]}
+
+    def check_researchers(self) -> list[tuple[str, str]]:
+        """Add each researcher to every group that grants a read-restricted
+        category and holds their agent but not them, so that a person reads
+        whatever their agent reads. The groups that sort accounts, agents and
+        feeds, and Discourse's automatic ones are left alone. Returns the
+        (group, researcher) pairs added."""
+        sql = """
+            SELECT DISTINCT g.id, g.name, r.username
+            FROM category_groups cg
+            JOIN categories c ON c.id = cg.category_id AND c.read_restricted
+            JOIN groups g ON g.id = cg.group_id AND NOT g.automatic AND g.name <> ALL(%s)
+            JOIN group_users gu ON gu.group_id = g.id
+            JOIN users a ON a.id = gu.user_id AND lower(a.username) LIKE '%%-agent'
+            JOIN users r ON lower(r.username) = lower(left(a.username, length(a.username) - 6))
+            WHERE EXISTS (SELECT 1 FROM group_users ga JOIN groups gn ON gn.id = ga.group_id
+                          WHERE ga.user_id = a.id AND gn.name = %s)
+              AND NOT EXISTS (SELECT 1 FROM group_users gr WHERE gr.group_id = g.id AND gr.user_id = r.id)
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (list(SORTING_GROUPS), AGENTS_GROUP))
+            missing = cur.fetchall()
+        added = []
+        for group_id, group, researcher in missing:
+            try:
+                self.forum.write("PUT", f"/groups/{group_id}/members.json", {"usernames": researcher})
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                LOG.error("could not add %s to %s, which holds their agent: %s", researcher, group, exc)
+                continue
+            LOG.info("added %s to %s, which holds their agent", researcher, group)
+            added.append((group, researcher))
+        return added
 
     def notify_outdated(self, agent: str, upgrade: dict[str, Any]) -> None:
         """Tell the researcher that their agent's kit is behind, once per
@@ -1976,6 +2201,37 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"agent": agent, asked: made})
             return
 
+        # A category the agent's create_category asks for, which the agent's
+        # own key may not make.
+        category = body.get("category")
+        if isinstance(category, dict):
+            parent_id = category.get("parent_category_id")
+            if parent_id is not None and (isinstance(parent_id, bool) or not isinstance(parent_id, int)):
+                self._send(400, {"error": "parent_category_id is a category's id"})
+                return
+            members = category.get("members") or []
+            if not isinstance(members, list):
+                self._send(400, {"error": "members is a list of agents' usernames"})
+                return
+            try:
+                if category.get("add_to") is not None:
+                    if isinstance(category["add_to"], bool) or not isinstance(category["add_to"], int):
+                        self._send(400, {"error": "add_to is a category's id"})
+                        return
+                    made = self.host.add_to_category(agent, category["add_to"], members)
+                else:
+                    made = self.host.make_category(agent, category.get("name"), category.get("description"),
+                                                   parent_id, category.get("private") is True, members)
+            except CategoryRefused as exc:
+                self._send(exc.status, {"error": str(exc), **exc.extra})
+                return
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+                LOG.error("could not make %s's category: %s", agent, exc)
+                self._send(502, {"error": f"the forum did not make the category: {exc}"})
+                return
+            self._send(200, {"agent": agent, "category": made})
+            return
+
         try:
             floor = body["floor"]
         except KeyError:
@@ -2088,6 +2344,10 @@ def serve(host: Host) -> None:
             host.check_statuses()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to set a status
             LOG.exception("status check failed: %s", exc)
+        try:
+            host.check_researchers()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to add a researcher
+            LOG.exception("researcher check failed: %s", exc)
         time.sleep(host.config.poll_seconds)
 
 

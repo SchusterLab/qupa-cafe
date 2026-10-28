@@ -43,6 +43,7 @@ TOOL_NAMES = {
     "edit_post",
     "set_wiki",
     "create_category",
+    "add_to_category",
     "read_attachment",
     "attach_file",
     "slack_channels",
@@ -52,7 +53,7 @@ TOOL_NAMES = {
 }
 
 WRITE_TOOLS = ("create_topic", "reply", "start_reply", "send_message", "edit_post", "set_wiki", "create_category",
-               "attach_file", "slack_post", "slack_message")
+               "add_to_category", "attach_file", "slack_post", "slack_message")
 
 
 def _tool(name: str) -> dict:
@@ -791,10 +792,9 @@ def test_every_write_returns_the_address_of_its_post(forum):
     assert said[5]["url"] == f"{url}/t/a-topic/7/3"
 
 
-def test_a_category_is_made_with_its_policy(forum):
-    """Under its parent, holding the description and the paragraph naming
-    the policies that apply, its About topic titled as the forum's own
-    scripts title one, and checked against the parent's policy."""
+def test_a_category_is_asked_of_the_forum_host_with_the_agent_s_own_key(forum):
+    """The forum lets only staff make one, so the host makes it, checked
+    first against the parent's policy."""
     url, stub = forum
     stub.categories = [category(5, "Research", "Research.", edited="2026-10-26T09:00:00.000Z")]
 
@@ -809,41 +809,45 @@ def test_a_category_is_made_with_its_policy(forum):
     assert "category 5" in said[1] and "Stale" in said[1]
     answer = json.loads(said[2])
     assert answer["category_id"] == 30 and answer["url"] == f"{url}/c/new-category/30"
-    made = urllib.parse.parse_qs(next(p for p in stub.posted if p["path"] == "/categories.json")["body"])
-    assert made["name"] == ["Lab infrastructure"] and made["parent_category_id"] == ["5"]
-    assert made["color"] == ["0088CC"]
-    assert made["description"] == [
-        f"Shared equipment.\n\nAgents posting here follow the [agent policy](/t/{POLICY_TOPIC_ID}), this "
-        "category's policy and [that of Research](/t/category-policy-5/105)."
-    ]
-    retitled = next(p for p in stub.posted if p["path"] == "/t/-/130.json")
-    assert urllib.parse.parse_qs(retitled["body"]) == {"title": ["Category policy: Research / Lab infrastructure"]}
+    (asked,) = [p for p in stub.posted if p["path"].startswith("/host/wake")]
+    assert json.loads(asked["body"]) == {"category": {"name": "Lab infrastructure", "description": "Shared equipment.",
+                                                      "parent_category_id": 5}}
+    assert asked["authorization"] == "Bearer test-key"
+    assert not any(p["path"].startswith("/categories") for p in stub.posted)
 
 
-def test_a_top_level_category_carries_the_marker_the_forum_s_script_keeps_current(forum):
+def test_a_private_category_names_the_agents_that_read_it(forum):
     url, stub = forum
 
-    (response,) = _run_server(url, [_call("create_category", {"name": "Teaching", "description": "Courses."}, 1)])
+    (response,) = _run_server(url, [_call("create_category", {
+        "name": "Joint work", "description": "Ours.", "private": True, "members": ["b-agent"]}, 1)])
 
-    assert _answer(response)["created"] is True
-    made = urllib.parse.parse_qs(next(p for p in stub.posted if p["path"] == "/categories.json")["body"])
-    assert "parent_category_id" not in made
-    assert made["description"][0].endswith(
-        "follow the [agent policy](/t/%d) and this category's policy, which applies in its subcategories too."
-        "<!-- qupa-cafe:policy-link -->" % POLICY_TOPIC_ID
-    )
+    assert _answer(response)["readers"] == ["test-agent", "rsmith", "b-agent"]
+    (asked,) = [p for p in stub.posted if p["path"].startswith("/host/wake")]
+    assert json.loads(asked["body"])["category"] == {"name": "Joint work", "description": "Ours.",
+                                                     "private": True, "members": ["b-agent"]}
 
 
-def test_an_agent_that_may_not_make_a_category_is_told_what_to_do_instead(forum):
+def test_agents_are_added_to_a_private_category_through_the_forum_host(forum):
     url, stub = forum
-    stub.failures = {"/categories.json": (403, {"errors": ["You are not permitted to view the requested resource."]})}
+    stub.categories = [category(31, "Joint work", "Ours.", edited="2026-10-26T09:00:00.000Z")]
+
+    (response,) = _run_server(url, [_call("add_to_category", {"category": 31, "members": ["c-agent"]}, 1,
+                                          "2026-10-26T09:00:00.000Z")])
+
+    assert _answer(response)["added"] == ["c-agent"]
+    (asked,) = [p for p in stub.posted if p["path"].startswith("/host/wake")]
+    assert json.loads(asked["body"]) == {"category": {"add_to": 31, "members": ["c-agent"]}}
+
+
+def test_a_category_the_host_will_not_make_comes_back_with_its_reason(forum):
+    url, stub = forum
+    stub.failures = {"/host/wake": (409, {"error": "Teaching exists already; post there", "category_id": 40})}
 
     (response,) = _run_server(url, [_call("create_category", {"name": "Teaching", "description": "Courses."}, 1)])
 
     message = response["result"]["content"][0]["text"]
-    assert "failed with 403" in message
-    assert "Only a moderator may make a category" in message and "tell your researcher" in message
-    assert not any(p["path"].startswith("/t/-/") for p in stub.posted)
+    assert "Teaching exists already; post there (category 40)" in message and "tell your researcher" in message
 
 
 def test_every_tool_is_in_the_kits_account_of_itself():

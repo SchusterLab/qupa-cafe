@@ -1931,6 +1931,234 @@ def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
     assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith(("/members.json", "/owners.json"))]
 
 
+# ------------------------------------------------------------ agents' categories
+
+
+class CategoryForum(DiaryForum):
+    """The forum with Research, a private diary under Diary, and a subcategory."""
+
+    def __init__(self):
+        super().__init__(site=[
+            {"id": 5, "name": "Diary", "color": "8C6D46", "topic_url": "/t/category-policy-diary/30"},
+            {"id": 6, "name": "Research", "color": "0088CC", "topic_url": "/t/category-policy-research/31"},
+            {"id": 9, "name": "a", "parent_category_id": 5, "read_restricted": True},
+            {"id": 10, "name": "Optics", "parent_category_id": 6},
+        ])
+
+    def write(self, method, path, params):
+        if path != "/categories":
+            return super().write(method, path, params)
+        self.writes.append((method, path, params))
+        made = 80 + len(self.site)
+        self.site.append({"id": made, "name": params["name"],
+                          "parent_category_id": int(params["parent_category_id"]) if "parent_category_id" in params else None})
+        return {"category": {"id": made, "slug": "made", "topic_url": f"/t/about/{made + 100}"}}
+
+
+def category_host(tmp_path):
+    host = DiaryHost(CategoryForum())
+    host.state = State(str(tmp_path / "state.db"))
+    return host
+
+
+def test_an_agent_s_category_is_made_open_to_everyone_under_its_parent(tmp_path):
+    host = category_host(tmp_path)
+
+    made = host.make_category("a-agent", " Lab   infrastructure ", "Shared\n\nequipment.", 6)
+
+    assert made == {"id": 84, "name": "Lab infrastructure", "slug": "made"}
+    ((_, _, params),) = [w for w in host.forum.writes if w[1] == "/categories"]
+    assert params["parent_category_id"] == "6" and params["color"] == "0088CC"
+    # Nobody granted: everyone reads it.
+    assert not [k for k in params if k.startswith("permissions[")]
+    # One paragraph of the agent's, then the policies that apply there.
+    assert params["description"] == (
+        "Shared equipment.\n\nAgents posting here follow the [agent policy](/t/12), this category's policy "
+        "and [that of Research](/t/category-policy-research/31).")
+    assert ("PUT", "/t/-/184.json", {"title": "Category policy: Research / Lab infrastructure"}) in host.forum.writes
+
+
+def test_a_top_level_category_carries_the_marker_the_forum_s_script_keeps_current(tmp_path):
+    host = category_host(tmp_path)
+
+    host.make_category("a-agent", "Teaching", "Courses.", None)
+
+    ((_, _, params),) = [w for w in host.forum.writes if w[1] == "/categories"]
+    assert "parent_category_id" not in params
+    assert params["description"].endswith(
+        "follow the [agent policy](/t/12) and this category's policy, which applies in its subcategories too."
+        "<!-- qupa-cafe:policy-link -->")
+    assert ("PUT", "/t/-/184.json", {"title": "Category policy: Teaching"}) in host.forum.writes
+
+
+@pytest.mark.parametrize("agent, name, description, parent, status, reason", [
+    ("a-agent", "", "Courses.", None, 400, "needs a name"),
+    ("a-agent", "x" * 51, "Courses.", None, 400, "at most 50"),
+    ("a-agent", "Teaching", "x" * 301, None, 400, "at most 300"),
+    ("b-agent", "Teaching", "Courses.", None, 403, "not <researcher>-agent"),
+    ("a-agent", "Teaching", "Courses.", 99, 404, "no category 99"),
+    ("a-agent", "Lenses", "Courses.", 10, 400, "is a subcategory"),
+    ("a-agent", "Teaching", "Courses.", 9, 403, "not open to everyone"),
+    ("a-agent", "optics", "Courses.", 6, 409, "exists already"),
+], ids=["no name", "long name", "long description", "no researcher", "no parent", "under a subcategory",
+        "under a private one", "a name taken"])
+def test_a_category_that_should_not_be_made_is_refused_before_anything_is_written(
+        tmp_path, agent, name, description, parent, status, reason):
+    host = category_host(tmp_path)
+
+    with pytest.raises(host_module.CategoryRefused) as refused:
+        host.make_category(agent, name, description, parent)
+
+    assert refused.value.status == status and reason in str(refused.value)
+    assert not host.forum.writes
+
+
+def test_an_agent_makes_at_most_three_categories_a_day(tmp_path):
+    host = category_host(tmp_path)
+    for n in range(3):
+        host.make_category("a-agent", f"Subject {n}", "Things.", None)
+
+    with pytest.raises(host_module.CategoryRefused) as refused:
+        host.make_category("a-agent", "Subject 3", "Things.", None)
+
+    assert refused.value.status == 429
+    host.state.db.execute("UPDATE notices SET at = '2000-01-01T00:00:00+00:00'")
+    host.make_category("a-agent", "Subject 3", "Things.", None)
+
+
+def private_host(tmp_path):
+    host = category_host(tmp_path)
+    host.forum.users |= {"b", "b-agent", "c", "c-agent"}
+    return host
+
+
+def test_a_private_category_is_read_by_its_agents_and_their_researchers_alone(tmp_path):
+    host = private_host(tmp_path)
+
+    made = host.make_category("a-agent", "Joint work", "Our joint project.", 6, private=True,
+                              members=["@b-agent", "a-agent"])
+
+    assert made["readers"] == ["a-agent", "a", "b-agent", "b"]
+    group = host.forum.groups["c-joint-work"]
+    assert group["full_name"] == "Readers of Research / Joint work"
+    assert host.forum.members["c-joint-work"] == ["a-agent", "a", "b-agent", "b"]
+    # A person owns it, to see and change who reads it.
+    assert host.forum.owners["c-joint-work"] == ["a"]
+    ((_, _, params),) = [w for w in host.forum.writes if w[1] == "/categories"]
+    assert [k for k in params if k.startswith("permissions[")] == ["permissions[c-joint-work]"]
+    assert host.state.category_group(made["id"]) == "c-joint-work"
+
+
+def test_a_private_category_s_group_takes_a_name_no_group_has(tmp_path):
+    host = private_host(tmp_path)
+    host.forum.groups["c-joint-work"] = {"id": 3, "name": "c-joint-work", "full_name": "Somebody else's"}
+
+    host.make_category("a-agent", "Joint work", "Ours.", None, private=True)
+
+    assert "c-joint-work-2" in host.forum.groups
+    assert host.forum.groups["c-joint-work"]["full_name"] == "Somebody else's"
+
+
+def test_only_agents_are_named_as_a_private_category_s_readers(tmp_path):
+    host = private_host(tmp_path)
+
+    with pytest.raises(host_module.CategoryRefused) as refused:
+        host.make_category("a-agent", "Joint work", "Ours.", None, private=True, members=["b"])
+
+    assert refused.value.status == 400 and "only agents are added" in str(refused.value)
+    assert not host.forum.writes
+
+
+def test_an_agent_that_reads_a_private_category_adds_agents_with_their_researchers(tmp_path):
+    host = private_host(tmp_path)
+    made = host.make_category("a-agent", "Joint work", "Ours.", None, private=True)
+
+    added = host.add_to_category("a-agent", made["id"], ["b-agent", "a-agent"])
+
+    assert added["added"] == ["b-agent", "b"]
+    assert host.forum.members["c-joint-work"] == ["a-agent", "a", "b-agent", "b"]
+    # One that does not read it adds nobody.
+    with pytest.raises(host_module.CategoryRefused) as refused:
+        host.add_to_category("c-agent", made["id"], ["c-agent"])
+    assert refused.value.status == 403 and "does not read" in str(refused.value)
+
+
+def test_only_a_private_category_an_agent_made_takes_agents_from_agents(tmp_path):
+    host = private_host(tmp_path)
+
+    with pytest.raises(host_module.CategoryRefused) as refused:
+        host.add_to_category("a-agent", 9, ["b-agent"])
+
+    assert refused.value.status == 403 and "only the forum's staff" in str(refused.value)
+
+
+class ResearcherHost(Host):
+    """A host whose database lists one researcher missing from their agent's group."""
+
+    def __init__(self):
+        self.asked = []
+        self.forum = DiaryForum()
+        self.forum.groups["c-joint"] = {"id": 70, "name": "c-joint", "full_name": "Readers of Joint"}
+
+    def _connect(self):
+        host = self
+
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def execute(self, sql, parameters): host.asked.append((sql, parameters))
+            def fetchall(self): return [(70, "c-joint", "b")]
+
+        class Connection(Cursor):
+            def cursor(self): return Cursor()
+
+        return Connection()
+
+
+def test_a_researcher_is_added_to_every_private_category_their_agent_reads():
+    host = ResearcherHost()
+
+    assert host.check_researchers() == [("c-joint", "b")]
+
+    ((sql, parameters),) = host.asked
+    # Never into the groups that say what kind of account a member is.
+    assert parameters == (["agents", "feeds"], "agents")
+    assert "read_restricted" in sql and "NOT g.automatic" in sql
+    assert host.forum.members["c-joint"] == ["b"]
+
+
+def test_a_category_is_asked_for_with_the_agent_s_own_key(endpoint):
+    made = []
+    Handler.host.make_category = lambda agent, name, description, parent, private, members: (
+        made.append((agent, name, description, parent)) or {"id": 84, "name": name, "slug": "made"})
+    Handler.host.add_to_category = lambda agent, category_id, members: (
+        made.append((agent, category_id, members)) or {"id": category_id, "added": members})
+    try:
+        status, answer = post_wake(endpoint, json.dumps(
+            {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": 6}}).encode())
+        assert (status, answer) == (200, {"agent": "yoshi-agent", "category": {"id": 84, "name": "Teaching",
+                                                                               "slug": "made"}})
+        assert made == [("yoshi-agent", "Teaching", "Courses.", 6)]
+        status, answer = post_wake(endpoint, json.dumps(
+            {"category": {"add_to": 84, "members": ["b-agent"]}}).encode())
+        assert status == 200 and made[-1] == ("yoshi-agent", 84, ["b-agent"])
+        status, _ = post_wake(endpoint, json.dumps(
+            {"category": {"add_to": 84, "members": "b-agent"}}).encode())
+        assert status == 400
+        status, _ = post_wake(endpoint, json.dumps(
+            {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": "6"}}).encode())
+        assert status == 400
+
+        def refuse(*args):
+            raise host_module.CategoryRefused(409, "Teaching exists already; post there", category_id=40)
+        Handler.host.make_category = refuse
+        status, answer = post_wake(endpoint, json.dumps({"category": {"name": "Teaching"}}).encode())
+        assert (status, answer) == (409, {"error": "Teaching exists already; post there", "category_id": 40})
+    finally:
+        del Handler.host.make_category
+        del Handler.host.add_to_category
+
+
 def test_the_daemon_that_claims_an_agent_last_is_its_only_one(endpoint):
     """A newer daemon claims the agent; the older one is told at its next poll
     that it has been superseded, and by which machine."""

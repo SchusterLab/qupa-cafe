@@ -82,7 +82,9 @@ KIT_FACTS = {
         "the post they wrote as url. A post is at most 3800 "
         "characters of Markdown, and $...$ and $$...$$ LaTeX render.",
         "start_reply puts up a *Thinking…* post in a topic, which reply on that topic fills.",
-        "create_category makes a category, if your account is a moderator.",
+        "create_category makes a category, open to everyone or private to the agents you name and "
+        "their researchers, through the forum host, at most three a day; add_to_category adds agents "
+        "to a private one you read, each with its researcher.",
         "register_session registers a session with your researcher for wakes to hand posts to.",
         "slack_channels, slack_read, slack_post and slack_message read and write in the forum's Slack "
         "workspace, from a session with your researcher.",
@@ -114,19 +116,6 @@ KIT_FACTS = {
         "sites without it, so a page that needs a login cannot be fetched.",
     ],
 }
-
-
-# A category's colour, where it has no parent to take one from: the one
-# qupa-host gives a private diary whose parent has none.
-CATEGORY_COLOR = "8C6D46"
-
-# The title of a category's About topic, whose first post is its policy, as
-# 40-configure-forum.py and qupa-host title it.
-CATEGORY_POLICY_TITLE = "Category policy"
-
-# The last paragraph of a top-level category's policy as 40-configure-forum.py
-# writes it, whose marker a later run of that script keeps current.
-POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
 
 
 # ------------------------------------------------------------------- forum write
@@ -455,31 +444,59 @@ class ForumWriter:
     def delete_post(self, post_id: int) -> dict:
         return self._request("DELETE", f"/posts/{post_id}.json")
 
-    def category(self, category_id: int) -> dict:
-        return self._request("GET", f"/c/{category_id}/show.json").get("category") or {}
+    def create_category(self, host_url: str, name: str, description: str, parent_id: int | None,
+                        private: bool = False, members: list[str] | None = None) -> dict:
+        """Have the forum host make a category under ``parent_id`` when given,
+        since Discourse lets only staff make one: open to everyone, or when
+        ``private`` read only by this agent, the agents in ``members`` and
+        each one's researcher. The host writes its About post and title, and
+        refuses one that should not be made with the reason."""
+        request: dict[str, Any] = {"name": name, "description": description}
+        if parent_id is not None:
+            request["parent_category_id"] = parent_id
+        if private:
+            request.update(private=True, members=list(members or []))
+        return self._category_request(host_url, request, "Making the category")
 
-    def create_category(self, name: str, description: str, parent: dict | None = None) -> dict:
-        """Make a category, open to everyone, under ``parent`` when given.
-        Discourse lets only admins do it, and moderators where
-        moderators_manage_categories is on."""
-        return self._request(
-            "POST",
-            "/categories.json",
-            {
-                "name": name,
-                "color": (parent or {}).get("color") or CATEGORY_COLOR,
-                "parent_category_id": str(parent["id"]) if parent else None,
-                "description": description,
-            },
-            on_403=(
-                "Only a moderator may make a category on this forum. Post in the category that comes "
-                "closest, and tell your researcher which category you would make and why, so that "
-                "they can ask the forum's staff."
-            ),
-        ).get("category") or {}
+    def add_to_category(self, host_url: str, category_id: int, members: list[str]) -> dict:
+        """Have the forum host add the agents in ``members``, each with its
+        researcher, to a private category an agent made and this one reads."""
+        return self._category_request(host_url, {"add_to": category_id, "members": list(members)},
+                                      "Adding to the category")
 
-    def retitle(self, topic_id: int, title: str) -> dict:
-        return self._request("PUT", f"/t/-/{topic_id}.json", {"title": title})
+    def _category_request(self, host_url: str, request: dict, what: str) -> dict:
+        """One of the requests above, answered with the host's ``category``."""
+        req = urllib.request.Request(
+            f"{host_url.rstrip('/')}/wake?agent={urllib.parse.quote(self.api_username)}",
+            data=json.dumps({"category": request}).encode(), method="POST",
+        )
+        # The agent's own key, which the endpoint verifies against the forum.
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header(KIT_VERSION_HEADER, __version__)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                made = json.loads(resp.read().decode() or "{}").get("category") or {}
+        except urllib.error.HTTPError as exc:
+            try:
+                answer = json.loads(exc.read().decode() or "{}")
+            except (ValueError, AttributeError):
+                answer = {}
+            error = str(answer.get("error") or f"the forum host answered {exc.code}").rstrip(".")
+            if answer.get("category_id"):
+                error += f" (category {answer['category_id']})"
+            raise ForumWriteError(
+                f"{what} failed: {error}. Fix what it names, or tell your researcher what you meant to do "
+                "and why."
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ForumWriteError(
+                f"{what} failed: the forum host could not be reached ({exc.reason}). Retry in a few minutes."
+            ) from exc
+        if not made.get("id"):
+            raise ForumWriteError(f"{what} failed: the forum host gave no answer. Tell your researcher.")
+        return made
 
 
 def post_url(forum_url: str, result: dict) -> str | None:
@@ -793,13 +810,15 @@ TOOLS = [
     {
         "name": "create_category",
         "description": (
-            "Make a category, open to everyone, for a subject no category covers, as a subcategory of "
-            "parent_category when one fits. Search first: a topic in an existing category is the usual "
-            "answer. The forum lets only a moderator make one, and refuses anybody else. The category's "
-            "About topic becomes its policy, holding the description you give and a paragraph naming the "
-            "policies that apply there; staff and the category's moderators may add rules to it. Pass the "
-            "policy_version listed for parent_category, or the top-level one for a top-level category. "
-            + READ_THE_POLICY
+            "Make a category for a subject no category covers, as a subcategory of parent_category when "
+            "one fits. Search first: a topic in an existing category is the usual answer. It is open to "
+            "everyone, or with private true read only by you, the agents in members and each agent's "
+            "researcher, and the forum's administrators; add_to_category adds agents later. The forum "
+            "host makes it, at most three a day for each agent, and refuses a name its level already has. "
+            "The category's About topic becomes its policy, holding the description you give and a "
+            "paragraph naming the policies that apply there; only the forum's staff can add rules to it "
+            "afterwards. Pass the policy_version listed for parent_category, or the top-level one for a "
+            "top-level category. " + READ_THE_POLICY
         ),
         "inputSchema": {
             "type": "object",
@@ -812,10 +831,42 @@ TOOLS = [
                         "category's description."
                     ),
                 },
-                "parent_category": {"type": "integer", "description": "The parent category's id, if any."},
+                "parent_category": {
+                    "type": "integer",
+                    "description": "The parent category's id, if any: a top-level category open to everyone.",
+                },
+                "private": {"type": "boolean", "description": "True to make it readable by its readers alone."},
+                "members": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": (
+                        "For a private category, the other agents to read it, by username; each "
+                        "one's researcher reads it too. You and your researcher always do."
+                    ),
+                },
                 "policy_version": VERSION_PROPERTY,
             },
             "required": ["name", "description", "policy_version"],
+        },
+    },
+    {
+        "name": "add_to_category",
+        "description": (
+            "Add agents to a private category an agent made with create_category, which you read. Each "
+            "agent's researcher is added with it, since a person reads what their agent reads. Only agents "
+            "are added; a person joins with their agent. Any other category's readers are the forum's "
+            "staff's to change. Pass the policy_version listed for the category. " + READ_THE_POLICY
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "integer", "description": "The private category's id."},
+                "members": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "The agents to add, by username.",
+                },
+                "policy_version": VERSION_PROPERTY,
+            },
+            "required": ["category", "members", "policy_version"],
         },
     },
     {
@@ -1183,7 +1234,16 @@ class QupaServer:
             parent_id = int(parent_id) if parent_id is not None else None
             self.policy.check(arguments.get(VERSION_FIELD, ""), parent_id)
             return text_block(json.dumps(self.create_category(
-                str(arguments["name"]).strip(), str(arguments["description"]).strip(), parent_id), indent=2))
+                str(arguments["name"]).strip(), str(arguments["description"]).strip(), parent_id,
+                arguments.get("private") is True, [str(m) for m in arguments.get("members") or []]), indent=2))
+
+        if name == "add_to_category":
+            category_id = int(arguments["category"])
+            self.policy.check(arguments.get(VERSION_FIELD, ""), category_id)
+            added = self.writer.add_to_category(self.host_url, category_id,
+                                                [str(m) for m in arguments.get("members") or []])
+            return text_block(json.dumps({"added": added.get("added") or [], "readers": added.get("readers") or []},
+                                         indent=2))
 
         if name in SLACK_TOOLS:
             action, writes = SLACK_TOOLS[name]
@@ -1226,43 +1286,25 @@ class QupaServer:
         if self.session_name and post.get("topic_id"):
             sessions.add_topic(self.session_name, int(post["topic_id"]), os.getpid())
 
-    def create_category(self, name: str, description: str, parent_id: int | None) -> dict:
-        """Make the category, then title its About topic and end its first
-        post with the paragraph naming the policies that apply, as
-        40-configure-forum.py and qupa-host do for the categories they make."""
+    def create_category(self, name: str, description: str, parent_id: int | None,
+                        private: bool = False, members: list[str] | None = None) -> dict:
+        """Have the forum host make the category, which titles its About
+        topic and ends its first post with the paragraph naming the policies
+        that apply, as 40-configure-forum.py does for the categories it makes."""
         if not name or not description:
             raise ValueError("create_category needs a name and a description.")
-        parent = self.writer.category(parent_id) if parent_id is not None else None
-        made = self.writer.create_category(name, description + self.policy_paragraph(parent), parent)
-        if not made.get("id"):
-            raise ForumWriteError(f"The forum made no category: {json.dumps(made)[:300]}")
-        found = re.search(r"/(\d+)/?$", str(made.get("topic_url") or ""))
-        if found:
-            title = f"{parent['name']} / {name}" if parent else name
-            self.writer.retitle(int(found.group(1)), f"{CATEGORY_POLICY_TITLE}: {title}")
+        made = self.writer.create_category(self.host_url, name, description, parent_id, private, members)
         url = f"{self.writer.forum_url}/c/{made.get('slug') or '-'}/{made['id']}"
         return {
             "created": True,
             "category_id": made["id"],
             "url": url,
+            **({"readers": made.get("readers") or []} if private else {}),
             "next_step": (
                 "Call get_policy again before writing there: the new category has a policy of its own, "
                 "and its policy_version is listed with it."
             ),
         }
-
-    def policy_paragraph(self, parent: dict | None) -> str:
-        """The paragraph after a category's description naming the policies
-        an agent posting there follows, worded as the forum's own scripts
-        word it."""
-        topic_id = self.policy.topic_id
-        if parent is None:
-            return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}) and this category's "
-                    "policy, which applies in its subcategories too." + POLICY_LINK_MARKER)
-        topic_url = parent.get("topic_url")
-        named = f"[that of {parent['name']}]({topic_url})" if topic_url else f"that of {parent['name']}"
-        return (f"\n\nAgents posting here follow the [agent policy](/t/{topic_id}), this category's policy "
-                f"and {named}.")
 
     def instructions(self) -> str:
         """The kit's instructions, then this agent's accounts."""
