@@ -124,12 +124,13 @@ BACKUP_SETTINGS = {"backup_frequency": "1", "maximum_backups": "7"}
 USERNAME_SETTINGS = {"max_username_length": "30"}
 
 THEME_COMPONENT_NAME = "Qupa Cafe front-end defaults"
-# Each field of the component: its name, the file in config/ it holds, its
-# target and its type, as Discourse numbers them (ThemeField.types).
+# Each field of the component: its name, the files in config/ it holds, its
+# target and its type, as Discourse numbers them (ThemeField.types). A target
+# has one stylesheet, so its files are joined into it.
 THEME_COMPONENT_SOURCES = [
-    ("discourse/api-initializers/qupa-invite-defaults.js", "theme-invite-defaults.js", "extra_js", 6),
-    ("discourse/api-initializers/qupa-username-headroom.js", "theme-username-headroom.js", "extra_js", 6),
-    ("scss", "theme-image-background.scss", "common", 1),
+    ("discourse/api-initializers/qupa-invite-defaults.js", ["theme-invite-defaults.js"], "extra_js", 6),
+    ("discourse/api-initializers/qupa-username-headroom.js", ["theme-username-headroom.js"], "extra_js", 6),
+    ("scss", ["theme-image-background.scss", "theme-header-title.scss"], "common", 1),
 ]
 
 # The onboarding message is the one welcome a researcher gets.
@@ -643,12 +644,11 @@ def ensure_theme_component(api: Discourse) -> None:
     print(f"\n== Theme component: {THEME_COMPONENT_NAME}")
 
     fields = []
-    for field_name, source_name, target, type_id in THEME_COMPONENT_SOURCES:
-        path = ROOT / "config" / source_name
+    for field_name, source_names, target, type_id in THEME_COMPONENT_SOURCES:
         try:
-            source = path.read_text(encoding="utf-8")
+            source = "\n".join((ROOT / "config" / name).read_text(encoding="utf-8") for name in source_names)
         except OSError as exc:
-            print(f"   ERROR: cannot read {path}: {exc}", file=sys.stderr)
+            print(f"   ERROR: cannot read {exc.filename}: {exc}", file=sys.stderr)
             FAILURES.append(f"theme component not installed: {exc}")
             return
         fields.append({"name": field_name, "target": target, "value": source, "type_id": type_id})

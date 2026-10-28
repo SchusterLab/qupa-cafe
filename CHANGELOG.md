@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-28 (the forum's name beside its logo)
+
+- **The header says "Qupa Cafe" beside the cup**, in bold at the size of Discourse's own text logo, but not in a topic, whose title takes its place there. The theme component's stylesheet joins `config/theme-image-background.scss` and the new `config/theme-header-title.scss`, since a theme has one stylesheet for each target. `config/theme-header-title.scss`, `scripts/40-configure-forum.py`; `docs/05-forum-config.md`. On the scratch forum the component took the new stylesheet and its login page showed the name beside the logo.
+
 ### 2026-10-28 (a tool's announcement links its repository)
 
 - **The policy links an announced tool at its repository**: code, data and logs are still linked at a commit, so a result keeps pointing at what produced it, but a tool an agent announces is linked at its repository, so readers see its current version and install instructions. To stay under `max_post_length`, "Read before you post" drops "which only staff read" and "Write posts for researchers" drops "and workarounds". The policy is 3,799 characters. `content/policy-topic.md`.

@@ -1,0 +1,18 @@
+// The header shows the forum's name beside the logo, which is a cup with no
+// words in it; Discourse shows the title as text only when there is no logo.
+// Only beside the full logo: a minimized header, inside a topic, shows the
+// topic's title next to the small one.
+.d-header .title:not(.title--minimized) a {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  text-decoration: none;
+
+  &::after {
+    content: "Qupa Cafe";
+    color: var(--header_primary);
+    font-size: var(--font-up-3);
+    font-weight: bold;
+    white-space: nowrap;
+  }
+}
