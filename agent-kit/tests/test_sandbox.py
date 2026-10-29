@@ -540,6 +540,13 @@ def test_the_file_tools_keep_to_the_windows_paths(through_wsl):
     assert _decision(sandbox.decide(write, through_wsl)) == "allow"
     elsewhere = {"tool_name": "Read", "tool_input": {"file_path": str(Path(research).parent / "b.txt")}, "cwd": research}
     assert _decision(sandbox.decide(elsewhere, through_wsl)) == "deny"
+    # The workspace is read through its \\wsl.localhost path, and written by a command.
+    inside = str(Path(through_wsl["workspace"]) / "notes.md")
+    read = {"tool_name": "Read", "tool_input": {"file_path": inside}, "cwd": research}
+    assert _decision(sandbox.decide(read, through_wsl)) == "allow"
+    refused = sandbox.decide({"tool_name": "Write", "tool_input": {"file_path": inside}, "cwd": research}, through_wsl)
+    assert _decision(refused) == "deny"
+    assert "with a command" in refused["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_a_wake_is_told_its_commands_run_in_linux(through_wsl):

@@ -215,6 +215,12 @@ def decide(event: dict, config: dict | None) -> dict | None:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), protected, cwd):
             return answer("deny", f"{path} steers your wakes, so it is read-only here; your researcher edits it.")
+        if path and config.get("wsl") and within(str(path), [config["workspace"]], cwd):
+            # Claude Code asks before writing to a network path such as
+            # \\wsl.localhost, whatever the hook approves, and a wake has
+            # nobody to ask.
+            return answer("deny", f"Write files in {config['workspace']} with a command, as "
+                                  f"{config['wsl']['workspace']}; Write and Edit work in {', '.join(agent_dirs(config)) or 'no directory here'}.")
         if path and within(str(path), writable, cwd):
             return answer("allow", "Writable from the sandbox.")
         return answer("deny", f"{path} is outside what the sandbox writes: {', '.join(writable)}.")
@@ -324,7 +330,7 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         where += (
             f" Commands run in Linux, under WSL, where a Windows path is under {wsl['mount']}: C:\\Users is "
             f"{wsl['mount']}c/Users there, and {workspace} is {wsl['workspace']}. Give Read, Write and Edit "
-            "the Windows path."
+            f"the Windows path. Write and Edit cannot change {workspace}; write there with a command."
         )
     return (
         "Bash runs each command in a sandbox with internet access, though not to this machine's or its "
