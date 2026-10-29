@@ -2,7 +2,6 @@
 //
 //     node run.mjs <config.json> <command, base64>
 //     node run.mjs <config.json> --check
-//     node run.mjs <config.json> --windows-status
 //
 // Anthropic's sandbox-runtime used as a library rather than through its `srt`
 // CLI, because the CLI reads its allow list from a file whose allowedDomains
@@ -14,22 +13,21 @@
 // The command runs in bash with the workspace's pixi environment activated,
 // the workspace as HOME, and the agent's directory (config.agent_dirs) as its
 // directory. It writes to those two, except the paths config.protected names,
-// which steer later wakes. Reads: on Linux and macOS everything is denied
-// apart from those, the projects the researcher lets wakes read, the
-// program directories and the system's own (SYSTEM_READ); on Windows the command
-// runs as the runtime's `srt-sandbox` user, which reads and writes only what
-// qupa-install granted it. Variables that look like credentials are not
-// passed in.
+// which steer later wakes. It reads nothing else but those, the projects the
+// researcher lets wakes read, the program directories and the system's own
+// (SYSTEM_READ). It runs on Linux and macOS, and in WSL, where Windows hands
+// its commands. Variables that look like credentials are not passed in.
 //
 // qupa-install writes config.json; qupa_cafe.sandbox calls this script.
 
-import { SandboxManager, VENDORED_SRT_WIN_EXE, checkWindowsSandboxStatus, resolveSrtWin } from '@anthropic-ai/sandbox-runtime';
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const WINDOWS = process.platform === 'win32';
+// In WSL, which Windows hands its commands to.
+const IN_WSL = process.platform === 'linux' && Boolean(process.env.WSL_DISTRO_NAME);
 
 const PRIVATE_RANGES = [
   '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16',
@@ -54,34 +52,12 @@ function fail(message) {
   process.exit(126);
 }
 
-// A path as Git Bash on Windows writes one, for PATH: C:\a\b is /c/a/b.
-function bashPath(p) {
-  if (!WINDOWS) return p;
-  const m = /^([A-Za-z]):[\\/](.*)$/.exec(p);
-  return m ? `/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : p.replace(/\\/g, '/');
-}
-
 function quote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
 function sandboxConfig(config, bridge) {
   const network = { allowedDomains: [], deniedDomains: [], deniedResolvedAddresses: PRIVATE_RANGES };
-  if (WINDOWS) {
-    // The srt-sandbox user's reads and writes are the ACEs qupa-install
-    // granted once. Granting them here would re-stamp the whole environment
-    // on every command, which takes a minute.
-    return {
-      network,
-      filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] },
-      windows: {
-        srtWin: { path: VENDORED_SRT_WIN_EXE },
-        // The range windows-install gave the firewall rule, out of Windows'
-        // dynamic ports; the runtime's default is in them.
-        ...(config.windows_ports ? { proxyPortRange: config.windows_ports } : {}),
-      },
-    };
-  }
   return {
     network,
     filesystem: {
@@ -113,18 +89,15 @@ function sandboxConfig(config, bridge) {
 function prelude(config) {
   const ws = config.workspace;
   const lines = [
-    `export HOME=${quote(bashPath(ws))}`,
-    `export TMPDIR=${quote(bashPath(path.join(ws, '.tmp')))} TMP=${quote(path.join(ws, '.tmp'))} TEMP=${quote(path.join(ws, '.tmp'))}`,
+    `export HOME=${quote(ws)}`,
+    `export TMPDIR=${quote(path.join(ws, '.tmp'))} TMP=${quote(path.join(ws, '.tmp'))} TEMP=${quote(path.join(ws, '.tmp'))}`,
     `export PIXI_CACHE_DIR=${quote(path.join(ws, '.cache', 'rattler'))}`,
     // No display: a figure is saved, never shown.
     'export MPLBACKEND=Agg',
-    `export PATH=${quote(bashPath(path.dirname(config.pixi)))}:"$PATH"`,
+    `export PATH=${quote(path.dirname(config.pixi))}:"$PATH"`,
     `eval "$(pixi shell-hook --manifest-path ${quote(path.join(ws, 'pixi.toml'))} --shell bash)" || exit 1`,
-    // The environment's OpenSSL names a certificate directory with no
-    // certificates in it on Windows, which every pixi command warns about.
-    '[ -n "$(ls "${SSL_CERT_DIR:-/nonexistent}" 2>/dev/null)" ] || unset SSL_CERT_DIR',
-    `export PATH=${quote(bashPath(path.join(ws, '.qupa-bin')))}:"$PATH"`,
-    `cd ${quote(bashPath((config.agent_dirs ?? [])[0] ?? ws))} || exit 1`,
+    `export PATH=${quote(path.join(ws, '.qupa-bin'))}:"$PATH"`,
+    `cd ${quote((config.agent_dirs ?? [])[0] ?? ws)} || exit 1`,
   ];
   return lines.join('\n');
 }
@@ -134,6 +107,12 @@ function cleanEnv() {
   for (const [name, value] of Object.entries(process.env)) {
     if (!SECRET.test(name) && !FOREIGN.test(name)) env[name] = value;
   }
+  if (IN_WSL) {
+    // Not Windows' programs, which WSL appends to PATH, nor the socket WSL
+    // starts one through, which would run it on Windows as the researcher.
+    delete env.WSL_INTEROP;
+    env.PATH = (env.PATH ?? '').split(':').filter(dir => !dir.startsWith('/mnt/')).join(':');
+  }
   return env;
 }
 
@@ -142,26 +121,14 @@ async function run(config, command) {
   process.env.PATH = [...(config.path ?? []), process.env.PATH].join(path.delimiter);
   // The ask callback is the open internet: every host the allow list does not
   // name, which is every host, is approved.
-  let bridge;
-  if (!WINDOWS) {
-    bridge = mkdtempSync(path.join(tmpdir(), 'qupa-cafe-'));
-    process.env.TMPDIR = bridge;
-  }
+  const bridge = mkdtempSync(path.join(tmpdir(), 'qupa-cafe-'));
+  process.env.TMPDIR = bridge;
   await SandboxManager.initialize(sandboxConfig(config, bridge), async () => true);
 
   const script = `${prelude(config)}\n${command}`;
   const env = cleanEnv();
-  let child;
-  if (WINDOWS) {
-    const before = process.env;
-    process.env = env;
-    const wrapped = await SandboxManager.wrapWithSandboxArgv(script, config.bash, undefined, undefined, config.workspace);
-    process.env = before;
-    child = spawn(wrapped.argv[0], wrapped.argv.slice(1), { shell: false, stdio: 'inherit', env: wrapped.env, cwd: config.workspace });
-  } else {
-    const wrapped = await SandboxManager.wrapWithSandbox(script, config.bash);
-    child = spawn(wrapped, { shell: true, stdio: 'inherit', env, cwd: config.workspace });
-  }
+  const wrapped = await SandboxManager.wrapWithSandbox(script, config.bash);
+  const child = spawn(wrapped, { shell: true, stdio: 'inherit', env, cwd: config.workspace });
 
   const forward = signal => child.kill(signal);
   process.on('SIGINT', forward);
@@ -175,7 +142,7 @@ async function run(config, command) {
   });
   SandboxManager.cleanupAfterCommand?.();
   await SandboxManager.reset();
-  if (bridge) rmSync(bridge, { recursive: true, force: true });
+  rmSync(bridge, { recursive: true, force: true });
   return code;
 }
 
@@ -191,12 +158,7 @@ const CHECK = [
 
 async function main() {
   const [configPath, what] = process.argv.slice(2);
-  if (!configPath || !what) fail('usage: node run.mjs <config.json> <command in base64> | --check | --windows-status');
-
-  if (what === '--windows-status') {
-    console.log(JSON.stringify(checkWindowsSandboxStatus({ srtWin: resolveSrtWin({ path: VENDORED_SRT_WIN_EXE }) })));
-    return 0;
-  }
+  if (!configPath || !what) fail('usage: node run.mjs <config.json> <command in base64> | --check');
 
   let config;
   try {

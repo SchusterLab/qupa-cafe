@@ -18,10 +18,14 @@ import pytest
 from qupa_cafe import daemon, pixi_advice, sandbox
 from qupa_cafe.daemon import Settings, build_prompt, runtime_command
 
+# The real one, which conftest stands in for in every test.
+WSL_DISTRO = sandbox.wsl_distro
+
 
 @pytest.fixture
-def installed(tmp_path):
-    """A sandbox set up as qupa-install leaves one, minus the programs."""
+def installed(tmp_path, monkeypatch):
+    """A sandbox set up as qupa-install leaves one on Linux, minus the programs."""
+    monkeypatch.setattr(sandbox, "WINDOWS", False)
     root = sandbox.sandbox_dir()
     workspace = root / "workspace"
     (workspace / ".pixi" / "envs" / "default").mkdir(parents=True)
@@ -422,33 +426,9 @@ def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch
 def test_a_setup_that_fails_leaves_no_sandbox_behind(installed, monkeypatch):
     """Not the configuration of a sandbox it has half replaced."""
     monkeypatch.setattr(sandbox, "missing_programs", lambda: ["pixi: https://pixi.sh"])
-    assert sandbox.setup(installed["agent_dirs"][0], interactive=False) is False
+    assert sandbox.setup(installed["agent_dirs"][0]) is False
     assert not sandbox.config_path().exists()
     assert sandbox.load_config() is None
-
-
-def test_an_update_shows_the_uac_prompt_rather_than_skipping_it(monkeypatch, tmp_path, capsys):
-    ran = []
-
-    class Done:
-        returncode = 0
-
-    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: ran.append(argv) or Done())
-    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("an update asks nothing"))
-    sandbox.runtime_dir().mkdir(parents=True, exist_ok=True)
-    assert sandbox.windows_install("node", sandbox.runtime_dir(), interactive=False) is True
-    assert "windows-install" in ran[0] and "--proxy-port-range" in ran[0]
-    assert "UAC prompt" in capsys.readouterr().out
-
-
-def test_a_declined_uac_prompt_is_said_to_be_declined(monkeypatch, capsys):
-    class Declined:
-        returncode = 2
-        stdout = stderr = ""
-
-    monkeypatch.setattr(sandbox, "_run", lambda argv, **kw: Declined())
-    assert sandbox.windows_install("node", sandbox.runtime_dir(), interactive=False) is False
-    assert "declined" in capsys.readouterr().out
 
 
 # ------------------------------------------- Ubuntu's user-namespace restriction
@@ -462,7 +442,7 @@ def test_a_restricted_linux_is_given_a_script_to_run_with_sudo(installed, monkey
     monkeypatch.setattr(sandbox, "bwrap_exempted", lambda: False)
     monkeypatch.setattr(sandbox.subprocess, "call", lambda *a, **k: pytest.fail("ran something"))
     monkeypatch.setattr(sandbox, "_run", lambda argv, **k: pytest.fail(f"ran {argv}"))
-    assert sandbox.setup(installed["agent_dirs"][0], interactive=True) is False
+    assert sandbox.setup(installed["agent_dirs"][0]) is False
     script = sandbox.bwrap_script_path()
     assert f"sudo sh {script}" in capsys.readouterr().out
     text = script.read_text(encoding="utf-8")
@@ -472,10 +452,12 @@ def test_a_restricted_linux_is_given_a_script_to_run_with_sudo(installed, monkey
 
 
 def test_the_restriction_is_read_from_the_sysctl_or_ubuntu_s_profile(monkeypatch, tmp_path):
-    sysctl, profile = tmp_path / "sysctl", tmp_path / "bwrap-userns-restrict"
+    sysctl, profile, enabled = tmp_path / "sysctl", tmp_path / "bwrap-userns-restrict", tmp_path / "enabled"
+    enabled.write_text("Y\n", encoding="ascii")
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
     monkeypatch.setattr(sandbox, "USERNS_SYSCTL", sysctl)
     monkeypatch.setattr(sandbox, "UBUNTU_BWRAP_PROFILE", profile)
+    monkeypatch.setattr(sandbox, "APPARMOR_ENABLED", enabled)
     assert not sandbox.userns_restricted()
     sysctl.write_text("1\n", encoding="ascii")
     assert sandbox.userns_restricted()
@@ -485,6 +467,161 @@ def test_the_restriction_is_read_from_the_sysctl_or_ubuntu_s_profile(monkeypatch
     assert sandbox.userns_restricted()
     monkeypatch.setattr(sandbox.sys, "platform", "darwin")
     assert not sandbox.userns_restricted()
+
+
+def test_a_kernel_without_apparmor_enforces_no_profile(monkeypatch, tmp_path):
+    """WSL's: Ubuntu installs its profile, and nothing applies it."""
+    profile = tmp_path / "bwrap-userns-restrict"
+    profile.write_text("", encoding="ascii")
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "UBUNTU_BWRAP_PROFILE", profile)
+    monkeypatch.setattr(sandbox, "APPARMOR_ENABLED", tmp_path / "absent")
+    assert not sandbox.userns_restricted()
+    (tmp_path / "absent").write_text("N\n", encoding="ascii")
+    assert not sandbox.userns_restricted()
+
+
+# ------------------------------------------------------ on Windows, through WSL
+
+
+@pytest.fixture
+def through_wsl(tmp_path):
+    """A sandbox in WSL as wsl_setup leaves it, on Windows' side."""
+    exe = tmp_path / "wsl.exe"
+    exe.write_text("", encoding="utf-8")
+    research = tmp_path / "research"
+    research.mkdir()
+    config = {
+        "wsl": {
+            "exe": str(exe), "distro": "Ubuntu", "mount": "/mnt/", "dir": "/home/r/" + sandbox.WSL_SANDBOX,
+            "config": "/home/r/" + sandbox.WSL_SANDBOX + "/config.json", "node": "/home/r/.pixi/bin/node",
+            "run": "/home/r/" + sandbox.WSL_SANDBOX + "/runtime/run.mjs", "script": "/mnt/c/kit/qupa_cafe/sandbox.py",
+            "workspace": "/home/r/" + sandbox.WSL_SANDBOX + "/workspace",
+        },
+        "workspace": r"\\wsl.localhost\Ubuntu\home\r" + "\\" + sandbox.WSL_SANDBOX.replace("/", "\\") + r"\workspace",
+        "agent_dirs": [str(research)],
+        "read_dirs": [],
+        "protected": sandbox.protected_paths([str(research)]),
+    }
+    sandbox.config_path().parent.mkdir(parents=True, exist_ok=True)
+    sandbox.config_path().write_text(json.dumps(config), encoding="utf-8")
+    return config
+
+
+def test_a_command_is_handed_to_wsl_with_its_linux_paths_untouched_by_git_bash(through_wsl):
+    result = sandbox.decide(_bash("echo 'hi'"), through_wsl)
+    assert _decision(result) == "allow"
+    command = result["hookSpecificOutput"]["updatedInput"]["command"]
+    wsl = through_wsl["wsl"]
+    assert command.startswith("MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' ")
+    assert f"-d 'Ubuntu' -e '{wsl['node']}' '{wsl['run']}' '{wsl['config']}' " in command
+    encoded = command.rsplit(" ", 1)[1]
+    assert base64.b64decode(encoded).decode() == "echo 'hi'"
+    # Run as Git Bash would, the arguments reach wsl.exe as written.
+    # Git's bash on Windows, as Claude Code runs it; a bare `bash` there is WSL's.
+    bash = (sandbox.git_bash() if sys.platform == "win32" else None) or "bash"
+    printed = subprocess.run(
+        [bash, "-c", command.replace(sandbox.shell_quote(sandbox.posix(wsl["exe"])), "printf '%s\\n'", 1)],
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert printed[:6] == ["-d", "Ubuntu", "-e", wsl["node"], wsl["run"], wsl["config"]]
+
+
+def test_a_sandbox_in_wsl_is_ready_without_starting_the_distribution(through_wsl, monkeypatch):
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda *a, **k: pytest.fail("started WSL"))
+    assert sandbox.ready(through_wsl)
+    Path(through_wsl["wsl"]["exe"]).unlink()
+    assert not sandbox.ready(through_wsl)
+
+
+def test_the_file_tools_keep_to_the_windows_paths(through_wsl):
+    research = through_wsl["agent_dirs"][0]
+    write = {"tool_name": "Write", "tool_input": {"file_path": str(Path(research) / "a.txt")}, "cwd": research}
+    assert _decision(sandbox.decide(write, through_wsl)) == "allow"
+    elsewhere = {"tool_name": "Read", "tool_input": {"file_path": str(Path(research).parent / "b.txt")}, "cwd": research}
+    assert _decision(sandbox.decide(elsewhere, through_wsl)) == "deny"
+
+
+def test_a_wake_is_told_its_commands_run_in_linux(through_wsl):
+    research = through_wsl["agent_dirs"][0]
+    text = sandbox.wake_notice(through_wsl, research)
+    assert "Commands run in Linux, under WSL" in text
+    assert through_wsl["wsl"]["workspace"] in text
+    assert "cannot create a file directly" not in text
+
+
+@pytest.mark.parametrize("path, expected", [
+    (r"C:\Users\r\research", "/mnt/c/Users/r/research"),
+    ("D:/data", "/mnt/d/data"),
+    ("C:\\", "/mnt/c"),
+    (r"\\server\share\x", None),
+])
+def test_a_windows_path_is_given_as_wsl_mounts_it(path, expected):
+    assert sandbox.linux_path(path, "/mnt/") == expected
+
+
+@pytest.mark.parametrize("listing, named, expected", [
+    ("  NAME              STATE    VERSION\n* docker-desktop    Stopped  2\n  Ubuntu            Stopped  2\n", None, "Ubuntu"),
+    ("  NAME      STATE    VERSION\n  Debian    Stopped  2\n* Ubuntu    Running  2\n", None, "Ubuntu"),
+    ("  NAME      STATE    VERSION\n* Legacy    Stopped  1\n", None, None),
+    ("  NAME      STATE    VERSION\n* Ubuntu    Stopped  2\n  Debian    Stopped  2\n", "Debian", "Debian"),
+    ("  NAME      STATE    VERSION\n* Ubuntu    Stopped  2\n", "Fedora", None),
+])
+def test_the_distribution_is_one_on_wsl_2_with_a_shell(monkeypatch, tmp_path, listing, named, expected):
+    exe = tmp_path / "wsl.exe"
+    exe.write_text("", encoding="utf-8")
+
+    class Listed:
+        returncode = 0
+        stdout = listing.encode("utf-8")
+
+    monkeypatch.setattr(sandbox, "wsl_distro", WSL_DISTRO)
+    monkeypatch.setattr(sandbox, "wsl_exe", lambda: str(exe))
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda *a, **k: Listed())
+    if named:
+        monkeypatch.setenv("QUPA_WSL_DISTRO", named)
+    else:
+        monkeypatch.delenv("QUPA_WSL_DISTRO", raising=False)
+    assert sandbox.wsl_distro() == expected
+
+
+def test_on_windows_with_wsl_the_setup_goes_there(installed, monkeypatch):
+    monkeypatch.setattr(sandbox, "WINDOWS", True)
+    monkeypatch.setattr(sandbox, "wsl_distro", lambda: "Ubuntu")
+    went = []
+    monkeypatch.setattr(sandbox, "wsl_setup", lambda distro, *lists: went.append((distro, *lists)) or True)
+    monkeypatch.setattr(sandbox, "install", lambda *a, **k: pytest.fail("set up the Windows sandbox"))
+    assert sandbox.setup(installed["agent_dirs"][0])
+    distro, writable, protected, projects = went[0]
+    assert distro == "Ubuntu" and writable == installed["agent_dirs"] and protected
+
+
+def test_on_windows_without_wsl_there_is_no_sandbox(installed, monkeypatch, capsys):
+    monkeypatch.setattr(sandbox, "WINDOWS", True)
+    monkeypatch.setattr(sandbox, "install", lambda *a, **k: pytest.fail("set up a sandbox outside WSL"))
+    assert sandbox.setup(installed["agent_dirs"][0]) is False
+    assert "wsl --install" in capsys.readouterr().out
+    assert not sandbox.config_path().exists()
+
+
+def test_on_windows_a_sandbox_outside_wsl_runs_nothing(installed, monkeypatch):
+    """A configuration for commands run on Windows itself is not one."""
+    monkeypatch.setattr(sandbox, "WINDOWS", True)
+    assert not sandbox.ready(installed)
+    assert _decision(sandbox.decide(_bash("echo hi"), installed)) == "deny"
+
+
+def test_in_wsl_windows_programs_are_not_found(monkeypatch, tmp_path):
+    windows, linux = tmp_path / "mnt" / "c" / "nodejs", tmp_path / "usr" / "bin"
+    for directory in (windows, linux):
+        directory.mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "IN_WSL", True)
+    monkeypatch.setattr(sandbox, "pixi_bin", lambda: tmp_path / "none")
+    seen = []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda name, path=None: seen.append(path) or None)
+    monkeypatch.setenv("PATH", "/usr/bin:/mnt/c/Program Files/nodejs:/bin")
+    assert sandbox.find("npm") is None
+    assert seen == ["/usr/bin:/bin"]
 
 
 # ------------------------------------------------- the environment, kept up to date

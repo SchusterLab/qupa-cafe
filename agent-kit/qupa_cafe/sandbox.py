@@ -14,9 +14,13 @@ or refuses a pip or conda install with the pixi command to run instead
 ``WRITE_TOOLS``) it approves a path the sandbox could reach the same way, and
 refuses any other.
 
+On Windows the commands run in a Linux distribution in WSL 2, in the same
+Linux sandbox, which this module sets up by running itself in the
+distribution (``wsl_setup``).
+
 ``qupa-install`` sets it up with ``setup``, and stops when it cannot: without
-node, npm and pixi, or on Windows without the runtime's one-time elevated
-install, it reports what is missing. The daemon wakes nobody without it.
+node, npm and pixi, or on Windows without a Linux distribution in WSL 2, it
+reports what is missing. The daemon wakes nobody without it.
 
 The researcher can also let wakes read a project of theirs, and not change
 it, which the qupa-cafe skill offers in their own sessions:
@@ -55,9 +59,9 @@ FILES_DIR = PACKAGE_DIR / "sandbox_files"
 
 NL = chr(10)
 WINDOWS = os.name == "nt"
-
-# Where the runtime runs as on Windows; sandbox-runtime's windows-install makes it.
-WINDOWS_USER = "srt-sandbox"
+# This kit running inside WSL, where Windows hands its commands to the Linux
+# sandbox, and where Windows' own PATH is appended to Linux's.
+IN_WSL = sys.platform.startswith("linux") and "microsoft" in platform.release().lower()
 
 # The programs a shim in the workspace stands in for.
 SHIMS = ("pip", "pip3", "conda", "mamba", "micromamba")
@@ -102,6 +106,14 @@ def ready(config: dict | None = None) -> bool:
     config = config if config is not None else load_config()
     if not config:
         return False
+    wsl = config.get("wsl")
+    if wsl:
+        # The Linux side is not looked at, which would start the distribution
+        # on every command; the command fails there if it has gone.
+        return all(wsl.get(key) for key in ("exe", "distro", "config", "node", "run")) and Path(wsl["exe"]).is_file()
+    if WINDOWS:
+        # On Windows commands run only in WSL.
+        return False
     needed = [
         config.get("node", ""),
         config.get("run", ""),
@@ -128,6 +140,14 @@ def wrapped(command: str, config: dict) -> str:
     """``command`` as a command that runs it in the sandbox. Base64, so that no
     quoting in it can reach the shell outside."""
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
+    wsl = config.get("wsl")
+    if wsl:
+        # Git Bash would rewrite an argument that starts with / into a Windows
+        # path, and these are Linux paths.
+        return " ".join(
+            ["MSYS_NO_PATHCONV=1", "MSYS2_ARG_CONV_EXCL='*'", shell_quote(posix(wsl["exe"])), "-d", shell_quote(wsl["distro"]),
+             "-e", shell_quote(wsl["node"]), shell_quote(wsl["run"]), shell_quote(wsl["config"]), encoded]
+        )
     return " ".join(
         [shell_quote(posix(config["node"])), shell_quote(posix(config["run"])), shell_quote(posix(str(config_path()))), encoded]
     )
@@ -286,8 +306,6 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         )
         if config.get("protected"):
             where += " QUPA.md, CLAUDE.md and the other files that steer your wakes are read-only there."
-        if WINDOWS:
-            where += " A command cannot create a file directly in your working directory, only in a folder there; Write can."
     else:
         where = (
             f"Commands start in {workspace}, which is HOME there and the only place you can write; it keeps "
@@ -300,6 +318,13 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         where += (
             f" You can read, and not change, your researcher's {'project' if len(projects) == 1 else 'projects'} "
             f"{', '.join(projects)}, to answer a post from what is there."
+        )
+    wsl = config.get("wsl")
+    if wsl:
+        where += (
+            f" Commands run in Linux, under WSL, where a Windows path is under {wsl['mount']}: C:\\Users is "
+            f"{wsl['mount']}c/Users there, and {workspace} is {wsl['workspace']}. Give Read, Write and Edit "
+            "the Windows path."
         )
     return (
         "Bash runs each command in a sandbox with internet access, though not to this machine's or its "
@@ -411,7 +436,12 @@ def pixi_bin() -> Path:
 def find(name: str) -> str | None:
     """A program on PATH, or one this kit installed into pixi's bin directory,
     which need not be on PATH."""
-    found = shutil.which(name)
+    search = None
+    if IN_WSL:
+        # Not a Windows program WSL appended the directory of: Windows' npm
+        # is a shell script that would run Windows' node.
+        search = ":".join(d for d in os.environ.get("PATH", "").split(":") if not d.startswith("/mnt/"))
+    found = shutil.which(name, path=search)
     if found:
         return found
     for candidate in (pixi_bin() / name, pixi_bin() / f"{name}.exe"):
@@ -526,6 +556,7 @@ def ensure_programs() -> str | None:
 # namespaces, works with the restriction left on, and is the only exemption.
 # Linux paths, named as POSIX paths so that they read the same wherever this runs.
 USERNS_SYSCTL = PurePosixPath("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+APPARMOR_ENABLED = PurePosixPath("/sys/module/apparmor/parameters/enabled")
 UBUNTU_BWRAP_PROFILE = PurePosixPath("/etc/apparmor.d/bwrap-userns-restrict")
 SYSTEM_BWRAP = PurePosixPath("/usr/bin/bwrap")
 LINUX_BWRAP = PurePosixPath("/usr/local/libexec/qupa-cafe/bwrap")
@@ -547,11 +578,17 @@ def userns_restricted() -> bool:
     bubblewrap cannot run the sandbox."""
     if not sys.platform.startswith("linux"):
         return False
+    # A kernel without AppArmor, such as WSL's, enforces no profile that
+    # Ubuntu installed.
+    try:
+        enabled = Path(APPARMOR_ENABLED).read_text(encoding="ascii").strip().upper().startswith("Y")
+    except OSError:
+        enabled = False
     try:
         restricted = Path(USERNS_SYSCTL).read_text(encoding="ascii").strip() == "1"
     except OSError:
         restricted = False
-    return restricted or Path(UBUNTU_BWRAP_PROFILE).exists()
+    return enabled and (restricted or Path(UBUNTU_BWRAP_PROFILE).exists())
 
 
 def bwrap_exempted() -> bool:
@@ -597,7 +634,11 @@ def ask_for_bwrap() -> bool:
     script.write_text(bwrap_script(), encoding="utf-8", newline=NL)
     print("  One step needs sudo, once. Run this, then qupa-install again:")
     print()
-    print(f"    sudo sh {script}")
+    if os.environ.get("QUPA_WSL_FOR_WINDOWS"):
+        # Set up from Windows, whose terminal the researcher is in.
+        print(f"    wsl -d {os.environ.get('WSL_DISTRO_NAME', '')} -- sudo sh {script}")
+    else:
+        print(f"    sudo sh {script}")
     print()
     print("  It lets the sandbox use its own copy of bubblewrap under Ubuntu's AppArmor")
     print("  rules. The script is short, and its first lines say what it does.")
@@ -677,105 +718,165 @@ def protected_paths(directories: list[str]) -> list[str]:
     return sorted(paths)
 
 
-def _has_grant(path: Path, rights: str, kind: str = "(OI)(CI)", deny: bool = False) -> bool:
-    result = _run(["icacls", str(path)])
-    ace = f"{WINDOWS_USER}:{kind}{'(DENY)' if deny else ''}({rights})".lower()
-    return result.returncode == 0 and ace in result.stdout.lower()
+# On Windows commands run in a Linux distribution in WSL 2, in the Linux
+# sandbox, which reads only what it is given. The daemon, Claude Code and the
+# file tools stay on Windows: the hook hands each command to wsl.exe. The Linux side is this
+# module, run by the distribution's python3 from where Windows has the kit, and
+# set up by its Linux code in a directory of its own, WSL_SANDBOX under the
+# distribution's home.
+WSL_SANDBOX = ".local/share/qupa-cafe/windows-sandbox"
 
 
-def windows_deny(path: Path, rights: str, kind: str) -> bool:
-    """A lasting DENY ACE for the sandbox user, which outranks its grants."""
-    if _has_grant(path, rights, kind, deny=True):
-        return True
-    result = _run(["icacls", str(path), "/deny", f"{WINDOWS_USER}:{kind}({rights})", "/Q"])
-    if result.returncode != 0:
-        print(f"  FAILED to keep the sandbox from changing {path}")
-        print(_tail(result))
-        return False
-    return True
+def wsl_exe() -> str | None:
+    found = shutil.which("wsl.exe")
+    if found:
+        return found
+    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wsl.exe"
+    return str(system) if system.is_file() else None
 
 
-def windows_protect(directory: Path, protected: list[str]) -> bool:
-    """Keep the sandbox from changing what steers wakes. What exists gets a
-    DENY of writing and deleting; what does not yet exist cannot carry an ACE,
-    so the directory itself refuses new entries at its top level (a folder
-    already there takes them), which is where those names are read."""
-    ok = windows_deny(directory, "WD,AD", "")
-    for name in protected:
-        path = Path(name)
-        if path.is_dir():
-            ok = windows_deny(path, "W,D", "(OI)(CI)") and ok
-        elif path.is_file():
-            ok = windows_deny(path, "W,D", "") and ok
-    return ok
+def _wsl(distro: str, *argv: str, **kwargs) -> subprocess.CompletedProcess:
+    return _run([wsl_exe() or "wsl.exe", "-d", distro, "-e", *argv], **kwargs)
 
 
-def windows_grant(path: Path, rights: str, inherit: bool = True) -> bool:
-    """A lasting ACE for the sandbox user. Granted once: an inheritable grant
-    over a large tree takes minutes, and a new file inherits it for nothing."""
-    if inherit and _has_grant(path, rights):
-        return True
-    spec = f"{WINDOWS_USER}:(OI)(CI){rights}" if inherit else f"{WINDOWS_USER}:{rights}"
-    result = _run(["icacls", str(path), "/grant", spec, "/Q"])
-    if result.returncode != 0:
-        print(f"  FAILED to let the sandbox reach {path}")
-        print(_tail(result))
-        return False
-    return True
-
-
-# The loopback ports the runtime's proxies listen on, which its firewall rule
-# lets the sandbox user reach. Below Windows' dynamic range (49152-65535),
-# since a port in it can be held by any program's outgoing connection, and
-# the runtime's own default range is in it.
-WINDOWS_PROXY_PORTS = (47080, 47089)
-
-
-def windows_marker() -> Path:
-    """What this kit last installed the Windows sandbox with."""
-    return runtime_dir() / "windows-install.json"
-
-
-def windows_provisioned(node: str, run: Path) -> bool:
-    """Whether the sandbox user exists and its firewall rule admits our ports,
-    which only an install made by this kit records."""
-    result = _run([node, str(run), "-", "--windows-status"], cwd=str(run.parent))
+def wsl_distro() -> str | None:
+    """The distribution commands run in: QUPA_WSL_DISTRO, else the default
+    one, else the first, of those on WSL 2, and not Docker Desktop's, which
+    has no shell. None without one."""
+    exe = wsl_exe()
+    if exe is None:
+        return None
     try:
-        user = json.loads(result.stdout)["user"]
-        marker = json.loads(windows_marker().read_text(encoding="utf-8"))
-    except (ValueError, KeyError, OSError):
-        return False
-    ports = list(WINDOWS_PROXY_PORTS)
-    return bool(user.get("provisioned") and user.get("credPresent")) and marker.get("ports") == ports
-
-
-def windows_install(node: str, runtime: Path, interactive: bool) -> bool:
-    """sandbox-runtime's one-time elevated step: a hidden local user the
-    commands run as, and firewall rules that apply only to it. Its UAC prompt
-    is the consent, so a run that asks nothing else (an update) shows it too;
-    an interactive one asks first, to say what it is for."""
-    cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
-    command = f'"{node}" "{cli}" windows-install --proxy-port-range {WINDOWS_PROXY_PORTS[0]}-{WINDOWS_PROXY_PORTS[1]} --force'
-    print("  On Windows the sandbox runs commands as a hidden local user, srt-sandbox, whose")
-    print("  network goes only through the sandbox's proxy. Creating it needs one UAC prompt.")
-    if not interactive:
-        print("  Approve the UAC prompt to go on; declining it leaves your agent without the sandbox.")
-    elif input("  Create it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
-        print(f"  Not done. To do it later, run this and then qupa-install again:{NL}    {command}")
-        return False
-    ports = "-".join(str(port) for port in WINDOWS_PROXY_PORTS)
-    # --force: an install made without our ports is replaced, not kept.
-    result = _run([node, str(cli), "windows-install", "--proxy-port-range", ports, "--force"], cwd=str(runtime))
-    if result.returncode == 2:
-        print(f"  Not done: the UAC prompt was declined. To do it later, run this and then qupa-install again:{NL}    {command}")
-        return False
+        # WSL_UTF8, or wsl.exe writes UTF-16.
+        result = subprocess.run([exe, "-l", "-v"], capture_output=True, env=dict(os.environ, WSL_UTF8="1"), timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     if result.returncode != 0:
-        print("  FAILED to create the sandbox user")
-        print(_tail(result))
+        return None
+    text = result.stdout.decode("utf-8", "replace").replace("\x00", "").replace("\ufeff", "")
+    found, default = [], None
+    for line in text.splitlines()[1:]:
+        words = line.replace("*", " * ").split()
+        if not words:
+            continue
+        marked = words[0] == "*"
+        words = words[1:] if marked else words
+        if len(words) < 3 or words[-1] != "2" or words[0].startswith("docker-desktop"):
+            continue
+        found.append(words[0])
+        if marked:
+            default = words[0]
+    named = os.environ.get("QUPA_WSL_DISTRO")
+    if named:
+        return named if named in found else None
+    return default or (found[0] if found else None)
+
+
+def wsl_mount(distro: str) -> str | None:
+    """Where the distribution mounts Windows' drives, ending in a slash:
+    /mnt/ unless its wsl.conf says otherwise."""
+    result = _wsl(distro, "wslpath", "-a", "-u", "C:\\", timeout=120)
+    path = result.stdout.strip().rstrip("/")
+    return path[:-1] if result.returncode == 0 and path.endswith("/c") else None
+
+
+def linux_path(path: str, mount: str) -> str | None:
+    """A Windows path on a drive as the distribution has it, or None for one
+    that is not, such as a network share's."""
+    text = str(path)
+    if len(text) < 2 or text[1] != ":" or not text[0].isalpha():
+        return None
+    rest = text[2:].replace("\\", "/").strip("/")
+    return f"{mount}{text[0].lower()}" + (f"/{rest}" if rest else "")
+
+
+def wsl_setup(distro: str, writable: list[str], protected: list[str], projects: list[str]) -> bool:
+    """The Linux sandbox in ``distro``, set up by this module there, and the
+    configuration that hands it each command."""
+    print(f"  Commands will run in Linux, in WSL's {distro}, in the Linux sandbox.")
+    exe = wsl_exe()
+    home = _wsl(distro, "sh", "-c", 'printf %s "$HOME"', timeout=300).stdout.strip()
+    mount = wsl_mount(distro)
+    if not home.startswith("/") or mount is None:
+        print(f"  FAILED to start {distro}, or to find where it mounts Windows' drives.")
         return False
-    windows_marker().write_text(json.dumps({"ports": list(WINDOWS_PROXY_PORTS)}) + NL, encoding="utf-8")
-    print(f'  Created. `"{node}" "{cli}" windows-uninstall` removes it.')
-    return True
+    given = {"agent_dirs": writable, "protected": protected, "read_dirs": [d for d in projects if d not in writable]}
+    linux = {key: [linux_path(path, mount) for path in paths] for key, paths in given.items()}
+    script = linux_path(str(Path(__file__).resolve()), mount)
+    if script is None or None in linux["agent_dirs"] or None in linux["read_dirs"]:
+        print("  FAILED: the kit and the directories it works in must be on a drive, not a network share.")
+        return False
+    linux["protected"] = [path for path in linux["protected"] if path]
+
+    directory = f"{home}/{WSL_SANDBOX}"
+    payload = base64.b64encode(json.dumps(linux).encode("utf-8")).decode("ascii")
+    # Not captured: its progress and any question it asks are the researcher's.
+    sys.stdout.flush()
+    ran = subprocess.run([exe, "-d", distro, "-e", "env", f"QUPA_SANDBOX_DIR={directory}", "QUPA_WSL_FOR_WINDOWS=1",
+                          "python3", script, "wsl-setup", payload])
+    if ran.returncode != 0:
+        if ran.returncode == 127:
+            print(f"  {distro} has no python3. Install it there, then run qupa-install again:")
+            print(f"    wsl -d {distro} -- sudo apt install python3")
+        return False
+    try:
+        inside = json.loads(_wsl(distro, "cat", f"{directory}/config.json", timeout=120).stdout)
+    except ValueError:
+        print(f"  FAILED to read the sandbox's configuration in {distro}.")
+        return False
+    shared = _wsl(distro, "wslpath", "-w", inside["workspace"], timeout=120).stdout.strip()
+    config = {
+        "wsl": {
+            "exe": exe, "distro": distro, "mount": mount, "dir": directory, "config": f"{directory}/config.json",
+            "node": inside["node"], "run": inside["run"], "script": script, "workspace": inside["workspace"],
+        },
+        # The Windows paths, which the file tools are given.
+        "workspace": shared or inside["workspace"],
+        "agent_dirs": given["agent_dirs"],
+        "read_dirs": given["read_dirs"],
+        "protected": protected,
+    }
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
+    cli = runtime_dir() / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
+    if (runtime_dir() / "windows-install.json").is_file() and cli.is_file():
+        # The account kits up to 0.26.0 ran commands as, which nothing uses now.
+        print("  The Windows account srt-sandbox, which ran commands before, is still here. To remove")
+        print(f'  it and its firewall rules (one UAC prompt): "{find("node")}" "{cli}" windows-uninstall')
+    return check(config)
+
+
+def wsl_command(config: dict, *argv: str) -> list[str]:
+    """This module's ``argv`` run in the distribution, on its sandbox."""
+    wsl = config["wsl"]
+    return [wsl["exe"], "-d", wsl["distro"], "-e", "env", f"QUPA_SANDBOX_DIR={wsl['dir']}", "python3", wsl["script"], *argv]
+
+
+class kept_up:
+    """The distribution kept running while a wake does, when commands run in
+    WSL: WSL stops it seconds after its last process ends, and the next command
+    would wait for it to start again."""
+
+    def __init__(self, config: dict | None):
+        self.wsl = (config or {}).get("wsl")
+        self.keeper = None
+
+    def __enter__(self):
+        if self.wsl:
+            try:
+                self.keeper = subprocess.Popen(
+                    [self.wsl["exe"], "-d", self.wsl["distro"], "-e", "sleep", "infinity"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError:
+                self.keeper = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.keeper is not None:
+            self.keeper.terminate()
+        return False
 
 
 def write_workspace(workspace: Path) -> None:
@@ -873,7 +974,7 @@ def update_workspace(workspace: Path, pixi: str, env: dict) -> bool:
     return True
 
 
-def setup(agent_dir: str, interactive: bool) -> bool:
+def setup(agent_dir: str) -> bool:
     """Install the runtime and the environment, and check a command runs.
     False, having said why, when the sandbox cannot be had here."""
     # The projects the researcher let it read stay readable.
@@ -881,6 +982,26 @@ def setup(agent_dir: str, interactive: bool) -> bool:
     # Written again only once everything below has worked, so a setup that
     # fails part-way leaves no sandbox half replaced.
     config_path().unlink(missing_ok=True)
+    writable, refused = writable_agent_dirs(agent_dir)
+    if refused:
+        print(f"  {refused}")
+    protected = protected_paths(writable)
+    if WINDOWS:
+        distro = wsl_distro()
+        if distro:
+            return wsl_setup(distro, writable, protected, projects)
+        print("  On Windows, commands run in Linux, under WSL 2, and this machine has no Linux")
+        print("  distribution there. Install Ubuntu with this, restart if it asks, then run")
+        print("  qupa-install again:")
+        print()
+        print("    wsl --install")
+        return False
+    return install(writable, protected, projects)
+
+
+def install(writable: list[str], protected: list[str], projects: list[str]) -> bool:
+    """The runtime, the environment and the configuration, for these
+    directories of the researcher's, then the test command."""
     missing = missing_programs()
     if missing:
         print("  Not set up. Missing:")
@@ -904,32 +1025,6 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         print(_tail(result))
         return False
 
-    writable, refused = writable_agent_dirs(agent_dir)
-    if refused:
-        print(f"  {refused}")
-    protected = protected_paths(writable)
-
-    workspace.mkdir(parents=True, exist_ok=True)
-    if WINDOWS:
-        if not windows_provisioned(node, runtime / "run.mjs") and not windows_install(node, runtime, interactive):
-            return False
-        # Before the environment exists, so that its files inherit the grant.
-        granted = windows_grant(runtime, "RX") and windows_grant(workspace, "M")
-        granted = granted and windows_grant(Path(pixi), "RX", inherit=False)
-        # The bash every command runs in. A Git under the user's profile, the
-        # copy this kit unpacked or a per-user install, is not readable to the
-        # sandbox user until granted; one in Program Files already is.
-        bash = git_bash()
-        if bash and Path.home().resolve() in Path(bash).resolve().parents:
-            granted = granted and windows_grant(Path(bash).resolve().parent.parent, "RX")
-        for directory in writable:
-            print(f"  Letting the sandbox work in {directory}...")
-            granted = granted and windows_grant(Path(directory), "M") and windows_protect(Path(directory), protected)
-        for directory in projects:
-            granted = granted and windows_grant(Path(directory), "RX")
-        if not granted:
-            return False
-
     write_workspace(workspace)
     env = dict(os.environ, PIXI_CACHE_DIR=str(workspace / ".cache" / "rattler"))
     if not update_workspace(workspace, pixi, env):
@@ -950,14 +1045,13 @@ def setup(agent_dir: str, interactive: bool) -> bool:
         "node": node,
         "run": str(runtime / "run.mjs"),
         "pixi": pixi,
-        "bash": git_bash() if WINDOWS else "/bin/bash",
+        "bash": "/bin/bash",
         # Where the runtime finds bwrap, socat and rg, which may be only in
         # pixi's bin directory and not on the PATH a wake inherits; the
         # exempted bubblewrap first, where AppArmor needs it.
         "path": ([str(LINUX_BWRAP.parent)] if userns_restricted() else [])
         + sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
         "programs": program_dirs(),
-        "windows_ports": list(WINDOWS_PROXY_PORTS),
     }
     config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
     return check(config)
@@ -970,7 +1064,11 @@ def check(config: dict | None = None) -> bool:
     if not ready(config):
         print("  The sandbox is not set up. Run qupa-install.")
         return False
-    result = _run([config["node"], config["run"], str(config_path()), "--check"], cwd=config["workspace"], timeout=300)
+    wsl = config.get("wsl")
+    if wsl:
+        result = _run([wsl["exe"], "-d", wsl["distro"], "-e", wsl["node"], wsl["run"], wsl["config"], "--check"], timeout=300)
+    else:
+        result = _run([config["node"], config["run"], str(config_path()), "--check"], cwd=config["workspace"], timeout=300)
     if result.returncode != 0:
         print("  FAILED: a command in the sandbox did not run")
         print(_tail(result, 6))
@@ -1012,9 +1110,16 @@ def grant_read(directory: str) -> bool:
     if path in read_dirs(config):
         print(f"Your agent's wakes already read {path}.")
         return True
-    if WINDOWS:
-        print(f"Letting the sandbox read {path} (a large project takes a minute)...")
-        if not windows_grant(Path(path), "RX"):
+    wsl = config.get("wsl")
+    if wsl:
+        inside = linux_path(path, wsl["mount"])
+        if inside is None:
+            print(f"{path} is not on a drive, so the sandbox in WSL cannot read it.")
+            return False
+        result = _run(wsl_command(config, "read", inside), timeout=300)
+        if result.returncode != 0:
+            print(f"FAILED to let the sandbox in WSL read {path}")
+            print(_tail(result))
             return False
     config["read_dirs"] = [*read_dirs(config), path]
     config_path().write_text(json.dumps(config, indent=2) + NL, encoding="utf-8")
@@ -1032,13 +1137,11 @@ def forget_read(directory: str) -> bool:
     if path not in read_dirs(config):
         print(f"{path} is not among the projects your agent's wakes read.")
         return False
-    if WINDOWS:
-        # The grant at its top alone, which takes what its folders inherited
-        # with it and leaves a grant of their own, such as the agent's
-        # directory's, in place.
-        result = _run(["icacls", path, "/remove:g", WINDOWS_USER, "/Q"])
+    wsl = config.get("wsl")
+    if wsl:
+        result = _run(wsl_command(config, "unread", linux_path(path, wsl["mount"]) or path), timeout=300)
         if result.returncode != 0:
-            print(f"FAILED to take back the sandbox's reading of {path}")
+            print(f"FAILED to take back the sandbox's reading of {path} in WSL")
             print(_tail(result))
             return False
     config["read_dirs"] = [d for d in read_dirs(config) if d != path]
@@ -1052,6 +1155,11 @@ def main(argv: list[str]) -> int:
         return hook_main()
     if argv[:1] == ["check"]:
         return 0 if check() else 1
+    if argv[:1] == ["wsl-setup"] and len(argv) == 2:
+        # In WSL, from Windows' wsl_setup: what Windows chose, as Linux paths.
+        given = json.loads(base64.b64decode(argv[1]).decode("utf-8"))
+        ensure_programs()
+        return 0 if install(given["agent_dirs"], given["protected"], given["read_dirs"]) else 1
     if argv[:1] == ["read"] and len(argv) == 2:
         return 0 if grant_read(argv[1]) else 1
     if argv[:1] == ["unread"] and len(argv) == 2:

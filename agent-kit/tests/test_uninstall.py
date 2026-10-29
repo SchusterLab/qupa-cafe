@@ -59,3 +59,19 @@ def test_the_bubblewrap_exemption_is_named_with_the_commands_that_undo_it(instal
     out = capsys.readouterr().out
     # The profile is unloaded while its file is still there to name it.
     assert out.index("apparmor_parser -R") < out.index(f"sudo rm -r {sandbox.LINUX_BWRAP.parent}")
+
+
+def test_a_sandbox_in_wsl_is_deleted_there_and_its_pixi_named(installed, monkeypatch, capsys):
+    wsl = {"exe": "wsl.exe", "distro": "Ubuntu", "dir": "/home/r/.local/share/qupa-cafe/windows-sandbox"}
+    monkeypatch.setattr(sandbox, "load_config", lambda: {"wsl": wsl})
+    ran = []
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(uninstall.subprocess, "run", lambda argv, **kw: ran.append(argv) or Done())
+    assert uninstall.uninstall(yes=True) == 0
+    assert ["wsl.exe", "-d", "Ubuntu", "-e", "rm", "-rf", wsl["dir"]] in ran
+    out = capsys.readouterr().out
+    assert f"deleted {wsl['dir']} in WSL's Ubuntu" in out and "~/.pixi there" in out

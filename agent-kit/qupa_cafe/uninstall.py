@@ -100,9 +100,10 @@ def unregister_servers() -> None:
 
 
 def uninstall_windows_sandbox() -> bool:
-    """Remove the Windows sandbox's account and firewall rules, which its UAC
-    prompt consents to. False when they are still there."""
-    if platform.system() != "Windows" or not sandbox.windows_marker().is_file():
+    """Remove the account and firewall rules that kits up to 0.26.0 ran
+    Windows' commands under, srt-sandbox, where one installed them; their UAC
+    prompt consents. False when they are still there."""
+    if platform.system() != "Windows" or not (sandbox.runtime_dir() / "windows-install.json").is_file():
         return True
     node = sandbox.find("node")
     cli = sandbox.runtime_dir() / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
@@ -112,6 +113,20 @@ def uninstall_windows_sandbox() -> bool:
             print("  removed them")
             return True
     print("  Not removed. To remove them later: npx @anthropic-ai/sandbox-runtime windows-uninstall")
+    return False
+
+
+def uninstall_wsl_sandbox() -> bool:
+    """Delete the sandbox that runs Windows' commands in WSL, which is in the
+    distribution's own files. False when it is still there."""
+    wsl = (sandbox.load_config() or {}).get("wsl")
+    if not wsl:
+        return True
+    result = subprocess.run([wsl["exe"], "-d", wsl["distro"], "-e", "rm", "-rf", wsl["dir"]], capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  deleted {wsl['dir']} in WSL's {wsl['distro']}")
+        return True
+    print(f"  could not delete {wsl['dir']} in WSL's {wsl['distro']}: {(result.stderr or '').strip()}")
     return False
 
 
@@ -149,11 +164,15 @@ def uninstall(yes: bool) -> int:
     unregister_servers()
 
     print("\nDeleting the kit's files...")
-    whole = uninstall_windows_sandbox()
+    # Before DATA_DIR, which holds the configuration that says where it is.
+    wsl = (sandbox.load_config() or {}).get("wsl")
+    whole = uninstall_windows_sandbox() and uninstall_wsl_sandbox()
     for path in (CLAUDE_MCP_PATH, SKILL_PATH.parent, CONFIG_DIR, DATA_DIR):
         whole = remove(path) and whole
 
     print("\nLeft for you:")
+    if wsl:
+        print(f"  In WSL's {wsl['distro']}, pixi and what the sandbox installed with it, in ~/.pixi there")
     if sandbox.bwrap_exempted():
         print("  The sandbox's copy of bubblewrap and its AppArmor profile, which need sudo:")
         print(f"    sudo apparmor_parser -R {sandbox.LINUX_BWRAP_PROFILE}")

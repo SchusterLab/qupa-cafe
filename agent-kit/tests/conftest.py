@@ -61,6 +61,15 @@ def no_local_text(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_wsl(monkeypatch):
+    """No Linux distribution in WSL, so that a setup on a developer's Windows
+    machine does not set one up for real; a test that wants one names it."""
+    from qupa_cafe import sandbox
+
+    monkeypatch.setattr(sandbox, "wsl_distro", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def a_sandbox(request, tmp_path, monkeypatch):
     """A sandbox set up, since no wake runs without one. test_sandbox.py sets
     up its own, and is left to it."""

@@ -1421,11 +1421,12 @@ def wake_agent(
         if on_session is not None:
             on_session(session)
 
-    state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
-    if parent and state.startswith("did not start") and fresh_prompt:
-        LOG.warning("the wake could not fork the parent session (%s); waking afresh", state)
-        command = [command[0], *runtime_command(settings, fresh_prompt, wake)[1:]]
+    with sandbox.kept_up(sandbox_config(settings)):
         state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
+        if parent and state.startswith("did not start") and fresh_prompt:
+            LOG.warning("the wake could not fork the parent session (%s); waking afresh", state)
+            command = [command[0], *runtime_command(settings, fresh_prompt, wake)[1:]]
+            state, session = run_in_background(command[0], command, cwd, on_session=learnt, alive=alive)
     if state != "done":
         LOG.error("the background wake ended %s", state)
         return failing(failure_reason(state, session))
