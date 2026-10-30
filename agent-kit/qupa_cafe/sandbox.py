@@ -980,9 +980,11 @@ def update_workspace(workspace: Path, pixi: str, env: dict) -> bool:
     return True
 
 
-def setup(agent_dir: str) -> bool:
+def setup(agent_dir: str, interactive: bool = False) -> bool:
     """Install the runtime and the environment, and check a command runs.
-    False, having said why, when the sandbox cannot be had here."""
+    False, having said why, when the sandbox cannot be had here. On Windows
+    without a Linux distribution in WSL 2, ``interactive`` offers to install
+    one."""
     # The projects the researcher let it read stay readable.
     projects = read_dirs(load_config() or {})
     # Written again only once everything below has worked, so a setup that
@@ -994,15 +996,43 @@ def setup(agent_dir: str) -> bool:
     protected = protected_paths(writable)
     if WINDOWS:
         distro = wsl_distro()
+        if not distro:
+            print("  On Windows, commands run in Linux, under WSL 2, and this machine has no Linux")
+            print("  distribution there.")
+            distro = wsl_install() if interactive else None
         if distro:
             return wsl_setup(distro, writable, protected, projects)
-        print("  On Windows, commands run in Linux, under WSL 2, and this machine has no Linux")
-        print("  distribution there. Install Ubuntu with this, restart if it asks, then run")
-        print("  qupa-install again:")
+        print("  To install one: run this, restart if it asks, open Ubuntu from the Start menu")
+        print("  once to choose its username, then run qupa-install again:")
         print()
-        print("    wsl --install")
+        print(f"    {WSL_INSTALL}")
         return False
     return install(writable, protected, projects)
+
+
+WSL_INSTALL = "wsl --install -d Ubuntu"
+
+
+def wsl_install() -> str | None:
+    """Ask, then install WSL and Ubuntu with WSL's own installer, which shows
+    a UAC prompt to turn WSL on and asks for Ubuntu's username where it can
+    start Ubuntu at once. The distribution, or None where a restart or the
+    first start of Ubuntu is still to come."""
+    exe = wsl_exe()
+    if exe is None:
+        return None
+    print("  WSL's installer can install Ubuntu: it shows one UAC prompt, may need a restart,")
+    print("  and asks you to choose a username and password for Ubuntu.")
+    if input("  Install it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+        return None
+    # Not captured: its progress, the UAC prompt's outcome and Ubuntu's
+    # questions are the researcher's.
+    sys.stdout.flush()
+    ran = subprocess.run([exe, "--install", "-d", "Ubuntu"])
+    if ran.returncode != 0:
+        print(f"  WSL's installer stopped (exit {ran.returncode}).")
+        return None
+    return wsl_distro()
 
 
 def install(writable: list[str], protected: list[str], projects: list[str]) -> bool:

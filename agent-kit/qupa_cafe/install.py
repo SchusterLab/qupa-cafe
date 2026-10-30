@@ -1597,7 +1597,7 @@ def install(args: argparse.Namespace) -> int:
     register_mcp_servers(settings)
 
     print("\nSetting up the sandbox your agent runs commands in...")
-    if not sandbox.setup(settings["agent_dir"]):
+    if not sandbox.setup(settings["agent_dir"], interactive=interactive()):
         # Where it is waiting for the sudo step, what it printed says it all.
         if sandbox.userns_restricted() and not sandbox.bwrap_exempted():
             return 1

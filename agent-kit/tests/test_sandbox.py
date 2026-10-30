@@ -606,9 +606,64 @@ def test_on_windows_with_wsl_the_setup_goes_there(installed, monkeypatch):
 def test_on_windows_without_wsl_there_is_no_sandbox(installed, monkeypatch, capsys):
     monkeypatch.setattr(sandbox, "WINDOWS", True)
     monkeypatch.setattr(sandbox, "install", lambda *a, **k: pytest.fail("set up a sandbox outside WSL"))
+    # A scripted install asks nothing and installs nothing.
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked"))
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda *a, **k: pytest.fail(f"ran {a}"))
     assert sandbox.setup(installed["agent_dirs"][0]) is False
-    assert "wsl --install" in capsys.readouterr().out
+    assert "wsl --install -d Ubuntu" in capsys.readouterr().out
     assert not sandbox.config_path().exists()
+
+
+@pytest.fixture
+def wsl_installer(tmp_path, monkeypatch):
+    """WSL's installer, standing in: what it was run with, and what it does."""
+    exe = tmp_path / "wsl.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sandbox, "WINDOWS", True)
+    monkeypatch.setattr(sandbox, "wsl_exe", lambda: str(exe))
+    state = {"ran": [], "distro": None, "code": 0}
+
+    class Ran:
+        def __init__(self, code):
+            self.returncode = code
+
+    def run(argv, **kwargs):
+        state["ran"].append(argv)
+        if state["code"] == 0:
+            state["distro"] = state.get("after")
+        return Ran(state["code"])
+
+    monkeypatch.setattr(sandbox.subprocess, "run", run)
+    monkeypatch.setattr(sandbox, "wsl_distro", lambda: state["distro"])
+    return state
+
+
+def test_asked_yes_wsl_s_installer_runs_and_the_setup_goes_on_in_ubuntu(installed, wsl_installer, monkeypatch):
+    """Where WSL was already on, Ubuntu starts at once and the setup goes on."""
+    wsl_installer["after"] = "Ubuntu"
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    went = []
+    monkeypatch.setattr(sandbox, "wsl_setup", lambda distro, *lists: went.append(distro) or True)
+    assert sandbox.setup(installed["agent_dirs"][0], interactive=True)
+    assert wsl_installer["ran"][0][1:] == ["--install", "-d", "Ubuntu"]
+    assert went == ["Ubuntu"]
+
+
+def test_an_install_that_needs_a_restart_says_what_is_left(installed, wsl_installer, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    assert sandbox.setup(installed["agent_dirs"][0], interactive=True) is False
+    assert len(wsl_installer["ran"]) == 1
+    out = capsys.readouterr().out
+    assert "restart if it asks" in out and "qupa-install again" in out
+
+
+@pytest.mark.parametrize("answer, code", [("n", 0), ("", 1)])
+def test_declined_or_failed_the_install_leaves_the_command(installed, wsl_installer, monkeypatch, capsys, answer, code):
+    wsl_installer["code"] = code
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+    assert sandbox.setup(installed["agent_dirs"][0], interactive=True) is False
+    assert len(wsl_installer["ran"]) == (0 if answer == "n" else 1)
+    assert "wsl --install -d Ubuntu" in capsys.readouterr().out
 
 
 def test_on_windows_a_sandbox_outside_wsl_runs_nothing(installed, monkeypatch):
