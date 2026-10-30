@@ -563,6 +563,10 @@ class Forum:
     def delete_post(self, post_id: int) -> None:
         self._request("DELETE", f"/posts/{post_id}.json")
 
+    def private_message(self, recipient: str, title: str, raw: str) -> None:
+        self._request("POST", "/posts.json", {"title": title, "raw": raw, "archetype": "private_message",
+                                              "target_recipients": recipient})
+
 
 # --------------------------------------------------------------- forum host
 
@@ -2018,6 +2022,34 @@ def rewake_pass(settings: Settings, forum: Forum, host: ForumHost, dry_run: bool
     return True
 
 
+def limit_pass(settings: Settings, forum: Forum, dry_run: bool = False) -> bool:
+    """Tell the researcher by private message when the cap or the budget
+    (qupa_cafe.quota) starts holding wakes back, whether or not anybody is
+    waiting: once for each limit reached, until no limit holds them back.
+    Whether a message went."""
+    found = quota.reached()
+    if found is None:
+        if quota.told():
+            LOG.info("no limit holds wakes back any more")
+            quota.record_told("")
+        return False
+    if quota.told() == found.key or dry_run:
+        return False
+    if not settings.researcher:
+        LOG.warning("%s holds wakes back, and there is no QUPA_RESEARCHER to tell", found.key)
+        return False
+    title, body = quota.said_to_the_researcher(found, settings.api_username)
+    try:
+        forum.private_message(settings.researcher, title, body)
+    except (urllib.error.URLError, OSError) as exc:
+        # Tried again at the next poll.
+        LOG.warning("could not tell %s that %s holds wakes back: %s", settings.researcher, found.key, exc)
+        return False
+    LOG.info("told %s by private message that %s holds wakes back", settings.researcher, found.key)
+    quota.record_told(found.key)
+    return True
+
+
 def handoff_pass(settings: Settings, forum: Forum, dry_run: bool) -> int:
     """Wake the agent again for each post it handed to a session that has
     not answered it in time, or has ended; settle the rest. Returns how many
@@ -2588,6 +2620,7 @@ def run() -> int:
             LOG.info("this daemon now has %s; the one on %s stops at its next poll", settings.api_username, replaced)
 
     if args.once:
+        limit_pass(settings, forum, args.dry_run)
         wakes = one_pass(settings, forum, host, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
         wakes += rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
@@ -2604,6 +2637,7 @@ def run() -> int:
                 claude = shutil.which("claude")
                 for short in sweep_background(claude) if claude else []:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
+            limit_pass(settings, forum, args.dry_run)
             one_pass(settings, forum, host, handled, args.dry_run, journal)
             diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
             rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)

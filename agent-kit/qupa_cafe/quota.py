@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -187,28 +188,50 @@ def spent(now: float | None = None) -> float:
     return sum(cost for _, cost in spending(now))
 
 
-def over_budget(budget: str | None = None, now: float | None = None) -> str:
-    """Why the budget holds wakes back now, or empty."""
+@dataclass
+class Reached:
+    """A limit that holds wakes back: which, as env names it, its setting,
+    what was used of it, and the Unix time it lets wakes start again."""
+
+    key: str
+    limit: str
+    used: str
+    until: float
+    # The plan's window the cap was reached in, "five-hour" or "weekly";
+    # empty for the budget.
+    window: str = ""
+
+    @property
+    def when(self) -> str:
+        return time.strftime("%H:%M UTC on %d %B", time.gmtime(self.until))
+
+
+def budget_reached(budget: str | None = None, now: float | None = None) -> Reached | None:
+    """The budget, if the wakes of the last five hours have spent it."""
     budget = read(key=BUDGET_KEY) if budget is None else budget
     allowed = tokens_of(budget)
     if not allowed:
-        return ""
+        return None
     now = time.time() if now is None else now
     found = spending(now)
     total = sum(cost for _, cost in found)
     if total < allowed:
-        return ""
+        return None
     # It is under again once enough of the oldest responses are five hours old.
     left = total
     for at, cost in found:
         left -= cost
         if left < allowed:
             break
-    until = time.strftime("%H:%M UTC on %d %B", time.gmtime(at + BUDGET_SECONDS))
     from qupa_cafe import wakes
 
-    return (f"its wakes have spent {wakes.count(round(total))} input-token equivalents of its researcher's Claude "
-            f"usage in the last five hours, and they allow {budget} ({BUDGET_KEY}), so it waits until {until}")
+    return Reached(BUDGET_KEY, budget, wakes.count(round(total)), at + BUDGET_SECONDS)
+
+
+def over_budget(budget: str | None = None, now: float | None = None) -> str:
+    """Why the budget holds wakes back now, or empty."""
+    found = budget_reached(budget, now)
+    return said_to_the_forum(found) if found else ""
 
 
 # ------------------------------------------------------------------ readings
@@ -253,17 +276,71 @@ def usage(now: float | None = None) -> dict[str, dict]:
             if window in WINDOWS and isinstance(found, dict) and float(found.get("resets_at") or 0) > now}
 
 
-def held_back(cap: str | None = None, now: float | None = None) -> str:
-    """Why no wake may start now, by the cap or the budget, or empty. In
-    words for the forum's notice to somebody waiting, so the time it waits
-    until is in UTC."""
+def reached(cap: str | None = None, now: float | None = None) -> Reached | None:
+    """The limit that holds wakes back now, the cap before the budget, or None."""
     cap = read() if cap is None else cap
     for window, found in usage(now).items() if cap else ():
         if found["used"] >= int(cap):
-            until = time.strftime("%H:%M UTC on %d %B", time.gmtime(found["resets_at"]))
-            return (f"its researcher's Claude plan has used {found['used']:.0f}% of its {WINDOWS[window]} limit, "
-                    f"and they stop its wakes at {cap}% ({KEY}), so it waits until the limit resets at {until}")
-    return over_budget(now=now)
+            return Reached(KEY, cap, f"{found['used']:.0f}%", found["resets_at"], WINDOWS[window])
+    return budget_reached(now=now)
+
+
+def held_back(cap: str | None = None, now: float | None = None) -> str:
+    """Why no wake may start now, or empty, in words for the forum's notice
+    to somebody waiting."""
+    found = reached(cap, now)
+    return said_to_the_forum(found) if found else ""
+
+
+def said_to_the_forum(found: Reached) -> str:
+    """Why the agent waits, for somebody waiting on it; the time is in UTC,
+    since they may be anywhere."""
+    if found.key == KEY:
+        return (f"its researcher's Claude plan has used {found.used} of its {found.window} limit, and they stop "
+                f"its wakes at {found.limit}% ({KEY}), so it waits until the limit resets at {found.when}")
+    return (f"its wakes have spent {found.used} input-token equivalents of its researcher's Claude usage in the "
+            f"last five hours, and they allow {found.limit} ({BUDGET_KEY}), so it waits until {found.when}")
+
+
+def said_to_the_researcher(found: Reached, agent: str) -> tuple[str, str]:
+    """The title and body of the private message telling the researcher."""
+    if found.key == KEY:
+        title = f"{agent} has stopped waking: your Claude plan reached your cap"
+        why = (f"Your Claude plan has used {found.used} of its {found.window} limit, and you stop {agent}'s wakes "
+               f"at {found.limit}% (`{KEY}`). That counts your own sessions too.")
+        change = "`c` steps the cap"
+    else:
+        title = f"{agent} has stopped waking: its wakes spent your budget"
+        why = (f"{agent}'s wakes have spent {found.used} input-token equivalents in the last five hours, and you "
+               f"allow them {found.limit} (`{BUDGET_KEY}`).")
+        change = "`b` steps the budget"
+    body = (f"{why}\n\nNo wake starts until {found.when}, and a wake still running is stopped. A mention or "
+            f"message that arrives meanwhile is told that {agent} cannot answer yet, and is answered once the limit "
+            f"lets wakes start again.\n\nTo change the limit, open the wake browser from the tray's **Show wakes**, "
+            f"where {change}, or edit `{found.key}` in the kit's `env`; the daemon reads it again before every "
+            f"wake. You are told once each time a limit is reached.")
+    return title, body
+
+
+def told_path() -> Path:
+    """Which limit the researcher was last told of, beside the readings."""
+    return readings_path().with_name("quota-told.json")
+
+
+def told() -> str:
+    try:
+        found = json.loads(told_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(found.get("key") or "") if isinstance(found, dict) else ""
+
+
+def record_told(key: str) -> None:
+    """Record that the researcher was told of ``key``, or empty once no limit
+    holds wakes back."""
+    path = told_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"key": key}), encoding="utf-8")
 
 
 def summary(now: float | None = None) -> str:

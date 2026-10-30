@@ -7,10 +7,12 @@ import json
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 import pytest
 
+from conftest import refused
 from qupa_cafe import browse, daemon, install, quota
 from test_browse import SAID, _browser, _row
 from test_daemon import MENTION, FakeForum, FakeHost, _settings, _started, _topic, _woken, handled  # noqa: F401
@@ -225,6 +227,77 @@ def test_a_wake_that_reaches_a_limit_is_stopped(claude_home, monkeypatch, limit)
     assert ["stop", "2bc6e6bc"] in ran
     assert daemon.failure_reason(state, session).startswith(
         "it was stopped once " + ("its researcher's Claude plan has used 95%" if limit == "cap" else "its wakes have spent 2.0M"))
+
+
+class Messages:
+    """The forum, as the daemon sends the researcher a private message."""
+
+    def __init__(self, fails: bool = False):
+        self.sent: list[tuple[str, str, str]] = []
+        self.fails = fails
+
+    def private_message(self, recipient, title, raw):
+        if self.fails:
+            refused()
+        self.sent.append((recipient, title, raw))
+
+
+TOLD = daemon.Settings(api_username="sunada-agent", researcher="sunada")
+
+
+def test_the_researcher_is_told_once_when_a_limit_is_reached(claude_home):
+    forum = Messages()
+    assert daemon.limit_pass(TOLD, forum) is False and forum.sent == []
+
+    quota.write("80")
+    quota.record(_status(five_hour=85))
+    assert daemon.limit_pass(TOLD, forum) is True
+    ((recipient, title, raw),) = forum.sent
+    assert recipient == "sunada" and title == "sunada-agent has stopped waking: your Claude plan reached your cap"
+    assert "Your Claude plan has used 85% of its five-hour limit" in raw and "`c` steps the cap" in raw
+    # Not again while the cap holds wakes back.
+    assert daemon.limit_pass(TOLD, forum) is False and len(forum.sent) == 1
+
+    # The budget is another limit, and is told of too.
+    quota.write("")
+    quota.write("500k", key=quota.BUDGET_KEY)
+    _spent(claude_home, "a", (60, 600_000))
+    assert daemon.limit_pass(TOLD, forum) is True
+    assert forum.sent[-1][1] == "sunada-agent has stopped waking: its wakes spent your budget"
+    assert "spent 600k input-token equivalents in the last five hours" in forum.sent[-1][2]
+
+    # Once nothing holds wakes back, the next time a limit does is told.
+    quota.write("", key=quota.BUDGET_KEY)
+    assert daemon.limit_pass(TOLD, forum) is False and quota.told() == ""
+    quota.write("1k", key=quota.BUDGET_KEY)
+    assert daemon.limit_pass(TOLD, forum) is True and len(forum.sent) == 3
+
+
+def test_a_message_that_does_not_go_is_tried_again(claude_home):
+    quota.write("80")
+    quota.record(_status(five_hour=85))
+    assert daemon.limit_pass(TOLD, Messages(fails=True)) is False
+    assert daemon.limit_pass(TOLD, Messages()) is True
+
+
+@pytest.mark.parametrize("settings, dry_run", [(daemon.Settings(api_username="sunada-agent", researcher=""), False),
+                                               (TOLD, True)])
+def test_nobody_is_told_without_a_researcher_or_in_a_dry_run(settings, dry_run):
+    quota.write("80")
+    quota.record(_status(five_hour=85))
+    forum = Messages()
+    assert daemon.limit_pass(settings, forum, dry_run) is False and forum.sent == []
+
+
+def test_the_message_is_a_private_message_to_the_researcher(forum):
+    url, stub = forum
+    daemon.Forum(daemon.Settings(forum_url=url, api_key="k", api_username="sunada-agent")).private_message(
+        "sunada", "A title long enough", "A body.")
+    (posted,) = stub.posted
+    sent = urllib.parse.parse_qs(posted["body"])
+    assert posted["path"] == "/posts.json"
+    assert sent == {"title": ["A title long enough"], "raw": ["A body."], "archetype": ["private_message"],
+                    "target_recipients": ["sunada"]}
 
 
 # ---------------------------------------------- qupa-install and the browser
