@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, sandbox, sessions, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, quota, sandbox, sessions, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -1149,8 +1149,11 @@ def wake_settings(config: dict | None) -> str:
     Code's tool search stays on, so a tool's definition is loaded only by a
     wake that searches for it. A wake that only reads its post, as most do,
     then rereads a shared start some 26k tokens shorter at every request,
-    and a parent's first fork can read the parent's cache entry."""
-    return json.dumps(json.loads(sandbox.claude_settings()) if config is not None else {})
+    and a parent's first fork can read the parent's cache entry. And the
+    status line that records the plan's usage for QUPA_QUOTA_CAP."""
+    given = json.loads(sandbox.claude_settings()) if config is not None else {}
+    given["statusLine"] = {"type": "command", "command": quota.status_command()}
+    return json.dumps(given)
 
 
 def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, name: str = "",
@@ -1196,6 +1199,9 @@ def runtime_command(settings: Settings, prompt: str, wake: Wake | None = None, n
 # told when it is.
 WAKE_TIMEOUT = 900
 TIMED_OUT = f"the wake ran for {WAKE_TIMEOUT // 60} minutes without finishing and was stopped"
+
+# A wake stopped because the plan's usage reached QUPA_QUOTA_CAP.
+CAPPED = "capped"
 
 # How often a background wake's state is asked for.
 BACKGROUND_POLL_SECONDS = 5
@@ -1328,6 +1334,10 @@ def run_in_background(
             if time.time() > deadline:
                 state = "timeout"
                 break
+            # The wake's status line records the plan's usage as it goes.
+            if quota.held_back():
+                state = CAPPED
+                break
             time.sleep(BACKGROUND_POLL_SECONDS)
     finally:
         # Somebody attached to a wake that has ended is left in it, and a
@@ -1366,6 +1376,8 @@ def failure_reason(state: str, session: str) -> str:
         return "Claude Code would not start it: " + state[len("did not start: "):]
     if state == "timeout":
         return TIMED_OUT
+    if state == CAPPED:
+        return "it was stopped once " + (quota.held_back() or f"its researcher's {quota.KEY} was reached")
     said = last_said(session)
     return f"Claude Code ended it with: {said[:200]}" if said else f"Claude Code ended it ({state})"
 
@@ -1778,6 +1790,16 @@ def one_pass(
     if sandbox_config(settings) is None:
         LOG.warning(NO_SANDBOX + "; %d topic(s) deferred", len(candidates))
         return 0
+    held = quota.held_back()
+    if held:
+        LOG.warning("nobody is woken: %s; %d topic(s) deferred", held, len(candidates))
+        if not dry_run:
+            # Somebody who mentioned or messaged the agent is told why it
+            # does not answer yet, as for a wake that failed.
+            for candidate in candidates:
+                if candidate.notification_ids:
+                    host.failed(settings.api_username, candidate.topic_id, held)
+        return 0
 
     wakes = 0
     # The forum's categories, read once a pass, for the first wake that needs them.
@@ -1924,6 +1946,10 @@ def rewake_pass(settings: Settings, forum: Forum, host: ForumHost, dry_run: bool
     wording = texts.wake_prompt()
     if sandbox_config(settings) is None:
         LOG.warning(NO_SANDBOX + "; waking again for %s is deferred", where)
+        return False
+    held = quota.held_back()
+    if held:
+        LOG.warning("waking again for %s is deferred: %s", where, held)
         return False
 
     # A preprint that woke the agent for relevance goes where QUPA_ARXIV says
@@ -2186,6 +2212,10 @@ def diary_ready(settings: Settings, day: date) -> tuple[str, dict] | None:
     config = sandbox_config(settings)
     if config is None:
         LOG.warning(NO_SANDBOX + "; the diary of %s is deferred", day)
+        return None
+    held = quota.held_back()
+    if held:
+        LOG.warning("the diary of %s is deferred: %s", day, held)
         return None
     return template, config
 

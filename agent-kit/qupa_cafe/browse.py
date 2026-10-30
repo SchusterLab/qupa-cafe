@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import local, models, preprints, wakes
+from . import local, models, preprints, quota, wakes
 from .daemon import (
     CLAUDE_ALLOWED_TOOLS, INTERESTS_TOPIC_TITLE, PARENT_NAME, TUNE_NAME, ForumHost, ForumHostError, Rewake, Settings,
     ask_rewake, background_sessions, claim_lock,
@@ -60,6 +60,45 @@ MODEL_KEYS = {"m": "model", "f": "effort"}
 
 # In the list: step what the agent does with a preprint (qupa_cafe.preprints).
 ARXIV_KEY = "a"
+
+# In the list: step the cap on the plan's usage at which wakes stop (qupa_cafe.quota).
+QUOTA_KEY = "c"
+
+# In the list: step the budget on what wakes spend in five hours (qupa_cafe.quota).
+BUDGET_KEY = "b"
+
+
+def quota_line() -> str:
+    """The cap on wakes' Claude usage and the plan's last reading, for the
+    box above the list."""
+    cap, held, read = quota.read(), quota.held_back(), quota.summary()
+    mark = wakes.paint("● ", "bad") if held else wakes.paint("○ ", "meta") if not cap else wakes.paint("● ", "good")
+    line = ("No cap on wakes' Claude usage" if not cap else
+            f"Wakes stop at {cap}% of your plan" + (", and are stopped now" if held else ""))
+    return mark + line + wakes.paint(f"  ({'now ' + read + '; ' if read else ''}c steps the cap)", "meta")
+
+
+def change_quota() -> str:
+    """Step the cap, and say what it is now."""
+    said = quota.describe(quota.step())
+    return f"{said[0].upper()}{said[1:]}, from the next wake."
+
+
+def budget_line() -> str:
+    """The budget on what wakes spend, and what they spent in the last five
+    hours, for the box above the list."""
+    budget, held = quota.read(key=quota.BUDGET_KEY), quota.over_budget()
+    spent = wakes.count(round(quota.spent()))
+    mark = wakes.paint("● ", "bad") if held else wakes.paint("○ ", "meta") if not budget else wakes.paint("● ", "good")
+    line = ("No budget on what wakes spend" if not budget else
+            f"Wakes may spend {budget} in any five hours" + (", and are stopped now" if held else ""))
+    return mark + line + wakes.paint(f"  ({spent} in the last five hours; b steps the budget)", "meta")
+
+
+def change_budget() -> str:
+    """Step the budget, and say what it is now."""
+    said = quota.describe_budget(quota.step_budget())
+    return f"{said[0].upper()}{said[1:]}, from now."
 
 
 def arxiv_line() -> str:
@@ -333,6 +372,10 @@ class Browser:
             return MODEL_KEYS[key]
         if key == ARXIV_KEY and not self.viewing:
             return "arxiv"
+        if key == QUOTA_KEY and not self.viewing:
+            return "quota"
+        if key == BUDGET_KEY and not self.viewing:
+            return "budget"
         # Enter in a wake opens it in Claude Code; in the list it reads one.
         if key == "enter" and self.viewing:
             if self.selected and self.selected.askable:
@@ -390,7 +433,7 @@ class Browser:
             f"  {what} of {self.agent}" if self.agent else f"  {what}", "meta"
         )
         header = box(cols, title, [wakes.daemon_line(self.state), wakes.floor_line(self.state), model_line(models.WAKE),
-                                   arxiv_line()])
+                                   arxiv_line(), quota_line(), budget_line()])
         out, self._room, self._tops[what] = listing(cols, rows, header, what, count, line, index, empty,
                                                     self.status_line(), [*keys, "Esc to quit"],
                                                     self._tops.get(what, 0))
@@ -1049,6 +1092,10 @@ def run(settings: Settings, limit: int | None = None) -> int:
                 browser.message = change_model(models.WAKE, action)
             if action == "arxiv":
                 browser.message = change_arxiv()
+            if action == "quota":
+                browser.message = change_quota()
+            if action == "budget":
+                browser.message = change_budget()
             if action == "rewake":
                 browser.message = rewake(settings, browser.selected)
             if action == "ask" or (action or "").startswith("tune-"):

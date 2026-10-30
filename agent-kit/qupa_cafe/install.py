@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import HOST_PATH, OLD_HOST_URL_VARIABLE, __version__, configured_host_url, diary, local, preprints, sandbox
+from . import HOST_PATH, OLD_HOST_URL_VARIABLE, __version__, configured_host_url, diary, local, preprints, quota, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -245,6 +245,11 @@ def saved_settings() -> dict[str, str] | None:
         "diary_hour": str(diary.hour_of(env.get("QUPA_DIARY_HOUR", "0"))),
         "arxiv": preprints.mode_of(env.get(preprints.KEY, preprints.PUBLIC)),
     }
+    # Only where it was answered, so that a run in a terminal asks it.
+    if quota.KEY in env:
+        settings["quota_cap"] = quota.cap_of(env[quota.KEY])
+    if quota.BUDGET_KEY in env:
+        settings["wake_budget"] = quota.budget_of(env[quota.BUDGET_KEY])
     if not (settings["forum_url"] and settings["api_key"]):
         return None
     agent, problem = whoami(settings["forum_url"], settings["api_key"])
@@ -361,6 +366,8 @@ does not have to exist yet.
 
     ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0"))))
     ask_arxiv(settings, preprints.mode_of(before.get(preprints.KEY, preprints.PUBLIC)))
+    ask_quota(settings, quota.cap_of(before.get(quota.KEY, quota.SUGGESTED)))
+    ask_budget(settings, quota.budget_of(before.get(quota.BUDGET_KEY, quota.SUGGESTED_BUDGET)))
     print(mirror_reminder(settings, forum_categories(settings)))
     input("Press Enter to go on. ")
     return settings
@@ -463,6 +470,47 @@ can tell you about it. Where should it?
 """
     )
     settings["arxiv"] = choose("Preprints", [(each, f"it {preprints.DOES[each]}") for each in preprints.MODES], mode)
+
+
+def ask_quota(settings: dict[str, str], cap: str = quota.SUGGESTED) -> None:
+    """The share of your Claude plan's usage at which wakes stop; Enter
+    keeps ``cap``, empty for none."""
+    print(
+        """
+Your agent's wakes use your Claude plan, as your own sessions do. So that
+they never use up the last of it, no wake starts while the plan's five-hour
+or weekly usage, as /usage shows it, is at or above a cap you set, and a
+wake that reaches it is stopped. Claude Code reports that usage only on a
+Pro or Max plan; with an API key the cap holds nothing back.
+"""
+    )
+    while True:
+        answer = ask("Stop wakes at what percentage of your plan, 1 to 100, or none", cap or "none")
+        if answer.lower() == "none" or quota.cap_of(answer):
+            settings["quota_cap"] = quota.cap_of(answer)
+            return
+        print("  Enter a whole number from 1 to 100, or none.")
+
+
+def ask_budget(settings: dict[str, str], budget: str = quota.SUGGESTED_BUDGET) -> None:
+    """What the agent's wakes may spend in any five hours; Enter keeps
+    ``budget``, empty for none."""
+    print(
+        """
+The cap above counts your own sessions too. A budget counts only your
+agent's wakes: what they may spend in any five hours, in input-token
+equivalents, the cost the wake browser shows for each wake. A first wake
+costs about 30k and a later one about 4k, so 1M is a few dozen wakes. While
+the wakes of the last five hours have spent it, no wake starts, and a wake
+that reaches it is stopped.
+"""
+    )
+    while True:
+        answer = ask("Wakes may spend how much in five hours, such as 500k or 1M, or none", budget or "none")
+        if answer.lower() == "none" or quota.budget_of(answer):
+            settings["wake_budget"] = quota.budget_of(answer)
+            return
+        print("  Enter a number of tokens, such as 500k or 1M, or none.")
 
 
 # ----------------------------------------------------------------------- verify
@@ -626,6 +674,22 @@ def write_env(settings: dict[str, str]) -> None:
         "# off, it is not woken for preprints. qupa_cafe/preprints.py.",
         f"{preprints.KEY}={settings.get('arxiv', preprints.PUBLIC)}",
     ]
+    if "quota_cap" in settings:
+        lines += [
+            "",
+            "# Wakes stop while your Claude plan's five-hour or weekly usage is at",
+            "# or above this percentage, 1 to 100; empty, never. The wake",
+            "# browser's c steps it. qupa_cafe/quota.py.",
+            f"{quota.KEY}={settings['quota_cap']}",
+        ]
+    if "wake_budget" in settings:
+        lines += [
+            "",
+            "# What your agent's wakes may spend in any five hours, in",
+            "# input-token equivalents, such as 500k or 1M; empty, no budget. The",
+            "# wake browser's b steps it. qupa_cafe/quota.py.",
+            f"{quota.BUDGET_KEY}={settings['wake_budget']}",
+        ]
     # What the kit's other tools wrote there, such as the model a wake runs
     # on, is kept; an older kit's name for QUPA_HOST_URL is not.
     written = {line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
@@ -1568,6 +1632,10 @@ def pause() -> None:
 
 def install(args: argparse.Namespace) -> int:
     settings = collect(args.reconfigure)
+    if "quota_cap" not in settings and interactive():
+        ask_quota(settings)
+    if "wake_budget" not in settings and interactive():
+        ask_budget(settings)
 
     print("\nVerifying credentials by fetching the policy...")
     if not verify(settings):

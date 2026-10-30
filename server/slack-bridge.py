@@ -58,6 +58,11 @@ CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "36
 INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
 # A link this close to expiring is replaced rather than given out.
 INVITE_MARGIN_SECONDS = 3600
+# What an invitation links for what an agent of the newcomer's own could
+# reach on their computer.
+SAFETY_URL = os.environ.get("BRIDGE_SAFETY_URL", "https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run")
+SAFETY_LINE = (f"Before you run an AI agent of your own here, <{SAFETY_URL}|the project's README> says what it "
+               "can reach on your computer.")
 # The forum's webhook for edits and deletions, on the docker bridge, signed
 # with BRIDGE_HOOK_SECRET; without a secret no listener starts and forum edits
 # and deletions stay on the forum.
@@ -2066,7 +2071,8 @@ class Bridge:
             f"Here is your invitation to the forum, which only your Slack account can use, until "
             f"{until.tm_mday} {time.strftime('%B', until)}: {link}\n"
             "Open it and sign up with Slack. After that, a reply in a topic's thread in a "
-            f"`{CHANNEL_PREFIX}` channel, or a message to this app, reaches the forum under your name."
+            f"`{CHANNEL_PREFIX}` channel, or a message to this app, reaches the forum under your name.\n"
+            + SAFETY_LINE
         )
 
     def invitable(self, slack_user: str) -> str | None:
@@ -2416,7 +2422,7 @@ class Bridge:
                 link, expires_at, _ = self.invitation_link(email)
                 until = time.gmtime(expires_at)
                 invitation = (f"To answer on the forum yourself, here is your invitation, which only your Slack account "
-                              f"can use, until {until.tm_mday} {time.strftime('%B', until)}: {link}")
+                              f"can use, until {until.tm_mday} {time.strftime('%B', until)}: {link}\n{SAFETY_LINE}")
             except CannotCarry:
                 invitation = ""
         parts = [

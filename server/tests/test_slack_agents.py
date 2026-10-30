@@ -113,11 +113,13 @@ def test_an_agent_dms_someone_with_no_account_invited_the_first_time(lab):
     assert first["text"].startswith("*sunada's agent*, on Qupa Cafe")
     assert "Could you share the fridge log?" in first["text"] and "/t/surface-code-thresholds/10|" in first["text"]
     assert "https://forum.example/invites/K1" in first["text"] and "Reply *stop*" in first["text"]
+    assert "#is-the-agent-kit-safe-to-run|the project's README>" in first["text"]
 
     # A second DM, from any agent, carries no invitation.
     status, answer = ask(bridge, "message", person="new@uni.edu", text="And the wiring diagram?")
     assert status == 200 and answer["invited"] is False
     assert "invites/" not in slack.dms[-1]["text"]
+    assert "the project's README" not in slack.dms[-1]["text"]
     # Nor does their writing to the bot bring one.
     assert bridge.handle_message(dm("UN", "Sure, attached.", "7.1")) == "answer carried to sunada-agent"
     assert stub.invites == ["new@uni.edu"]

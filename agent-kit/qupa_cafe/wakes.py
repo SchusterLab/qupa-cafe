@@ -772,6 +772,63 @@ def subagent_responses(path: Path) -> dict[str, tuple[dict, str]]:
     return responses
 
 
+def spend(path: Path) -> list[tuple[float, float]]:
+    """When each model response of a wake came, as a Unix time, and what it
+    cost in input-token equivalents: the wake's own, not a fork's parent's,
+    and its subagents'. What the budget in qupa_cafe.quota counts, which
+    the daemon checks every few seconds of a wake and the browser at every
+    frame, so it is read again only once a file has changed."""
+    files = [path, *sorted((path.with_suffix("") / "subagents").glob("*.jsonl"))]
+    try:
+        key = tuple((str(each), each.stat().st_mtime_ns, each.stat().st_size) for each in files)
+    except OSError:
+        key = None
+    if key is not None and key in _SPENT:
+        return _SPENT[key]
+    found: dict[str, tuple[float, float]] = {}
+    for each in files:
+        try:
+            records = each.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for raw in records[forked_from(records) if each == path else 0:]:
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            message = record.get("message") or {}
+            at = diary.when(record)
+            if record.get("type") != "assistant" or not isinstance(message.get("usage"), dict) or at is None:
+                continue
+            response = message.get("id") or f"{each.name} record {len(found)}"
+            # Claude Code writes one record per block of a response, each
+            # repeating its usage, so the first is kept.
+            found.setdefault(response, (at.timestamp(), equivalent(message["usage"], str(message.get("model") or ""))))
+    spent = list(found.values())
+    if key is not None:
+        _SPENT[key] = spent
+    return spent
+
+
+# What spend found in each transcript, by its files' names, times and sizes.
+_SPENT: dict[tuple, list[tuple[float, float]]] = {}
+
+
+def sessions_since(state_path: str, started: str) -> list[str]:
+    """The sessions of the wakes the journal records as started at or after
+    ``started``, in its UTC ``YYYY-MM-DD HH:MM:SS``."""
+    db = connect(state_path)
+    if db is None:
+        return []
+    try:
+        rows = db.execute("SELECT session FROM wakes WHERE started >= ? AND session != ''", (started,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        db.close()
+    return [row[0] for row in rows if row[0]]
+
+
 # ----------------------------------------------------------------- render
 
 

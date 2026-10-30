@@ -41,6 +41,8 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
     # And the sessions registered on it, which every wake prompt lists.
     monkeypatch.setenv("QUPA_SESSIONS", str(tmp_path / "sessions.json"))
+    # And the readings of its Claude plan's usage, which hold wakes back.
+    monkeypatch.setenv("QUPA_QUOTA", str(tmp_path / "quota.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
     # And its env, where the diary's settings are read again at every poll,

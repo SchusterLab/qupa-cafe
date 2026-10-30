@@ -1139,6 +1139,8 @@ def test_someone_with_no_account_is_sent_their_invitation_by_dm_once(world):
     (invitation,) = slack.dms
     assert invitation["channel"] == "DUN" and "https://forum.example/invites/K1" in invitation["text"]
     assert "invite-only" in invitation["text"] and "sign up with Slack" in invitation["text"]
+    # Where to read what an agent of their own could reach on their computer.
+    assert "<https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run|the project's README>" in invitation["text"]
     # Under what they wrote, only they see where it is; nobody else is told.
     answer = slack.ephemerals[-1]
     assert answer["user"] == "UN" and answer["thread_ts"] == event["thread_ts"]
