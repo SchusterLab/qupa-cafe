@@ -29,11 +29,13 @@ def forum_reads(stub) -> list[str]:
 
 
 @pytest.mark.parametrize("host", [True, False])
-def test_fetch_returns_the_text_and_its_version(forum, host):
-    url, stub = forum
+def test_fetch_returns_the_raw_text_and_its_version(forum, host):
+    """A topic's posts carry `raw` only when include_raw=true is sent; the
+    stub returns HTML otherwise, so no <p> means the client sends it."""
+    url, _ = forum
     policy = client(url, host).fetch()
 
-    assert "something to add" in policy.text
+    assert "something to add" in policy.text and "<p>" not in policy.text
     assert policy.version == POLICY_EDITED
     assert policy.topic_id == POLICY_TOPIC_ID
 
@@ -58,16 +60,6 @@ def test_a_forum_host_naming_another_policy_topic_is_not_believed(forum):
     assert policy.text == stub.policy_text
     with pytest.raises(PolicyError):
         client(url, topic_id=12345).fetch()
-
-
-def test_the_fetch_asks_for_raw(forum):
-    """A topic's posts carry `raw` only when include_raw=true is sent; the
-    stub returns HTML otherwise, so this passing means the client sends it."""
-    url, _ = forum
-    policy = client(url, host=False).fetch()
-
-    assert "<p>" not in policy.text
-    assert "something to add" in policy.text
 
 
 def test_cooked_only_is_reported_as_such(forum):

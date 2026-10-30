@@ -29,7 +29,7 @@ from qupa_cafe.server import (
     use_utf8_stdio,
 )
 
-from conftest import ATTACHED_PDF, ATTACHED_TEXT, FIGURE_PNG, POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID, SHORT_URL, category
+from conftest import ATTACHED_PDF, ATTACHED_TEXT, FIGURE_PNG, POLICY_EDITED, POLICY_TOPIC_ID, SHORT_URL, category, refused
 
 KIT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -502,18 +502,13 @@ def test_a_server_error_says_to_retry(forum):
     assert "failed on its side" in message and "Retry" in message
 
 
-def test_an_unreachable_forum_says_which_host_and_to_retry():
-    import socket
+def test_an_unreachable_forum_says_which_host_and_to_retry(monkeypatch):
+    monkeypatch.setattr(server_module.urllib.request, "urlopen", refused)
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    url = f"http://127.0.0.1:{port}"
-
-    message = _failure(lambda: ForumWriter(url, "key", "agent").reply(7, "hello"))
+    message = _failure(lambda: ForumWriter("http://127.0.0.1:9", "key", "agent").reply(7, "hello"))
 
     assert "POST /posts.json failed" in message
-    assert f"127.0.0.1:{port} could not be reached" in message
+    assert "127.0.0.1:9 could not be reached" in message
     assert "Retry" in message
 
 
@@ -544,11 +539,16 @@ def _run_server(url: str, messages: list[dict]) -> list[dict]:
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
+def _read_call(name: str, arguments: dict, request_id: int = 1) -> dict:
+    """A tools/call with exactly ``arguments``, as a tool that writes nothing takes them."""
+    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}}
+
+
 def _call(name: str, arguments: dict, request_id: int = 1, policy_version: str | None = None) -> dict:
     """A tools/call, carrying the policy's current version unless told otherwise."""
     version = POLICY_EDITED if policy_version is None else policy_version
-    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-            "params": {"name": name, "arguments": {**arguments, "policy_version": version}}}
+    return _read_call(name, {**arguments, "policy_version": version}, request_id)
 
 
 def _answer(response: dict) -> dict:
@@ -557,8 +557,7 @@ def _answer(response: dict) -> dict:
 
 
 def _get_policy(url: str) -> dict:
-    (response,) = _run_server(url, [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                     "params": {"name": "get_policy", "arguments": {}}}])
+    (response,) = _run_server(url, [_read_call("get_policy", {})])
     return _answer(response)
 
 
@@ -878,11 +877,7 @@ def test_reading_an_attachment_end_to_end(forum):
     """Through the process, as a runtime would drive it: short url in, file out."""
     url, _ = forum
 
-    (response,) = _run_server(
-        url,
-        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-          "params": {"name": "read_attachment", "arguments": {"url": SHORT_URL}}}],
-    )
+    (response,) = _run_server(url, [_read_call("read_attachment", {"url": SHORT_URL})])
 
     resource = next(b for b in response["result"]["content"] if b["type"] == "resource")
     assert base64.b64decode(resource["resource"]["blob"]) == ATTACHED_PDF
@@ -1038,7 +1033,7 @@ def test_a_slack_write_goes_to_the_forum_host_with_the_policy_read(forum):
     responses = _run_server(url, [
         _call("slack_message", {"person": "Pat Lee", "text": "Which fridge?", "topic_id": 7}, 1),
         _call("slack_post", {"channel": "lab", "text": "Hello"}, 2, policy_version="stale"),
-        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "slack_channels", "arguments": {}}},
+        _read_call("slack_channels", {}, 3),
     ])
     said = {r["id"]: r for r in responses}
     assert _answer(said[1])["slack"] == {"person": "Pat Lee", "text": "Which fridge?", "topic_id": 7, "action": "message"}

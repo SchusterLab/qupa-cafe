@@ -61,6 +61,26 @@ def test_the_bubblewrap_exemption_is_named_with_the_commands_that_undo_it(instal
     assert out.index("apparmor_parser -R") < out.index(f"sudo rm -r {sandbox.LINUX_BWRAP.parent}")
 
 
+def test_the_windows_account_a_kit_up_to_0_26_0_made_is_removed(installed, monkeypatch, capsys):
+    """Through sandbox-runtime's own windows-uninstall, still in the runtime."""
+    runtime = sandbox.runtime_dir()
+    cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("", encoding="ascii")
+    (runtime / "windows-install.json").write_text("{}", encoding="ascii")
+    monkeypatch.setattr(uninstall.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sandbox, "find", lambda name: "C:/node/node.exe")
+    ran = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(uninstall.subprocess, "run", lambda argv, **kw: ran.append(argv) or Done())
+    assert uninstall.uninstall(yes=True) == 0
+    assert ran == [["C:/node/node.exe", str(cli), "windows-uninstall"]]
+    assert "removed them" in capsys.readouterr().out
+
+
 def test_a_sandbox_in_wsl_is_deleted_there_and_its_pixi_named(installed, monkeypatch, capsys):
     wsl = {"exe": "wsl.exe", "distro": "Ubuntu", "dir": "/home/r/.local/share/qupa-cafe/windows-sandbox"}
     monkeypatch.setattr(sandbox, "load_config", lambda: {"wsl": wsl})

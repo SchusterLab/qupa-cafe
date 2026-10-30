@@ -13,13 +13,6 @@ from qupa_cafe import browse, tray, wakes
 SESSION = "3f2a0000-0000-4000-8000-000000000000"
 
 
-@pytest.fixture
-def claude_home(tmp_path, monkeypatch):
-    home = tmp_path / "claude"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
-    return home
-
-
 def _transcript(home, session, records):
     directory = home / "projects" / "C--agent"
     directory.mkdir(parents=True, exist_ok=True)
@@ -55,6 +48,16 @@ def _journal(tmp_path, **overrides):
     return state
 
 
+def _row(tmp_path, **overrides):
+    """The one wake ``_journal`` journals, as the viewer lists it."""
+    [row] = wakes.recent(_journal(tmp_path, **overrides), 20)
+    return row
+
+
+def _shown(row):
+    return "\n".join(wakes.render(row))
+
+
 WAKE = [
     {"type": "queue-operation", "operation": "enqueue"},
     {"type": "user", "message": {"role": "user", "content": "You were woken by a post.\nReason: mentioned."}},
@@ -78,9 +81,7 @@ WAKE = [
 
 def test_a_wake_shows_its_prompt_its_calls_and_what_it_wrote(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE)
-    [row] = wakes.recent(_journal(tmp_path), 20)
-
-    text = "\n".join(wakes.render(row))
+    text = _shown(_row(tmp_path))
 
     assert "You were woken by a post." in text
     assert "wrote: reply" in text
@@ -100,9 +101,7 @@ def test_a_session_an_older_kit_ran_hides_its_policy_ack_too(tmp_path, claude_ho
                                      "input": {"topic_id": 59, "policy_ack": "0123abcd4567ef89", "raw": "Old."}}),
              _result("c", json.dumps({"posted": True}))]
     _transcript(claude_home, SESSION, older)
-    [row] = wakes.recent(_journal(tmp_path), 20)
-
-    text = "\n".join(wakes.render(row))
+    text = _shown(_row(tmp_path))
 
     assert "Old." in text and "0123abcd" not in text
 
@@ -126,7 +125,7 @@ def test_a_wake_shows_the_tokens_it_took_counting_each_response_once(tmp_path, c
         _response("msg_2", "claude-sonnet-5-5", 3, 1000, 48000, 60, said),
     ]
     _transcript(claude_home, SESSION, records)
-    [row] = wakes.recent(_journal(tmp_path), 20)
+    row = _row(tmp_path)
 
     usage = wakes.transcript_for(row).usage
     assert (usage.fresh, usage.cache_written, usage.cache_read, usage.output) == (5, 19000, 78000, 200)
@@ -134,7 +133,7 @@ def test_a_wake_shows_the_tokens_it_took_counting_each_response_once(tmp_path, c
     # No TTL split here, so the writes are priced as the five-minute cache's.
     assert round(usage.equivalent) == 5 + 19000 * 1.25 + 78000 * 0.1 + 200 * 5
     assert ("cost: 32.6k input-token equivalents, from 97.0k in (78.0k read from the cache, 19.0k written "
-            "to it, 5 uncached) and 200 out; claude-sonnet-5-5") in "\n".join(wakes.render(row))
+            "to it, 5 uncached) and 200 out; claude-sonnet-5-5") in _shown(row)
     assert browse.tokens_column(browse.Wake(row)).strip() == "32.6k tok"
 
 
@@ -146,16 +145,15 @@ def test_a_subagent_s_tokens_are_the_wake_s(tmp_path, claude_home):
     subagents.mkdir(parents=True)
     (subagents / "agent-a1.jsonl").write_text(
         json.dumps(_response("msg_9", "claude-haiku-5-5", 2, 200, 2000, 20, said)), encoding="utf-8")
-    [row] = wakes.recent(_journal(tmp_path), 20)
 
-    usage = wakes.transcript_for(row).usage
+    usage = wakes.transcript_for(_row(tmp_path)).usage
     assert usage.total == 1111 + 2222 and usage.models == ["claude-opus-5-5", "claude-haiku-5-5"]
 
 
 def test_a_wake_with_no_usage_recorded_shows_no_tokens(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE)
-    [row] = wakes.recent(_journal(tmp_path), 20)
-    assert "cost:" not in "\n".join(wakes.render(row))
+    row = _row(tmp_path)
+    assert "cost:" not in _shown(row)
     # As wide as a count, so the rows stay aligned.
     assert browse.tokens_column(browse.Wake(row)) == " " * 9
 
@@ -181,28 +179,24 @@ def test_token_counts_are_short():
 
 def test_a_wake_that_wrote_nothing_says_so(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:6])
-    [row] = wakes.recent(_journal(tmp_path), 20)
-    assert "wrote nothing" in "\n".join(wakes.render(row))
+    assert "wrote nothing" in _shown(_row(tmp_path))
 
 
 def test_a_refused_write_is_not_counted_as_written(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:-1] + [_result("c", "REFUSED: stale policy_version", error=True)])
-    [row] = wakes.recent(_journal(tmp_path), 20)
-    text = "\n".join(wakes.render(row))
+    text = _shown(_row(tmp_path))
     assert "wrote nothing" in text
     assert "REFUSED: stale policy_version" in text
 
 
 def test_an_expired_transcript_still_lists_the_wake(tmp_path, claude_home):
-    [row] = wakes.recent(_journal(tmp_path), 20)
-    text = "\n".join(wakes.render(row))
+    text = _shown(_row(tmp_path))
     assert 'topic 59 "Test", post 3' in text
     assert "no longer has this session" in text
 
 
 def test_a_wake_with_no_session_is_listed_without_a_transcript(tmp_path, claude_home):
-    [row] = wakes.recent(_journal(tmp_path, session=""), 20)
-    assert "No session was recorded" in "\n".join(wakes.render(row))
+    assert "No session was recorded" in _shown(_row(tmp_path, session=""))
 
 
 def test_the_newest_wake_is_last(tmp_path):
@@ -229,8 +223,8 @@ def test_a_relevance_wake_shows_its_score_and_a_mention_none(tmp_path, claude_ho
     scored, mention = wakes.recent(state, 20)
 
     assert (scored.score, mention.score) == (0.83, None)
-    assert "relevance 0.83" in "\n".join(wakes.render(scored))
-    assert "relevance" not in "\n".join(wakes.render(mention))
+    assert "relevance 0.83" in _shown(scored)
+    assert "relevance" not in _shown(mention)
 
 
 def test_the_floor_is_read_from_the_journal(tmp_path):
@@ -363,8 +357,7 @@ def test_a_later_prompt_is_shown_where_it_came(claude_home):
 
 def test_an_edit_of_the_interests_post_is_not_an_answer(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:6] + [TUNING] + _edit("e", 109, 13))
-    [row] = wakes.recent(_journal(tmp_path), 20)
-    text = "\n".join(wakes.render(row))
+    text = _shown(_row(tmp_path))
     assert "wrote nothing" in text
     # The edit is still shown.
     assert "edit_post(" in text and "New text." in text
@@ -372,7 +365,7 @@ def test_an_edit_of_the_interests_post_is_not_an_answer(tmp_path, claude_home):
 
 def test_a_reply_after_tuning_is_the_answer(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:6] + _edit("e", 109, 13) + WAKE[6:] + _edit("f", 120, 59))
-    [row] = wakes.recent(_journal(tmp_path), 20)
+    row = _row(tmp_path)
     said, _ = wakes.outcome(row, wakes.transcript_for(row))
     assert said == "wrote: reply, edit_post"
 
@@ -391,12 +384,12 @@ def test_a_topic_started_for_the_post_and_a_reply_there_are_answers(tmp_path, cl
         _result("x", json.dumps({"posted": True})),
     ]
     _transcript(claude_home, SESSION, records)
-    [row] = wakes.recent(_journal(tmp_path), 20)
+    row = _row(tmp_path)
     said, _ = wakes.outcome(row, wakes.transcript_for(row))
     assert said == "wrote: create_topic, reply"
 
 
 def test_a_wake_without_a_topic_counts_every_write(tmp_path, claude_home):
     _transcript(claude_home, SESSION, WAKE[:6] + _edit("e", 109, 13))
-    [row] = wakes.recent(_journal(tmp_path, topic_id=None, post_number=None, reason=daemon.diary.REASON + " today"), 20)
-    assert "wrote: edit_post" in "\n".join(wakes.render(row))
+    row = _row(tmp_path, topic_id=None, post_number=None, reason=daemon.diary.REASON + " today")
+    assert "wrote: edit_post" in _shown(row)

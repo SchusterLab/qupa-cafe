@@ -10,17 +10,16 @@ import pytest
 pytest.importorskip("jeepney")
 os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
 pystray = pytest.importorskip("pystray")
-PIL = pytest.importorskip("PIL")
+pytest.importorskip("PIL")
 
 from jeepney import DBusAddress, MessageType, new_method_call  # noqa: E402
+from PIL import Image  # noqa: E402
 
 from qupa_cafe import sni  # noqa: E402
 
 
 @pytest.fixture
 def icon():
-    from PIL import Image
-
     clicked = []
     menu = pystray.Menu(
         pystray.MenuItem("Show wakes", lambda icon, item: clicked.append("wakes")),

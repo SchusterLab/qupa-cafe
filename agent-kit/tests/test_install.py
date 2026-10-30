@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 from pathlib import Path
@@ -9,7 +10,9 @@ from pathlib import Path
 import pytest
 
 import qupa_cafe.install as install
-from qupa_cafe import diary, sandbox
+from qupa_cafe import daemon, diary, preprints, sandbox
+
+from conftest import refused
 
 
 @pytest.mark.parametrize(
@@ -114,8 +117,9 @@ def test_a_refused_key_is_reported_as_a_refused_key(forum):
     assert "refused this key" in problem
 
 
-def test_an_unreachable_forum_says_so_instead(forum):
+def test_an_unreachable_forum_says_so_instead(monkeypatch):
     """The key may be perfectly good, and re-typing it changes nothing."""
+    monkeypatch.setattr(install.urllib.request, "urlopen", refused)
     agent, problem = install.whoami("http://127.0.0.1:9", "k")
 
     assert agent is None
@@ -139,10 +143,8 @@ def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
     assert settings["api_username"] == "rsmith-agent"
 
 
-def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch, capsys):
+def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch):
     """Its researcher and policy topic, and whether it serves this kit."""
-    from qupa_cafe import daemon
-
     asked = []
 
     def handshake(self, agent):
@@ -178,8 +180,6 @@ def test_the_windows_daemon_search_ignores_quotes():
     Asserted against the PowerShell text, since these tests do not run
     PowerShell.
     """
-    import inspect
-
     source = inspect.getsource(install.stop_running_daemon)
     assert "($_.CommandLine -replace '\\\"', '') -like '*-m {module}*'" in source
 
@@ -318,28 +318,15 @@ def test_the_named_copy_carries_the_forum_name(tmp_path):
     assert out == "Qupa Cafe"
 
 
-def _wake_check(monkeypatch, check):
-    from qupa_cafe import daemon
-
+@pytest.mark.parametrize("check, said", [
+    (daemon.WakeCheck(True, True, False, "WOKEN 5aa6f598 NOBASH"), "no command ran in the sandbox"),
+    (daemon.WakeCheck(False, False, False, "claude is not on PATH."), "sign in"),
+], ids=["the sandbox ran no command", "the agent cannot be woken"])
+def test_the_install_fails_when_the_test_wake_does(monkeypatch, capsys, check, said):
     monkeypatch.setattr(daemon, "check_wake", lambda settings: check)
     settings = {"forum_url": "http://x", "api_key": "k", "api_username": "u", "runtime": "claude"}
-    return settings
-
-
-def test_the_install_fails_when_the_sandbox_ran_no_command(monkeypatch, capsys):
-    from qupa_cafe import daemon
-
-    settings = _wake_check(monkeypatch, daemon.WakeCheck(True, True, False, "WOKEN 5aa6f598 NOBASH"))
     assert install.check_agent_wakes(settings) is False
-    assert "no command ran in the sandbox" in capsys.readouterr().out
-
-
-def test_the_install_fails_when_the_agent_cannot_be_woken(monkeypatch, capsys):
-    from qupa_cafe import daemon
-
-    settings = _wake_check(monkeypatch, daemon.WakeCheck(False, False, False, "claude is not on PATH."))
-    assert install.check_agent_wakes(settings) is False
-    assert "sign in" in capsys.readouterr().out
+    assert said in capsys.readouterr().out
 
 
 def _claude_state(tmp_path, monkeypatch, projects):
@@ -405,12 +392,12 @@ def test_a_trusted_home_directory_does_not_make_a_folder_in_it_trusted(tmp_path,
     assert not install.claude_trusts(str(agent))
 
 
-def test_the_closing_message_says_where_instructions_go(tmp_path, monkeypatch):
+def test_the_closing_message_says_where_instructions_go(tmp_path):
     """QUPA.md for every project, or in a project for its sessions,
     naming the one the agent's wakes read."""
-    monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "thesis" / "agent"
     agent_dir.mkdir(parents=True)
+    # conftest's QUPA_HOME is tmp_path / "home".
     said = install.instructions_summary(str(agent_dir))
     assert str(tmp_path / "home" / "QUPA.md") in said and str(agent_dir / "QUPA.md") in said
     assert "A QUPA.md at the top of a project" in said and "none of its rules" in said
@@ -420,7 +407,8 @@ def test_the_closing_message_says_where_instructions_go(tmp_path, monkeypatch):
     assert "For your agent's wakes" not in install.instructions_summary("")
 
 
-def _saved_env(tmp_path, monkeypatch, extra=""):
+def _saved_env(extra=""):
+    """An env file as a kit naming QUPA_RANKING_URL writes it, plus ``extra``."""
     env = install.ENV_PATH
     env.write_text(
         "# Written by agent-kit/install.py.\nQUPA_FORUM_URL=https://forum.example\nQUPA_API_USERNAME=a-agent\n"
@@ -431,8 +419,8 @@ def _saved_env(tmp_path, monkeypatch, extra=""):
     return env
 
 
-def test_running_it_again_asks_nothing_while_the_saved_key_works(tmp_path, monkeypatch, capsys):
-    _saved_env(tmp_path, monkeypatch)
+def test_running_it_again_asks_nothing_while_the_saved_key_works(monkeypatch, capsys):
+    _saved_env()
     monkeypatch.setattr(install, "whoami", lambda url, key: ("a-agent", ""))
     monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail(f"asked {prompt!r}"))
     settings = install.collect()
@@ -440,14 +428,14 @@ def test_running_it_again_asks_nothing_while_the_saved_key_works(tmp_path, monke
     assert "--reconfigure" in capsys.readouterr().out
 
 
-def test_a_saved_key_that_no_longer_works_is_asked_for_again(tmp_path, monkeypatch):
-    _saved_env(tmp_path, monkeypatch)
+def test_a_saved_key_that_no_longer_works_is_asked_for_again(monkeypatch):
+    _saved_env()
     monkeypatch.setattr(install, "whoami", lambda url, key: (None, "the forum refused the key"))
     assert install.saved_settings() is None
 
 
-def test_reconfigure_ignores_the_saved_settings(tmp_path, monkeypatch):
-    _saved_env(tmp_path, monkeypatch)
+def test_reconfigure_ignores_the_saved_settings(monkeypatch):
+    _saved_env()
     monkeypatch.setattr(install, "saved_settings", lambda: pytest.fail("read the saved settings"))
     monkeypatch.setattr(install, "interactive", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError))
@@ -455,7 +443,7 @@ def test_reconfigure_ignores_the_saved_settings(tmp_path, monkeypatch):
         install.collect(reconfigure=True)
 
 
-def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(tmp_path, monkeypatch, capsys):
+def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(monkeypatch):
     """The account, the researcher, the policy topic and the host URL come
     from the forum, and the diary is off; nothing is asked."""
     install.ENV_PATH.write_text(
@@ -487,7 +475,6 @@ def test_the_daemon_reads_an_older_kit_s_variable(monkeypatch):
     monkeypatch.delenv("QUPA_HOST_URL", raising=False)
     monkeypatch.setenv("QUPA_FORUM_URL", "https://forum.example")
     monkeypatch.setenv("QUPA_RANKING_URL", "https://forum.example/ranking")
-    from qupa_cafe import daemon
     assert daemon.Settings().host_url == "https://forum.example/host"
 
 
@@ -499,8 +486,8 @@ def test_with_no_settings_and_nobody_to_ask_it_says_what_to_write(monkeypatch, c
     assert "QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR" in capsys.readouterr().err
 
 
-def test_writing_env_keeps_what_the_browsers_set(tmp_path, monkeypatch):
-    env = _saved_env(tmp_path, monkeypatch, "QUPA_WAKE_MODEL=opus\n")
+def test_writing_env_keeps_what_the_browsers_set():
+    env = _saved_env("QUPA_WAKE_MODEL=opus\n")
     install.write_env({"forum_url": "https://forum.example", "api_username": "a-agent", "api_key": "k2",
                        "policy_topic_id": "7", "agent_dir": "/work"})
     values = install.env_values(env)
@@ -535,8 +522,6 @@ def test_the_diary_s_choices_are_numbered_from_one_in_the_preprints_order(monkey
 
 
 def test_the_installer_asks_what_the_agent_does_with_a_preprint(monkeypatch, capsys):
-    from qupa_cafe import preprints
-
     answers = iter(["", "4", "2"])
     asked = []
 

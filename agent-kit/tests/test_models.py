@@ -33,7 +33,7 @@ def test_the_steps_go_round_and_a_full_name_steps_to_the_default():
     assert models.step(models.EFFORTS, "max") == ""
 
 
-def test_a_wake_is_given_its_model_and_effort(tmp_path):
+def test_a_wake_is_given_its_model_and_effort():
     models.write(models.WAKE, models.Choice("opus", "xhigh"))
     wake = daemon.wake_for(Settings(), "you were mentioned", {"id": 7, "title": "t", "post_stream": {"posts": []}})
     command = daemon.runtime_command(Settings(), "P", wake)

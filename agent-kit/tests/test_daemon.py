@@ -1,23 +1,25 @@
-"""The daemon: deduplication, prompt framing, and what counts as a direct hit."""
+"""The daemon: what wakes the agent, the prompt a wake is given, how a wake
+runs and is journalled, the parent session it forks, and waking again."""
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import re
 import subprocess
-import threading
 import time
 import urllib.error
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
 
 import qupa_cafe.daemon as daemon
-from conftest import wording
-from qupa_cafe import placeholders, texts
+from conftest import POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID, category, refused, serving, wording
+from qupa_cafe import placeholders, preprints, texts, tray, wakes
+from qupa_cafe.server import FORUM_DESCRIPTION
 from qupa_cafe.daemon import (
     EDITED,
     GRANTED_BADGE,
@@ -190,10 +192,10 @@ def test_no_host_url_means_no_wakes_and_no_crash():
     assert host.pending("agent") == []
 
 
-def test_an_unreachable_endpoint_degrades_quietly_and_warns_once(caplog):
-    """Port 1 on loopback: connection refused, immediately. A day of downtime
-    at a 60-second interval would otherwise be 1,440 lines."""
-    host = ForumHost(Settings(host_url="http://127.0.0.1:1"))
+def test_an_unreachable_endpoint_degrades_quietly_and_warns_once(monkeypatch, caplog):
+    """A day of downtime at a 60-second interval would otherwise be 1,440 lines."""
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", refused)
+    host = ForumHost(Settings(host_url="http://host.invalid"))
 
     assert host.pending("agent") == []
     assert host.pending("agent") == []
@@ -442,8 +444,6 @@ def test_a_post_cannot_rewrite_the_prompt_around_it():
     }
 
     prompt = build_prompt(Settings(), "mentioned", hostile, "%BODY%%DATA_NOTICE%")
-
-    from qupa_cafe.server import FORUM_DESCRIPTION
 
     # After what the forum is, which opens every prompt run afresh.
     assert prompt.removeprefix(FORUM_DESCRIPTION).lstrip().startswith("%REASON% %TOPIC_ID% %DATA_NOTICE% %AUTHOR%")
@@ -798,20 +798,14 @@ def test_setting_the_floor_posts_it_with_the_agent_s_key():
         def log_message(self, *args):
             pass
 
-    server = HTTPServer(("127.0.0.1", 0), Host)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        settings = Settings(api_key="the-key", host_url=f"http://127.0.0.1:{server.server_port}/host")
-        host = daemon.ForumHost(settings)
+    with serving(Host) as url:
+        host = daemon.ForumHost(Settings(api_key="the-key", host_url=f"{url}/host"))
 
         assert host.set_floor("u-agent", 0.734)["similarity_floor"] == 0.73
         assert heard["path"] == "/host/wake?agent=u-agent"
         assert heard["key"] == "Bearer the-key"
         with pytest.raises(daemon.ForumHostError, match="from 0.6 to 0.9"):
             host.set_floor("u-agent", 0.95)
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 # ------------------------------------------------------- the *Thinking…* post
@@ -1031,42 +1025,32 @@ def test_a_wake_that_will_not_start_says_why(monkeypatch):
     assert reasons == ["Claude Code is not installed, or not on the PATH the daemon sees"]
 
 
-def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(handled, monkeypatch):
+def _noticed(monkeypatch):
+    """A forum notifying the agent of topic 10, whose newest post is another
+    agent's automatic notice; any wake fails the test."""
     topic = _topic(10)
     topic["post_stream"]["posts"].append(
         {"post_number": 2, "username": "pat-agent", "raw": "*An automatic notice.*\n\n<!-- qupa-cafe:notice -->"}
     )
-    forum = FakeForum({10: topic}, [{"id": 8, "notification_type": POSTED, "topic_id": 10, "post_number": 2}])
     monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
+    return FakeForum({10: topic}, [{"id": 8, "notification_type": POSTED, "topic_id": 10, "post_number": 2}])
+
+
+def test_the_notice_that_another_agent_cannot_answer_wakes_nobody(handled, monkeypatch):
+    forum = _noticed(monkeypatch)
 
     assert daemon.one_pass(_settings(), forum, FakeHost(), handled, dry_run=False) == 0
     assert forum.marked_read == [8]
 
 
-def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path, monkeypatch):
+def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(handled, in_topic_10, monkeypatch):
     """Left unacknowledged, the relevance wake comes back alone at the next
     pass and wakes the agent for the notice."""
-    topic = _topic(10)
-    topic["post_stream"]["posts"].append(
-        {"post_number": 2, "username": "pat-agent", "raw": "*An automatic notice.*\n\n<!-- qupa-cafe:notice -->"}
-    )
-
-    class WatchedForum(FakeForum):
-        def totals(self):
-            return {"unread_notifications": 1, "total_unread_notifications": 1}
-
-        def unread_notifications(self):
-            return [{"id": 8, "notification_type": daemon.POSTED, "topic_id": 10, "post_number": 2}]
-
-    forum = WatchedForum({10: topic})
+    forum = _noticed(monkeypatch)
     host = FakeHost([101], scores={101: 0.9})
-    handled = Handled(str(tmp_path / "s.sqlite3"))
-    monkeypatch.setattr(daemon, "_topic_for_post", lambda f, post_id: 10)
-    monkeypatch.setattr(daemon, "wake_agent", lambda *a, **k: pytest.fail("woken for a notice"))
-    settings = Settings(forum_url="http://x", api_key="k", api_username="u")
 
-    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 0
-    assert daemon.one_pass(settings, forum, host, handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, host, handled, dry_run=False) == 0
+    assert daemon.one_pass(_settings(), forum, host, handled, dry_run=False) == 0
     assert handled.seen("wake", 101)
 
 
@@ -1076,8 +1060,6 @@ def test_a_relevance_wake_folded_into_a_notice_is_acknowledged_with_it(tmp_path,
 def test_a_wake_s_prompt_carries_the_policy_and_its_version_as_they_stand(forum):
     """So the wake spends no call on get_policy, and its writes carry the
     current version."""
-    from conftest import POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID
-
     url, _ = forum
     settings = Settings(forum_url=url, api_key="k", api_username="test-agent", policy_topic_id=POLICY_TOPIC_ID)
     policy = daemon.policy_text(settings)
@@ -1097,11 +1079,9 @@ def test_a_wake_carries_only_the_policies_of_its_topic_s_category(forum):
     """The Diary's policy is no use to a wake on a preprint, nor the arXiv
     one to a mention in another category; a subcategory's comes with its
     parent's."""
-    from conftest import POLICY_TOPIC_ID, StubForum, category
-
-    StubForum.categories = [category(8, "arXiv quant-ph", "ARXIV RULE"), category(9, "Diary", "DIARY RULE"),
-                            category(12, "a", "PRIVATE ARXIV RULE", parent=8), category(1, "Research", "RESEARCH")]
-    url, _ = forum
+    url, stub = forum
+    stub.categories = [category(8, "arXiv quant-ph", "ARXIV RULE"), category(9, "Diary", "DIARY RULE"),
+                       category(12, "a", "PRIVATE ARXIV RULE", parent=8), category(1, "Research", "RESEARCH")]
     settings = Settings(forum_url=url, api_key="test-key", api_username="test-agent",
                         policy_topic_id=POLICY_TOPIC_ID, host_url=f"{url}/host")
 
@@ -1120,8 +1100,9 @@ def test_a_wake_carries_only_the_policies_of_its_topic_s_category(forum):
     assert daemon.IN_PARENT in forked and "PRIVATE ARXIV RULE" in forked and shared not in forked
 
 
-def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy():
-    policy = daemon.policy_text(Settings(forum_url="http://127.0.0.1:9", api_key="k", api_username="u", policy_topic_id=42))
+def test_a_policy_that_cannot_be_fetched_leaves_the_wake_to_call_get_policy(monkeypatch):
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", refused)
+    policy = daemon.policy_text(Settings(forum_url="http://x", api_key="k", api_username="u", policy_topic_id=42))
     assert policy.startswith("Call get_policy before you write anything")
     assert "QUPA_POLICY_TOPIC_ID is not set" in daemon.policy_text(Settings(forum_url="http://x", api_key="k"))
 
@@ -1146,8 +1127,6 @@ def test_a_host_that_cannot_take_a_claim_costs_nothing_but_the_claim(monkeypatch
 
 
 def test_a_superseded_daemon_learns_where_the_agent_went(monkeypatch):
-    import io
-
     def superseded(*args, **kwargs):
         body = io.BytesIO(json.dumps({"error": "superseded", "superseded_by": "desk (Windows)"}).encode())
         raise urllib.error.HTTPError("http://host.invalid/wake", 409, "Conflict", {}, body)
@@ -1165,8 +1144,6 @@ def test_one_superseded_from_another_machine_retires_and_says_where(tmp_path, mo
     settings = Settings(state_path=state, api_username="agent")
     assert daemon.superseded("desk (Windows)", settings, journal) == 0
     assert retired == [True]
-    from qupa_cafe import tray, wakes
-
     assert wakes.status(state).replaced_by == "desk (Windows)"
     assert "desk (Windows)" in tray.describe(settings)[1]
     assert "qupa-install" in wakes.daemon_line(wakes.status(state))
@@ -1217,8 +1194,6 @@ def test_the_parent_holds_what_every_fork_shares(monkeypatch):
     monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
     settings = Settings(api_username="a-agent", researcher="a")
     prompt = daemon.parent_prompt(settings, "THE POLICY", daemon.sandbox_config(settings))
-    from qupa_cafe.server import FORUM_DESCRIPTION
-
     assert prompt.startswith(FORUM_DESCRIPTION) and daemon.PARENT_MARK in prompt
     for part in ("`a-agent`", "THE POLICY", "RESEARCHER SAYS", daemon.OLD_NOTES, daemon.PARENT_READY):
         assert part in prompt
@@ -1241,8 +1216,6 @@ def parents(tmp_path, monkeypatch):
         return f"parent-{len(made)}"
 
     monkeypatch.setattr(daemon, "make_parent", make)
-    from qupa_cafe import wakes
-
     monkeypatch.setattr(wakes, "transcript_path", lambda session: tmp_path if session else None)
     return journal, made
 
@@ -1283,21 +1256,7 @@ def test_each_poll_keeps_the_interests_post_and_an_older_host_leaves_it(tmp_path
     settings = _settings(api_username="a-agent", state_path=str(tmp_path / "state.sqlite3"),
                          host_url="http://host/host/wake")
     served = {"interests": {"topic_id": 13, "post_number": 3, "raw": "Flux noise."}, "pending": []}
-
-    class Answer:
-        def __init__(self, payload):
-            self.body = json.dumps(payload).encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return self.body
-
-    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, timeout=None: Answer(served))
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda request, timeout=None: _answering(served))
     host = daemon.ForumHost(settings)
     host.pending("a-agent")
     assert daemon.interests_path(settings).read_text(encoding="utf-8") == "post 3 of topic 13\n\nFlux noise."
@@ -1364,9 +1323,8 @@ def test_the_parent_says_when_the_researcher_has_written_nothing(monkeypatch):
     assert "there is no QUPA.md" in daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
 
 
-def test_an_edited_claude_md_makes_a_new_parent(tmp_path, monkeypatch):
+def test_an_edited_claude_md_makes_a_new_parent(tmp_path, claude_home):
     """A fork inherits the parent's copy of it."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     settings = Settings(agent_dir=str(tmp_path))
     config, choice = daemon.sandbox_config(settings), daemon.models.Choice()
     before = daemon.parent_key(settings, "P", choice, config)
@@ -1552,8 +1510,6 @@ def _preprint(category_id=8):
 
 @pytest.mark.parametrize("mode", ["public", "private", "off"])
 def test_a_preprint_goes_as_qupa_arxiv_says(mode, handled, in_topic_10, monkeypatch):
-    from qupa_cafe import preprints
-
     if mode != "public":
         preprints.write(mode)
     woken = _woken(monkeypatch)
@@ -1570,8 +1526,6 @@ def test_a_preprint_goes_as_qupa_arxiv_says(mode, handled, in_topic_10, monkeypa
 
 
 def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_topic_10, monkeypatch):
-    from qupa_cafe import preprints
-
     preprints.write(preprints.PRIVATE)
     prompts = []
     monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
@@ -1584,8 +1538,6 @@ def test_a_private_preprint_is_brought_to_the_private_subcategory(handled, in_to
 
 
 def test_a_preprint_elsewhere_a_mention_or_a_refusal_is_not_brought_privately(handled, in_topic_10, monkeypatch):
-    from qupa_cafe import preprints
-
     preprints.write(preprints.PRIVATE)
     prompts = []
     monkeypatch.setattr(daemon, "wake_agent", lambda settings, prompt, **k: prompts.append(prompt) or True)
@@ -1604,8 +1556,6 @@ def test_a_preprint_elsewhere_a_mention_or_a_refusal_is_not_brought_privately(ha
 
 
 def test_qupa_arxiv_is_public_unless_env_says_otherwise(tmp_path):
-    from qupa_cafe import preprints
-
     path = tmp_path / "env"
     assert preprints.read(path) == preprints.PUBLIC
     path.write_text("QUPA_DIARY=off\nQUPA_ARXIV=nonsense\n", encoding="utf-8")
@@ -1623,13 +1573,8 @@ class PrivatePostsForum(PostsForum):
             return ArxivForum._get(self, path)
         return super()._get(path)
 
-    def delete_post(self, post_id):
-        self.deleted.append(post_id)
-
 
 def test_waking_again_for_a_private_preprint_takes_back_its_private_topic(tmp_path, monkeypatch):
-    from qupa_cafe import preprints
-
     preprints.write(preprints.PRIVATE)
     topic = {**_thread("arxiv-bot", "u"), "category_id": 8}
     actions = [
@@ -1651,8 +1596,6 @@ def test_waking_again_for_a_private_preprint_takes_back_its_private_topic(tmp_pa
 
 
 def test_waking_again_for_a_private_preprint_with_nothing_there_starts_one(tmp_path, monkeypatch):
-    from qupa_cafe import preprints
-
     preprints.write(preprints.PRIVATE)
     forum = PrivatePostsForum({10: {**_thread("arxiv-bot"), "category_id": 8}})
     woke, [(prompt, _)], _, _ = _rewake(tmp_path, monkeypatch, forum, post_number=1, reason=daemon.RELEVANT,

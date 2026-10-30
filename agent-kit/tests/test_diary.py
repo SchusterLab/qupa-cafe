@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,8 +14,9 @@ import pytest
 
 import qupa_cafe.daemon as daemon
 from conftest import wording
-from qupa_cafe import diary, texts
-from qupa_cafe.daemon import Handled, Journal, Settings
+from qupa_cafe import diary, models
+from qupa_cafe.daemon import Handled, Journal, Settings, build_prompt
+from qupa_cafe.server import FORUM_DESCRIPTION
 
 # A moment in the afternoon, local time, and the day before it.
 NOW = datetime.combine(date(2026, 10, 11), datetime.min.time()).astimezone() + timedelta(hours=15)
@@ -184,7 +187,7 @@ def test_the_public_diary_is_the_first_open_topic_the_agent_made_there():
 # --------------------------------------------------------------- the prompt
 
 
-def test_the_sessions_are_framed_as_data_and_substituted_last(monkeypatch):
+def test_the_sessions_are_framed_as_data_and_substituted_last():
     settings = Settings(api_username="a-agent", researcher="a", agent_dir="")
     _, start, end = window()
     filled = diary.build_prompt(settings, "%WHOAMI% %DAY% %WHERE%\n%SESSIONS%", DAY, start, end,
@@ -237,27 +240,22 @@ def test_a_failed_diary_is_tried_again_after_an_hour_not_at_every_poll(handled):
 
 
 @pytest.fixture
-def projects(tmp_path, monkeypatch):
-    home = tmp_path / "claude"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
-    return home / "projects"
+def projects(claude_home):
+    return claude_home / "projects"
 
 
 class FakeHost:
     """The forum host, which the daemon tells it is still there."""
 
-    def __init__(self, site=None):
-        self.site = site
-
     def alive(self, agent):
         pass
 
 
-def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=(), host=None):
+def _pass(settings, handled, journal, monkeypatch, ok=True, site=SITE, created=()):
     woken = []
     monkeypatch.setattr(daemon, "wake_agent", lambda s, p, **k: woken.append((p, k)) or ok)
     handled.mark(diary.HANDLED_KIND, 20000101)
-    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), host or FakeHost(site), handled,
+    woke = daemon.diary_pass(settings, SiteForum(site, list(created)), FakeHost(), handled,
                              diary.Diary(), False, journal, now=NOW)
     return woke, woken
 
@@ -317,10 +315,12 @@ def test_one_there_already_is_posted_in_by_its_id(handled, projects, monkeypatch
     assert woke and "category=6" in woken[0][0] and "private_diary" not in woken[0][0]
 
 
-def test_a_private_diary_without_the_diary_category_leaves_the_day_to_do(handled, projects, monkeypatch):
+@pytest.mark.parametrize("mode", [diary.PUBLIC, diary.PRIVATE])
+def test_a_diary_on_a_forum_without_the_diary_category_leaves_the_day_to_do(handled, projects, monkeypatch, mode):
+    """The entry has nowhere to go, so nothing is woken until there is."""
     wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
-    woke, woken = _pass(_settings(diary.PRIVATE), handled, None, monkeypatch, site=[])
+    woke, woken = _pass(_settings(mode), handled, None, monkeypatch, site=[])
     assert not woke and not woken and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
@@ -331,15 +331,7 @@ def test_a_failed_diary_wake_leaves_the_day_to_do(handled, projects, monkeypatch
     assert not woke and not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
 
 
-def test_a_diary_the_forum_cannot_take_is_deferred(handled, projects, monkeypatch):
-    """A forum with no Diary category, where the entry has nowhere to go."""
-    write_session(projects, "mine", [prompt("work", at(9))])
-    woke, woken = _pass(_settings(), handled, None, monkeypatch, site=[])
-    assert not woke and not woken
-    assert not handled.seen(diary.HANDLED_KIND, diary.day_key(DAY))
-
-
-def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects, monkeypatch, tmp_path):
+def test_the_diary_follows_env_as_it_stands_without_a_restart(handled, projects, monkeypatch):
     """The diary browser writes env; the daemon started with the diary off."""
     wording(wake="w", diary="%WHERE%")
     write_session(projects, "mine", [prompt("work", at(9))])
@@ -361,9 +353,6 @@ def test_the_diary_prompt_carries_qupa_md(monkeypatch, tmp_path):
 def test_a_prompt_run_afresh_opens_with_what_the_forum_is():
     """A diary wake, and a forum wake that does not fork, have it from nowhere
     else until the MCP server's instructions arrive after a first tool call."""
-    from qupa_cafe.daemon import build_prompt
-    from qupa_cafe.server import FORUM_DESCRIPTION
-
     _, start, end = window()
     assert diary.build_prompt(Settings(api_username="a-agent"), "Diary.", DAY, start, end, "", "", "").startswith(
         FORUM_DESCRIPTION)
@@ -416,8 +405,6 @@ def test_a_session_in_full_is_its_prompts_and_final_replies_unclipped(tmp_path):
 
 
 def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
-    import tempfile
-
     _, start, end = window()
     scratch = str(Path(tempfile.gettempdir()) / "scratch.py")
     path = write_session(tmp_path / "projects", "s1", [
@@ -485,7 +472,7 @@ def test_a_sandboxed_diary_wake_reads_the_sessions_in_full_which_go_when_it_ends
 
     monkeypatch.setattr(daemon, "wake_agent", wake)
     handled.mark(diary.HANDLED_KIND, 20000101)
-    assert daemon.diary_pass(_settings(), SiteForum(SITE, []), FakeHost(SITE), handled, diary.Diary(), False,
+    assert daemon.diary_pass(_settings(), SiteForum(SITE, []), FakeHost(), handled, diary.Diary(), False,
                              None, now=NOW)
     assert seen == [["2026-10-10/01-home-r-thesis.md"]]
     assert not root.exists()
@@ -515,8 +502,6 @@ def test_a_diary_wake_runs_on_the_researcher_s_default_model_and_effort(handled,
 
 
 def test_a_diary_wake_runs_on_the_model_and_effort_chosen_for_it(handled, projects, monkeypatch):
-    from qupa_cafe import models
-
     models.write(models.DIARY, models.Choice("haiku", "low"))
     wording(wake="w", diary="%SESSIONS%")
     write_session(projects, "mine", [prompt("work", at(9))])
@@ -525,15 +510,6 @@ def test_a_diary_wake_runs_on_the_model_and_effort_chosen_for_it(handled, projec
     assert command[command.index("--model") + 1] == "haiku" and command[command.index("--effort") + 1] == "low"
     # Before --allowedTools, which takes every word after it.
     assert command.index("--effort") < command.index("--allowedTools")
-
-
-def test_with_the_transcripts_to_read_the_prompt_lists_the_sessions_and_quotes_none(tmp_path):
-    session = diary.Session("s1", "/work/thesis", [diary.Turn(datetime(2026, 10, 10, 9, tzinfo=timezone.utc), "Fit the resonance", "Done: Q = 4e5.")])
-    session.written = tmp_path / "s1.md"
-    listed = diary.index([session])
-    assert "Session: s1" in listed and f"In full: {session.written}" in listed
-    assert "Fit the resonance" not in listed
-
 
 
 # ------------------------------------------------------------ writing again
@@ -555,6 +531,9 @@ def test_a_rewrite_s_reason_names_its_day_as_the_first_entry_s_does():
 def test_a_day_is_asked_for_once_and_dropped_once_written(tmp_path):
     path = str(tmp_path / "state.sqlite3")
     assert diary.ask_rewrite(path, DAY) and not diary.ask_rewrite(path, DAY)
+    # A request is stamped to the millisecond and ties fall back to the
+    # earlier day, which here was asked second.
+    time.sleep(0.002)
     assert diary.ask_rewrite(path, DAY - timedelta(days=1))
     assert diary.rewrites(path) == [DAY, DAY - timedelta(days=1)]
     diary.drop_rewrite(path, DAY)
@@ -624,7 +603,7 @@ def _rewrite(settings, journal, monkeypatch, actions=ACTIONS, ok=True, created=(
         return ok
 
     monkeypatch.setattr(daemon, "wake_agent", wake)
-    woke = daemon.rewrite_pass(settings, forum, FakeHost(SITE), diary.Diary(), False, journal, now=NOW)
+    woke = daemon.rewrite_pass(settings, forum, FakeHost(), diary.Diary(), False, journal, now=NOW)
     return woke, woken, forum
 
 
@@ -643,7 +622,7 @@ def rewriting(tmp_path, projects):
     return _settings(state_path=path), journal
 
 
-def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting, monkeypatch, handled):
+def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting, monkeypatch):
     settings, journal = rewriting
     woke, woken, forum = _rewrite(settings, journal, monkeypatch, writes="The new entry.")
     assert woke

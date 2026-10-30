@@ -71,6 +71,7 @@ def test_a_session_registers_and_the_topics_it_posts_in_are_added_until_it_ends(
 def test_a_wake_hands_a_post_only_to_a_registered_session_once_in_the_handoff_s_form():
     sessions.register("trilayer", "/home/r/trilayer", "fitting the flux noise", [7], os.getpid())
 
+    assert "SendMessage" in sandbox.claude_settings()
     assert decision(sandbox.decide(send("fusion", HANDOFF), None))[0] == "deny"
     refused, why = decision(sandbox.decide(send("trilayer", "Please look at topic 7."), None))
     assert refused == "deny" and "Qupa Cafe handoff: topic <topic id>, post <post number>" in why
@@ -82,24 +83,12 @@ def test_a_wake_hands_a_post_only_to_a_registered_session_once_in_the_handoff_s_
     assert again == "deny" and "already" in why
 
 
-def test_a_wake_does_not_read_or_write_in_slack():
-    for tool in sandbox.SLACK_TOOLS:
-        assert decision(sandbox.decide({"tool_name": tool, "tool_input": {}}, None))[0] == "deny"
-        assert tool in sandbox.claude_settings()
-
-
-def test_a_wake_makes_no_category_and_adds_nobody_to_one():
-    """Whatever the researcher's own settings approve: a category is made
-    from a session with them."""
-    for tool in sandbox.CATEGORY_TOOLS:
-        assert decision(sandbox.decide({"tool_name": tool, "tool_input": {}}, None))[0] == "deny"
-        assert tool in sandbox.claude_settings()
-
-
-def test_a_wake_does_not_register():
-    event = {"tool_name": sandbox.REGISTER_TOOL, "tool_input": {"name": "fusion"}}
-    assert decision(sandbox.decide(event, None))[0] == "deny"
-    assert "SendMessage" in sandbox.claude_settings() and sandbox.REGISTER_TOOL in sandbox.claude_settings()
+@pytest.mark.parametrize("tool", [*sandbox.SLACK_TOOLS, *sandbox.CATEGORY_TOOLS, sandbox.REGISTER_TOOL])
+def test_a_wake_does_not_use_slack_make_a_category_or_register(tool):
+    """Whatever the researcher's own settings approve: each is done from a
+    session with them, and the hook every wake is given refuses it."""
+    assert decision(sandbox.decide({"tool_name": tool, "tool_input": {}}, None))[0] == "deny"
+    assert tool in sandbox.claude_settings()
 
 
 TOPIC = {"id": 7, "title": "Flux noise", "post_stream": {"posts": [

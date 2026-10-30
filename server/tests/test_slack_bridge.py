@@ -11,6 +11,8 @@ Run from the repository root::
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib.util
 import io
 import json
@@ -18,7 +20,9 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -122,6 +126,19 @@ def test_channel_name_is_slack_safe_and_includes_the_parent():
 # ---------------------------------------------------------------- a stub forum
 
 
+class QuietHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+def start_server(handler):
+    """``handler`` served on a free local port. It checks for a shutdown every
+    10 ms rather than every 500, which every test's teardown would wait out."""
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+    return httpd
+
+
 class StubForum:
     def __init__(self):
         self.categories = {
@@ -180,7 +197,7 @@ class StubForum:
 
 
 def serve(stub: StubForum):
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(QuietHandler):
         def _json(self, code, payload):
             body = json.dumps(payload).encode()
             self.send_response(code)
@@ -359,12 +376,7 @@ def serve(stub: StubForum):
                 return self._json(200, {})
             return self._json(404, {})
 
-        def log_message(self, *args):
-            pass
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+    return start_server(Handler)
 
 
 # ---------------------------------------------------------------- a fake Slack
@@ -526,6 +538,9 @@ class FakeSlack:
         raise SlackError("The server responded with: {'ok': False, 'error': 'users_not_found'}")
 
 
+# ---------------------------------------------------------------- fixtures
+
+
 def history(stub):
     """A public topic, and the forum's onboarding message to sunada."""
     stub.topic(10, "Surface code thresholds", 1, "sunada")
@@ -565,14 +580,54 @@ def world(connect):
     return stub, slack, bridge
 
 
+# ---------------------------------------------------------------- helpers
+
+
+def parents(slack):
+    """The bot's channel messages that open a thread."""
+    return [m for m in slack.messages if not m.get("thread_ts")]
+
+
 def replies(slack):
+    """The bot's channel messages in a thread."""
     return [m for m in slack.messages if m.get("thread_ts")]
+
+
+def in_thread(slack, channel, thread_ts):
+    return [m for m in slack.dms + slack.messages if m["channel"] == channel and m.get("thread_ts") == thread_ts]
+
+
+def updates(slack):
+    return [c[1] for c in slack.calls if c[0] == "update"]
 
 
 def start_thread(stub, bridge):
     """A reply in topic 10, which opens its thread in Slack."""
     stub.post(10, "pat", "Starting the thread.")
     bridge.poll()
+
+
+def agent_message(stub, raw):
+    """Topic 41, a private message from sunada-agent to sunada."""
+    stub.topic(41, "The d=7 sweep finished", None, "sunada-agent", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada"])
+    stub.post(41, "sunada-agent", raw)
+
+
+def dm(user, text, ts, thread_ts=None, channel=None):
+    """Slack's event for a message in a DM with the bot."""
+    event = {"type": "message", "channel_type": "im", "channel": channel or f"D{user}", "user": user,
+             "text": text, "ts": ts}
+    if thread_ts:
+        event["thread_ts"] = thread_ts
+    return event
+
+
+def reply_event(slack, bridge, user, text, topic_id=10, **extra):
+    """Slack's event for a reply in a topic's thread."""
+    channel, thread_ts = bridge.state.thread_for(topic_id)
+    return {"type": "message", "user": user, "text": text, "channel": channel,
+            "ts": "2000.000001", "thread_ts": thread_ts, **extra}
 
 
 # ---------------------------------------------------------------- forum to Slack
@@ -585,8 +640,7 @@ def test_a_new_forums_first_posts_reach_slack(connect):
     stub, slack, bridge = connect()
     bridge.poll()
 
-    parents = [m for m in slack.messages if not m.get("thread_ts")]
-    assert any("Surface code thresholds" in m["text"] for m in parents)
+    assert any("Surface code thresholds" in m["text"] for m in parents(slack))
     # The onboarding message is considered too, rather than skipped: it
     # reaches Slack for whoever in it has an account there.
     assert bridge.state.cursor("pm_cursor") == stub.topics[40]["posts"][-1]["id"]
@@ -609,8 +663,8 @@ def test_a_post_becomes_a_reply_in_its_topics_thread(world):
     stub.post(10, "pat", "I get **0.57%** for this [code](https://arxiv.org/abs/2)")
     assert bridge.poll() == 1
 
-    parent = [m for m in slack.messages if not m.get("thread_ts")]
-    assert len(parent) == 1 and "Surface code thresholds" in parent[0]["text"]
+    (parent,) = parents(slack)
+    assert "Surface code thresholds" in parent["text"]
     (reply,) = replies(slack)
     assert reply["channel"] == slack.channels["qupa-research"]
     assert reply["thread_ts"] == bridge.state.thread_for(10)[1]
@@ -622,7 +676,7 @@ def test_a_post_becomes_a_reply_in_its_topics_thread(world):
     bridge.poll()
     assert bridge.poll() == 0
     assert len(replies(slack)) == 2
-    assert len([m for m in slack.messages if not m.get("thread_ts")]) == 1
+    assert len(parents(slack)) == 1
 
 
 def test_a_topics_first_post_is_its_threads_parent(world):
@@ -634,7 +688,7 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     stub.post(11, "pat", "Does **leakage** matter here?")
     assert bridge.poll() == 1
 
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    (parent,) = parents(slack)
     assert parent["username"] == "pat"
     assert "|Leakage in the cat qubit>*\nDoes *leakage* matter here?" in parent["text"]
     # The linked title is the link to the post, so no second link follows it.
@@ -647,6 +701,175 @@ def test_a_topics_first_post_is_its_threads_parent(world):
     bridge.poll()
     (reply,) = replies(slack)
     assert reply["thread_ts"] == bridge.state.thread_for(11)[1]
+
+
+def test_threads_and_posts_carry_their_links(world):
+    """A thread opens with the topic's title, and every reply, whatever its
+    length, is posted whole and ends with a link to it. An agent's reply
+    starts by mentioning its researcher; a person's mentions nobody."""
+    stub, slack, bridge = world
+    stub.post(10, "pat", "I get 0.57% for this.")
+    bridge.poll()
+
+    (parent,) = parents(slack)
+    assert parent["text"].startswith("*<")
+    assert "|Surface code thresholds>*\n" in parent["text"]
+    (reply,) = replies(slack)
+    assert reply["text"].endswith("|View this post>_")
+    assert "<@" not in reply["text"]
+
+    stub.post(10, "sunada-agent", "A counterexample at distance 5.")
+    bridge.poll()
+    agent = replies(slack)[1]
+    assert agent["username"] == "sunada-agent"
+    assert agent["text"].startswith("_<@US>, your agent posted:_\n")
+    assert agent["text"].endswith("|View this post>_")
+
+    # Longer than max_post_length allows, and still whole.
+    stub.post(10, "pat", ("word " * 799) + "last")
+    bridge.poll()
+    long = replies(slack)[2]["text"]
+    assert long.startswith(("word " * 799) + "last\n_<")
+    assert long.endswith("|View this post>_")
+
+
+def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
+    stub, slack, bridge = world
+    stub.topic(12, "A counterexample at distance 5", 1, "sunada-agent")
+    stub.post(12, "sunada-agent", "Here it is.")
+    bridge.poll()
+    (parent,) = parents(slack)
+    assert parent["username"] == "sunada-agent"
+    assert parent["text"].startswith("_<@US>, your agent posted:_\n*<")
+
+
+def test_a_persons_mention_is_their_slack_one_and_an_agents_stays_a_name(world):
+    """A person is found in Slack by their forum email address. An agent has
+    no Slack account of its own, even where its address matches one."""
+    stub, slack, bridge = world
+    post = stub.post(10, "pat", "@sunada, @sunada-agent and @nobody: is @agents right? @pat-agent too.")
+    bridge.poll()
+    (reply,) = replies(slack)
+    assert reply["text"].startswith("<@US>, @sunada-agent and @nobody: is @agents right? @pat-agent too.\n_<")
+
+    # A forum edit is carried the same way.
+    post["raw"] = "Thanks, @pat."
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    (update,) = updates(slack)
+    assert update["text"].startswith("Thanks, <@UP>.\n_<")
+
+
+def test_private_messages_and_whispers_stay_out_of_channels(world):
+    stub, slack, bridge = world
+    stub.topic(21, "A private message", None, "sunada", archetype="private_message")
+    stub.post(21, "sunada", "Just between us.")
+    stub.post(10, "sunada", "A whisper.", post_type=4)
+    assert bridge.poll() == 0
+    assert slack.messages == []
+
+
+def test_a_preprint_waits_for_its_first_reply(world):
+    stub, slack, bridge = world
+    stub.topic(30, "Magic states (arXiv:2610.00001)", 8, "arxiv-bot")
+    stub.post(30, "arxiv-bot", "Abstract: magic.")
+    assert bridge.poll() == 0
+    assert slack.messages == []
+
+    stub.post(30, "sunada-agent", "Relevant to our threshold work.")
+    bridge.poll()
+    (parent,) = parents(slack)
+    assert parent["username"] == "arxiv-bot" and "Abstract: magic." in parent["text"]
+    assert parent["channel"] == slack.channels["qupa-arxiv"]
+    (reply,) = replies(slack)
+    assert reply["username"] == "sunada-agent"
+
+
+def test_a_preprint_brings_the_feeds_own_reply_with_the_first_other(world):
+    stub, slack, bridge = world
+    stub.topic(30, "Magic states (arXiv:2610.00001)", 8, "arxiv-bot")
+    stub.post(30, "arxiv-bot", "**Ada Lovelace** (University of Ottawa)")
+    stub.post(30, "arxiv-bot", "**Authors:** Ada Lovelace\n\n**Abstract:** Magic.")
+    assert bridge.poll() == 0
+    assert slack.messages == []
+
+    stub.post(30, "sunada-agent", "Relevant to our threshold work.")
+    bridge.poll()
+    (parent,) = parents(slack)
+    assert "Ada Lovelace" in parent["text"]
+    details, reply = replies(slack)
+    assert details["username"] == "arxiv-bot" and "*Abstract:* Magic." in details["text"]
+    assert reply["username"] == "sunada-agent"
+
+    # Once the thread is open, the next reply goes alone.
+    stub.post(30, "pat-agent", "Agreed.")
+    bridge.poll()
+    assert [m["username"] for m in replies(slack)] == ["arxiv-bot", "sunada-agent", "pat-agent"]
+
+
+# ---------------------------------------------------------------- channels
+
+
+def test_a_private_category_is_a_private_channel_of_its_readers(world):
+    stub, slack, bridge = world
+    staff = slack.channels["qupa-staff"]
+    # The readers with a Slack account, and not the agent, which posts through the bridge.
+    assert ("invite", {"channel": staff, "users": "US"}) in slack.calls
+    stub.topic(20, "Moderation notes", 2, "sunada")
+    stub.post(20, "sunada", "Staff only.")
+    assert bridge.poll() == 1
+    (parent,) = parents(slack)
+    assert parent["channel"] == staff and "Staff only." in parent["text"]
+
+    # A reply there is posted as its writer, as anywhere.
+    event = reply_event(slack, bridge, "US", "Noted.", topic_id=20)
+    assert bridge.handle_message(event).startswith("posted")
+
+    # Who reads it follows the forum, at the hourly sync.
+    stub.groups["staff"] = ["pat"]
+    bridge._groups.clear()
+    bridge.sync_categories(force=True)
+    assert slack.members[staff] == ["UBOT", "UP"]
+    assert ("kick", {"channel": staff, "user": "US"}) in slack.calls
+
+
+def test_a_private_category_slack_will_not_make_a_channel_for_stays_on_the_forum(connect):
+    stub, slack, bridge = connect(first_run="newest")
+    slack.refuse_private = "missing_scope"
+    bridge.poll()
+    assert "qupa-staff" not in slack.channels and "qupa-research" in slack.channels
+    stub.topic(20, "Moderation notes", 2, "sunada")
+    stub.post(20, "sunada", "Staff only.")
+    bridge.poll()
+    assert slack.messages == []
+
+
+def test_an_existing_channel_is_adopted(tmp_path, world):
+    stub, slack, bridge = world
+    # A lost state file: the channel exists in Slack and not in the bridge's memory.
+    other = bridge_mod.Bridge(bridge.forum, slack, bridge_mod.State(tmp_path / "lost.db"))
+    assert other.ensure_channel(stub.categories[1]) == slack.channels["qupa-research"]
+    assert ("join", {"channel": slack.channels["qupa-research"]}) in slack.calls
+
+
+def test_channels_are_renamed_when_the_prefix_changes(world):
+    stub, slack, bridge = world
+    research = slack.channels["qupa-research"]
+    bridge.prefix = "lab-"
+    bridge.sync_categories(force=True)
+    # Renamed in place: the same channel, so its threads still map to topics.
+    assert slack.channels["lab-research"] == research
+    assert set(slack.channels) == {"lab-research", "lab-arxiv", "lab-staff"}
+    assert bridge.state.channel_for(1) == research
+
+    # A name somebody already took by hand leaves the channel as it is.
+    slack.channels["taken-research"] = "CX"
+    bridge.prefix = "taken-"
+    bridge.sync_categories(force=True)
+    assert slack.channels["lab-research"] == research
+
+
+# ---------------------------------------------------------------- images and attachments
 
 
 PNG = b"\x89PNG\r\n\x1a\nfigure two"
@@ -674,7 +897,7 @@ def test_the_key_stays_behind_at_the_object_stores_redirect(world):
     stub, slack, bridge = world
     seen = []
 
-    class Store(BaseHTTPRequestHandler):
+    class Store(QuietHandler):
         def do_GET(self):  # noqa: N802
             seen.append(dict(self.headers))
             self.send_response(200)
@@ -682,11 +905,7 @@ def test_the_key_stays_behind_at_the_object_stores_redirect(world):
             self.end_headers()
             self.wfile.write(PNG)
 
-        def log_message(self, *args):
-            pass
-
-    store = ThreadingHTTPServer(("127.0.0.1", 0), Store)
-    threading.Thread(target=store.serve_forever, daemon=True).start()
+    store = start_server(Store)
     try:
         stub.object_store = f"http://127.0.0.1:{store.server_address[1]}"
         stub.uploads["upload://sEc.png"] = PNG
@@ -706,7 +925,7 @@ def test_an_image_in_a_topics_first_post_follows_its_parent(world):
     stub.post(11, "pat", "Here: ![](upload://xYz.png)")
     bridge.poll()
 
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
+    (parent,) = parents(slack)
     (upload,) = slack.files
     assert upload["thread_ts"] == bridge.state.thread_for(11)[1]
     # With no name of its own, it goes under the stored one.
@@ -771,159 +990,40 @@ def test_a_posts_attachment_follows_it_too(world):
     assert slack.files[0]["file_uploads"] == [{"content": b"%PDF-1.4 the sweep", "filename": "sweep.pdf", "title": "sweep.pdf"}]
 
 
-def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
+def _png(mode, colour):
+    # Imported here: the bridge runs without Pillow, and only these tests need it.
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new(mode, (4, 4), colour).save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_a_transparent_image_goes_to_slack_on_white_and_any_other_as_it_is():
+    from PIL import Image  # as in _png
+
+    clear = _png("RGBA", (0, 0, 0, 0))
+    flat = bridge_mod.on_white(clear, "plot.png")
+    with Image.open(io.BytesIO(flat)) as image:
+        assert image.format == "PNG" and image.mode == "RGB" and image.getpixel((0, 0)) == (255, 255, 255)
+    opaque = _png("RGBA", (10, 20, 30, 255))
+    assert bridge_mod.on_white(opaque, "plot.png") == opaque
+    assert bridge_mod.on_white(clear, "notes.pdf") == clear
+    assert bridge_mod.on_white(b"not an image", "plot.png") == b"not an image"
+
+
+def test_a_posts_transparent_image_reaches_slack_on_white(world):
     stub, slack, bridge = world
-    stub.topic(12, "A counterexample at distance 5", 1, "sunada-agent")
-    stub.post(12, "sunada-agent", "Here it is.")
+    start_thread(stub, bridge)
+    stub.uploads["upload://cLr.png"] = _png("RGBA", (0, 0, 0, 0))
+    stub.post(10, "pat", "A plot. ![c.png](upload://cLr.png)")
     bridge.poll()
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["username"] == "sunada-agent"
-    assert parent["text"].startswith("_<@US>, your agent posted:_\n*<")
-
-
-def test_a_persons_mention_is_their_slack_one_and_an_agents_stays_a_name(world):
-    """A person is found in Slack by their forum email address. An agent has
-    no Slack account of its own, even where its address matches one."""
-    stub, slack, bridge = world
-    post = stub.post(10, "pat", "@sunada, @sunada-agent and @nobody: is @agents right? @pat-agent too.")
-    bridge.poll()
-    (reply,) = replies(slack)
-    assert reply["text"].startswith("<@US>, @sunada-agent and @nobody: is @agents right? @pat-agent too.\n_<")
-
-    # A forum edit is carried the same way.
-    post["raw"] = "Thanks, @pat."
-    bridge.edited("post", post["id"])
-    bridge.poll()
-    (update,) = updates(slack)
-    assert update["text"].startswith("Thanks, <@UP>.\n_<")
-
-
-def test_private_messages_and_whispers_stay_out_of_channels(world):
-    stub, slack, bridge = world
-    stub.topic(21, "A private message", None, "sunada", archetype="private_message")
-    stub.post(21, "sunada", "Just between us.")
-    stub.post(10, "sunada", "A whisper.", post_type=4)
-    assert bridge.poll() == 0
-    assert slack.messages == []
-
-
-def test_a_private_category_is_a_private_channel_of_its_readers(world):
-    stub, slack, bridge = world
-    staff = slack.channels["qupa-staff"]
-    # The readers with a Slack account, and not the agent, which posts through the bridge.
-    assert ("invite", {"channel": staff, "users": "US"}) in slack.calls
-    stub.topic(20, "Moderation notes", 2, "sunada")
-    stub.post(20, "sunada", "Staff only.")
-    assert bridge.poll() == 1
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["channel"] == staff and "Staff only." in parent["text"]
-
-    # A reply there is posted as its writer, as anywhere.
-    event = reply_event(slack, bridge, "US", "Noted.", topic_id=20)
-    assert bridge.handle_message(event).startswith("posted")
-
-    # Who reads it follows the forum, at the hourly sync.
-    stub.groups["staff"] = ["pat"]
-    bridge._groups.clear()
-    bridge.sync_categories(force=True)
-    assert slack.members[staff] == ["UBOT", "UP"]
-    assert ("kick", {"channel": staff, "user": "US"}) in slack.calls
-
-
-def test_a_private_category_slack_will_not_make_a_channel_for_stays_on_the_forum(connect):
-    stub, slack, bridge = connect(first_run="newest")
-    slack.refuse_private = "missing_scope"
-    bridge.poll()
-    assert "qupa-staff" not in slack.channels and "qupa-research" in slack.channels
-    stub.topic(20, "Moderation notes", 2, "sunada")
-    stub.post(20, "sunada", "Staff only.")
-    bridge.poll()
-    assert slack.messages == []
-
-
-def test_a_preprint_waits_for_its_first_reply(world):
-    stub, slack, bridge = world
-    stub.topic(30, "Magic states (arXiv:2610.00001)", 8, "arxiv-bot")
-    stub.post(30, "arxiv-bot", "Abstract: magic.")
-    assert bridge.poll() == 0
-    assert slack.messages == []
-
-    stub.post(30, "sunada-agent", "Relevant to our threshold work.")
-    bridge.poll()
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["username"] == "arxiv-bot" and "Abstract: magic." in parent["text"]
-    assert parent["channel"] == slack.channels["qupa-arxiv"]
-    (reply,) = replies(slack)
-    assert reply["username"] == "sunada-agent"
-
-
-def test_a_preprint_brings_the_feeds_own_reply_with_the_first_other(world):
-    stub, slack, bridge = world
-    stub.topic(30, "Magic states (arXiv:2610.00001)", 8, "arxiv-bot")
-    stub.post(30, "arxiv-bot", "**Ada Lovelace** (University of Ottawa)")
-    stub.post(30, "arxiv-bot", "**Authors:** Ada Lovelace\n\n**Abstract:** Magic.")
-    assert bridge.poll() == 0
-    assert slack.messages == []
-
-    stub.post(30, "sunada-agent", "Relevant to our threshold work.")
-    bridge.poll()
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert "Ada Lovelace" in parent["text"]
-    details, reply = replies(slack)
-    assert details["username"] == "arxiv-bot" and "*Abstract:* Magic." in details["text"]
-    assert reply["username"] == "sunada-agent"
-
-    # Once the thread is open, the next reply goes alone.
-    stub.post(30, "pat-agent", "Agreed.")
-    bridge.poll()
-    assert [m["username"] for m in replies(slack)] == ["arxiv-bot", "sunada-agent", "pat-agent"]
-
-
-def test_an_existing_channel_is_adopted(tmp_path, world):
-    stub, slack, bridge = world
-    # A lost state file: the channel exists in Slack and not in the bridge's memory.
-    other = bridge_mod.Bridge(bridge.forum, slack, bridge_mod.State(tmp_path / "lost.db"))
-    assert other.ensure_channel(stub.categories[1]) == slack.channels["qupa-research"]
-    assert ("join", {"channel": slack.channels["qupa-research"]}) in slack.calls
-
-
-def test_channels_are_renamed_when_the_prefix_changes(world):
-    stub, slack, bridge = world
-    research = slack.channels["qupa-research"]
-    bridge.prefix = "lab-"
-    bridge.sync_categories(force=True)
-    # Renamed in place: the same channel, so its threads still map to topics.
-    assert slack.channels["lab-research"] == research
-    assert set(slack.channels) == {"lab-research", "lab-arxiv", "lab-staff"}
-    assert bridge.state.channel_for(1) == research
-
-    # A name somebody already took by hand leaves the channel as it is.
-    slack.channels["taken-research"] = "CX"
-    bridge.prefix = "taken-"
-    bridge.sync_categories(force=True)
-    assert slack.channels["lab-research"] == research
+    (sent,) = slack.files
+    assert sent["file_uploads"][0]["content"] == bridge_mod.on_white(stub.uploads["upload://cLr.png"], "c.png")
+    assert sent["file_uploads"][0]["content"] != stub.uploads["upload://cLr.png"]
 
 
 # ---------------------------------------------------------------- conversations with the bot
-
-
-def dm(user, text, ts, thread_ts=None, channel=None):
-    event = {"type": "message", "channel_type": "im", "channel": channel or f"D{user}", "user": user,
-             "text": text, "ts": ts}
-    if thread_ts:
-        event["thread_ts"] = thread_ts
-    return event
-
-
-def in_thread(slack, channel, thread_ts):
-    return [m for m in slack.dms + slack.messages if m["channel"] == channel and m.get("thread_ts") == thread_ts]
-
-
-def agent_message(stub, raw):
-    """Topic 41, a private message from sunada-agent to sunada."""
-    stub.topic(41, "The d=7 sweep finished", None, "sunada-agent", archetype="private_message",
-               allowed_users=["sunada-agent", "sunada"])
-    stub.post(41, "sunada-agent", raw)
 
 
 def test_a_dm_with_the_bot_is_a_private_message_with_your_agent(world):
@@ -1106,12 +1206,6 @@ def test_somebody_with_no_agent_is_told(world):
 # ---------------------------------------------------------------- Slack to the forum
 
 
-def reply_event(slack, bridge, user, text, topic_id=10, **extra):
-    channel, thread_ts = bridge.state.thread_for(topic_id)
-    return {"type": "message", "user": user, "text": text, "channel": channel,
-            "ts": "2000.000001", "thread_ts": thread_ts, **extra}
-
-
 def test_a_thread_reply_is_posted_as_the_slack_users_forum_account(world):
     stub, slack, bridge = world
     start_thread(stub, bridge)
@@ -1126,6 +1220,54 @@ def test_a_thread_reply_is_posted_as_the_slack_users_forum_account(world):
     # The forum now has the post, and the poller does not put it back in Slack.
     assert bridge.poll() == 0
     assert len(slack.messages) == before
+
+
+def test_nobody_posts_as_an_agent(world):
+    """In a channel thread and in a DM with the bot alike, the writer is told
+    to ask a forum admin."""
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    outcome = bridge.handle_message(reply_event(slack, bridge, "UA", "Impersonation attempt."))
+    assert outcome.startswith("refused")
+    assert slack.ephemerals[-1]["user"] == "UA"
+    assert slack.ephemerals[-1]["text"] == bridge_mod.UNUSABLE_ACCOUNT
+    assert bridge.handle_message(dm("UA", "Hello?", "7200.1")).startswith("refused")
+    (in_dm,) = in_thread(slack, "DUA", "7200.1")
+    assert in_dm["text"] == bridge_mod.UNUSABLE_ACCOUNT
+    assert "Ask a forum admin." in bridge_mod.UNUSABLE_ACCOUNT
+    assert stub.created_as == [] and stub.invites == []
+
+
+def test_a_top_level_message_is_not_relayed(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    channel = slack.channels["qupa-research"]
+    event = {"type": "message", "user": "US", "text": "Anyone around?", "channel": channel, "ts": "3000.1"}
+    assert bridge.handle_message(event) == "top-level message, not relayed"
+    assert stub.created_as == []
+    assert slack.ephemerals[-1]["user"] == "US"
+
+
+def test_bots_their_edits_and_unbridged_channels_are_ignored(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    base = reply_event(slack, bridge, "US", "text")
+    assert bridge.handle_message({**base, "bot_id": "B1"}) == "not from a person"
+    edited = {**base, "user": None, "subtype": "message_changed", "message": {"bot_id": "B1", "text": "x"}}
+    assert bridge.handle_message(edited) == "not an edit by a person"
+    assert bridge.handle_message({**base, "channel": "CELSEWHERE"}) == "not a bridged channel"
+    assert stub.created_as == []
+
+
+def test_a_refusal_is_told_to_the_person_who_wrote(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    outcome = bridge.handle_message(reply_event(slack, bridge, "US", "ok"))
+    assert outcome == "refused: Body is too short (minimum is 5 characters)"
+    assert "too short" in slack.ephemerals[-1]["text"]
+
+
+# ---------------------------------------------------------------- invitations
 
 
 def test_someone_with_no_account_is_sent_their_invitation_by_dm_once(world):
@@ -1233,81 +1375,6 @@ def test_a_slack_guest_is_not_invited(world):
     assert slack.dms == []
 
 
-def test_nobody_posts_as_an_agent(world):
-    """In a channel thread and in a DM with the bot alike, the writer is told
-    to ask a forum admin."""
-    stub, slack, bridge = world
-    start_thread(stub, bridge)
-    outcome = bridge.handle_message(reply_event(slack, bridge, "UA", "Impersonation attempt."))
-    assert outcome.startswith("refused")
-    assert slack.ephemerals[-1]["user"] == "UA"
-    assert slack.ephemerals[-1]["text"] == bridge_mod.UNUSABLE_ACCOUNT
-    assert bridge.handle_message(dm("UA", "Hello?", "7200.1")).startswith("refused")
-    (in_dm,) = in_thread(slack, "DUA", "7200.1")
-    assert in_dm["text"] == bridge_mod.UNUSABLE_ACCOUNT
-    assert "Ask a forum admin." in bridge_mod.UNUSABLE_ACCOUNT
-    assert stub.created_as == [] and stub.invites == []
-
-
-def test_a_top_level_message_is_not_relayed(world):
-    stub, slack, bridge = world
-    start_thread(stub, bridge)
-    channel = slack.channels["qupa-research"]
-    event = {"type": "message", "user": "US", "text": "Anyone around?", "channel": channel, "ts": "3000.1"}
-    assert bridge.handle_message(event) == "top-level message, not relayed"
-    assert stub.created_as == []
-    assert slack.ephemerals[-1]["user"] == "US"
-
-
-def test_bots_their_edits_and_unbridged_channels_are_ignored(world):
-    stub, slack, bridge = world
-    start_thread(stub, bridge)
-    base = reply_event(slack, bridge, "US", "text")
-    assert bridge.handle_message({**base, "bot_id": "B1"}) == "not from a person"
-    edited = {**base, "user": None, "subtype": "message_changed", "message": {"bot_id": "B1", "text": "x"}}
-    assert bridge.handle_message(edited) == "not an edit by a person"
-    assert bridge.handle_message({**base, "channel": "CELSEWHERE"}) == "not a bridged channel"
-    assert stub.created_as == []
-
-
-def test_a_refusal_is_told_to_the_person_who_wrote(world):
-    stub, slack, bridge = world
-    start_thread(stub, bridge)
-    outcome = bridge.handle_message(reply_event(slack, bridge, "US", "ok"))
-    assert outcome == "refused: Body is too short (minimum is 5 characters)"
-    assert "too short" in slack.ephemerals[-1]["text"]
-
-
-def test_threads_and_posts_carry_their_links(world):
-    """A thread opens with the topic's title, and every reply, whatever its
-    length, is posted whole and ends with a link to it. An agent's reply
-    starts by mentioning its researcher; a person's mentions nobody."""
-    stub, slack, bridge = world
-    stub.post(10, "pat", "I get 0.57% for this.")
-    bridge.poll()
-
-    (parent,) = [m for m in slack.messages if not m.get("thread_ts")]
-    assert parent["text"].startswith("*<")
-    assert "|Surface code thresholds>*\n" in parent["text"]
-    (reply,) = replies(slack)
-    assert reply["text"].endswith("|View this post>_")
-    assert "<@" not in reply["text"]
-
-    stub.post(10, "sunada-agent", "A counterexample at distance 5.")
-    bridge.poll()
-    agent = replies(slack)[1]
-    assert agent["username"] == "sunada-agent"
-    assert agent["text"].startswith("_<@US>, your agent posted:_\n")
-    assert agent["text"].endswith("|View this post>_")
-
-    # Longer than max_post_length allows, and still whole.
-    stub.post(10, "pat", ("word " * 799) + "last")
-    bridge.poll()
-    long = replies(slack)[2]["text"]
-    assert long.startswith(("word " * 799) + "last\n_<")
-    assert long.endswith("|View this post>_")
-
-
 # ---------------------------------------------------------------- Slack edits
 
 
@@ -1378,7 +1445,7 @@ def test_an_edit_to_a_message_not_on_the_forum_changes_nothing(world):
     assert stub.edited_as == []
 
 
-# ------------------------------------------------------------ files from Slack
+# ---------------------------------------------------------------- files from Slack
 
 
 @pytest.fixture
@@ -1389,7 +1456,7 @@ def slack_files(world, monkeypatch):
     served: dict[str, tuple[str, bytes]] = {}
     seen: list[str | None] = []
 
-    class Files(BaseHTTPRequestHandler):
+    class Files(QuietHandler):
         def do_GET(self):  # noqa: N802
             seen.append(self.headers.get("Authorization"))
             mime, content = served[self.path]
@@ -1399,11 +1466,7 @@ def slack_files(world, monkeypatch):
             self.end_headers()
             self.wfile.write(content)
 
-        def log_message(self, *args):
-            pass
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Files)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    httpd = start_server(Files)
     base = f"http://127.0.0.1:{httpd.server_address[1]}/"
     monkeypatch.setattr(bridge_mod, "SLACK_FILES_URL", base)
 
@@ -1521,14 +1584,15 @@ def test_a_file_in_a_dm_opens_a_private_message_holding_it(world, slack_files):
     assert title == "Files: shot.png" and raw == "![shot.png|10x20](upload://up1.png)"
 
 
-# ------------------------------------------------------- the *Thinking…* post
+# ---------------------------------------------------------------- the *Thinking…* post
+
 
 THINKING = "*Thinking…*\n\n<!-- qupa-cafe:thinking 0123abcd -->"
 
 
 def test_a_thinking_post_becomes_its_answer_in_slack(world):
-    """A forum edit is otherwise not carried, and this copy would say
-    *Thinking…* for good."""
+    """Its copy is watched, so it becomes the answer with or without the edit
+    webhook rather than saying *Thinking…* for good."""
     stub, slack, bridge = world
     start_thread(stub, bridge)
     post = stub.post(10, "sunada-agent", THINKING)
@@ -1541,20 +1605,20 @@ def test_a_thinking_post_becomes_its_answer_in_slack(world):
     ts = next(t for t, m in slack.sent.items() if m is copy)
 
     bridge.poll()
-    assert not [c for c in slack.calls if c[0] == "update"]
+    assert updates(slack) == []
 
     stub.uploads["upload://aBc.png"] = PNG
     post["raw"] = "The threshold holds at **0.57%**. ![plot.png](upload://aBc.png)"
     bridge.poll()
 
-    (update,) = [c[1] for c in slack.calls if c[0] == "update"]
+    (update,) = updates(slack)
     assert update["ts"] == ts
     assert update["text"].startswith("_<@US>, your agent posted:_")
     assert "*0.57%*" in update["text"] and "View this post" in update["text"]
     assert slack.files[0]["thread_ts"] == copy["thread_ts"]
     # Updated once, and no longer watched.
     bridge.poll()
-    assert len([c for c in slack.calls if c[0] == "update"]) == 1
+    assert len(updates(slack)) == 1
 
 
 def test_a_thinking_post_deleted_on_the_forum_is_deleted_in_slack(world):
@@ -1581,16 +1645,12 @@ def test_a_thinking_post_in_a_dm_becomes_its_answer(world):
     post["raw"] = "Done: it holds."
     bridge.poll()
 
-    (update,) = [c[1] for c in slack.calls if c[0] == "update"]
+    (update,) = updates(slack)
     assert update["channel"] == "DUS" and "Done: it holds." in update["text"]
     assert "<@" not in update["text"]
 
 
-# ------------------------------------------------------------ forum edits
-
-
-def updates(slack):
-    return [c[1] for c in slack.calls if c[0] == "update"]
+# ---------------------------------------------------------------- forum edits
 
 
 def test_a_forum_edit_updates_the_posts_copy_and_sends_only_new_files(world):
@@ -1652,7 +1712,7 @@ def test_a_forum_edit_reaches_a_dm_copy_without_a_mention(world):
     assert update["channel"] == "DUS" and "Done: it holds." in update["text"] and "<@" not in update["text"]
 
 
-def test_a_copy_relayed_before_copies_were_recorded_is_found_by_its_link(world):
+def test_a_copy_the_state_file_does_not_place_is_found_by_its_link(world):
     stub, slack, bridge = world
     start_thread(stub, bridge)
     post = stub.post(10, "pat", "First version.")
@@ -1686,10 +1746,6 @@ def test_a_post_written_in_slack_and_a_thinking_post_are_left_to_their_own_paths
 
 
 def test_the_edit_webhook_is_verified_and_queues_the_edit(world):
-    import hashlib
-    import hmac
-    import urllib.request
-
     stub, slack, bridge = world
     httpd = bridge_mod.listen_for_edits(bridge, "127.0.0.1", 0, "s3cret-s3cret")
     try:
@@ -1720,7 +1776,7 @@ def test_the_edit_webhook_is_verified_and_queues_the_edit(world):
     assert bridge_mod.listen_for_edits(bridge, "127.0.0.1", 0, "") is None
 
 
-# ------------------------------------------------------------ deletions
+# ---------------------------------------------------------------- deletions
 
 
 def deleted(slack):
@@ -1799,38 +1855,3 @@ def test_a_message_deleted_in_slack_deletes_its_post_as_its_writer(world):
     assert bridge.handle_message(ours) == "not a deletion by a person"
     elsewhere = {**event, "previous_message": {"user": "US", "ts": "123.4"}}
     assert bridge.handle_message(elsewhere) == "a deleted message that is not on the forum"
-
-
-# ------------------------------------------------------- images on white
-
-
-def _png(mode, colour):
-    from PIL import Image
-
-    out = io.BytesIO()
-    Image.new(mode, (4, 4), colour).save(out, format="PNG")
-    return out.getvalue()
-
-
-def test_a_transparent_image_goes_to_slack_on_white_and_any_other_as_it_is():
-    from PIL import Image
-
-    clear = _png("RGBA", (0, 0, 0, 0))
-    flat = bridge_mod.on_white(clear, "plot.png")
-    with Image.open(io.BytesIO(flat)) as image:
-        assert image.format == "PNG" and image.mode == "RGB" and image.getpixel((0, 0)) == (255, 255, 255)
-    opaque = _png("RGBA", (10, 20, 30, 255))
-    assert bridge_mod.on_white(opaque, "plot.png") == opaque
-    assert bridge_mod.on_white(clear, "notes.pdf") == clear
-    assert bridge_mod.on_white(b"not an image", "plot.png") == b"not an image"
-
-
-def test_a_posts_transparent_image_reaches_slack_on_white(world):
-    stub, slack, bridge = world
-    start_thread(stub, bridge)
-    stub.uploads["upload://cLr.png"] = _png("RGBA", (0, 0, 0, 0))
-    stub.post(10, "pat", "A plot. ![c.png](upload://cLr.png)")
-    bridge.poll()
-    (sent,) = slack.files
-    assert sent["file_uploads"][0]["content"] == bridge_mod.on_white(stub.uploads["upload://cLr.png"], "c.png")
-    assert sent["file_uploads"][0]["content"] != stub.uploads["upload://cLr.png"]

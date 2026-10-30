@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from conftest import wording
-from qupa_cafe import browse, diaries, diary, texts, wakes
-from qupa_cafe.daemon import TUNE_NAME
+from qupa_cafe import browse, diaries, diary, models, wakes
+from qupa_cafe.daemon import TUNE_NAME, Journal, Settings, Wake
 
 
 def _row(title="Diary of a-agent, 2026-10-10", session="", topic_id=None, reason=f"{diary.REASON} 2026-10-10"):
@@ -46,8 +48,6 @@ def test_a_mode_env_does_not_name_keeps_the_one_started_with(tmp_path):
 
 def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
     """And the wake browser shows the rest, counting only those against -n."""
-    from qupa_cafe.daemon import Journal, Wake
-
     path = str(tmp_path / "state.sqlite3")
     journal = Journal(path)
     for n in range(3):
@@ -58,7 +58,7 @@ def test_the_diary_s_wakes_are_the_diary_browser_s_and_no_others_are(tmp_path):
     assert [r.title for r in wakes.recent(path, 2, wakes.FORUM)] == ["Topic 1", "Topic 2"]
     assert [r.title for r in wakes.recent(path, None, wakes.DIARY)] == [f"Diary of a-agent, 2026-10-1{n}" for n in range(3)]
     assert len(wakes.recent(path, None)) == 6
-    settings = type("S", (), {"state_path": path})()
+    settings = Settings(state_path=path)
     assert [w.row.title for w in browse.load(settings, None)] == ["Topic 2", "Topic 1", "Topic 0"]
     assert [w.row.title for w in diaries.load(settings)][0] == "Diary of a-agent, 2026-10-12"
 
@@ -146,9 +146,7 @@ def test_each_entry_shows_what_its_wake_cost():
 
 
 def test_m_and_f_step_the_diary_s_model_and_effort():
-    from qupa_cafe import models
-
-    b = _browser([browse.Wake(_row(), None)], diary.PUBLIC)
+    b =_browser([browse.Wake(_row(), None)], diary.PUBLIC)
     assert any("Runs on your Claude Code default model, its default effort" in line for line in b.frame(160, 20))
     assert b.handle("m") == "model" and b.handle("f") == "effort"
     assert browse.change_model(models.DIARY, "model") == "Diary wakes now run on fable, its default effort, from the next one."
@@ -160,16 +158,16 @@ def test_m_and_f_step_the_diary_s_model_and_effort():
 
 
 def test_r_asks_for_the_chosen_entry_s_day_once_and_only_with_the_diary_on(tmp_path):
-    settings = diaries.Settings(state_path=str(tmp_path / "state.sqlite3"))
+    settings = Settings(state_path=str(tmp_path / "state.sqlite3"))
     b = _browser([browse.Wake(_row(), None)], mode=diary.PUBLIC)
     assert b.handle("r") == "rewrite"
     assert "again at the daemon's next poll" in diaries.rewrite(settings, b.chosen, b.selected)
     assert "already waiting" in diaries.rewrite(settings, b.chosen, b.selected)
-    assert diary.rewrites(settings.state_path) == [diary.date(2026, 10, 10)]
+    assert diary.rewrites(settings.state_path) == [date(2026, 10, 10)]
 
     off = diary.Choice(diary.OFF)
     assert "The diary is off" in diaries.rewrite(settings, off, browse.Wake(_row(reason=f"{diary.REASON} 2026-10-09"), None))
-    assert diary.rewrites(settings.state_path) == [diary.date(2026, 10, 10)]
+    assert diary.rewrites(settings.state_path) == [date(2026, 10, 10)]
     # Nothing to write again in an empty list.
     assert _browser().handle("r") is None
 

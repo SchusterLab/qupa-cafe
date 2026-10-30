@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from qupa_cafe import browse, daemon, wakes
+from qupa_cafe import browse, daemon, models, preprints, wakes
 from qupa_cafe.daemon import Settings, claim_lock
 
 
@@ -138,9 +138,6 @@ def test_a_wake_without_a_transcript_cannot_be_asked():
     assert b.handle("enter") is None
     assert "no session" in b.message
     assert "Enter to open" not in b.frame(100, 30)[-1]
-    b2 = _browser(browse.Wake(_row(2), SAID))
-    b2.handle("enter")
-    assert b2.handle("enter") == "ask"
 
 
 def test_only_the_keys_shown_do_anything():
@@ -339,11 +336,11 @@ def test_run_as_a_module_the_browser_shares_the_colour_switch():
     assert result.stdout.strip() == "colour", result.stderr
 
 
-def test_reading_a_wake_takes_none_of_them():
-    b = _browser(browse.Wake(_row(1), SAID))
+def test_reading_a_wake_takes_none_of_the_list_s_settings_keys():
+    b = _browser(browse.Wake(_row(1), SAID), floor=0.72)
     b.handle("enter")
-    assert [b.handle(key) for key in ("l", "u", "t")] == [None, None, None]
-    assert b.viewing
+    assert [b.handle(key) for key in ("+", "-", "m", "f", "a", "l", "u")] == [None] * 7
+    assert b.viewing and not b.tuning
 
 
 def test_a_second_browser_is_noticed_and_not_opened(tmp_path, monkeypatch, capsys):
@@ -404,8 +401,6 @@ def test_transcripts_are_read_only_for_the_wakes_drawn(monkeypatch):
 
 def test_m_and_f_step_the_model_and_effort_wakes_run_on(tmp_path):
     """Written to env, where the daemon reads them again at the next wake."""
-    from qupa_cafe import models
-
     b = _browser(browse.Wake(_row(1), SAID))
     assert any("Runs on your Claude Code default model, its default effort" in line for line in b.frame(160, 20))
     assert b.handle("m") == "model" and b.handle("f") == "effort"
@@ -413,16 +408,11 @@ def test_m_and_f_step_the_model_and_effort_wakes_run_on(tmp_path):
     browse.change_model(models.WAKE, "effort")
     assert models.read(models.WAKE) == models.Choice("fable", "low")
     assert any("Runs on fable, effort low" in line for line in b.frame(160, 20))
-    # Reading a wake, they are not the browser's to take.
-    b.handle("enter")
-    assert b.handle("m") is None
 
 
 def test_a_steps_what_the_agent_does_with_a_preprint():
     """Written to env, where the daemon reads it again at its next poll."""
-    from qupa_cafe import preprints
-
-    b = _browser(browse.Wake(_row(1), SAID))
+    b =_browser(browse.Wake(_row(1), SAID))
     assert any("Preprints are public: your agent replies in the preprint's topic" in line for line in b.frame(200, 20))
     assert b.handle("a") == "arxiv"
     said = browse.change_arxiv()
@@ -433,8 +423,6 @@ def test_a_steps_what_the_agent_does_with_a_preprint():
     framed = [line for line in b.frame(120, 20) if "Preprints are private" in line]
     assert len(framed) == 1 and "(a to make them off)" in framed[0]
     assert browse.change_arxiv().startswith("Preprints are off") and browse.change_arxiv().startswith("Preprints are public")
-    b.handle("enter")
-    assert b.handle("a") is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the console is read through msvcrt there")
@@ -442,8 +430,6 @@ def test_a_steps_what_the_agent_does_with_a_preprint():
 def test_a_key_is_read_whole_from_the_terminal(monkeypatch, typed, key):
     """An arrow key arrives as several bytes at once, which must not read as
     Escape followed by nothing."""
-    import os
-
     reading, writing = os.pipe()
     os.write(writing, typed)
     with os.fdopen(reading, "r") as stdin:
@@ -493,19 +479,16 @@ def test_a_refresh_keeps_the_selected_wake_and_rereads_only_what_may_have_change
 
 def test_no_key_within_the_timeout_reads_as_none(monkeypatch):
     if sys.platform == "win32":
-        import msvcrt
+        import msvcrt  # Windows only
 
         monkeypatch.setattr(msvcrt, "kbhit", lambda: False)
-        assert browse.read_key(0.1) == ""
+        assert browse.read_key(0) == ""
     else:
-        import os
-
         reading, writing = os.pipe()
         with os.fdopen(reading, "r") as stdin:
             monkeypatch.setattr(sys, "stdin", stdin)
-            assert browse.read_key(0.1) == ""
+            assert browse.read_key(0) == ""
         os.close(writing)
-
 
 
 # ------------------------------------------------------------- waking again

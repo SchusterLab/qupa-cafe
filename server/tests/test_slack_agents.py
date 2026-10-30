@@ -11,7 +11,8 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_slack_bridge import bridge_mod, connect, dm, start_thread, world  # noqa: F401 - fixtures
+# connect and world are fixtures, which pytest finds by name in this module.
+from test_slack_bridge import bridge_mod, connect, dm, start_thread, world  # noqa: F401
 
 LAB = {"id": "CLAB", "name": "lab", "is_member": True, "purpose": {"value": "Our group"}, "num_members": 6}
 

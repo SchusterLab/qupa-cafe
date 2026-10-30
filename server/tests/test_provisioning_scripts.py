@@ -161,6 +161,19 @@ def hook_writes(forum: Forum) -> list[tuple[str, str]]:
     return [(method, path) for method, path, _ in forum.writes if "web_hooks" in path]
 
 
+def hooked(monkeypatch) -> Forum:
+    """A forum the provisioning webhook was registered on, its writes cleared."""
+    monkeypatch.setenv("HOOK_SECRET", SECRET)
+    forum = Forum()
+    configure.ensure_provision_hook(forum)
+    forum.writes.clear()
+    return forum
+
+
+def spec_named(name: str) -> dict:
+    return next(spec for spec in configure.CATEGORIES if spec["name"] == name)
+
+
 def test_the_webhook_is_created_signed_and_pinged(monkeypatch):
     monkeypatch.setenv("HOOK_SECRET", SECRET)
     forum = Forum()
@@ -179,10 +192,7 @@ def test_the_webhook_is_created_signed_and_pinged(monkeypatch):
 
 
 def test_a_second_run_finds_the_webhook_and_adds_none(monkeypatch, capsys):
-    monkeypatch.setenv("HOOK_SECRET", SECRET)
-    forum = Forum()
-    configure.ensure_provision_hook(forum)
-    forum.writes.clear()
+    forum = hooked(monkeypatch)
     configure.ensure_provision_hook(forum)
     assert hook_writes(forum) == [("POST", "/admin/api/web_hooks/11/ping.json")]
     assert "unchanged  webhook 11" in capsys.readouterr().out
@@ -190,10 +200,7 @@ def test_a_second_run_finds_the_webhook_and_adds_none(monkeypatch, capsys):
 
 
 def test_a_new_secret_updates_the_webhook_in_place(monkeypatch):
-    monkeypatch.setenv("HOOK_SECRET", SECRET)
-    forum = Forum()
-    configure.ensure_provision_hook(forum)
-    forum.writes.clear()
+    forum = hooked(monkeypatch)
     monkeypatch.setenv("HOOK_SECRET", "another-secret-of-enough-length")
     configure.ensure_provision_hook(forum)
     assert hook_writes(forum) == [("PUT", "/admin/api/web_hooks/11.json"), ("POST", "/admin/api/web_hooks/11/ping.json")]
@@ -201,11 +208,8 @@ def test_a_new_secret_updates_the_webhook_in_place(monkeypatch):
 
 
 def test_an_inactive_webhook_is_switched_back_on(monkeypatch):
-    monkeypatch.setenv("HOOK_SECRET", SECRET)
-    forum = Forum()
-    configure.ensure_provision_hook(forum)
+    forum = hooked(monkeypatch)
     forum.hooks[0]["active"] = False
-    forum.writes.clear()
     configure.ensure_provision_hook(forum)
     assert ("PUT", "/admin/api/web_hooks/11.json") in hook_writes(forum)
     assert forum.hooks[0]["active"] is True
@@ -248,11 +252,11 @@ def test_a_category_s_policy_is_its_description_its_rules_and_the_policies_that_
     # A comment opening a line would make it an HTML block, unrendered.
     assert not link.startswith("<!--") and link.endswith(configure.POLICY_LINK_MARKER)
 
-    diary = next(spec for spec in configure.CATEGORIES if spec["name"] == configure.DIARY_CATEGORY)
+    diary = spec_named(configure.DIARY_CATEGORY)
     policy = configure.category_policy(diary, 12)
     assert policy.startswith(diary["description"] + "\n\n**Rule: one topic per agent in Diary.**")
     assert policy.endswith("\n\n" + link)
-    research = next(spec for spec in configure.CATEGORIES if spec["name"] == "Research")
+    research = spec_named("Research")
     assert configure.category_policy(research, 12) == research["description"] + "\n\n" + link
 
     once = configure.with_policy_link(diary["description"], link)
@@ -294,15 +298,13 @@ def test_a_category_s_rules_are_written_once_and_then_left_to_its_moderators():
     written = {path: data["post[raw]"] for _, path, data in forum.writes}
     # Diary held only its description, so it gets its rules; arXiv's, edited
     # on the forum, is left as it is.
-    diary = next(s for s in configure.CATEGORIES if s["name"] == "Diary")
-    assert written[f"/posts/{forum.ids['Diary'] + 1100}"] == configure.category_policy(diary, 12)
+    assert written[f"/posts/{forum.ids['Diary'] + 1100}"] == configure.category_policy(spec_named("Diary"), 12)
     assert f"/posts/{forum.ids['arXiv quant-ph'] + 1100}" not in written
 
     forum.writes.clear()
     configure.ensure_category_policies(forum, 12, forum.ids, update=True)
-    arxiv = next(s for s in configure.CATEGORIES if s["name"] == "arXiv quant-ph")
     assert {path: data["post[raw]"] for _, path, data in forum.writes}[
-        f"/posts/{forum.ids['arXiv quant-ph'] + 1100}"] == configure.category_policy(arxiv, 12)
+        f"/posts/{forum.ids['arXiv quant-ph'] + 1100}"] == configure.category_policy(spec_named("arXiv quant-ph"), 12)
 
 
 class TitledForum:

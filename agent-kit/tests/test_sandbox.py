@@ -8,6 +8,7 @@ last step of setting it up.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from qupa_cafe import daemon, pixi_advice, sandbox
+from qupa_cafe import daemon, install, pixi_advice, sandbox
 from qupa_cafe.daemon import Settings, build_prompt, runtime_command
 
 # The real one, which conftest stands in for in every test.
@@ -53,6 +54,14 @@ def installed(tmp_path, monkeypatch):
 
 def _bash(command: str) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": command, "description": "d"}, "cwd": "."}
+
+
+def _file(tool: str, path, cwd: str | None = None) -> dict:
+    """A call of the file tool ``tool`` on ``path``."""
+    event = {"tool_name": tool, "tool_input": {"file_path": str(path)}}
+    if cwd is not None:
+        event["cwd"] = cwd
+    return event
 
 
 def _decision(result: dict) -> str:
@@ -182,14 +191,13 @@ def test_without_the_sandbox_no_command_runs():
 
 
 def test_writes_are_approved_in_the_workspace_and_the_agents_directory(installed, tmp_path):
-    write = lambda path: {"tool_name": "Write", "tool_input": {"file_path": str(path)}}  # noqa: E731
     workspace, research = Path(installed["workspace"]), Path(installed["agent_dirs"][0])
 
-    assert _decision(sandbox.decide(write(workspace / "plot.py"), installed)) == "allow"
-    assert _decision(sandbox.decide(write(research / "notes" / "run.md"), installed)) == "allow"
+    assert _decision(sandbox.decide(_file("Write", workspace / "plot.py"), installed)) == "allow"
+    assert _decision(sandbox.decide(_file("Write", research / "notes" / "run.md"), installed)) == "allow"
     # Refused whatever a settings file approves, with where to write instead.
     for elsewhere in (tmp_path / "x", workspace / ".." / ".." / "x"):
-        out = sandbox.decide(write(elsewhere), installed)["hookSpecificOutput"]
+        out = sandbox.decide(_file("Write", elsewhere), installed)["hookSpecificOutput"]
         assert out["permissionDecision"] == "deny"
         assert installed["workspace"] in out["permissionDecisionReason"]
 
@@ -199,7 +207,7 @@ def test_what_steers_later_wakes_is_never_approved_for_writing(installed, name):
     """A misled agent would otherwise rewrite its own instructions, or the
     settings and hooks Claude Code runs outside the sandbox."""
     path = Path(installed["agent_dirs"][0]) / name
-    out = sandbox.decide({"tool_name": "Edit", "tool_input": {"file_path": str(path)}}, installed)["hookSpecificOutput"]
+    out = sandbox.decide(_file("Edit", path), installed)["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny"
     assert "read-only" in out["permissionDecisionReason"]
 
@@ -220,28 +228,24 @@ def test_the_hook_approves_reads_only_where_the_sandbox_writes(installed, tmp_pa
     other.mkdir()
     config = dict(installed, readable=[str(other)])
 
-    out = sandbox.decide({"tool_name": "Read", "tool_input": {"file_path": str(other / "x")}}, config)
+    out = sandbox.decide(_file("Read", other / "x"), config)
     assert _decision(out) == "deny"
     assert str(other) not in sandbox.wake_notice(config)
 
 
 def test_reads_are_approved_in_the_workspace_and_the_agents_directories(installed, tmp_path):
-    read = lambda path: {"tool_name": "Read", "tool_input": {"file_path": str(path)}}  # noqa: E731
-
-    assert _decision(sandbox.decide(read(Path(installed["agent_dirs"][0]) / "notes.md"), installed)) == "allow"
-    assert _decision(sandbox.decide(read(Path(installed["workspace"]) / "out.png"), installed)) == "allow"
+    assert _decision(sandbox.decide(_file("Read", Path(installed["agent_dirs"][0]) / "notes.md"), installed)) == "allow"
+    assert _decision(sandbox.decide(_file("Read", Path(installed["workspace"]) / "out.png"), installed)) == "allow"
     for elsewhere in (Path.home() / ".ssh" / "id_ed25519", Path(Path.home().anchor) / "data" / "notes.md"):
-        out = sandbox.decide(read(elsewhere), installed)["hookSpecificOutput"]
+        out = sandbox.decide(_file("Read", elsewhere), installed)["hookSpecificOutput"]
         assert out["permissionDecision"] == "deny"
         assert installed["agent_dirs"][0] in out["permissionDecisionReason"]
 
 
-def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(installed, tmp_path, monkeypatch):
-    monkeypatch.setattr(sandbox, "WINDOWS", False)
+def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(installed, tmp_path):
     project = tmp_path / "project"
     project.mkdir()
-    read = {"tool_name": "Read", "tool_input": {"file_path": str(project / "notes.md")}}
-    write = {"tool_name": "Write", "tool_input": {"file_path": str(project / "notes.md")}}
+    read, write = _file("Read", project / "notes.md"), _file("Write", project / "notes.md")
     assert _decision(sandbox.decide(read, sandbox.load_config())) == "deny"
 
     assert sandbox.grant_read(str(project))
@@ -259,7 +263,6 @@ def test_a_project_the_researcher_lets_wakes_read_is_read_and_never_written(inst
 
 
 def test_no_project_holding_a_key_or_the_home_directory_is_opened_to_reading(installed, tmp_path, monkeypatch):
-    monkeypatch.setattr(sandbox, "WINDOWS", False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".ssh").mkdir()
 
@@ -332,8 +335,8 @@ def test_a_wake_without_the_sandbox_gets_no_hook(tmp_path):
 
 
 def test_a_wake_keeps_claude_code_s_tool_search(installed, tmp_path):
-    """Loading every tool with the session made each request reread their
-    definitions; a wake that reads only its post needs none of them."""
+    """Loading every tool with the session makes each request reread their
+    definitions, and a wake that reads only its post needs none of them."""
     for config in (None, installed):
         assert "ENABLE_TOOL_SEARCH" not in json.dumps(json.loads(daemon.wake_settings(config)))
     assert "hooks" in json.loads(daemon.wake_settings(installed))
@@ -352,7 +355,6 @@ def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
     assert "absolute paths" in prompt
     assert "CLAUDE.md" in prompt and "read-only" in prompt
     assert "pixi add" in prompt
-    assert "cannot draw a plot" not in prompt
     assert prompt.endswith(daemon.OLD_NOTES)
 
 
@@ -360,8 +362,6 @@ def test_a_sandboxed_wake_is_told_where_it_can_work(installed):
 
 
 def test_the_install_banner_names_where_the_agent_runs_code_and_the_risk(installed):
-    from qupa_cafe import install
-
     text = install.sandbox_summary()
     assert installed["agent_dirs"][0] in text
     assert "misleads" in text
@@ -402,9 +402,7 @@ def test_only_what_is_missing_is_installed(monkeypatch):
     assert ran == [["/opt/pixi", "global", "install", "nodejs", "ripgrep"]]
 
 
-def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch, tmp_path):
-    import io
-
+def test_a_git_download_that_does_not_match_its_checksum_is_not_used(monkeypatch):
     release = {"assets": [{"name": "PortableGit-9.9-64-bit.7z.exe", "size": 3, "digest": "sha256:" + "0" * 64,
                            "browser_download_url": "https://example.invalid/pg.exe"}]}
     bodies = {sandbox.GIT_RELEASE_API: json.dumps(release).encode(), "https://example.invalid/pg.exe": b"exe"}
@@ -486,19 +484,22 @@ def test_a_kernel_without_apparmor_enforces_no_profile(monkeypatch, tmp_path):
 
 @pytest.fixture
 def through_wsl(tmp_path):
-    """A sandbox in WSL as wsl_setup leaves it, on Windows' side."""
+    """A sandbox in WSL as wsl_setup leaves it, on Windows' side. The
+    distribution is one no machine has, since resolving a path in a real
+    one's wsl.localhost share starts it."""
     exe = tmp_path / "wsl.exe"
     exe.write_text("", encoding="utf-8")
     research = tmp_path / "research"
     research.mkdir()
+    distro = "QupaTestLinux"
     config = {
         "wsl": {
-            "exe": str(exe), "distro": "Ubuntu", "mount": "/mnt/", "dir": "/home/r/" + sandbox.WSL_SANDBOX,
+            "exe": str(exe), "distro": distro, "mount": "/mnt/", "dir": "/home/r/" + sandbox.WSL_SANDBOX,
             "config": "/home/r/" + sandbox.WSL_SANDBOX + "/config.json", "node": "/home/r/.pixi/bin/node",
             "run": "/home/r/" + sandbox.WSL_SANDBOX + "/runtime/run.mjs", "script": "/mnt/c/kit/qupa_cafe/sandbox.py",
             "workspace": "/home/r/" + sandbox.WSL_SANDBOX + "/workspace",
         },
-        "workspace": r"\\wsl.localhost\Ubuntu\home\r" + "\\" + sandbox.WSL_SANDBOX.replace("/", "\\") + r"\workspace",
+        "workspace": rf"\\wsl.localhost\{distro}\home\r" + "\\" + sandbox.WSL_SANDBOX.replace("/", "\\") + r"\workspace",
         "agent_dirs": [str(research)],
         "read_dirs": [],
         "protected": sandbox.protected_paths([str(research)]),
@@ -514,7 +515,7 @@ def test_a_command_is_handed_to_wsl_with_its_linux_paths_untouched_by_git_bash(t
     command = result["hookSpecificOutput"]["updatedInput"]["command"]
     wsl = through_wsl["wsl"]
     assert command.startswith("MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' ")
-    assert f"-d 'Ubuntu' -e '{wsl['node']}' '{wsl['run']}' '{wsl['config']}' " in command
+    assert f"-d '{wsl['distro']}' -e '{wsl['node']}' '{wsl['run']}' '{wsl['config']}' " in command
     encoded = command.rsplit(" ", 1)[1]
     assert base64.b64decode(encoded).decode() == "echo 'hi'"
     # Run as Git Bash would, the arguments reach wsl.exe as written.
@@ -524,7 +525,7 @@ def test_a_command_is_handed_to_wsl_with_its_linux_paths_untouched_by_git_bash(t
         [bash, "-c", command.replace(sandbox.shell_quote(sandbox.posix(wsl["exe"])), "printf '%s\\n'", 1)],
         capture_output=True, text=True,
     ).stdout.split()
-    assert printed[:6] == ["-d", "Ubuntu", "-e", wsl["node"], wsl["run"], wsl["config"]]
+    assert printed[:6] == ["-d", wsl["distro"], "-e", wsl["node"], wsl["run"], wsl["config"]]
 
 
 def test_a_sandbox_in_wsl_is_ready_without_starting_the_distribution(through_wsl, monkeypatch):
@@ -536,15 +537,12 @@ def test_a_sandbox_in_wsl_is_ready_without_starting_the_distribution(through_wsl
 
 def test_the_file_tools_keep_to_the_windows_paths(through_wsl):
     research = through_wsl["agent_dirs"][0]
-    write = {"tool_name": "Write", "tool_input": {"file_path": str(Path(research) / "a.txt")}, "cwd": research}
-    assert _decision(sandbox.decide(write, through_wsl)) == "allow"
-    elsewhere = {"tool_name": "Read", "tool_input": {"file_path": str(Path(research).parent / "b.txt")}, "cwd": research}
-    assert _decision(sandbox.decide(elsewhere, through_wsl)) == "deny"
+    assert _decision(sandbox.decide(_file("Write", Path(research) / "a.txt", research), through_wsl)) == "allow"
+    assert _decision(sandbox.decide(_file("Read", Path(research).parent / "b.txt", research), through_wsl)) == "deny"
     # The workspace is read through its \\wsl.localhost path, and written by a command.
-    inside = str(Path(through_wsl["workspace"]) / "notes.md")
-    read = {"tool_name": "Read", "tool_input": {"file_path": inside}, "cwd": research}
-    assert _decision(sandbox.decide(read, through_wsl)) == "allow"
-    refused = sandbox.decide({"tool_name": "Write", "tool_input": {"file_path": inside}, "cwd": research}, through_wsl)
+    inside = Path(through_wsl["workspace"]) / "notes.md"
+    assert _decision(sandbox.decide(_file("Read", inside, research), through_wsl)) == "allow"
+    refused = sandbox.decide(_file("Write", inside, research), through_wsl)
     assert _decision(refused) == "deny"
     assert "with a command" in refused["hookSpecificOutput"]["permissionDecisionReason"]
 
@@ -554,7 +552,6 @@ def test_a_wake_is_told_its_commands_run_in_linux(through_wsl):
     text = sandbox.wake_notice(through_wsl, research)
     assert "Commands run in Linux, under WSL" in text
     assert through_wsl["wsl"]["workspace"] in text
-    assert "cannot create a file directly" not in text
 
 
 @pytest.mark.parametrize("path, expected", [
@@ -597,7 +594,7 @@ def test_on_windows_with_wsl_the_setup_goes_there(installed, monkeypatch):
     monkeypatch.setattr(sandbox, "wsl_distro", lambda: "Ubuntu")
     went = []
     monkeypatch.setattr(sandbox, "wsl_setup", lambda distro, *lists: went.append((distro, *lists)) or True)
-    monkeypatch.setattr(sandbox, "install", lambda *a, **k: pytest.fail("set up the Windows sandbox"))
+    monkeypatch.setattr(sandbox, "install", lambda *a, **k: pytest.fail("set up a sandbox outside WSL"))
     assert sandbox.setup(installed["agent_dirs"][0])
     distro, writable, protected, projects = went[0]
     assert distro == "Ubuntu" and writable == installed["agent_dirs"] and protected

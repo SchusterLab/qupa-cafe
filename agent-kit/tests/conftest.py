@@ -12,6 +12,7 @@ import json
 import shutil
 import sys
 import threading
+import urllib.error
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -19,6 +20,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Below the line above, which is what finds the package.
+from qupa_cafe import daemon, install, sandbox, texts  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -28,8 +32,6 @@ def no_local_text(tmp_path, monkeypatch):
     The kit's own prompts are copied, so that a test may word a wake its own
     way with ``wording`` without touching the package.
     """
-    from qupa_cafe import texts
-
     prompts = tmp_path / "prompts"
     shutil.copytree(texts.PROMPTS, prompts)
     monkeypatch.setattr(texts, "PROMPTS", prompts)
@@ -48,14 +50,10 @@ def no_local_text(tmp_path, monkeypatch):
     # And its env, where the diary's settings are read again at every poll,
     # and which the installer reuses.
     monkeypatch.setenv("QUPA_ENV_FILE", str(tmp_path / "env"))
-    from qupa_cafe import install
-
     monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
     # And Claude Code, which would otherwise be started to make a parent
     # session for the first wake a test runs; a test of the parent fakes its own.
-    from qupa_cafe import daemon
-
     monkeypatch.setattr(daemon, "make_parent", lambda *args, **kwargs: "")
     # And the state beside it, such as the copy of the agent's interests post
     # that every parent carries.
@@ -66,8 +64,6 @@ def no_local_text(tmp_path, monkeypatch):
 def no_wsl(monkeypatch):
     """No Linux distribution in WSL, so that a setup on a developer's Windows
     machine does not set one up for real; a test that wants one names it."""
-    from qupa_cafe import sandbox
-
     monkeypatch.setattr(sandbox, "wsl_distro", lambda: None)
 
 
@@ -77,7 +73,6 @@ def a_sandbox(request, tmp_path, monkeypatch):
     up its own, and is left to it."""
     if request.module.__name__.endswith("test_sandbox"):
         return
-    from qupa_cafe import daemon
 
     def config(settings):
         return {"workspace": str(tmp_path / "workspace"), "agent_dirs": [], "protected": []}
@@ -316,11 +311,26 @@ class StubForum(BaseHTTPRequestHandler):
         pass
 
 
+def refused(*args, **kwargs):
+    """``urlopen`` with nothing listening. A real refused port takes seconds to
+    give up on Windows, which retries it."""
+    raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch):
+    """Claude Code's own directory, where it keeps each session's transcript."""
+    home = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    return home
+
+
 @contextlib.contextmanager
 def serving(handler: type[BaseHTTPRequestHandler]):
     """``handler`` on a free local port, yielding the base URL."""
     server = HTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Polled often, since shutting the server down waits for the next poll.
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
     finally:
@@ -377,8 +387,6 @@ def elsewhere():
 
 def wording(wake: str | None = None, diary: str | None = None) -> None:
     """Word this test's wakes, or its diary wakes, its own way."""
-    from qupa_cafe import texts
-
     for name, text in (("wake", wake), ("diary", diary)):
         if text is not None:
             (texts.PROMPTS / f"{name}.md").write_text(text, encoding="utf-8")

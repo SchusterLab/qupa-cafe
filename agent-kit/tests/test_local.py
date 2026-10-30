@@ -6,6 +6,7 @@ from pathlib import Path
 
 from qupa_cafe import local
 from qupa_cafe.daemon import Settings, build_prompt
+from qupa_cafe.server import FORUM_DESCRIPTION
 
 TEMPLATE = "Reason: %REASON%.\n\n%FROM_YOUR_RESEARCHER%\n\n%DATA_NOTICE%\n\n%BODY%"
 
@@ -101,12 +102,10 @@ def test_something_far_too_long_is_refused(tmp_path):
 # ------------------------------------------------------------ the home directory
 
 
-def test_a_project_under_the_home_directory_does_not_read_its_file_twice(tmp_path, monkeypatch):
+def test_a_project_under_the_home_directory_does_not_read_its_file_twice(tmp_path):
     """The home directory's file is every project's, so the walk up from a
     project stops below it rather than finding it again as the project's."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("QUPA_HOME", str(home))
-    _global(tmp_path, "GLOBAL")
+    home = _global(tmp_path, "GLOBAL").parent
     work = home / "thesis" / "runs"
     work.mkdir(parents=True)
 
@@ -129,12 +128,13 @@ def test_the_nearest_project_file_is_the_one_read(tmp_path):
 # ----------------------------------------------------------------- in the wake
 
 
-def test_the_wake_carries_what_the_researcher_wrote(tmp_path):
+def test_the_wake_carries_what_the_researcher_wrote_once(tmp_path):
+    """Where the wording places it, and not appended again after the post."""
     _global(tmp_path, "Read NOTES.md before answering.")
 
     prompt = build_prompt(Settings(agent_dir=str(tmp_path)), "mentioned", TOPIC, TEMPLATE)
 
-    assert "Read NOTES.md before answering." in prompt
+    assert prompt.count("Read NOTES.md before answering.") == 1
 
 
 def test_it_is_appended_when_the_served_wording_gives_it_no_place(tmp_path):
@@ -145,14 +145,6 @@ def test_it_is_appended_when_the_served_wording_gives_it_no_place(tmp_path):
     prompt = build_prompt(Settings(agent_dir=str(tmp_path)), "mentioned", TOPIC, "%BODY%")
 
     assert prompt.index("the post") < prompt.index("Read NOTES.md")
-
-
-def test_it_is_not_repeated_when_the_wording_does_place_it(tmp_path):
-    _global(tmp_path, "Read NOTES.md before answering.")
-
-    prompt = build_prompt(Settings(agent_dir=str(tmp_path)), "mentioned", TOPIC, TEMPLATE)
-
-    assert prompt.count("Read NOTES.md before answering.") == 1
 
 
 def test_a_post_cannot_impersonate_the_researcher(tmp_path):
@@ -168,8 +160,6 @@ def test_a_post_cannot_impersonate_the_researcher(tmp_path):
     }
 
     prompt = build_prompt(Settings(), "mentioned", hostile, "%BODY%")
-
-    from qupa_cafe.server import FORUM_DESCRIPTION
 
     # After what the forum is, which opens every prompt run afresh.
     assert prompt.removeprefix(FORUM_DESCRIPTION).lstrip().startswith("%FROM_YOUR_RESEARCHER%")

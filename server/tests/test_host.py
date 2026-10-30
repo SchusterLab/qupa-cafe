@@ -15,7 +15,6 @@ import dataclasses
 import inspect
 import json
 import logging
-import os
 import re
 import sys
 import threading
@@ -66,6 +65,10 @@ coupling a transmon to a resonator.
 **Not interested in:** Cosmology.
 **Categories to skip:** Site Feedback, Meta
 """
+
+
+def blockquote(text: str) -> str:
+    return "\n".join("> " + line for line in text.splitlines())
 
 
 def test_a_well_formed_profile_parses():
@@ -143,8 +146,7 @@ def test_a_categories_line_is_not_read_as_the_skip_line():
 def test_blockquoted_profiles_parse():
     """The template in the interests topic is a blockquote, so people copy it
     as one."""
-    quoted = "\n".join("> " + line for line in WELL_FORMED.splitlines())
-    agents = parse_agents([post(1, "t"), post(2, quoted)])
+    agents = parse_agents([post(1, "t"), post(2, blockquote(WELL_FORMED))])
 
     assert len(agents) == 1
     assert agents[0].username == "yoshi-agent"
@@ -193,9 +195,17 @@ def test_the_exclusions_are_not_part_of_the_profile():
 # ----------------------------------------------------------------- the ledger
 
 
+def a_state(path) -> State:
+    """A State that skips the fsync at each commit. These tests never lose
+    power, and a hundred fsyncs take seconds on a busy Windows disk."""
+    state = State(str(path))
+    state.db.execute("PRAGMA synchronous=NORMAL")
+    return state
+
+
 @pytest.fixture
 def state(tmp_path):
-    return State(str(tmp_path / "host.sqlite3"))
+    return a_state(tmp_path / "host.sqlite3")
 
 
 def wakes_today(state, agent, kind="forum"):
@@ -290,6 +300,27 @@ class OfflineHost(Host):
         return 0.9
 
 
+def fake_connection(asked: list | None = None, one=None, rows=()):
+    """A database connection whose cursor appends each query and its
+    parameters to ``asked``, and answers fetchone with ``one`` and fetchall
+    with ``rows``."""
+
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def fetchone(self): return one
+        def fetchall(self): return rows
+
+        def execute(self, sql, parameters):
+            if asked is not None:
+                asked.append((sql, parameters))
+
+    class Connection(Cursor):
+        def cursor(self): return Cursor()
+
+    return Connection()
+
+
 def a_post(post_id: int, username: str) -> dict:
     return {
         "id": post_id, "topic_id": post_id, "post_number": 1, "username": username,
@@ -323,6 +354,15 @@ def test_a_reply_is_scored_by_its_thread_as_the_first_post_is(state):
     [decision] = host.score_post(a_reply(5))
 
     assert (decision.reason, decision.similarity) == ("woken", 0.9)
+
+
+def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):
+    host = OfflineHost(Config(), state, [Agent("a-agent", "a", [], "anything")])
+
+    host.score_post(a_post(1, "someone"))
+
+    [pending] = host.pending_for("a-agent")
+    assert pending["post_id"] == 1 and pending["similarity"] == 0.9 and pending["at"]
 
 
 def test_a_wake_just_before_midnight_is_still_pending_after_it(state):
@@ -476,6 +516,9 @@ def test_changing_only_the_exclusions_embeds_them_afresh(state, monkeypatch):
     assert host.agents[0].exclusion_vector == [0.5, 0.5]
 
 
+# ----------------------------------------- categories an agent is not woken in
+
+
 class PrivateHost(OfflineHost):
     """Category 6 is read by its group's members alone."""
 
@@ -604,6 +647,46 @@ def test_a_client_that_reports_no_version_is_noticed_rather_than_assumed_current
     assert verdict["reported"] is None
 
 
+def test_the_complaint_throttle_is_bounded():
+    """Its keys come from a request header, so it cannot grow without limit."""
+    kit = KitVersions(Config())
+
+    for n in range(KitVersions.COMPLAINT_KEYS * 3):
+        kit._complain_once(f"refused:{n}")
+
+    assert len(kit._complained) <= KitVersions.COMPLAINT_KEYS
+
+
+def _kit_page(*files):
+    return {"files": [{"filename": name, "upload-time": at, "yanked": yanked} for name, at, yanked in files]}
+
+
+def _epoch(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def test_a_kit_release_is_reported_only_once_an_update_can_find_it():
+    """Reported sooner, the agent is told to update, and pip -- reading its
+    ten-minute copy of the index -- finds nothing newer."""
+    page = _kit_page(
+        ("qupa_cafe-0.15.0-py3-none-any.whl", "2026-10-09T07:10:24Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-09T23:54:21Z", False),
+        ("qupa_cafe-0.16.0.tar.gz", "2026-10-09T23:54:22Z", False),
+    )
+    assert host_module.installable_version(page, now=_epoch("2026-10-09T23:58:00Z")) == "0.15.0"
+    assert host_module.installable_version(page, now=_epoch("2026-10-10T00:04:22Z")) == "0.16.0"
+
+
+def test_a_yanked_or_pre_release_kit_is_never_reported():
+    page = _kit_page(
+        ("qupa_cafe-0.10.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.9.0.tar.gz", "2026-10-01T00:00:00Z", False),
+        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-01T00:00:00Z", True),
+        ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
+    )
+    assert host_module.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"
+
+
 # ------------------------------------------------------- the credential check
 
 
@@ -697,16 +780,6 @@ def test_the_key_itself_is_not_kept():
     assert "right-key" not in str(checker._seen)
 
 
-def test_the_complaint_throttle_is_bounded():
-    """Its keys come from a request header, so it cannot grow without limit."""
-    kit = KitVersions(Config())
-
-    for n in range(KitVersions.COMPLAINT_KEYS * 3):
-        kit._complain_once(f"refused:{n}")
-
-    assert len(kit._complained) <= KitVersions.COMPLAINT_KEYS
-
-
 # ------------------------------------------------- /wake over real HTTP
 
 
@@ -763,14 +836,24 @@ def endpoint(state):
     Handler.texts = Texts(config)
     Handler.policy_topic = StubPolicyTopic()
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server = serve(Handler)
 
     yield f"http://127.0.0.1:{server.server_port}"
 
     server.shutdown()
     server.server_close()
+
+
+def serve(handler) -> HTTPServer:
+    """An HTTP server on a free local port, answering from a thread.
+
+    It checks for shutdown every 10 ms rather than serve_forever's default
+    half second, which would otherwise be the half second each test using it
+    takes to tear down.
+    """
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+    return server
 
 
 AUTH = {"Authorization": "Bearer right-key"}
@@ -789,8 +872,10 @@ def wake(base: str, headers: dict[str, str]) -> tuple[int, dict]:
     return _answer(urllib.request.Request(f"{base}/wake?agent=yoshi-agent", headers=headers))
 
 
-def post_wake(base: str, body: bytes, key: str = "right-key") -> tuple[int, dict]:
-    """A POST to /wake: a floor, or a daemon reporting in."""
+def post_wake(base: str, body: dict | bytes, key: str = "right-key") -> tuple[int, dict]:
+    """A POST to /wake, of ``body`` as JSON, or as it is if it is bytes."""
+    if not isinstance(body, bytes):
+        body = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -807,7 +892,7 @@ def test_a_poll_carries_the_agent_s_floor_and_the_range_it_may_be_set_in(endpoin
 
 
 def test_a_researcher_sets_their_agent_s_floor(endpoint):
-    status, payload = post_wake(endpoint, b'{"floor": 0.75}')
+    status, payload = post_wake(endpoint, {"floor": 0.75})
 
     assert status == 200
     assert payload["policy"]["similarity_floor"] == 0.75
@@ -817,7 +902,7 @@ def test_a_researcher_sets_their_agent_s_floor(endpoint):
 
 @pytest.mark.parametrize("floor", [0.0, 0.3, 0.95, 1.0])
 def test_a_floor_anywhere_from_0_to_1_is_taken(endpoint, floor):
-    status, payload = post_wake(endpoint, json.dumps({"floor": floor}).encode())
+    status, payload = post_wake(endpoint, {"floor": floor})
 
     assert status == 200
     assert payload["policy"]["similarity_floor"] == floor
@@ -832,19 +917,10 @@ def test_a_floor_outside_the_range_or_not_a_number_is_refused(endpoint, body):
 
 
 def test_setting_a_floor_needs_the_agent_s_key(endpoint):
-    status, _ = post_wake(endpoint, b'{"floor": 0.75}', key="")
+    status, _ = post_wake(endpoint, {"floor": 0.75}, key="")
 
     assert status == 401
     assert Handler.host.state.floor("yoshi-agent", 0.70) == 0.70
-
-
-def test_a_wake_tells_the_kit_how_relevant_its_post_was(state):
-    host = OfflineHost(Config(), state, [Agent("a-agent", "a", [], "anything")])
-
-    host.score_post(a_post(1, "someone"))
-
-    [pending] = host.pending_for("a-agent")
-    assert pending["post_id"] == 1 and pending["similarity"] == 0.9 and pending["at"]
 
 
 def test_an_outdated_client_is_served_rather_than_refused(endpoint):
@@ -882,13 +958,49 @@ def test_the_kit_is_given_its_agent_s_interests_post_as_posted(endpoint):
     assert payload["interests"] is None
 
     Handler.host.config = Config(interests_topic_id=13)
-    [agent] = parse_agents([post(1, "template"), post(3, "> " + WELL_FORMED.replace(chr(10), chr(10) + "> "))])
+    [agent] = parse_agents([post(1, "template"), post(3, blockquote(WELL_FORMED))])
     Handler.host.agents = [agent]
     _, payload = wake(endpoint, AUTH)
     interests = payload["interests"]
     assert (interests["topic_id"], interests["post_number"]) == (13, 3)
     # As posted, blockquote and all.
     assert interests["raw"].startswith("> **Researcher:** Yoshiki Sunada") and "Cosmology." in interests["raw"]
+
+
+def test_a_current_client_with_a_credential_is_served(endpoint):
+    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
+
+    assert status == 200
+    assert payload["agent"] == "yoshi-agent"
+    assert "upgrade" not in payload
+
+
+def test_a_kit_up_to_0_22_0_is_served_the_kit_s_own_wording(endpoint):
+    """It keeps no wording of its own and defers every wake without it."""
+    texts = wake(endpoint, AUTH)[1]["texts"]
+
+    assert texts["wake_prompt"] == host_module.WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    assert "%SESSIONS%" in texts["diary_prompt"]
+
+
+def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
+    """A version header is no substitute for the key."""
+    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
+
+    assert status == 401
+
+
+def test_health_reports_the_latest_kit_and_nothing_else_about_kits(endpoint):
+    """No kit is refused, so /health carries no minimum version beside the
+    latest one."""
+    with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
+        payload = json.load(response)
+
+    assert set(payload) == {"ok", "agents", "kit_latest"}
+    assert payload["kit_latest"] == "0.9.0"
+
+
+# ----------------------------------------------------------- the policy topic
 
 
 def test_the_policy_topic_is_confirmed_rather_than_matched_on_its_title():
@@ -929,20 +1041,7 @@ def test_no_policy_topic_is_an_answer_rather_than_a_guess():
     assert PolicyTopic(SearchStub()).id() is None
 
 
-def test_a_current_client_with_a_credential_is_served(endpoint):
-    status, payload = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
-
-    assert status == 200
-    assert payload["agent"] == "yoshi-agent"
-    assert "upgrade" not in payload
-
-
-def test_a_kit_up_to_0_22_0_is_served_the_kit_s_own_wording(endpoint):
-    """It keeps no wording of its own and defers every wake without it."""
-    texts = wake(endpoint, AUTH)[1]["texts"]
-
-    assert texts["wake_prompt"] == host_module.WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    assert "%SESSIONS%" in texts["diary_prompt"]
+# ------------------------------------------------- the messages in content/
 
 
 def test_the_messages_this_service_sends_are_files_in_content():
@@ -989,35 +1088,19 @@ def test_a_missing_message_file_is_raised_rather_than_sent(monkeypatch, tmp_path
         host_module.message("kit-outdated-message.md", AGENT="a")
 
 
-def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):
-    """Reporting on versions must not have made the key optional."""
-    status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0"})
-
-    assert status == 401
-
-
-def test_health_reports_the_latest_kit_and_nothing_else_about_kits(endpoint):
-    """No kit is refused, so /health carries no minimum version beside the
-    latest one."""
-    with urllib.request.urlopen(f"{endpoint}/health", timeout=10) as response:
-        payload = json.load(response)
-
-    assert set(payload) == {"ok", "agents", "kit_latest"}
-    assert payload["kit_latest"] == "0.9.0"
-
-
 # ------------------------------------------------- the embedding input limit
 
 
 class StubEmbedder(BaseHTTPRequestHandler):
-    """Just enough of the embedding server to answer /info and /tokenize.
+    """Just enough of the embedding server to answer /info, /tokenize and
+    /embed.
 
     ``tokens_per_call`` is what /tokenize claims, so a test can put a profile
-    over the limit without composing one.
+    over the limit without composing one; None makes /tokenize fail.
     """
 
     max_input_length: int | None = 512
-    tokens_per_call = 10
+    tokens_per_call: int | None = 10
 
     def _send(self, code, payload):
         body = json.dumps(payload).encode()
@@ -1039,7 +1122,9 @@ class StubEmbedder(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
-        if self.path == "/tokenize":
+        if self.path == "/tokenize" and type(self).tokens_per_call is None:
+            self._send(500, {"error": "tokeniser failed"})
+        elif self.path == "/tokenize":
             self._send(200, [[{"id": i} for i in range(type(self).tokens_per_call)]])
         elif self.path == "/embed":
             type(self).last_embed_body = json.loads(raw or b"{}")
@@ -1057,8 +1142,7 @@ def embedder():
     StubEmbedder.tokens_per_call = 10
     StubEmbedder.last_embed_body = None
 
-    server = HTTPServer(("127.0.0.1", 0), StubEmbedder)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server = serve(StubEmbedder)
 
     # The limit is remembered across calls, so each test starts unasked.
     host_module._INPUT_LIMIT = None
@@ -1079,12 +1163,7 @@ def profile(text: str = "x" * 40) -> Agent:
     )
 
 
-def test_the_limit_is_read_from_the_server(embedder):
-    config, _ = embedder
-    assert embedding_limit(config) == 512
-
-
-def test_the_limit_is_asked_for_once(embedder):
+def test_the_limit_is_read_from_the_server_once(embedder):
     config, stub = embedder
     assert embedding_limit(config) == 512
     # A server that stopped answering must not change the remembered answer.
@@ -1135,13 +1214,24 @@ def test_a_profile_inside_the_limit_is_reported_not_warned(embedder, caplog):
 
 def test_a_tokeniser_that_fails_says_nothing_and_breaks_nothing(embedder, caplog):
     """Never block a profile over a report about it."""
-    config, _ = embedder
-    unreachable = Config(tei_url="http://127.0.0.1:1")
+    config, stub = embedder
+    stub.tokens_per_call = None
 
     with caplog.at_level(logging.INFO):
-        report_profile_length(profile("x"), unreachable)
+        assert report_profile_length(profile("x"), config) is None
 
     assert "tokens" not in caplog.text
+
+
+def test_the_embedding_request_asks_for_truncation(embedder):
+    """The server runs with auto_truncate off, so without this an over-long
+    profile is refused with 413 and the agent is dropped from ranking."""
+    config, stub = embedder
+
+    host_module.embed("anything at all", config)
+
+    assert stub.last_embed_body is not None
+    assert stub.last_embed_body.get("truncate") is True
 
 
 # ------------------------------------- telling a researcher about truncation
@@ -1175,7 +1265,7 @@ def a_host(tmp_path, forum, interests_topic_id=11):
     )
     host = Host.__new__(Host)
     host.config = config
-    host.state = State(config.state_db)
+    host.state = a_state(config.state_db)
     host.forum = forum
     host.agents = []
     host.agents_hash = ""
@@ -1263,38 +1353,6 @@ def test_researcher_for_requires_the_account_to_exist(tmp_path):
     assert host.researcher_for("-agent") is None
 
 
-# ------------------------------------------- private messages are not candidates
-
-
-def test_new_posts_excludes_private_messages():
-    """One private message otherwise ends relevance wakes for the whole forum.
-
-    A PM topic has no embedding, so a PM post scores `no-embedding-yet`, which
-    stops the pass without advancing the cursor -- and the next pass starts at
-    the same post. Provisioning an agent sends a private message, so the forum
-    would break the moment somebody joined.
-
-    Asserted against the query text because these tests run without a
-    database. That is weaker than exercising it, and it does catch the filter
-    being dropped, which is the failure that matters.
-    """
-    sql = inspect.getsource(host_module.Host.new_posts)
-
-    assert "t.archetype = 'regular'" in sql
-    assert "p.post_type = 1" in sql
-
-
-def test_the_embedding_request_asks_for_truncation(embedder):
-    """The server runs with auto_truncate off, so without this an over-long
-    profile is refused with 413 and the agent is dropped from ranking."""
-    config, stub = embedder
-
-    host_module.embed("anything at all", config)
-
-    assert stub.last_embed_body is not None
-    assert stub.last_embed_body.get("truncate") is True
-
-
 # ------------------------------------ telling a researcher their kit is behind
 
 
@@ -1360,18 +1418,6 @@ def test_a_client_that_reports_nothing_earns_no_message(tmp_path):
 # ------------------------------------- telling a researcher their daemon stopped
 
 
-def test_the_kit_is_given_the_policy_s_posts_without_it_counting_as_a_poll(endpoint):
-    status, payload = _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1", headers=AUTH))
-
-    assert status == 200
-    assert payload["policy_posts"][0] == {"post_id": 13, "topic_id": 42, "updated_at": "2026-10-26T02:09:42.955Z",
-                                          "category_id": None, "category": None, "parent_category_id": None}
-    assert set(payload) == {"agent", "policy_posts"}
-    assert Handler.host.state.db.execute("SELECT count(*) FROM daemons").fetchone()[0] == 0
-    # The agent's own key, as for a poll.
-    assert _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1"))[0] == 401
-
-
 def test_a_poll_is_recorded_as_proof_of_life(endpoint):
     status, _ = wake(endpoint, {KIT_VERSION_HEADER: "0.9.0", **AUTH})
     assert status == 200
@@ -1424,7 +1470,25 @@ def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
     assert host.check_daemons(later) == ["yoshi-agent"]
 
 
-# ------------------------------------------------------- the *Thinking…* post
+# ------------------------------------------------------- what a pass scores
+
+
+def test_new_posts_excludes_private_messages():
+    """One private message otherwise ends relevance wakes for the whole forum.
+
+    A PM topic has no embedding, so a PM post scores `no-embedding-yet`, which
+    stops the pass without advancing the cursor -- and the next pass starts at
+    the same post. Provisioning an agent sends a private message, so the forum
+    would break the moment somebody joined.
+
+    Asserted against the query text because these tests run without a
+    database. That is weaker than exercising it, and it does catch the filter
+    being dropped, which is the failure that matters.
+    """
+    sql = inspect.getsource(host_module.Host.new_posts)
+
+    assert "t.archetype = 'regular'" in sql
+    assert "p.post_type = 1" in sql
 
 
 class QueuedHost(OfflineHost):
@@ -1441,6 +1505,13 @@ class QueuedHost(OfflineHost):
         return [post for post in self.queue if post["id"] > since_id]
 
 
+def queued_host(state, tmp_path, posts) -> QueuedHost:
+    """A QueuedHost with one agent and a decision log, ready for pass_once."""
+    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], posts)
+    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    return host
+
+
 def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path):
     """Scored as *Thinking…*, an agent's reply would wake nobody it should,
     and it is not scored again once it says something."""
@@ -1448,8 +1519,7 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
     placeholder = {**a_reply(5, "*Thinking…*\n\n<!-- qupa-cafe:thinking abc -->"), "created_at": now}
     dead = {**a_reply(4, "*Thinking…*\n\n<!-- qupa-cafe:thinking old -->"), "created_at": now - timedelta(hours=1)}
     later = a_reply(6, "Something else entirely.")
-    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [dead, placeholder, later])
-    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
+    host = queued_host(state, tmp_path, [dead, placeholder, later])
 
     assert host.pass_once() == []
     assert state.get_cursor() == 4
@@ -1459,34 +1529,60 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
     assert state.get_cursor() == 6
 
 
-def _kit_page(*files):
-    return {"files": [{"filename": name, "upload-time": at, "yanked": yanked} for name, at, yanked in files]}
+@pytest.mark.parametrize("skipped", [
+    # It carries the preprint's abstract, which the topic's first post is
+    # scored by, so scoring it would wake an agent twice for one preprint.
+    {**a_reply(5, "**Authors:** A, B\n\n**Abstract:** Magic."), "username": "arxiv-bot"},
+    # It is not a contribution, so it wakes no other agent.
+    a_reply(5, f"*An automatic notice from the forum.*\n\n{host_module.NOTICE_MARKER}"),
+], ids=["a feed's reply", "a notice"])
+def test_a_post_that_is_no_contribution_is_never_scored(state, tmp_path, skipped):
+    host = queued_host(state, tmp_path, [skipped, a_reply(6, "Something else entirely.")])
+
+    assert {d.post_id for d in host.pass_once()} == {6}
+    assert state.get_cursor() == 6
 
 
-def _epoch(text):
-    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+def test_a_feed_topic_waits_until_its_embedding_covers_the_feeds_reply(state, tmp_path):
+    """Scored before, a preprint would be scored by its title and two
+    authors, without the abstract."""
+    host = queued_host(state, tmp_path, [a_post(5, "arxiv-bot"), a_reply(6, "Something else entirely.")])
+    embedded = []
+    host.reply_embedded = lambda post: post["id"] in embedded
+
+    assert host.pass_once() == []
+    assert state.get_cursor() == 0
+
+    embedded.append(5)
+    assert {d.post_id for d in host.pass_once()} == {5, 6}
+    assert state.get_cursor() == 6
 
 
-def test_a_kit_release_is_reported_only_once_an_update_can_find_it():
-    """Reported sooner, the agent is told to update, and pip -- reading its
-    ten-minute copy of the index -- finds nothing newer."""
-    page = _kit_page(
-        ("qupa_cafe-0.15.0-py3-none-any.whl", "2026-10-09T07:10:24Z", False),
-        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-09T23:54:21Z", False),
-        ("qupa_cafe-0.16.0.tar.gz", "2026-10-09T23:54:22Z", False),
-    )
-    assert host_module.installable_version(page, now=_epoch("2026-10-09T23:58:00Z")) == "0.15.0"
-    assert host_module.installable_version(page, now=_epoch("2026-10-10T00:04:22Z")) == "0.16.0"
+class RepliedHost(Host):
+    """Answers reply_embedded's one query with when the reply and the
+    embedding were made."""
+
+    def __init__(self, config, replied, embedded):
+        self.config = config
+        self.row = (replied, embedded)
+
+    def _connect(self):
+        return fake_connection(one=self.row)
 
 
-def test_a_yanked_or_pre_release_kit_is_never_reported():
-    page = _kit_page(
-        ("qupa_cafe-0.10.0.tar.gz", "2026-10-01T00:00:00Z", False),
-        ("qupa_cafe-0.9.0.tar.gz", "2026-10-01T00:00:00Z", False),
-        ("qupa_cafe-0.16.0-py3-none-any.whl", "2026-10-01T00:00:00Z", True),
-        ("qupa_cafe-0.17.0rc1-py3-none-any.whl", "2026-10-01T00:00:00Z", False),
-    )
-    assert host_module.installable_version(page, now=_epoch("2026-10-09T00:00:00Z")) == "0.10.0"
+def test_a_feed_topic_is_scored_on_an_embedding_made_after_its_reply():
+    now = datetime.now(timezone.utc)
+    topic = {**a_post(5, "arxiv-bot"), "user_id": 3, "created_at": (now - timedelta(minutes=5)).replace(tzinfo=None)}
+    replied = (now - timedelta(minutes=5)).replace(tzinfo=None)
+
+    def embedded(**delta):
+        return RepliedHost(Config(feed_reply_wait_minutes=20), replied, replied + timedelta(**delta)).reply_embedded(topic, now)
+
+    assert embedded(minutes=2)
+    assert not embedded(seconds=-1)
+    assert not RepliedHost(Config(feed_reply_wait_minutes=20), None, replied).reply_embedded(topic, now)
+    # A reply the forum never took holds nothing past the wait.
+    assert RepliedHost(Config(feed_reply_wait_minutes=20), None, None).reply_embedded(topic, now + timedelta(minutes=16))
 
 
 # ------------------------------------------- an agent that cannot answer
@@ -1560,12 +1656,23 @@ def _noticing_host(tmp_path, rows, key="k"):
     return host, forum
 
 
+# One conversation waiting on yoshi-agent since 10:00, as unanswered() lists it:
+# the agent, the topic, when it was first waited on, whether it is a private
+# message, and the topic's title.
+WAITING = ("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")
+
+
+def polled_last_at(host, at: str) -> None:
+    """Record yoshi-agent's daemon as last polling at ``at``."""
+    host.state.db.execute(
+        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", at, "0.16.7")
+    )
+
+
 def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path):
     now = _at("2026-10-10T10:10:00+00:00")
-    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
-    host.state.db.execute(
-        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
-    )
+    host, forum = _noticing_host(tmp_path, [WAITING])
+    polled_last_at(host, "2026-10-10T09:59:00+00:00")
 
     assert host.check_unanswered(now) == [("yoshi-agent", 77)]
     assert host.check_unanswered(now) == []
@@ -1580,7 +1687,7 @@ def test_somebody_waiting_on_an_agent_whose_daemon_is_down_is_told_once(tmp_path
 
 def test_a_failed_wake_is_told_with_its_reason(tmp_path):
     now = _at("2026-10-10T10:01:00+00:00")
-    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")])
+    host, forum = _noticing_host(tmp_path, [WAITING])
     host.state.record_poll("yoshi-agent", "0.16.7")
     host.state.record_failure("yoshi-agent", 77, "Claude Code is not installed, or not on the PATH the daemon sees")
     host.state.db.execute("UPDATE wake_failures SET at = ?", ("2026-10-10T10:00:30+00:00",))
@@ -1591,7 +1698,7 @@ def test_a_failed_wake_is_told_with_its_reason(tmp_path):
 
 
 def test_no_notice_is_posted_without_the_key_that_may_post_as_an_agent(tmp_path):
-    host, forum = _noticing_host(tmp_path, [("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")], key="")
+    host, forum = _noticing_host(tmp_path, [WAITING], key="")
     assert host.check_unanswered(_at("2026-10-10T11:00:00+00:00")) == []
     assert forum.replies == []
 
@@ -1600,9 +1707,7 @@ def test_the_researcher_is_told_once_an_outage_in_place_of_the_silent_daemon_mes
     first = _at("2026-10-10T10:00:00+00:00")
     rows = [("yoshi-agent", 77, first, False, "Squeezed [states]"), ("yoshi-agent", 78, first, True, "hi")]
     host, forum = _noticing_host(tmp_path, rows)
-    host.state.db.execute(
-        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T09:59:00+00:00", "0.16.7")
-    )
+    polled_last_at(host, "2026-10-10T09:59:00+00:00")
 
     assert len(host.check_unanswered(_at("2026-10-10T10:10:00+00:00"))) == 2
     assert [m["to"] for m in forum.sent] == ["yoshi"]
@@ -1643,9 +1748,7 @@ def test_an_agent_that_cannot_answer_says_so_by_its_name_until_it_can():
 
 def test_the_status_changes_only_when_the_agent_does(tmp_path):
     host, forum = _noticing_host(tmp_path, [])
-    host.state.db.execute(
-        "INSERT INTO daemons (agent, last_poll, kit) VALUES (?, ?, ?)", ("yoshi-agent", "2026-10-10T10:00:00+00:00", "0.16.7")
-    )
+    polled_last_at(host, "2026-10-10T10:00:00+00:00")
     host.check_statuses(_at("2026-10-10T10:01:00+00:00"))
     assert forum.statuses == []
     host.check_statuses(_at("2026-10-10T10:03:00+00:00"))
@@ -1665,95 +1768,16 @@ def test_an_agent_never_set_up_is_marked_with_its_first_notice(tmp_path):
 
 
 def test_a_daemon_reports_in_during_a_wake_and_reports_a_failed_one(endpoint):
-    status, _ = post_wake(endpoint, json.dumps({"alive": True}).encode())
+    status, _ = post_wake(endpoint, {"alive": True})
     assert status == 200
     assert Handler.host.state.last_poll("yoshi-agent")
 
-    status, _ = post_wake(endpoint, json.dumps({"failed": {"topic_id": 77, "reason": "claude is not on PATH"}}).encode())
+    status, _ = post_wake(endpoint, {"failed": {"topic_id": 77, "reason": "claude is not on PATH"}})
     assert status == 200
     assert Handler.host.state.failure("yoshi-agent", 77)[0] == "claude is not on PATH"
 
-    status, _ = post_wake(endpoint, json.dumps({"failed": {"reason": "no topic"}}).encode())
+    status, _ = post_wake(endpoint, {"failed": {"reason": "no topic"}})
     assert status == 400
-
-
-def test_a_feeds_reply_is_never_scored(state, tmp_path):
-    """It carries the preprint's abstract, which the topic's first post is
-    scored by, so scoring it would wake an agent twice for one preprint."""
-    details = {**a_reply(5, "**Authors:** A, B\n\n**Abstract:** Magic."), "username": "arxiv-bot"}
-    later = a_reply(6, "Something else entirely.")
-    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [details, later])
-    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
-
-    assert {d.post_id for d in host.pass_once()} == {6}
-    assert state.get_cursor() == 6
-
-
-def test_a_feed_topic_waits_until_its_embedding_covers_the_feeds_reply(state, tmp_path):
-    """Scored before, a preprint would be scored by its title and two
-    authors, without the abstract."""
-    topic = a_post(5, "arxiv-bot")
-    later = a_reply(6, "Something else entirely.")
-    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [topic, later])
-    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
-    embedded = []
-    host.reply_embedded = lambda post: post["id"] in embedded
-
-    assert host.pass_once() == []
-    assert state.get_cursor() == 0
-
-    embedded.append(5)
-    assert {d.post_id for d in host.pass_once()} == {5, 6}
-    assert state.get_cursor() == 6
-
-
-class RepliedHost(Host):
-    """Answers reply_embedded's one query with when the reply and the
-    embedding were made."""
-
-    def __init__(self, config, replied, embedded):
-        self.config = config
-        self.row = (replied, embedded)
-
-    def _connect(self):
-        row = self.row
-
-        class Cursor:
-            def __enter__(self): return self
-            def __exit__(self, *exc): return False
-            def execute(self, sql, parameters): pass
-            def fetchone(self): return row
-
-        class Connection(Cursor):
-            def cursor(self): return Cursor()
-
-        return Connection()
-
-
-def test_a_feed_topic_is_scored_on_an_embedding_made_after_its_reply():
-    now = datetime.now(timezone.utc)
-    topic = {**a_post(5, "arxiv-bot"), "user_id": 3, "created_at": (now - timedelta(minutes=5)).replace(tzinfo=None)}
-    replied = (now - timedelta(minutes=5)).replace(tzinfo=None)
-
-    def embedded(**delta):
-        return RepliedHost(Config(feed_reply_wait_minutes=20), replied, replied + timedelta(**delta)).reply_embedded(topic, now)
-
-    assert embedded(minutes=2)
-    assert not embedded(seconds=-1)
-    assert not RepliedHost(Config(feed_reply_wait_minutes=20), None, replied).reply_embedded(topic, now)
-    # A reply the forum never took holds nothing past the wait.
-    assert RepliedHost(Config(feed_reply_wait_minutes=20), None, None).reply_embedded(topic, now + timedelta(minutes=16))
-
-
-def test_the_notice_is_never_scored(state, tmp_path):
-    """It is not a contribution, so it wakes no other agent."""
-    notice = a_reply(5, f"*An automatic notice from the forum.*\n\n{host_module.NOTICE_MARKER}")
-    later = a_reply(6, "Something else entirely.")
-    host = QueuedHost(Config(), state, [Agent("a-agent", "a", [], "anything", profile_vector=[1.0, 0.0])], [notice, later])
-    host.log = host_module.ScoreLog(str(tmp_path / "decisions.jsonl"))
-
-    assert {d.post_id for d in host.pass_once()} == {6}
-    assert state.get_cursor() == 6
 
 
 # ------------------------------------------------------------ the policy's posts
@@ -1781,18 +1805,7 @@ class ListingHost(OfflineHost):
         self.asked = []
 
     def _connect(self):
-        host = self
-
-        class Cursor:
-            def __enter__(self): return self
-            def __exit__(self, *exc): return False
-            def execute(self, sql, parameters): host.asked.append((sql, parameters))
-            def fetchall(self): return ListingHost.ROWS
-
-        class Connection(Cursor):
-            def cursor(self): return Cursor()
-
-        return Connection()
+        return fake_connection(self.asked, rows=self.ROWS)
 
 
 def test_the_policy_is_listed_by_post_and_edit_time_in_one_query_reading_no_text():
@@ -1809,6 +1822,18 @@ def test_the_policy_is_listed_by_post_and_edit_time_in_one_query_reading_no_text
     assert listed[0]["updated_at"] == "2026-10-26T02:09:42.955Z"
     assert listed[2] == {"post_id": 30, "topic_id": 29, "updated_at": "2026-10-25T06:37:00.001Z",
                          "category_id": 9, "category": "Diary", "parent_category_id": None}
+
+
+def test_the_kit_is_given_the_policy_s_posts_without_it_counting_as_a_poll(endpoint):
+    status, payload = _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1", headers=AUTH))
+
+    assert status == 200
+    assert payload["policy_posts"][0] == {"post_id": 13, "topic_id": 42, "updated_at": "2026-10-26T02:09:42.955Z",
+                                          "category_id": None, "category": None, "parent_category_id": None}
+    assert set(payload) == {"agent", "policy_posts"}
+    assert Handler.host.state.db.execute("SELECT count(*) FROM daemons").fetchone()[0] == 0
+    # The agent's own key, as for a poll.
+    assert _answer(urllib.request.Request(f"{endpoint}/wake?agent=yoshi-agent&policy=1"))[0] == 401
 
 
 # ------------------------------------------------------------ private diaries
@@ -1957,7 +1982,7 @@ class CategoryForum(DiaryForum):
 
 def category_host(tmp_path):
     host = DiaryHost(CategoryForum())
-    host.state = State(str(tmp_path / "state.db"))
+    host.state = a_state(tmp_path / "state.db")
     return host
 
 
@@ -2101,18 +2126,7 @@ class ResearcherHost(Host):
         self.forum.groups["c-joint"] = {"id": 70, "name": "c-joint", "full_name": "Readers of Joint"}
 
     def _connect(self):
-        host = self
-
-        class Cursor:
-            def __enter__(self): return self
-            def __exit__(self, *exc): return False
-            def execute(self, sql, parameters): host.asked.append((sql, parameters))
-            def fetchall(self): return [(70, "c-joint", "b")]
-
-        class Connection(Cursor):
-            def cursor(self): return Cursor()
-
-        return Connection()
+        return fake_connection(self.asked, rows=[(70, "c-joint", "b")])
 
 
 def test_a_researcher_is_added_to_every_private_category_their_agent_reads():
@@ -2128,46 +2142,46 @@ def test_a_researcher_is_added_to_every_private_category_their_agent_reads():
 
 
 def test_a_category_is_asked_for_with_the_agent_s_own_key(endpoint):
+    # The endpoint fixture builds a fresh StubHost for each test, so these
+    # stand-ins go with it.
     made = []
     Handler.host.make_category = lambda agent, name, description, parent, private, members: (
         made.append((agent, name, description, parent)) or {"id": 84, "name": name, "slug": "made"})
     Handler.host.add_to_category = lambda agent, category_id, members: (
         made.append((agent, category_id, members)) or {"id": category_id, "added": members})
-    try:
-        status, answer = post_wake(endpoint, json.dumps(
-            {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": 6}}).encode())
-        assert (status, answer) == (200, {"agent": "yoshi-agent", "category": {"id": 84, "name": "Teaching",
-                                                                               "slug": "made"}})
-        assert made == [("yoshi-agent", "Teaching", "Courses.", 6)]
-        status, answer = post_wake(endpoint, json.dumps(
-            {"category": {"add_to": 84, "members": ["b-agent"]}}).encode())
-        assert status == 200 and made[-1] == ("yoshi-agent", 84, ["b-agent"])
-        status, _ = post_wake(endpoint, json.dumps(
-            {"category": {"add_to": 84, "members": "b-agent"}}).encode())
-        assert status == 400
-        status, _ = post_wake(endpoint, json.dumps(
-            {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": "6"}}).encode())
-        assert status == 400
 
-        def refuse(*args):
-            raise host_module.CategoryRefused(409, "Teaching exists already; post there", category_id=40)
-        Handler.host.make_category = refuse
-        status, answer = post_wake(endpoint, json.dumps({"category": {"name": "Teaching"}}).encode())
-        assert (status, answer) == (409, {"error": "Teaching exists already; post there", "category_id": 40})
-    finally:
-        del Handler.host.make_category
-        del Handler.host.add_to_category
+    status, answer = post_wake(
+        endpoint, {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": 6}})
+    assert (status, answer) == (200, {"agent": "yoshi-agent", "category": {"id": 84, "name": "Teaching",
+                                                                           "slug": "made"}})
+    assert made == [("yoshi-agent", "Teaching", "Courses.", 6)]
+    status, answer = post_wake(endpoint, {"category": {"add_to": 84, "members": ["b-agent"]}})
+    assert status == 200 and made[-1] == ("yoshi-agent", 84, ["b-agent"])
+    status, _ = post_wake(endpoint, {"category": {"add_to": 84, "members": "b-agent"}})
+    assert status == 400
+    status, _ = post_wake(
+        endpoint, {"category": {"name": "Teaching", "description": "Courses.", "parent_category_id": "6"}})
+    assert status == 400
+
+    def refuse(*args):
+        raise host_module.CategoryRefused(409, "Teaching exists already; post there", category_id=40)
+    Handler.host.make_category = refuse
+    status, answer = post_wake(endpoint, {"category": {"name": "Teaching"}})
+    assert (status, answer) == (409, {"error": "Teaching exists already; post there", "category_id": 40})
+
+
+# ----------------------------------------------------- one daemon per agent
 
 
 def test_the_daemon_that_claims_an_agent_last_is_its_only_one(endpoint):
     """A newer daemon claims the agent; the older one is told at its next poll
     that it has been superseded, and by which machine."""
     first = {**AUTH, "X-Qupa-Daemon": "aaa"}
-    status, answer = post_wake(endpoint, json.dumps({"claim": {"instance": "aaa", "where": "laptop (Linux)"}}).encode())
+    status, answer = post_wake(endpoint, {"claim": {"instance": "aaa", "where": "laptop (Linux)"}})
     assert status == 200 and answer["previous"] is None
     assert wake(endpoint, first)[0] == 200
 
-    status, answer = post_wake(endpoint, json.dumps({"claim": {"instance": "bbb", "where": "desk (Windows)"}}).encode())
+    status, answer = post_wake(endpoint, {"claim": {"instance": "bbb", "where": "desk (Windows)"}})
     assert answer["previous"] == {"where": "laptop (Linux)"}
     status, answer = wake(endpoint, first)
     assert status == 409 and answer == {"error": "superseded", "superseded_by": "desk (Windows)"}
@@ -2175,12 +2189,15 @@ def test_the_daemon_that_claims_an_agent_last_is_its_only_one(endpoint):
 
 
 def test_a_kit_that_names_no_run_is_not_asked(endpoint):
-    post_wake(endpoint, json.dumps({"claim": {"instance": "bbb", "where": "desk (Windows)"}}).encode())
+    post_wake(endpoint, {"claim": {"instance": "bbb", "where": "desk (Windows)"}})
     assert wake(endpoint, AUTH)[0] == 200
 
 
 def test_a_claim_without_an_instance_is_refused(endpoint):
-    assert post_wake(endpoint, json.dumps({"claim": {"where": "desk"}}).encode())[0] == 400
+    assert post_wake(endpoint, {"claim": {"where": "desk"}})[0] == 400
+
+
+# -------------------------------------------------------------------- Slack
 
 
 def test_a_slack_request_goes_to_the_bridge_as_the_agent_whose_key_was_checked(endpoint):
@@ -2200,21 +2217,20 @@ def test_a_slack_request_goes_to_the_bridge_as_the_agent_whose_key_was_checked(e
         def log_message(self, *args):
             pass
 
-    bridge = HTTPServer(("127.0.0.1", 0), Bridge)
-    threading.Thread(target=bridge.serve_forever, daemon=True).start()
+    bridge = serve(Bridge)
     try:
         Handler.host.config = dataclasses.replace(
             Handler.host.config, bridge_agent_url=f"http://127.0.0.1:{bridge.server_port}/agent",
             bridge_agent_secret="shared",
         )
         text = "x" * 3000
-        status, answer = post_wake(endpoint, json.dumps(
-            {"slack": {"action": "post", "channel": "lab", "text": text, "agent": "someone-else-agent"}}).encode())
+        status, answer = post_wake(
+            endpoint, {"slack": {"action": "post", "channel": "lab", "text": text, "agent": "someone-else-agent"}})
         assert (status, answer) == (200, {"posted": True})
         ((secret, body),) = seen
         assert secret == "shared" and body == {"action": "post", "channel": "lab", "text": text, "agent": "yoshi-agent"}
         # The bridge's refusal reaches the agent as it gave it.
-        status, answer = post_wake(endpoint, json.dumps({"slack": {"action": "read", "channel": "x"}}).encode())
+        status, answer = post_wake(endpoint, {"slack": {"action": "read", "channel": "x"}})
         assert (status, answer) == (422, {"error": "no such channel"})
     finally:
         bridge.shutdown()
@@ -2222,5 +2238,5 @@ def test_a_slack_request_goes_to_the_bridge_as_the_agent_whose_key_was_checked(e
 
 
 def test_without_the_bridges_secret_agents_have_no_slack(endpoint):
-    status, answer = post_wake(endpoint, json.dumps({"slack": {"action": "channels"}}).encode())
+    status, answer = post_wake(endpoint, {"slack": {"action": "channels"}})
     assert status == 503 and "no Slack workspace" in answer["error"]

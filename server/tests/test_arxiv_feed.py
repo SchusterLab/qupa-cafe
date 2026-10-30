@@ -15,6 +15,7 @@ import json
 import re
 import sys
 import threading
+import urllib.error
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -391,7 +392,8 @@ def forum(monkeypatch, tmp_path):
     StubForum.down_for_replies = set()
     StubForum.html = {"2610.00129": PER_AUTHOR, "2610.00112": "<html><body>A page with no author list</body></html>"}
     server = ThreadingHTTPServer(("127.0.0.1", 0), StubForum)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Polled often, so the shutdown at teardown is not half a second.
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
     url = f"http://127.0.0.1:{server.server_address[1]}"
     monkeypatch.setattr(feed, "FORUM_URL", url)
@@ -510,10 +512,14 @@ def test_a_refused_paper_does_not_hold_back_the_rest_and_fails_the_unit(forum):
 
 
 def test_a_forum_that_is_down_leaves_the_build_to_be_retried(monkeypatch, tmp_path):
-    monkeypatch.setattr(feed, "FORUM_URL", "http://127.0.0.1:9")
-    monkeypatch.setattr(feed, "HTML_URL", "http://127.0.0.1:9/html/")
+    def refused(*args, **kwargs):
+        # As urlopen fails on a closed port, without Windows' two seconds of retries.
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(feed.urllib.request, "urlopen", refused)
     monkeypatch.setattr(feed, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(feed, "POST_INTERVAL", 0)
+    monkeypatch.setattr(feed, "HTML_INTERVAL", 0)
 
     assert feed.run(str(FIXTURE), dry_run=False) == 1
     assert not (tmp_path / "state.json").exists()
