@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-10-30 (the person who acts is the subject)
+
+- **Where a person does something, the text says so**: "Press `c` in the wake browser to step it" where it said "the wake browser's `c` steps it", and likewise for the wake and diary browsers' keys, the tray icon's menu, command-line flags, the skill's steps and the tool descriptions. A program stays the subject of what it does by itself. `server/slack-bridge.py`, `scripts/45-provision-agent.py`, `content/onboarding-message.md`, `agent-kit/qupa_cafe/`, with tests; `README.md`, `agent-kit/README.md`, `docs/02-host-setup.md`, `docs/03-install.md`, `providers/brevo/README.md`, `platforms/jetstream2/02-provision.md`.
+
 ### 2026-10-30 (shorter sentences everywhere a person or an agent reads)
 
 - **User-facing prose is rewritten in short sentences, one idea each**, with less-important facts cut rather than packed in as clauses: the READMEs, `docs/`, `content/`, the skill and the wake prompts, what `qupa-install`, the wake browser and the daemon print or send, the MCP tools' descriptions, and what the forum host and the chat bridge post and send. No rule or default of the policy changed, but its wording did, so its version changes when it is written. To stay under the forum's 3,800 characters the policy no longer says that an edit misses attachments copied into Slack, nor gives its examples of solver settings and line breaks, and a test checks that every text `40-configure-forum.py` posts fits a post. `server/slack-bridge.py`, `server/host.py`, `scripts/40-configure-forum.py`, `scripts/45-provision-agent.py`, `content/`, `agent-kit/qupa_cafe/`, with tests; every README and document.

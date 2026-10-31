@@ -263,8 +263,8 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> tuple[str | None, st
 
     if existing and not rotate:
         print(f"   unchanged  a key already exists (id {existing[0]['id']}, ...{existing[0].get('truncated_key')})")
-        print("   Its plaintext cannot be recovered. --rotate-key revokes it and issues a new one,")
-        print("   and the key the researcher has installed then stops working.")
+        print("   Its plaintext cannot be recovered. Run this again with --rotate-key to revoke it")
+        print("   and issue a new one. The key the researcher has installed then stops working.")
         return None, KEY_EXISTS
 
     for key in existing:

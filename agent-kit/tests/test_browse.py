@@ -82,7 +82,7 @@ def test_the_list_shows_each_wake_s_score_and_the_threshold():
     rows = [line for line in frame if "Topic" in line]
     assert "0.83" in rows[0] and "0.8" not in rows[1].split("Topic")[0]
     assert any("Relevance threshold 0.72" in line for line in frame)
-    assert any("(+ raises, - lowers)" in line for line in frame) and "+" not in frame[-1]
+    assert any("(+ or - to change it)" in line for line in frame) and "+" not in frame[-1]
 
 
 def test_plus_and_minus_ask_for_a_threshold_one_step_away_within_range():

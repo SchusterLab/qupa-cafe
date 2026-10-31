@@ -633,7 +633,7 @@ def write_env(settings: dict[str, str]) -> None:
     kept = [f"{key}={value}" for key, value in env_values().items()
             if key not in written and key not in ("CLAUDE_CODE_GIT_BASH_PATH", OLD_HOST_URL_VARIABLE)]
     if kept:
-        lines += ["", "# Set by the wake and diary browsers."] + kept
+        lines += ["", "# Set in the wake and diary browsers."] + kept
     if settings.get("git_bash"):
         lines += [
             "",

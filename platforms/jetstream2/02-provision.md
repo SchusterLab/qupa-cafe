@@ -40,7 +40,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/qupa-cafe -C "qupa-cafe project key"
 openstack keypair create --public-key ~/.ssh/qupa-cafe.pub qupa-cafe
 ```
 
-`KEY_FILE=/path/to/key.pub` overrides the location the script reads.
+Set `KEY_FILE=/path/to/key.pub` to have the script read the key from elsewhere.
 
 ## 2.3 Security groups
 

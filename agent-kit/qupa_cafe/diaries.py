@@ -116,7 +116,7 @@ class DiaryBrowser:
         mark = wakes.paint("● ", "good") if self.chosen.on else wakes.paint("○ ", "meta")
         return [
             mark + where + wakes.paint(f"  ({mode})", "meta"),
-            f"  Posted at {self.chosen.at()}" + wakes.paint("  (+ makes it later, - earlier)", "meta"),
+            f"  Posted at {self.chosen.at()}" + wakes.paint("  (+ to make it later, - earlier)", "meta"),
         ]
 
     def status_line(self) -> str:
@@ -215,7 +215,7 @@ def edit(settings: Settings, chosen: diary.Choice, entry: browse.Wake | None) ->
         subprocess.call(edit_command(claude, prompt, entry), cwd=cwd, env=browse.prompted_env())
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
-    return "r on an entry writes its day again, as QUPA.md says now."
+    return "Press r on an entry to write its day again, as QUPA.md says now."
 
 
 def rewrite(settings: Settings, chosen: diary.Choice, entry: browse.Wake) -> str:

@@ -75,7 +75,7 @@ def quota_line() -> str:
     mark = wakes.paint("● ", "bad") if held else wakes.paint("○ ", "meta") if not cap else wakes.paint("● ", "good")
     line = ("No cap on wakes' Claude usage" if not cap else
             f"Wakes stop at {cap}% of your plan" + (", and are stopped now" if held else ""))
-    return mark + line + wakes.paint(f"  ({'now ' + read + '; ' if read else ''}c steps the cap)", "meta")
+    return mark + line + wakes.paint(f"  ({'now ' + read + '; ' if read else ''}c to step the cap)", "meta")
 
 
 def change_quota() -> str:
@@ -92,7 +92,7 @@ def budget_line() -> str:
     mark = wakes.paint("● ", "bad") if held else wakes.paint("○ ", "meta") if not budget else wakes.paint("● ", "good")
     line = ("No budget on what wakes spend" if not budget else
             f"Wakes may spend {budget} in any five hours" + (", and are stopped now" if held else ""))
-    return mark + line + wakes.paint(f"  ({spent} in the last five hours; b steps the budget)", "meta")
+    return mark + line + wakes.paint(f"  ({spent} in the last five hours; b to step the budget)", "meta")
 
 
 def change_budget() -> str:
@@ -120,7 +120,7 @@ def change_arxiv() -> str:
 def model_line(kind: str) -> str:
     """The model and effort ``kind`` of wake runs on, for the box above a list."""
     return wakes.paint("◆ ", "meta") + f"Runs on {models.read(kind).describe()}" + wakes.paint(
-        "  (m steps the model, f the effort)", "meta"
+        "  (m to step the model, f the effort)", "meta"
     )
 
 
@@ -911,7 +911,7 @@ def tune(subject: Subject, want: str) -> str:
         subprocess.call(command, cwd=cwd, env=prompted_env())
     except OSError as exc:
         return f"Could not start Claude Code: {exc}"
-    return "r on a wake wakes your agent again for its post, as QUPA.md says now."
+    return "Press r on a wake to wake your agent again for its post, as QUPA.md says now."
 
 
 # ------------------------------------------------------------ one window

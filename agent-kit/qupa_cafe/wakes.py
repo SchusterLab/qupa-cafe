@@ -919,7 +919,7 @@ def floor_line(state: Status) -> str:
         return paint("○ ", "meta") + "Relevance threshold not known yet: the daemon has not heard it from the forum."
     return (
         paint("○ ", "meta") + f"Relevance threshold {state.floor:.2f}: how similar a post must be to your interests "
-        "to wake your agent" + paint("  (+ raises, - lowers)", "meta")
+        "to wake your agent" + paint("  (+ or - to change it)", "meta")
     )
 
 

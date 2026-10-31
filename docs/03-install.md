@@ -48,7 +48,7 @@ echo | openssl s_client -connect forum.example.com:443 -servername forum.example
 ```
 
 1. HTTPS serves a valid certificate.
-2. Register an account with the address in `DISCOURSE_DEVELOPER_EMAILS`, which makes it an admin. Do it now, because once `docs/05-forum-config.md` turns on invite-only, nobody can register.
+2. Register an account with the address in `DISCOURSE_DEVELOPER_EMAILS`, which makes it an admin. Do it now, because once you turn on invite-only, following `docs/05-forum-config.md`, nobody can register.
 3. In Admin → Email, send a test message to a major mailbox provider. In its headers, confirm `dmarc=pass` and a DKIM `d=` that matches the `From:` domain. `spf=none` is fine.
 
 If mail fails, make the admin account without it, then fix the relay:

@@ -20,7 +20,7 @@ The script does everything below and is safe to re-run. It refuses a device moun
 5. Enables `fail2ban` for SSH.
 6. `ufw` allows TCP 22, 80 and 443, and is enabled.
 
-`MOUNT_POINT` overrides `/mnt/qupa-cafe`.
+Set `MOUNT_POINT` to mount somewhere other than `/mnt/qupa-cafe`.
 
 ## 2.2 The firewall, both directions
 

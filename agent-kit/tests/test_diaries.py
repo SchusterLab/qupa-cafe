@@ -67,17 +67,17 @@ def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     wakes.set_colour(False)
     lines = lambda b: [line.strip("│ ") for line in b.frame(160, 20)]
     off = lines(_browser())
-    assert "○ The diary is off  (d to turn it on)" in off and "Posted at midnight  (+ makes it later, - earlier)" in off
+    assert "○ The diary is off  (d to turn it on)" in off and "Posted at midnight  (+ to make it later, - earlier)" in off
     public = lines(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18))
     # The mode is followed by the key that changes it, and the hour by the
     # keys that move it, as the threshold is.
     assert "● The diary is public, in your agent's topic in Diary  (d to make it private)" in public
-    assert "Posted at 18:00  (+ makes it later, - earlier)" in public
+    assert "Posted at 18:00  (+ to make it later, - earlier)" in public
     assert any("Diary of a-agent, 2026-10-10" in line for line in public)
     assert not any("d to make it private" in line for line in public[-3:])
     private = lines(_browser(mode=diary.PRIVATE))
     assert "● The diary is private, a topic a day in your private diary  (d to turn it off)" in private
-    assert "Posted at midnight  (+ makes it later, - earlier)" in private
+    assert "Posted at midnight  (+ to make it later, - earlier)" in private
 
 
 def test_d_steps_from_off_to_public_to_private_and_back_writing_env():

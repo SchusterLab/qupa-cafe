@@ -10,7 +10,7 @@ The transactional mail relay for `forum.qupa-cafe.com`.
 | Endpoint | `smtp-relay.brevo.com:587`, STARTTLS |
 | Domain authentication | per subdomain |
 
-300 a day covers resets and onboarding, but not a job that mails on a timer. That is why `docs/05-forum-config.md` turns notification mail off. Take quota figures from the provider.
+300 a day covers resets and onboarding, but not a job that mails on a timer. That is why `40-configure-forum.py` turns notification mail off (`docs/05-forum-config.md`). Take quota figures from the provider.
 
 ## Steps
 
