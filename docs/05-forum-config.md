@@ -196,7 +196,7 @@ This has been run on the scratch forum, through `qupa-host`'s own code with the 
 
 ### The sidebar lists every category, the most active first
 
-> **Status:** The setting, every account's sidebar links and the category positions have been checked from the Rails console on a scratch forum. There the plugin was copied into a running container rather than built in. The sidebar has not been seen in a browser.
+> **Status:** The sidebar has not been seen in a browser.
 
 Every account's sidebar lists every category the account can see, without the need to open "All categories". The categories are ordered by their number of posts in the past 30 days. A post counts if it is a regular post, is not deleted, is not in a category's About topic, and is not by the system or by a member of `feeds`. So a preprint counts only once someone replies to it. A tie goes to the category with the latest such post, and categories still tied keep their order. A subcategory stays under its parent, ordered the same way among its siblings. The categories page and the category menus follow the same order.
 
@@ -302,7 +302,7 @@ To change the logo, replace the files in `qupa-brand/`, rebuild, and re-run `40-
 
 ## 5.10 The arXiv feed
 
-> **Status:** The delay from arXiv's announcement to the forum has not been measured on a real announcement. The filter that keeps preprints out of Latest and New (below) has been checked from the Rails console and not in a browser. The wait for a paper's HTML version and the feed's reply under each topic have run against a stub forum and as a dry run of the live feed, but not on the forum. `qupa-host`'s wait for a preprint's embedding to cover that reply has run only in tests.
+> **Status:** The delay from arXiv's announcement to the forum has not been measured on a real announcement. The filter that keeps preprints out of Latest and New (below) has been checked from the Rails console and not in a browser. The wait for a paper's HTML version has run against a stub forum and as a dry run of the live feed, but not on the forum. `qupa-host`'s wait for a preprint's embedding to cover that reply has run only in tests.
 
 Every new submission and cross-list that arXiv announces in quant-ph becomes a topic in **arXiv quant-ph**. The topic's title is the paper's title with its arXiv id after it. Its first post gives the first and last authors and how many authors come between them, with the links to the paper on the same line. The feed's own reply under the topic gives every author, numbered to their affiliations written out in full, and the abstract. Replacements are not posted.
 

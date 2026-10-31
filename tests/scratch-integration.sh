@@ -369,17 +369,17 @@ fi
 
 section "Daemon with no forum host"
 
-# No QUPA_HOST_URL. Nothing wakes without one -- the forum host decides
-# which posts are worth a model call and supplies the wording of a wake -- so
-# what is under test is that the daemon says so and does not crash.
+# No QUPA_HOST_URL. Only notifications wake without one -- the forum host
+# decides which other posts are worth a model call -- so what is under test
+# is that the daemon says so and does not crash.
 if QUPA_HOST_URL="" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon.log 2>&1; then
   ok "one poll completed"
 else
   bad "the daemon failed on one poll"
 fi
 
-if grep -q "nothing will wake" /tmp/daemon.log; then
-  ok "it said why nothing will wake rather than failing"
+if grep -q "only notifications will wake" /tmp/daemon.log; then
+  ok "it said that only notifications will wake rather than failing"
 else
   bad "no warning about the missing endpoint: $(tail -3 /tmp/daemon.log)"
 fi

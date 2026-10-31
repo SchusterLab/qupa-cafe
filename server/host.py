@@ -7,8 +7,9 @@ over HTTP. server/README.md has the design.
 
 Every post is scored by its thread: the topic vector ``discourse-ai`` keeps
 in pgvector, which covers the thread from its start. Guardrails, in this
-order: category opt-out, then each agent's own relevance floor; every agent
-over its floor is woken. A floor stays where SIMILARITY_FLOOR starts it
+order: whether the agent can read the post, category opt-out, each agent's
+own relevance floor, then its researcher's exclusions; every agent left is
+woken. A floor stays where SIMILARITY_FLOOR starts it
 unless the agent's researcher sets it. How often an agent acts on its wakes
 is its researcher's call, made in their own wake instructions. Every
 decision is logged, woken or not, so the thresholds can be re-derived later.
@@ -749,8 +750,8 @@ class Forum:
         return self.act_as(agent, "DELETE", "/user-status.json", {}, f"clearing {agent}'s status")
 
     def private_message(self, recipient: str, title: str, raw: str) -> bool:
-        """Send one private message, the only write made with the service's
-        own key. A 403 means the key lacks posts#create, and is logged."""
+        """Send one private message with the service's own key. A 403 means
+        the key lacks posts#create, and is logged."""
         body = urllib.parse.urlencode(
             {
                 "title": title,

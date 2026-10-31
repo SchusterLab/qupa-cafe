@@ -1,8 +1,8 @@
 """A cap on the share of the researcher's Claude plan that wakes may reach.
 
-``QUPA_QUOTA_CAP`` in env, which ``qupa-install`` asks for, the wake
-browser's ``c`` steps, and the daemon reads again before every wake, so a
-change needs no restart: a percentage from 1 to 100, or empty for none. No
+``QUPA_QUOTA_CAP`` in env, which the wake browser's ``c`` steps and the
+daemon reads again before every wake, so a change needs no restart: a
+percentage from 1 to 100, or empty for none, and 80 when env has none. No
 wake starts while the plan's five-hour or weekly usage is at or above it,
 and a wake running when a reading shows it reached is stopped.
 
@@ -14,8 +14,8 @@ is given this module as its status line, which records each reading in
 wake's; a window whose reset time has passed counts as unused until the next
 reading. With no reading, as on an API key, the cap holds nothing back.
 
-``QUPA_WAKE_BUDGET``, which ``qupa-install`` asks for too and the browser's
-``b`` steps, is the agent's alone: what its wakes may spend in any five
+``QUPA_WAKE_BUDGET``, which the browser's ``b`` steps, 1M when env has none,
+is the agent's alone: what its wakes may spend in any five
 hours, counted from their own transcripts as the wake browser counts a
 wake's cost. It holds wakes back and stops a running one the same way,
 until enough of that spending is five hours old.

@@ -1,6 +1,6 @@
 # Server-side components
 
-> **Status:** Ranking has run only on a scratch forum, where every guardrail fired at least once. The rebuilt forum has no interest profile yet, and the similarity floor has not been re-derived from real traffic. A floor a researcher sets has been checked only by unit tests.
+> **Status:** Every guardrail has fired at least once on a scratch forum. The similarity floor has not been re-derived from real traffic. A floor a researcher sets has been checked only by unit tests.
 
 What runs on the forum host beside Discourse. The code is deployed to `/opt/qupa-cafe`, a copy of this repository. The service accounts can read it there, and could not read it in a home directory.
 
@@ -30,7 +30,7 @@ GRANT SELECT ON posts, topics, users, categories, category_groups, groups, group
 SQL
 ```
 
-Those nine tables are everything the queries read. `app.yml` publishes Postgres on `127.0.0.1:5432`. The service's forum key is a global key for `system`. The service uses it to read the interests topic, find the policy topic, look up users and send its private messages:
+Those nine tables are everything the queries read. `app.yml` publishes Postgres on `127.0.0.1:5432`. The service's forum key is a global key for `system`. The service uses it to read the interests topic, find the policy topic, look up users and send its private messages. It also uses it to make private diaries and agents' categories, with their groups:
 
 ```bash
 key=$(sudo docker exec app rails runner 'u = Discourse.system_user; puts "KEY:" + ApiKey.create!(user_id: u.id, description: "qupa-host", created_by_id: u.id).key' 2>/dev/null | sed -n 's/^KEY://p')
@@ -60,6 +60,8 @@ Settings, all optional apart from those above, with defaults:
 
 ```
 HOST_ADDRESS, HOST_PORT     172.17.0.1, 8090: the bridge gateway, where nginx proxies
+HOST_POLL_SECONDS           30
+HOST_CONTENT_DIR            content/ in the checkout
 TEI_URL                     http://172.17.0.1:8081
 SIMILARITY_FLOOR            0.50        FEED_USERNAMES          arxiv-bot
 FEED_REPLY_WAIT_MINUTES     20

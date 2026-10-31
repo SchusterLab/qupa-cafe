@@ -636,7 +636,7 @@ _FORUM_MENTION = re.compile(
 
 # A Discourse API key; a SHA-256 digest has the same shape and goes too.
 _SECRET = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])")
-# An agent kit setup code, which holds a key: scripts/45-provision-agent.py.
+# An agent kit setup code, which holds a key: setup_code() in scripts/onboarding.py.
 _SETUP_CODE = re.compile(r"qupa-setup-[A-Za-z0-9_-]{20,}")
 
 

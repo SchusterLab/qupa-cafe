@@ -690,7 +690,7 @@ def rewrite_new(where: str) -> str:
 
 def build_prompt(settings, template: str, day: date, start: datetime, end: datetime,
                  where: str, sessions_text: str, notice: str, transcripts: str = "", policy: str = "") -> str:
-    """Fill the host's wording with the day's facts. DATA_NOTICE and the
+    """Fill the kit's wording with the day's facts. DATA_NOTICE and the
     researcher's own instructions go in whatever the template says, and the
     sessions are substituted last, so nothing they hold is substituted."""
     # What a forum wake's parent says first, from the same place.

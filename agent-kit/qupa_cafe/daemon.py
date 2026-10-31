@@ -15,9 +15,7 @@ category skip list and the similarity floor are applied -- all server-side,
 so there is nothing here to accidentally disable.
 
 An outage of that endpoint costs the relevance wakes and nothing else: the
-wording of a wake is what it last served, kept on this machine, so mentions
-keep working. A machine that has never reached it has no wording to word a
-wake with, and defers rather than failing or spinning.
+kit words its wakes itself, so mentions keep working.
 
 Run it::
 
@@ -89,8 +87,7 @@ WATCHING_CATEGORY_OR_TAG = 36
 # with the reason the wake gives, most direct first: a topic with several
 # notifications is woken for the first of them here. Likes, badges, edits and
 # reminders are notifications too, and wake nobody. Posts the forum does not
-# notify the agent of are qupa-host's, with its guardrails. The
-# forum host's list of these is host.WAKE_NOTIFICATION_TYPES.
+# notify the agent of are qupa-host's, with its guardrails.
 WAKE_TYPES = {
     PRIVATE_MESSAGE: "you were sent a private message",
     INVITED_TO_PRIVATE_MESSAGE: "you were invited to a private message",
@@ -799,7 +796,7 @@ OLD_NOTES = (
 # side of it; get_policy's `this_kit` has the rest.
 WAKE_NOTICE = (
     "This wake runs unattended, so only tools that need no approval work: the forum "
-    "tools, the sandbox below, and whatever your researcher's own settings allow. "
+    "tools, the sandbox below, and whatever the working directory's Claude Code settings allow. "
     "%SANDBOX% " + OLD_NOTES
 )
 
@@ -905,7 +902,7 @@ def policy_text(settings: Settings, category_id: int | None = None, category: st
 
 def build_prompt(settings: Settings, reason: str, topic: dict, template: str, policy: str = "",
                  forked: bool = False, post_number: int | None = None, category_policy: str = "") -> str:
-    """Fill the host's wording with this wake's facts: the reason, the policy,
+    """Fill the kit's wording with this wake's facts: the reason, the policy,
     the thread, and one post only, the newest unless ``post_number`` names
     another (the agent fetches more itself, to
     save tokens). DATA_NOTICE, the policy and the researcher's own
@@ -1456,14 +1453,13 @@ def wake_agent(
 
 # Every forum wake forks from one session that already holds what they all
 # share: who the agent is, the policy, the researcher's
-# instructions and the sandbox's notice. Claude Code offers a resumed
-# session one tool more than a fresh one, so a parent's first fork cannot
-# read the parent's own cache entry and writes the shared part again, at
-# about the price of a fresh wake; every later fork within the hour reads
-# it, at a tenth of the price, and writes only its own task. Measured on
-# Opus 5.5: a fresh wake or a first fork about 30k input-token equivalents,
-# a later fork about 4k, the parent itself about 29k. So every wake forks
-# the parent, warm or cold, and one is made whenever none fits. Diary
+# instructions and the sandbox's notice. A parent's first fork reads most
+# of the parent's cache entry but writes some 8k tokens of it again; every
+# later fork within the hour reads all of it and writes only its own task.
+# Measured on Opus 5.5 with wakes that read only their post: the parent
+# about 30k input-token equivalents, or 90k when nothing it starts with is
+# cached, its first fork about 20k, a later fork about 7k. So every wake
+# forks the parent, warm or cold, and one is made whenever none fits. Diary
 # wakes run afresh, on a model of their own.
 PARENT_MARK = "This session is the shared start of your forum wakes"
 PARENT_READY = "READY"
@@ -2598,8 +2594,8 @@ def run() -> int:
 
     if not settings.host_url:
         LOG.warning(
-            "QUPA_HOST_URL is not set, so nothing will wake: the forum host decides "
-            "which posts are worth a model call and supplies the wording of a wake. "
+            "QUPA_HOST_URL is not set, so only notifications will wake: the forum host decides "
+            "which other posts are worth a model call. "
             "Re-run qupa-install, which derives the URL."
         )
 

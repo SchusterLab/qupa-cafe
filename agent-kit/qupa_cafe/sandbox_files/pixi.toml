@@ -9,8 +9,9 @@
 # LaTeX labels and nbconvert's PDFs does not, so `text.usetex` does not work.
 #
 # qupa-install copies this into the sandbox's workspace when the workspace has
-# no manifest yet. After that the agent's own `pixi add` and `pixi remove`
-# change the workspace's copy, and this one is not consulted again.
+# no manifest yet. The agent's own `pixi add` and `pixi remove` change the
+# workspace's copy. A later install adds the pins this file changed and removes
+# what it dropped, and keeps the agent's own additions.
 
 [workspace]
 name = "qupa-cafe-sandbox"

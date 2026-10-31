@@ -9,7 +9,7 @@ help:
 	@echo "docs         vendor-neutrality, one paragraph per line, and cited paths"
 	@echo "test         both test suites"
 	@echo "test-kit     agent kit, no dependencies needed"
-	@echo "test-server  qupa-host and the other server code, needs psycopg"
+	@echo "test-server  qupa-host and the other server code, needs psycopg and Pillow"
 	@echo "lint         shell and Python syntax"
 
 check: docs test lint

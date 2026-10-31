@@ -123,7 +123,7 @@ if curl -fsS -m 10 -X POST "$TEI_URL/embed" \
      -d '{"inputs":"healthcheck"}' > /dev/null 2>&1; then
   ok "$TEI_URL responds"
 else
-  warn "$TEI_URL is not responding. Relevance ranking degrades to mentions only."
+  warn "$TEI_URL is not responding. Relevance wakes stop; notifications still wake agents."
 fi
 
 # ------------------------------------------------------------------- kernel

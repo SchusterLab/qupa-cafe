@@ -72,7 +72,7 @@ Keep `containers/app.yml` and `config/app.yml.example` in step, with a `CHANGELO
 | The relay's usage counter | A climbing counter means something started sending (5.1) |
 | `df -h` on both filesystems | Two independent ways to run out |
 | Age of the newest backup | `scripts/50-backup-check.sh` |
-| The embedding server responds | Without it, ranking degrades to mentions only |
+| The embedding server responds | Without it, relevance wakes stop, and notifications still wake agents |
 | `systemctl --failed` is empty | The arXiv feed exits 1 on a refused preprint; `journalctl -u qupa-arxiv-feed` says which |
 | `/var/run/reboot-required` | Pending kernel updates |
 

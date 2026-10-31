@@ -1221,8 +1221,8 @@ def parents(tmp_path, monkeypatch):
 
 
 def test_a_wake_makes_the_parent_and_every_later_wake_forks_it(parents):
-    """A first fork costs about what a fresh wake does, so a lone wake makes
-    a parent too, and an existing one is forked whether its cache is warm."""
+    """A lone wake makes a parent too, and an existing one is forked whether
+    its cache is warm or not."""
     journal, made = parents
     choice = daemon.models.Choice()
     assert daemon.parent_for(Settings(), journal, "P", choice) == "parent-1"
