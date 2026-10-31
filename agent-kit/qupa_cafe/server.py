@@ -1012,7 +1012,7 @@ class QupaServer:
 
         # The forum host's endpoint, which makes the private diary and lists
         # the policy's posts with their edit times.
-        self.host_url = configured_host_url(os.environ, forum_url) or f"{forum_url.rstrip('/')}{HOST_PATH}"
+        self.host_url = configured_host_url(os.environ) or f"{forum_url.rstrip('/')}{HOST_PATH}"
         self.policy = PolicyClient(forum_url, topic_id, api_key, api_username, self.host_url)
         self.writer = ForumWriter(forum_url, api_key, api_username)
         # topic id -> the *Thinking…* post start_reply put up there.

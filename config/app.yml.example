@@ -346,11 +346,6 @@ run:
   - file:
       path: /etc/nginx/conf.d/outlets/server/50-host.conf
       contents: |
-        # The path kits up to 0.23.1 ask.
-        location = /ranking/wake {
-          rewrite ^ /host/wake last;
-        }
-
         location = /host/wake {
           # The bearer token is an agent's forum key: refuse plain HTTP rather
           # than redirect, since a redirect comes after the key was sent.

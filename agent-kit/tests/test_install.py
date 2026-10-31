@@ -408,11 +408,11 @@ def test_the_closing_message_says_where_instructions_go(tmp_path):
 
 
 def _saved_env(extra=""):
-    """An env file as a kit naming QUPA_RANKING_URL writes it, plus ``extra``."""
+    """An env file as qupa-install writes it, plus ``extra``."""
     env = install.ENV_PATH
     env.write_text(
         "# Written by agent-kit/install.py.\nQUPA_FORUM_URL=https://forum.example\nQUPA_API_USERNAME=a-agent\n"
-        "QUPA_API_KEY=k\nQUPA_POLICY_TOPIC_ID=7\nQUPA_RESEARCHER=a\nQUPA_RANKING_URL=https://forum.example/r\n"
+        "QUPA_API_KEY=k\nQUPA_POLICY_TOPIC_ID=7\nQUPA_RESEARCHER=a\n"
         "QUPA_AGENT_DIR=/work\nQUPA_DIARY=public\nQUPA_DIARY_HOUR=5\n" + extra,
         encoding="utf-8",
     )
@@ -459,23 +459,13 @@ def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(monkey
 
 
 @pytest.mark.parametrize("line, expected", [
-    # An older kit's env file: the address it derived moves to this kit's path,
-    ("QUPA_RANKING_URL=https://forum.example/ranking", "https://forum.example/host"),
-    # and one set by hand is kept.
-    ("QUPA_RANKING_URL=https://elsewhere.example/r", "https://elsewhere.example/r"),
-    ("QUPA_HOST_URL=\nQUPA_RANKING_URL=https://forum.example/ranking", ""),
+    ("QUPA_HOST_URL=https://elsewhere.example/r", "https://elsewhere.example/r"),
+    ("QUPA_HOST_URL=", ""),
     ("", "https://forum.example/host"),
 ])
-def test_the_host_url_is_read_under_either_name(line, expected):
+def test_the_host_url_is_the_one_set_or_derived_from_the_forum(line, expected):
     install.ENV_PATH.write_text(f"QUPA_FORUM_URL=https://forum.example\n{line}\n", encoding="utf-8")
     assert install.saved_host_url(install.env_values()) == expected
-
-
-def test_the_daemon_reads_an_older_kit_s_variable(monkeypatch):
-    monkeypatch.delenv("QUPA_HOST_URL", raising=False)
-    monkeypatch.setenv("QUPA_FORUM_URL", "https://forum.example")
-    monkeypatch.setenv("QUPA_RANKING_URL", "https://forum.example/ranking")
-    assert daemon.Settings().host_url == "https://forum.example/host"
 
 
 def test_with_no_settings_and_nobody_to_ask_it_says_what_to_write(monkeypatch, capsys):
@@ -494,8 +484,7 @@ def test_writing_env_keeps_what_the_browsers_set():
     assert values["QUPA_WAKE_MODEL"] == "opus" and values["QUPA_API_KEY"] == "k2"
     text = env.read_text(encoding="utf-8")
     assert text.count("QUPA_API_KEY=") == 1 and text.count("QUPA_WAKE_MODEL=") == 1
-    # _saved_env is an older kit's, naming QUPA_RANKING_URL, which QUPA_HOST_URL replaces.
-    assert "QUPA_RANKING_URL" not in values and "QUPA_HOST_URL" in values
+    assert "QUPA_HOST_URL" in values
 
 
 def test_pkill_is_given_the_pattern_after_a_double_dash(monkeypatch):

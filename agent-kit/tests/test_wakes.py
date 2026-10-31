@@ -96,16 +96,6 @@ def test_a_wake_shows_its_prompt_its_calls_and_what_it_wrote(tmp_path, claude_ho
     assert "ToolSearch" not in text
 
 
-def test_a_session_an_older_kit_ran_hides_its_policy_ack_too(tmp_path, claude_home):
-    older = [*WAKE[:-2], _assistant({"type": "tool_use", "id": "c", "name": "mcp__qupa-cafe__reply",
-                                     "input": {"topic_id": 59, "policy_ack": "0123abcd4567ef89", "raw": "Old."}}),
-             _result("c", json.dumps({"posted": True}))]
-    _transcript(claude_home, SESSION, older)
-    text = _shown(_row(tmp_path))
-
-    assert "Old." in text and "0123abcd" not in text
-
-
 def _response(message_id, model, fresh, written, read, out, *blocks):
     usage = {"input_tokens": fresh, "cache_creation_input_tokens": written,
              "cache_read_input_tokens": read, "output_tokens": out}

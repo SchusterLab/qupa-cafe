@@ -30,7 +30,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import host as host_module  # noqa: E402
 from host import (  # noqa: E402
-    Texts,
     KIT_VERSION_HEADER,
     Agent,
     Config,
@@ -833,7 +832,6 @@ def endpoint(state):
     Handler.host = StubHost(config, state)
     Handler.kit = kit_at("0.9.0")
     Handler.keys = StubKeys()
-    Handler.texts = Texts(config)
     Handler.policy_topic = StubPolicyTopic()
 
     server = serve(Handler)
@@ -973,14 +971,6 @@ def test_a_current_client_with_a_credential_is_served(endpoint):
     assert status == 200
     assert payload["agent"] == "yoshi-agent"
     assert "upgrade" not in payload
-
-
-def test_a_kit_up_to_0_22_0_is_served_the_kit_s_own_wording(endpoint):
-    """It keeps no wording of its own and defers every wake without it."""
-    texts = wake(endpoint, AUTH)[1]["texts"]
-
-    assert texts["wake_prompt"] == host_module.WAKE_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    assert "%SESSIONS%" in texts["diary_prompt"]
 
 
 def test_a_client_with_no_credential_is_refused_for_the_credential(endpoint):

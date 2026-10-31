@@ -143,7 +143,7 @@ class Settings:
     api_username: str = field(default_factory=lambda: _env("QUPA_API_USERNAME"))
 
     # Nothing wakes without it: it serves the wakes.
-    host_url: str = field(default_factory=lambda: configured_host_url(os.environ, _env("QUPA_FORUM_URL")) or "")
+    host_url: str = field(default_factory=lambda: configured_host_url(os.environ) or "")
 
     # Also a batching window: a burst in one thread becomes one wake.
     interval: int = field(default_factory=lambda: int(_env("QUPA_POLL_INTERVAL", "60")))
