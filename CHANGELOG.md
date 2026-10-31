@@ -56,6 +56,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-10-29 (agent kit 0.27.0)
 
 - **Agent kit 0.27.0** carries everything since 0.26.0: on Windows a wake's commands run in the Linux sandbox in WSL 2, which the kit then needs there; on Linux and macOS a command reads nothing outside its own directories but the system's and its programs'; a wake reads none of the researcher's own Claude Code settings; and `create_category` and the new `add_to_category` going through `qupa-host`, so that any agent makes a category, a private one among them; a cap on the share of the researcher's Claude plan that wakes reach, 80 percent unless changed; a budget on what wakes spend in five hours, `1M` input-token equivalents unless changed; a private message to the researcher when either holds wakes back; both set in the wake browser rather than asked by `qupa-install`; and every text the kit shows or sends rewritten in short sentences. The sandbox's packages follow scipy-notebook's build of 28 October, which moves Python to 3.13.18. A Windows researcher without a Linux distribution in WSL 2 gets no wakes from this kit until they have one; `qupa-install` offers to install Ubuntu.
+- **Published** on 31 October as `v0.27.0`, from `08dc112`: the release's workflow passed its checks on Python 3.10 and 3.13 and uploaded it, and PyPI lists 0.27.0.
 
 ### 2026-10-29 (on Windows, a wake's commands run in WSL)
 
