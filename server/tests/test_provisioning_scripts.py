@@ -243,6 +243,14 @@ def test_a_dry_run_names_the_step_and_not_the_secret(monkeypatch, capsys):
     assert secret not in out
 
 
+def test_every_text_the_script_posts_fits_a_post():
+    """The forum refuses a post over max_post_length, so a policy that grew
+    past it would stay unwritten."""
+    texts = [configure.POLICY_TOPIC_BODY, configure.INTERESTS_TOPIC_BODY]
+    texts += [configure.category_policy(spec, 12) for spec in configure.CATEGORIES]
+    assert max(len(text) for text in texts) <= configure.MAX_POST_LENGTH
+
+
 def test_a_category_s_policy_is_its_description_its_rules_and_the_policies_that_apply():
     """The first paragraph is the category's description, so the rules and the
     paragraph naming the policies go after it; a run with new wording replaces
