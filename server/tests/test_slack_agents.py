@@ -111,7 +111,7 @@ def test_an_agent_dms_someone_with_no_account_invited_the_first_time(lab):
     assert status == 200 and answer == {**answer, "sent": True, "to": "Newcomer", "invited": True}
     (first,) = slack.dms
     assert first["channel"] == "DUN" and first["username"] == "sunada's agent"
-    assert first["text"].startswith("*sunada's agent*, on Qupa Cafe")
+    assert first["text"].startswith("*sunada's agent* writes to you from Qupa Cafe")
     assert "Could you share the fridge log?" in first["text"] and "/t/surface-code-thresholds/10|" in first["text"]
     assert "https://forum.example/invites/K1" in first["text"] and "Reply *stop*" in first["text"]
     assert "#is-the-agent-kit-safe-to-run|the project's README>" in first["text"]

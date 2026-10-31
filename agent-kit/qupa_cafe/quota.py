@@ -43,8 +43,8 @@ KEY = "QUPA_QUOTA_CAP"
 
 # What the wake browser's key steps through, in order; empty is no cap.
 CAPS = ("", "50", "70", "80", "90", "95")
-# What qupa-install offers first.
-SUGGESTED = "80"
+# The cap while env does not name one.
+DEFAULT = "80"
 
 # The windows Claude Code reports, and their names for a person.
 WINDOWS = {"five_hour": "five-hour", "seven_day": "weekly"}
@@ -54,7 +54,8 @@ WINDOWS = {"five_hour": "five-hour", "seven_day": "weekly"}
 # (qupa_cafe.wakes.equivalent), such as 500k or 1M; empty for none.
 BUDGET_KEY = "QUPA_WAKE_BUDGET"
 BUDGETS = ("", "250k", "500k", "1M", "2M", "5M")
-SUGGESTED_BUDGET = "1M"
+# The budget while env does not name one.
+DEFAULT_BUDGET = "1M"
 BUDGET_SECONDS = 5 * 3600
 UNITS = {"": 1, "k": 1_000, "m": 1_000_000}
 
@@ -94,8 +95,9 @@ def budget_of(value: str) -> str:
 
 def read(path: Path | None = None, key: str = KEY) -> str:
     """The cap, or with ``key`` BUDGET_KEY the budget, as env says now, else
-    as this process's environment does, else none."""
-    value = os.environ.get(key, "")
+    as this process's environment does, else the default. An empty value
+    is none."""
+    value = os.environ.get(key, DEFAULT_BUDGET if key == BUDGET_KEY else DEFAULT)
     try:
         lines = (path or diary.env_file()).read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -296,10 +298,11 @@ def said_to_the_forum(found: Reached) -> str:
     """Why the agent waits, for somebody waiting on it; the time is in UTC,
     since they may be anywhere."""
     if found.key == KEY:
-        return (f"its researcher's Claude plan has used {found.used} of its {found.window} limit, and they stop "
-                f"its wakes at {found.limit}% ({KEY}), so it waits until the limit resets at {found.when}")
-    return (f"its wakes have spent {found.used} input-token equivalents of its researcher's Claude usage in the "
-            f"last five hours, and they allow {found.limit} ({BUDGET_KEY}), so it waits until {found.when}")
+        return (f"its researcher's Claude plan has used {found.used} of its {found.window} limit, and its "
+                f"researcher stops its wakes at {found.limit}% ({KEY}). Wakes start again when the limit resets "
+                f"at {found.when}")
+    return (f"its wakes have spent {found.used} input-token equivalents in the last five hours, and its "
+            f"researcher allows them {found.limit} ({BUDGET_KEY}). Wakes start again at {found.when}")
 
 
 def said_to_the_researcher(found: Reached, agent: str) -> tuple[str, str]:
@@ -307,18 +310,18 @@ def said_to_the_researcher(found: Reached, agent: str) -> tuple[str, str]:
     if found.key == KEY:
         title = f"{agent} has stopped waking: your Claude plan reached your cap"
         why = (f"Your Claude plan has used {found.used} of its {found.window} limit, and you stop {agent}'s wakes "
-               f"at {found.limit}% (`{KEY}`). That counts your own sessions too.")
-        change = "`c` steps the cap"
+               f"at {found.limit}% (`{KEY}`). This usage includes your own sessions.")
+        change = "press `c` to step the cap"
     else:
         title = f"{agent} has stopped waking: its wakes spent your budget"
         why = (f"{agent}'s wakes have spent {found.used} input-token equivalents in the last five hours, and you "
                f"allow them {found.limit} (`{BUDGET_KEY}`).")
-        change = "`b` steps the budget"
-    body = (f"{why}\n\nNo wake starts until {found.when}, and a wake still running is stopped. A mention or "
-            f"message that arrives meanwhile is told that {agent} cannot answer yet, and is answered once the limit "
-            f"lets wakes start again.\n\nTo change the limit, open the wake browser from the tray's **Show wakes**, "
-            f"where {change}, or edit `{found.key}` in the kit's `env`; the daemon reads it again before every "
-            f"wake. You are told once each time a limit is reached.")
+        change = "press `b` to step the budget"
+    body = (f"{why}\n\nNo wake starts until {found.when}, and a wake still running is stopped. If somebody "
+            f"mentions or messages {agent} meanwhile, they are told that it cannot answer yet. {agent} answers "
+            f"them once wakes start again.\n\nTo change the limit, open the wake browser from the tray's "
+            f"**Show wakes** and {change}. You can also edit `{found.key}` in the kit's `env` file. The daemon "
+            f"reads it before every wake.\n\nYou get this message once each time a limit is reached.")
     return title, body
 
 

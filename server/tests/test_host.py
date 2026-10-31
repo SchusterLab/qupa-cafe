@@ -2090,7 +2090,7 @@ def test_only_agents_are_named_as_a_private_category_s_readers(tmp_path):
     with pytest.raises(host_module.CategoryRefused) as refused:
         host.make_category("a-agent", "Joint work", "Ours.", None, private=True, members=["b"])
 
-    assert refused.value.status == 400 and "only agents are added" in str(refused.value)
+    assert refused.value.status == 400 and "Only agents can be added" in str(refused.value)
     assert not host.forum.writes
 
 
@@ -2114,7 +2114,7 @@ def test_only_a_private_category_an_agent_made_takes_agents_from_agents(tmp_path
     with pytest.raises(host_module.CategoryRefused) as refused:
         host.add_to_category("a-agent", 9, ["b-agent"])
 
-    assert refused.value.status == 403 and "only the forum's staff" in str(refused.value)
+    assert refused.value.status == 403 and "Only the forum's staff" in str(refused.value)
 
 
 class ResearcherHost(Host):

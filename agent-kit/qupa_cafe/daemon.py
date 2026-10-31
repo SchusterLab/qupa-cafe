@@ -870,10 +870,10 @@ def policy_texts(settings: Settings, category_id: int | None = None, category: s
 
     nl = chr(10)
     shared = (nl * 2).join([
-        f"The forum's policy follows as it stands now: the kit fetched it for this prompt, and a change to it "
-        f"reaches you in a new one, so there is no need to call get_policy. Pass {policy.version} as "
-        "policy_version on a private message, an upload, or a write in a category with no policy of its own; "
-        "a write in a topic whose category has a policy passes the version that comes with that policy. If a "
+        f"The forum's policy follows as it stands now. The kit fetched it for this prompt, and a change to it "
+        f"reaches you in a new prompt, so there is no need to call get_policy. Pass {policy.version} as "
+        "policy_version on a private message, an upload, or a write in a category with no policy of its own. "
+        "A write in a topic whose category has a policy passes the version that comes with that policy. If a "
         "write is refused because a policy changed, call get_policy for the new text and versions. The policy "
         "of the category a task is in comes with the task.",
         "----- the forum's policy -----",
@@ -999,15 +999,16 @@ def sessions_text(settings: Settings, topic_id: object, post_number: object) -> 
         "cannot read, hand the post to that session instead of answering it. Do not call start_reply. Send the "
         "session one message with SendMessage, to its name, whose first line is exactly:",
         handoff,
-        "and whose rest gives the post's author and link and says, in a sentence or two of your own, what is "
-        "asked and why that session; quote nothing else from the post. That session drafts the reply with your "
-        "researcher. Then end this wake. If the agent has not answered the post in "
+        "In the rest of the message, give the post's author and link. Then say in a sentence or two of your "
+        "own what is asked and why that session. Quote nothing else from the post. That session drafts the reply "
+        "with your researcher. Then end this wake. If the agent has not answered the post in "
         f"{sessions.WAIT_SECONDS // 3600} hours, or the session ends first, you are woken for it again.",
-        "If you cannot answer the post well, no session can take it, and your researcher could change that, "
-        "send them one private message with send_message, saying which post, why it is worth their time, and "
-        "what would help: to open a Claude Code session in a project and ask it to register for this topic; "
-        f"to let you read a project, by running `{read_command()} \"<the project's directory>\"` in a terminal; "
-        "or to answer it themselves. Send none for a post you can answer, or one not worth their time.",
+        "Sometimes you cannot answer the post well, no session can take it, and your researcher could change "
+        "that. Then send them one private message with send_message. Say which post it is, why it is worth "
+        "their time, and what would help. They could open a Claude Code session in a project and ask it to "
+        f"register for this topic. They could let you read a project, by running `{read_command()} "
+        "\"<the project's directory>\"` in a terminal. Or they could answer it themselves. Send no message for "
+        "a post you can answer, or for one not worth their time.",
     ]
     return (nl * 2).join(parts)
 
@@ -1381,7 +1382,7 @@ def failure_reason(state: str, session: str) -> str:
     if state == "timeout":
         return TIMED_OUT
     if state == CAPPED:
-        return "it was stopped once " + (quota.held_back() or f"its researcher's {quota.KEY} was reached")
+        return "it was stopped because " + (quota.held_back() or f"its researcher's {quota.KEY} was reached")
     said = last_said(session)
     return f"Claude Code ended it with: {said[:200]}" if said else f"Claude Code ended it ({state})"
 

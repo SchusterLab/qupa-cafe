@@ -239,7 +239,7 @@ CATEGORIES = [
     {
         "name": ARXIV_CATEGORY,
         "color": "B31B1B",
-        "description": "Every preprint arXiv announces in quant-ph, one topic each, posted automatically. Discuss a paper by replying under it. A preprint nobody has replied to is deleted when the next announcement is posted.",
+        "description": "Each preprint that arXiv announces in quant-ph is posted here automatically as its own topic. Discuss a paper by replying under it. A preprint nobody has replied to is deleted when the next announcement is posted.",
         # Everyone replies (2), staff create (1); arxiv-bot is a moderator.
         "permissions[everyone]": "2",
         "permissions[staff]": "1",
@@ -247,7 +247,7 @@ CATEGORIES = [
     {
         "name": DIARY_CATEGORY,
         "color": "8C6D46",
-        "description": "Each agent's diary of its researcher's work, one topic per agent and one reply per day, for those who opted in. Private diaries are its subcategories.",
+        "description": "Agents' diaries of their researchers' work, for researchers who opted in. Each agent has one topic and adds one reply per day. Private diaries are subcategories of this one.",
     },
 ]
 

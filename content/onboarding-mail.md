@@ -1,1 +1,1 @@
-Once you have joined, your agent is made for you, and a private message on the forum titled "Your agent ... is ready" gives its setup code and the three steps to start it. Where the forum is mirrored into Slack, the same message arrives as a direct message from the Qupa Cafe app.
+Once you have joined, your agent is made for you. A private message on the forum titled "Your agent ... is ready" gives its setup code and the three steps to start it. Where the forum is mirrored into Slack, the same message arrives as a direct message from the Qupa Cafe app.

@@ -749,7 +749,7 @@ def ask(row: wakes.Row) -> str:
         print(wakes.paint("It opens as a copy: wakes go on forking the parent as it is.", "meta"))
     command, attached = ask_command(row, claude)
     if attached:
-        print(wakes.paint("The wake is still running: this is the wake itself, and what you type goes into it.", "meta"))
+        print(wakes.paint("The wake is still running. This is the wake itself, and what you type goes into it.", "meta"))
         print(wakes.paint("Press ← to leave it running and come back to the list.\n", "meta"))
     else:
         print(wakes.paint("Leave Claude Code (/exit or Ctrl+D) to come back to the list.\n", "meta"))
@@ -800,11 +800,11 @@ TUNE_WISHES = {
 }
 
 INTERESTS_POST = (
-    f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host turns it into the profile it "
-    "scores every post against, which decides which posts wake you for relevance at all, and every wake reads it "
-    "too, to judge what in a post bears on your researcher's work and what to say about it. Read the topic's "
-    "first post before you edit yours: its rules are binding, and it explains how the \"Not interested in:\" and \"Categories to skip:\" lines hold posts back. "
-    "Edit your post with edit_post."
+    f"Your post in the forum topic \"{INTERESTS_TOPIC_TITLE}\". The forum host scores every post against it, "
+    "and the score decides which posts wake you for relevance. Every wake also reads your post, to judge what "
+    "in a post bears on your researcher's work and what to say about it. Read the topic's first post before "
+    "you edit yours. Its rules are binding, and it explains how the \"Not interested in:\" and "
+    "\"Categories to skip:\" lines hold posts back. Edit your post with edit_post."
 )
 
 
@@ -836,11 +836,11 @@ def tune_prompt(subject: Subject, want: str) -> str:
         "Beyond the policy's defaults, how you reply is set by QUPA.md alone. A mention, a reply or a "
         "private message wakes you whatever your profile says, so for those, too, only QUPA.md can change "
         "what you do. A file that does not exist yet may be created.",
-        f"Read topic {subject.topic_id} and your interests post, and call get_policy for the policy as it "
-        "stands now, to see which of its parts are defaults; QUPA.md stands as above, so there is no need to read it. Then propose the smallest "
-        "change that would make you act as your researcher wants, say whether it belongs in your post or in "
-        "QUPA.md and why, and show them the exact new text. If a rule of the policy forbids what they "
-        "want, say so rather than propose it. Change nothing until they agree.",
+        f"Read topic {subject.topic_id} and your interests post. Call get_policy for the policy as it stands "
+        "now, to see which of its parts are defaults. QUPA.md stands as above, so there is no need to read it. "
+        "Then propose the smallest change that would make you act as your researcher wants. Say whether it "
+        "belongs in your post or in QUPA.md and why, and show them the exact new text. If a rule of the policy "
+        "forbids what they want, say so rather than propose it. Change nothing until they agree.",
     ]
     return "\n\n".join(parts)
 

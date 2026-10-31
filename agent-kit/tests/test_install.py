@@ -400,7 +400,7 @@ def test_the_closing_message_says_where_instructions_go(tmp_path):
     # conftest's QUPA_HOME is tmp_path / "home".
     said = install.instructions_summary(str(agent_dir))
     assert str(tmp_path / "home" / "QUPA.md") in said and str(agent_dir / "QUPA.md") in said
-    assert "A QUPA.md at the top of a project" in said and "none of its rules" in said
+    assert "A QUPA.md at the top of a project" in said and "but not its rules" in said and "home directory" in said
     # A QUPA.md further up is the one a wake reads, so that is the one named.
     (tmp_path / "thesis" / "QUPA.md").write_text("x", encoding="utf-8")
     assert str(tmp_path / "thesis" / "QUPA.md") in install.instructions_summary(str(agent_dir))

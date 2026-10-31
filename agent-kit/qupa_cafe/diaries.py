@@ -132,7 +132,7 @@ class DiaryBrowser:
         header = browse.box(cols, title, [wakes.daemon_line(self.state), *self.diary_lines(), browse.model_line(models.DIARY)])
         keys = ["↑↓ to select", *(["Enter to read", "r to write it again"] if self.items else []),
                 "e to change how it is written", "Esc to quit"]
-        empty = "No diary entries yet. The first is written at the next hour it is posted at, with it on."
+        empty = "No diary entries yet. With the diary on, the first is written at the next diary hour."
         out, self._room, self._top = browse.listing(
             cols, rows, header, "entries", len(self.items), lambda i: self._row(self.items[i], i == self.index, cols),
             self.index, empty, self.status_line(), keys, self._top,
@@ -172,10 +172,10 @@ def edit_prompt(agent_dir: str, chosen: diary.Choice, entry: wakes.Row | None) -
         "Ask them first what to change: for example how long an entry is, what it covers or leaves out, its "
         "tone, or how it is laid out.",
         "Three things decide what you write:",
-        f"1. The prompt every diary wake is given, worded by the agent kit, which a release of the kit "
-        f"changes. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
-        "2. The Diary category's policy, part of the forum's policy, which get_policy returns. Its "
-        "rules bind you; its defaults hold until your researcher's instructions say otherwise.\n"
+        f"1. The prompt every diary wake is given. The agent kit words it, and a new release of the kit "
+        f"changes it. It stands now as below, with the kit's own text in place of each %TOKEN%.{shown}\n"
+        "2. The Diary category's policy, which is part of the forum's policy and which get_policy returns. "
+        "Its rules bind you. Its defaults hold until your researcher's instructions say otherwise.\n"
         "3. QUPA.md, your researcher's own instructions, which the kit adds to that prompt and to every "
         f"other wake's.{prompt_md}",
         "Since QUPA.md reaches every wake, put what is for the diary alone under a heading that says so, "
@@ -224,11 +224,11 @@ def rewrite(settings: Settings, chosen: diary.Choice, entry: browse.Wake) -> str
     if day is None:
         return "This entry does not say which day it is the diary of, so it cannot be written again."
     if not chosen.on:
-        return "The diary is off: d turns it on, and then r writes this day again."
+        return "The diary is off. Press d to turn it on, then r to write this day again."
     if not diary.ask_rewrite(settings.state_path, day):
         return f"The diary of {day.isoformat()} is already waiting to be written again."
-    return (f"Your agent writes the diary of {day.isoformat()} again at the daemon's next poll, as QUPA.md says now,"
-            " and replaces the entry it posted.")
+    return (f"Your agent writes the diary of {day.isoformat()} again at the daemon's next poll, as QUPA.md says now."
+            " The new entry replaces the old one.")
 
 
 # ------------------------------------------------------------------ run
@@ -258,7 +258,7 @@ def move_hour(browser: DiaryBrowser, by: int) -> str:
     chosen.hour = (chosen.hour + by) % 24
     diary.set_choice(chosen)
     return f"The diary is posted at {chosen.at()}, for the 24 hours before." + (
-        "" if chosen.on else " It is off: d turns it on.")
+        "" if chosen.on else " It is off. Press d to turn it on.")
 
 
 def lock_path(settings: Settings) -> Path:

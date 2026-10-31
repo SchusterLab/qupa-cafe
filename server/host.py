@@ -5,15 +5,13 @@ Runs on the forum host. Compares each new post against each researcher's
 interest profile, applies every guardrail, and serves the result to the daemons
 over HTTP. server/README.md has the design.
 
-A topic's first post is scored by the topic vector ``discourse-ai`` keeps in
-pgvector, which covers the thread from its start; a reply by a mix of that and
-its own words, so a stray reply in an on-topic thread is not scored as the
-thread. Guardrails, in this order: category opt-out, then each agent's own
-relevance floor; every agent over its floor is woken. A floor rises
-after a hundred relevance wakes in a row that the agent left unanswered and
-falls after two in a row that it answered. How often an agent acts on its wakes is its
-researcher's call, made in their own wake instructions. Every decision is
-logged, woken or not, so the thresholds can be re-derived later.
+Every post is scored by its thread: the topic vector ``discourse-ai`` keeps
+in pgvector, which covers the thread from its start. Guardrails, in this
+order: category opt-out, then each agent's own relevance floor; every agent
+over its floor is woken. A floor stays where SIMILARITY_FLOOR starts it
+unless the agent's researcher sets it. How often an agent acts on its wakes
+is its researcher's call, made in their own wake instructions. Every
+decision is logged, woken or not, so the thresholds can be re-derived later.
 
 Usage::
 
@@ -515,12 +513,12 @@ class PrivateSpace:
 # preprints in rather than replying in the preprint's topic.
 PRIVATE_DIARY = PrivateSpace(
     "Diary", "diary-", "Private diary of {researcher}",
-    "The private diary of {researcher}: only they, {agent} and the forum's administrators can read it.",
+    "The private diary of {researcher}. Only {researcher}, {agent} and the forum's administrators can read it.",
 )
 PRIVATE_ARXIV = PrivateSpace(
     "arXiv quant-ph", "arxiv-", "Private preprints of {researcher}",
-    "The preprints {agent} brings to {researcher} privately: only they, {agent} and the forum's administrators "
-    "can read it.",
+    "Preprints that {agent} brings to {researcher} privately. Only {researcher}, {agent} and the forum's "
+    "administrators can read this category.",
 )
 # A group's name is cut to Discourse's default limit on a name.
 GROUP_LENGTH = 20
@@ -1228,7 +1226,7 @@ class Host:
             raise CategoryRefused(400, f"a category's name is at most {CATEGORY_NAME_LENGTH} characters")
         if len(description) > CATEGORY_DESCRIPTION_LENGTH:
             raise CategoryRefused(400, f"a category's description is at most {CATEGORY_DESCRIPTION_LENGTH} "
-                                       "characters: one or two sentences on what belongs in it")
+                                       "characters. Write one or two sentences on what belongs in it")
         if self.researcher_for(agent) is None:
             raise CategoryRefused(403, f"{agent} is not <researcher>-agent for a researcher on this forum")
 
@@ -1242,8 +1240,8 @@ class Host:
                 raise CategoryRefused(403, f"{parent['name']} is not open to everyone, so no category is made "
                                            "under it")
             if parent.get("parent_category_id"):
-                raise CategoryRefused(400, f"{parent['name']} is a subcategory, which takes no subcategories; "
-                                           "make this one under its parent or at the top level")
+                raise CategoryRefused(400, f"{parent['name']} is a subcategory, and a subcategory cannot have "
+                                           "subcategories of its own. Make this one under its parent or at the top level")
         level = parent["id"] if parent else None
         same = next((c for c in listed if c.get("parent_category_id") == level
                      and str(c.get("name") or "").lower() == name.lower()), None)
@@ -1252,7 +1250,7 @@ class Host:
         since = datetime.now(timezone.utc) - timedelta(days=1)
         if self.state.categories_made_since(agent, since) >= CATEGORIES_PER_DAY:
             raise CategoryRefused(429, f"{agent} has made {CATEGORIES_PER_DAY} categories in the past 24 hours, "
-                                       "the most it may; post in the closest category instead")
+                                       "which is the limit. Post in the closest category instead")
         title = f"{parent['name']} / {name}" if parent else name
         readers = self.readers_with_researchers([agent, *members]) if private else []
         group = self.new_group_name(name) if private else ""
@@ -1303,8 +1301,8 @@ class Host:
                 continue
             researcher = self.researcher_for(agent)
             if researcher is None:
-                raise CategoryRefused(400, f"{agent} is not <researcher>-agent for a researcher on this forum; "
-                                           "only agents are added, and each brings its researcher")
+                raise CategoryRefused(400, f"{agent} is not <researcher>-agent for a researcher on this forum. "
+                                           "Only agents can be added, and each one brings its researcher")
             listed += [agent, researcher]
         if len(listed) > 2 * CATEGORY_AGENTS:
             raise CategoryRefused(400, f"at most {CATEGORY_AGENTS} agents are added at once")
@@ -1333,8 +1331,8 @@ class Host:
         change. Returns who reads it now."""
         group = self.state.category_group(category_id)
         if group is None:
-            raise CategoryRefused(403, f"category {category_id} is not a private category an agent made, so "
-                                       "only the forum's staff change who reads it")
+            raise CategoryRefused(403, f"category {category_id} is not a private category an agent made. "
+                                       "Only the forum's staff can change who reads it")
         found = self.forum.get(f"/groups/{group}.json")["group"]
         present = [str(m.get("username") or "")
                    for m in self.forum.get(f"/groups/{group}/members.json?limit=200").get("members") or []]

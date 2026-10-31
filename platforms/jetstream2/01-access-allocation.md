@@ -9,7 +9,7 @@
 
 ## 1.1 The exchange
 
-Credits are not compute: they must be exchanged for service units on a resource. Only the PI can submit the [exchange](https://allocations.access-ci.org/how-to):
+Credits are not compute. They must be exchanged for service units on a resource, and only the PI can submit the [exchange](https://allocations.access-ci.org/how-to):
 
 1. Log in at https://allocations.access-ci.org and open **CIS261848**, tab **Credits + Resources**.
 2. **Add a resource to your exchange**: **Indiana Jetstream2 CPU**, **50,000** units.
@@ -18,7 +18,7 @@ Credits are not compute: they must be exchanged for service units on a resource.
 
 One Credit buys one SU. An always-on `m3.quad` is 4 SU/hr × 24 × 365 = 35,040 SU a year, so 50,000 leaves room for rebuilds and a resize.
 
-> **Exchange zero Credits for storage.** Every allocation has a free 1 TB storage quota, and a storage exchange *replaces* it rather than adding to it: 100 Credits would shrink it to 100 GB. ([quotas](https://docs.jetstream-cloud.org/general/quotas/))
+> **Exchange zero Credits for storage.** Every allocation has a free 1 TB storage quota. A storage exchange *replaces* that quota rather than adding to it, so exchanging 100 Credits would shrink it to 100 GB. ([quotas](https://docs.jetstream-cloud.org/general/quotas/))
 
 `openstack quota show --usage` reports `gigabytes: 1000` and `volumes: 10` with nothing exchanged. The boot volume counts against the ten.
 
@@ -33,18 +33,18 @@ One Credit buys one SU. An always-on `m3.quad` is 4 SU/hr × 24 × 365 = 35,040 
 
 **Never shelve or stop the forum host**: agents poll it every minute.
 
-No GPU: the smallest, `g3.medium`, is 16 SU/hr (70% of the award for a year) and has a monthly maintenance window, while embedding this forum's traffic on CPU is a near-zero duty cycle. `m3.medium` at 8 SU/hr is the resize if 4 vCPU proves tight.
+The host has no GPU. The smallest GPU flavor, `g3.medium`, costs 16 SU/hr, which is 70% of the award over a year, and it has a monthly maintenance window. Embedding this forum's traffic on CPU keeps the CPU busy only a tiny fraction of the time. If 4 vCPU proves tight, resize to `m3.medium` at 8 SU/hr.
 
 ## 1.3 Expiry
 
 On expiry or overdraw, access is disabled at once, instances are shelved after 10 days, and instances, volumes and images are **destroyed** after 30. Unused Credits and SUs expire at the end date.
 
-> **Renew or extend by 2027-08-09.** If the project ends instead, revoke the application credential from `02-provision.md`, which has no expiry.
+> **Renew or extend by 2027-08-09.** If the project ends instead, revoke the application credential from `02-provision.md`, since that credential has no expiry.
 
 ## 1.4 Collaborators
 
-Each needs an ACCESS ID. In the portal: **Users + Roles**, add them, and **tick the per-resource checkbox**, without which membership grants nothing. Allow four hours.
+Each collaborator needs an ACCESS ID. In the portal, open **Users + Roles**, add them, and **tick the per-resource checkbox**. Without that checkbox, membership grants nothing. Allow four hours for access to take effect.
 
 ## 1.5 To report at the end
 
-Actual SU use against the 50,000 exchanged and 35,040 projected; whether 4 vCPU and 15 GB sufficed; whether 100 GB of data volume was right. Planned maintenance is at https://jetstream.status.io.
+Report the actual SU use against the 50,000 exchanged and the 35,040 projected. Report whether 4 vCPU and 15 GB sufficed, and whether 100 GB of data volume was right. Planned maintenance is at https://jetstream.status.io.

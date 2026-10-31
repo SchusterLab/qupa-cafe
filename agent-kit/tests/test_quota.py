@@ -85,6 +85,14 @@ def test_the_cap_and_the_budget_are_kept_in_env_beside_the_other_settings():
     assert quota.read(env, key=quota.BUDGET_KEY) == "2M"
 
 
+def test_an_env_without_them_has_the_defaults_and_an_empty_one_none():
+    env = install.ENV_PATH
+    env.write_text("QUPA_API_KEY=k\n", encoding="utf-8")
+    assert (quota.read(env), quota.read(env, key=quota.BUDGET_KEY)) == ("80", "1M")
+    env.write_text("QUPA_QUOTA_CAP=\nQUPA_WAKE_BUDGET=\n", encoding="utf-8")
+    assert (quota.read(env), quota.read(env, key=quota.BUDGET_KEY)) == ("", "")
+
+
 @pytest.mark.parametrize("key, choices, step", [(quota.KEY, quota.CAPS, quota.step),
                                                 (quota.BUDGET_KEY, quota.BUDGETS, quota.step_budget)])
 def test_the_browser_s_keys_step_through_the_choices(key, choices, step):
@@ -157,7 +165,7 @@ def test_the_budget_counts_the_last_five_hours_of_the_agent_s_wakes(claude_home)
     assert quota.held_back() == ""
     quota.write("500k", key=quota.BUDGET_KEY)
     held = quota.held_back()
-    assert held.startswith("its wakes have spent 500k input-token equivalents") and "allow 500k (QUPA_WAKE_BUDGET)" in held
+    assert held.startswith("its wakes have spent 500k input-token equivalents") and "allows them 500k (QUPA_WAKE_BUDGET)" in held
     # Under again once the hour-old 300k is five hours old.
     assert time.strftime("%H:%M UTC", time.gmtime(time.time() - 3600 + quota.BUDGET_SECONDS)) in held
 
@@ -226,7 +234,7 @@ def test_a_wake_that_reaches_a_limit_is_stopped(claude_home, monkeypatch, limit)
     assert (state, session) == (daemon.CAPPED, "full")
     assert ["stop", "2bc6e6bc"] in ran
     assert daemon.failure_reason(state, session).startswith(
-        "it was stopped once " + ("its researcher's Claude plan has used 95%" if limit == "cap" else "its wakes have spent 2.0M"))
+        "it was stopped because " + ("its researcher's Claude plan has used 95%" if limit == "cap" else "its wakes have spent 2.0M"))
 
 
 class Messages:
@@ -254,7 +262,7 @@ def test_the_researcher_is_told_once_when_a_limit_is_reached(claude_home):
     assert daemon.limit_pass(TOLD, forum) is True
     ((recipient, title, raw),) = forum.sent
     assert recipient == "sunada" and title == "sunada-agent has stopped waking: your Claude plan reached your cap"
-    assert "Your Claude plan has used 85% of its five-hour limit" in raw and "`c` steps the cap" in raw
+    assert "Your Claude plan has used 85% of its five-hour limit" in raw and "press `c` to step the cap" in raw
     # Not again while the cap holds wakes back.
     assert daemon.limit_pass(TOLD, forum) is False and len(forum.sent) == 1
 
@@ -303,32 +311,18 @@ def test_the_message_is_a_private_message_to_the_researcher(forum):
 # ---------------------------------------------- qupa-install and the browser
 
 
-@pytest.mark.parametrize("ask, setting, answers, value", [
-    (install.ask_quota, "quota_cap", [""], "80"),
-    (install.ask_quota, "quota_cap", ["none"], ""),
-    (install.ask_quota, "quota_cap", ["150", "75"], "75"),
-    (install.ask_budget, "wake_budget", [""], "1M"),
-    (install.ask_budget, "wake_budget", ["none"], ""),
-    (install.ask_budget, "wake_budget", ["lots", "300k"], "300k"),
-])
-def test_qupa_install_asks_for_the_cap_and_the_budget(monkeypatch, ask, setting, answers, value):
-    given = iter(answers)
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(given))
-    settings = {}
-    ask(settings)
-    assert settings[setting] == value
-
-
-def test_a_scripted_install_writes_neither_so_a_later_one_in_a_terminal_asks():
+def test_qupa_install_keeps_the_limits_the_wake_browser_set():
     install.write_env(INSTALLED)
-    written = install.ENV_PATH.read_text(encoding="utf-8")
-    assert quota.KEY not in written and quota.BUDGET_KEY not in written
-    install.write_env({**INSTALLED, "quota_cap": "70", "wake_budget": "500k"})
+    assert quota.KEY not in install.ENV_PATH.read_text(encoding="utf-8")
+    quota.write("70")
+    quota.write("500k", key=quota.BUDGET_KEY)
+    install.write_env(INSTALLED)
     written = install.ENV_PATH.read_text(encoding="utf-8")
     assert f"{quota.KEY}=70" in written and f"{quota.BUDGET_KEY}=500k" in written
 
 
 def test_the_wake_browser_shows_the_cap_and_the_last_reading():
+    quota.write("")
     assert "No cap" in browse.visible(browse.quota_line())
     quota.write("80")
     quota.record(_status(five_hour=85, seven_day=10), now=time.time())
@@ -338,6 +332,7 @@ def test_the_wake_browser_shows_the_cap_and_the_last_reading():
 
 
 def test_the_wake_browser_shows_the_budget_and_what_wakes_spent(claude_home):
+    quota.write("", key=quota.BUDGET_KEY)
     assert "No budget" in browse.visible(browse.budget_line())
     _spent(claude_home, "a", (60, 600_000))
     quota.write("500k", key=quota.BUDGET_KEY)

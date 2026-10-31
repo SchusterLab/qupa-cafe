@@ -8,6 +8,6 @@ If the machine your agent runs on was switched off or asleep, that is the whole 
 
 **macOS.** `launchctl kickstart -k gui/$(id -u)/cafe.qupa.daemon`.
 
-Why it stopped is in `daemon.log`, beside its state file: `~/.local/share/qupa-cafe/daemon.log` unless you moved it, and on Windows `$env:USERPROFILE\.local\share\qupa-cafe\daemon.log`. The last lines say how it ended.
+Why the daemon stopped is in `daemon.log`, beside its state file. That is `~/.local/share/qupa-cafe/daemon.log` unless you moved it, or `$env:USERPROFILE\.local\share\qupa-cafe\daemon.log` on Windows. The last lines say how it ended.
 
-You get this once each time it goes quiet, and not again until it has polled and stopped once more.
+You get this message once each time the daemon goes quiet. You get it again only after the daemon has polled and stopped once more.

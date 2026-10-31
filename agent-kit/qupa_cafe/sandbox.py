@@ -214,7 +214,7 @@ def decide(event: dict, config: dict | None) -> dict | None:
     if tool in WRITE_TOOLS:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), protected, cwd):
-            return answer("deny", f"{path} steers your wakes, so it is read-only here; your researcher edits it.")
+            return answer("deny", f"{path} steers your wakes, so it is read-only here. Your researcher edits it.")
         if path and config.get("wsl") and within(str(path), [config["workspace"]], cwd):
             # Claude Code asks before writing to a network path such as
             # \\wsl.localhost, whatever the hook approves, and a wake has
@@ -306,16 +306,17 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
         agent_dir = str(Path(agent_dir).resolve())
     if agent_dir and agent_dir in dirs:
         where = (
-            f"Commands start in your working directory, {agent_dir}; you can write there and in "
-            f"{workspace}, which is HOME there and keeps what you leave for later wakes. Put scratch files "
-            "in $TMPDIR, since /tmp may not be writable."
+            f"Commands start in your working directory, {agent_dir}. You can write there and in "
+            f"{workspace}, which is HOME in the sandbox and keeps what you leave for later wakes. Put scratch "
+            "files in $TMPDIR, since /tmp may not be writable."
         )
         if config.get("protected"):
             where += " QUPA.md, CLAUDE.md and the other files that steer your wakes are read-only there."
     else:
         where = (
-            f"Commands start in {workspace}, which is HOME there and the only place you can write; it keeps "
-            "what you leave for later wakes. Put scratch files in $TMPDIR, since /tmp may not be writable."
+            f"Commands start in {workspace}, which is HOME in the sandbox and the only place you can write. "
+            "It keeps what you leave for later wakes. Put scratch files in $TMPDIR, since /tmp may not be "
+            "writable."
         )
         if agent_dir:
             where += f" Your working directory, {agent_dir}, is outside the sandbox."
@@ -335,10 +336,11 @@ def wake_notice(config: dict, agent_dir: str = "") -> str:
     return (
         "Bash runs each command in a sandbox with internet access, though not to this machine's or its "
         f"network's own addresses. {where} Give Write and Edit absolute paths. Python is a pixi environment "
-        "with the scipy-notebook packages, already active; add a package with `pixi add <name>` from "
-        "conda-forge or `pixi add --pypi <name>`, never pip or conda, and it stays for later wakes. Save a "
-        "figure with savefig, look at it with Read, and attach it with attach_file's path. A command stops "
-        "after two minutes unless you give Bash a longer timeout, up to ten, and the wake after fifteen."
+        "with the scipy-notebook packages, already active. Add a package with `pixi add <name>` from "
+        "conda-forge or `pixi add --pypi <name>`, never with pip or conda. A package you add stays for later "
+        "wakes. Save a figure with savefig, look at it with Read, and attach it with attach_file's path. A "
+        "command stops after two minutes unless you give Bash a longer timeout, of up to ten minutes. The "
+        "whole wake stops after fifteen minutes."
     )
 
 
@@ -847,8 +849,9 @@ def wsl_setup(distro: str, writable: list[str], protected: list[str], projects: 
     cli = runtime_dir() / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
     if (runtime_dir() / "windows-install.json").is_file() and cli.is_file():
         # The account kits up to 0.26.0 ran commands as, which nothing uses now.
-        print("  The Windows account srt-sandbox, which ran commands before, is still here. To remove")
-        print(f'  it and its firewall rules (one UAC prompt): "{find("node")}" "{cli}" windows-uninstall')
+        print("  The Windows account srt-sandbox and its firewall rules are still on this machine,")
+        print("  and this kit does not use them. To remove them, with one UAC prompt, run:")
+        print(f'    "{find("node")}" "{cli}" windows-uninstall')
     return check(config)
 
 
@@ -1002,8 +1005,8 @@ def setup(agent_dir: str, interactive: bool = False) -> bool:
             distro = wsl_install() if interactive else None
         if distro:
             return wsl_setup(distro, writable, protected, projects)
-        print("  To install one: run this, restart if it asks, open Ubuntu from the Start menu")
-        print("  once to choose its username, then run qupa-install again:")
+        print("  To install one, run the command below and restart if it asks. Then open Ubuntu")
+        print("  from the Start menu once to choose its username, and run qupa-install again:")
         print()
         print(f"    {WSL_INSTALL}")
         return False
@@ -1021,8 +1024,8 @@ def wsl_install() -> str | None:
     exe = wsl_exe()
     if exe is None:
         return None
-    print("  WSL's installer can install Ubuntu: it shows one UAC prompt, may need a restart,")
-    print("  and asks you to choose a username and password for Ubuntu.")
+    print("  WSL's installer can install Ubuntu. It shows one UAC prompt and may need a")
+    print("  restart. It also asks you to choose a username and password for Ubuntu.")
     if input("  Install it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
         return None
     # Not captured: its progress, the UAC prompt's outcome and Ubuntu's

@@ -157,7 +157,7 @@ def test_the_agent_is_told_who_reads_its_diary_and_how_to_post_in_it():
 
     own = diary.where_to_post("a-agent", diary.PRIVATE, private, None, DAY)
     assert "create_topic" in own and "category=6" in own and '"a-agent, 2026-10-10"' in own
-    assert "a topic of its own" in own and "only your researcher" in own
+    assert "a topic of its own" in own and "Only your researcher" in own
     assert '"diary-a-agent-2026-10-10"' in own
 
 
@@ -629,7 +629,7 @@ def test_a_day_asked_for_is_written_again_over_the_entry_posted_for_it(rewriting
     [(text, kwargs)] = woken
     assert "`edit_post`, post_id=77" in text and "post nothing new" in text
     # Taken back, so the agent writes afresh rather than adding to it.
-    assert "The old entry." not in text and "do not read the old one" in text
+    assert "The old entry." not in text and "Do not read the old one" in text
     assert forum.deleted == []
     assert "Session: mine" in text
     assert kwargs["wake"].reason.startswith(f"{diary.REASON} 2026-10-10, {diary.REWRITTEN}")

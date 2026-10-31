@@ -133,8 +133,8 @@ def _pip(rest: list[str], workspace: str) -> str | None:
         lines.append("Instead of that pip install, run:")
         if specs and all(_conda_forge_can_take(spec) for spec in specs):
             lines.append(f"  pixi add {_quoted(specs)}")
-            lines.append("which takes them from conda-forge, where the rest of the environment comes from, or, "
-                         "for a package conda-forge does not have:")
+            lines.append("That takes them from conda-forge, like the rest of the environment. For a package "
+                         "conda-forge does not have, run:")
         if specs:
             lines.append(f"  pixi add --pypi {_quoted(specs)}")
         for path in editable:

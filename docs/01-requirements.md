@@ -13,24 +13,24 @@ This guide deploys Discourse in its supported Docker configuration, with automat
 | OS | Debian-family LTS | Ubuntu 24.04 | `unattended-upgrades`, packaged Docker |
 | Docker | 20.10 | 29.1 | `launcher` refuses anything older |
 
-A smaller host runs Discourse but not Discourse plus the embedding model. Nothing auto-tunes a hand-written `app.yml`; `docs/03-install.md` has the sizing formula.
+A smaller host can run Discourse, but not Discourse and the embedding model together. Nothing tunes a hand-written `app.yml` for the host, so size it yourself with the formula in `docs/03-install.md` 3.2.
 
 ## Hostname and DNS
 
-- A **subdomain** (for example `forum.example.com`) with an A record pointing at the host, resolving before you install. Discourse will not work on a bare IP. A subdomain is also what the relay authenticates, and the forum's hostname and mail identity must be the same name.
-- Plain DNS, not a proxying CDN, so the HTTP-01 challenge reaches the host.
-- Check the answer against the host's address, not merely that something resolves: a parked domain's wildcard record resolves too. `EXPECTED_IP` in `.env` makes the install check it.
+- A **subdomain** (for example `forum.example.com`) with an A record that points at the host. It must resolve before you install. Discourse does not work on a bare IP address. The mail relay authenticates this same subdomain. The forum's hostname and its mail identity must be the same name.
+- Plain DNS, not a proxying CDN, so that the certificate's HTTP-01 challenge reaches the host.
+- Check that the name resolves to the host's address, not just that it resolves. A parked domain's wildcard record also resolves. If you set `EXPECTED_IP` in `.env`, the install script checks the address.
 
 ## Object storage
 
-S3-compatible object storage for uploads. Uploads on the local volume cannot be put behind the forum's login, because nginx serves image files off disk without asking Discourse. A store that addresses buckets only by path is fine; `docs/05-forum-config.md` 5.6 covers it.
+S3-compatible object storage for uploads. Uploads kept on the local volume cannot be put behind the forum's login, because nginx serves image files straight from disk without asking Discourse. A store that addresses buckets only by path also works (`docs/05-forum-config.md` 5.6).
 
 ## Email
 
 - A transactional relay on port 587 with STARTTLS. Direct delivery from a fresh cloud address lands in spam.
-- Authenticate the sending **subdomain** with the relay (SPF/DKIM as it asks) and publish DMARC at `p=none` until a test message is confirmed delivered.
-- Take the daily quota from the provider. This forum's only regular mail is password resets and one activation per new member; `docs/05-forum-config.md` 5.1 turns everything else off, because a quota drained by notifications takes account recovery with it.
-- Nothing validates SMTP during bootstrap. `docs/03-install.md` 3.6 makes a delivered test message a gate.
+- Authenticate the sending **subdomain** with the relay, using the SPF and DKIM records it asks for. Publish DMARC at `p=none` until a test message is confirmed delivered.
+- Note the relay's daily quota. The only mail this forum sends regularly is password resets and one activation mail per new member. `docs/05-forum-config.md` 5.1 turns all other mail off, because if notifications use up the quota, password resets stop too.
+- The bootstrap does not test SMTP. So `docs/03-install.md` 3.6 requires a delivered test message before the install counts as done.
 
 ## Storage layout
 
@@ -39,7 +39,7 @@ S3-compatible object storage for uploads. Uploads on the local volume cannot be 
 /mnt/<data>      100 GB    postgres_data, backups, model cache
 ```
 
-Set `volumes:` before the first bootstrap; moving data afterwards needs `rsync -a` to keep ownership, or Postgres refuses to start. A future major Postgres upgrade needs two to three times the database size free on the data volume.
+Set `volumes:` before the first bootstrap. To move the data afterwards, copy it with `rsync -a` so that file ownership is kept. Postgres refuses to start on data with the wrong owner. A future major Postgres upgrade needs free space on the data volume of two to three times the database's size.
 
 ## Network
 
@@ -50,7 +50,7 @@ Set `volumes:` before the first bootstrap; moving data afterwards needs `rsync -
 | 443 | inbound | The forum |
 | 587 | outbound | SMTP relay |
 
-Docker writes its own iptables chain and bypasses `ufw`, so the platform's ingress control (security group, cloud firewall) is the real one for published ports.
+Docker writes its own iptables chain and bypasses `ufw`. For published ports, the firewall that counts is the platform's ingress control, such as a security group or cloud firewall.
 
 ## Not covered
 

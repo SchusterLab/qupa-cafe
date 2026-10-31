@@ -141,8 +141,8 @@ def update() -> int:
     if run(argv) != 0:
         if latest:
             print(
-                f"\npip could not find {latest} yet, and nothing else was changed. A release takes a few\n"
-                "minutes to reach every copy of the index: try again shortly."
+                f"\npip could not find {latest} yet, and nothing else was changed. A new release takes a\n"
+                "few minutes to reach every copy of the index, so try again shortly."
             )
             return 1
         print(

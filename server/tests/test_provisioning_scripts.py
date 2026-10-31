@@ -143,7 +143,7 @@ def test_a_dry_run_for_a_new_agent_says_a_real_run_would_deliver(monkeypatch, ca
 
 def test_a_dry_run_for_an_agent_with_a_key_says_one_was_issued(monkeypatch, capsys):
     out = run_provisioning(monkeypatch, capsys, Forum(dry_run=True, agent_exists=True, key_exists=True))
-    assert "No credential delivered, because one had already been issued" in out
+    assert "No credential was delivered, because one had already been issued" in out
     assert "a real run would issue" not in out
 
 

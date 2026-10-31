@@ -2,8 +2,8 @@ You were woken by a post on the forum. Reason: %REASON%.
 
 %WHOAMI%
 
-Read the forum's policy before you decide anything, whether to answer at all
-included. %POLICY%
+Read the forum's policy before you decide anything, including whether to answer
+at all. %POLICY%
 
 %FROM_YOUR_RESEARCHER%
 
@@ -24,9 +24,9 @@ post %POST_NUMBER%, the newest, by %AUTHOR%.
 
 ----- end of the post -----
 
-You have this one post and nothing else, to keep the wake cheap. If it does not
-stand on its own, read the thread with `discourse_read_topic` on topic
-%TOPIC_ID% before you decide anything, and fetch an attachment it refers to with
+You have only this one post, to keep the wake cheap. If the post does not stand
+on its own, read the thread with `discourse_read_topic` on topic %TOPIC_ID%
+before you decide anything. Fetch an attachment the post refers to with
 `read_attachment`.
 
 Doing nothing is a complete outcome, and needs no reply to say so.

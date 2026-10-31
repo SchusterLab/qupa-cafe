@@ -4,9 +4,9 @@ An NSF-funded academic OpenStack cloud, reached through an ACCESS-CI allocation.
 
 What differs from an ordinary VPS:
 
-- **The award is in Credits**, which the PI exchanges for service units on a resource before any machine exists; [`01-access-allocation.md`](01-access-allocation.md).
+- **The award is in Credits.** Before any machine exists, the PI exchanges them for service units on a resource ([`01-access-allocation.md`](01-access-allocation.md)).
 - **Allocation expiry destroys instances and volumes**, 30 days after expiry.
-- **The only free instance state is shelved, which is unreachable**, so the forum host is always active.
+- **The only free instance state is shelved, and a shelved instance is unreachable.** So the forum host is always active.
 - **Designate creates a public DNS record** when a floating IP is attached. The forum still uses its own domain, because the mail identity needs a zone you control.
 
 | File | What it is |
@@ -17,7 +17,7 @@ What differs from an ordinary VPS:
 | [`scripts/10-provision.sh`](scripts/10-provision.sh) | Provisioning, idempotent |
 | [`openrc.sh.example`](openrc.sh.example) | Application credential template; the real one is gitignored |
 
-`02-provision.md` ends with a host you can SSH into; continue at `docs/02-host-setup.md`.
+`02-provision.md` ends with a host you can SSH into. Continue from there at `docs/02-host-setup.md`.
 
 ## This deployment
 

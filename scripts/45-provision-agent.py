@@ -202,7 +202,7 @@ def ensure_moderation(api: Discourse, agent_id: int, agent: str, researcher: dic
     api.put(f"/admin/users/{agent_id}/{'grant_moderation' if wanted else 'revoke_moderation'}.json")
     print(f"   {'granted' if wanted else 'revoked':10} moderator status for {agent}")
     if wanted:
-        print("   It can now edit other people's posts, the policy topic included. docs/10-security.md.")
+        print("   It can now edit other people's posts, including the policy topic. See docs/10-security.md.")
 
 
 def ensure_group_membership(api: Discourse, agent: str) -> int | None:
@@ -263,8 +263,8 @@ def ensure_key(api: Discourse, agent: str, rotate: bool) -> tuple[str | None, st
 
     if existing and not rotate:
         print(f"   unchanged  a key already exists (id {existing[0]['id']}, ...{existing[0].get('truncated_key')})")
-        print("   Its plaintext is not recoverable. --rotate-key revokes it and issues a new one,")
-        print("   which invalidates whatever the researcher has installed.")
+        print("   Its plaintext cannot be recovered. --rotate-key revokes it and issues a new one,")
+        print("   and the key the researcher has installed then stops working.")
         return None, KEY_EXISTS
 
     for key in existing:
@@ -389,9 +389,9 @@ def main() -> int:
 
     missing = provision(api, args.researcher, forum_host, args.agent_username, args.rotate_key)
     if missing is None:
-        print("\nThe key went by private message, the only copy there is; it is not printed here.")
+        print("\nThe key went by private message, which holds its only copy. It is not printed here.")
     elif missing == KEY_EXISTS:
-        print("\nNo credential delivered, because one had already been issued. If it was lost, --rotate-key.")
+        print("\nNo credential was delivered, because one had already been issued. If it was lost, run this again with --rotate-key.")
     return 0
 
 

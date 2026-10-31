@@ -1,8 +1,8 @@
 # 3. Object storage
 
-The forum's uploads live here; `docs/05-forum-config.md` 5.6 covers the Discourse side.
+The forum's uploads live here. `docs/05-forum-config.md` 5.6 covers the Discourse side.
 
-**The endpoint** is Ceph RGW, answering S3 at `https://js2.jetstream-cloud.org:8001/` and Swift at `https://js2.jetstream-cloud.org:8001/swift/v1`. It addresses buckets by path only: there is no wildcard DNS and the certificate names only `js2.jetstream-cloud.org`, which is why the `qupa-s3-path-style` plugin exists.
+**The endpoint** is Ceph RGW. It answers S3 at `https://js2.jetstream-cloud.org:8001/` and Swift at `https://js2.jetstream-cloud.org:8001/swift/v1`. It addresses buckets by path only, because there is no wildcard DNS and the certificate names only `js2.jetstream-cloud.org`. That is why the `qupa-s3-path-style` plugin exists.
 
 **Credentials** are an EC2 credential, which the application credential can create:
 

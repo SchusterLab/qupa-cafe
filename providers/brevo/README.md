@@ -10,11 +10,11 @@ The transactional mail relay for `forum.qupa-cafe.com`.
 | Endpoint | `smtp-relay.brevo.com:587`, STARTTLS |
 | Domain authentication | per subdomain |
 
-300 a day covers resets and onboarding, not a job that mails on a timer, which is why `docs/05-forum-config.md` turns notification mail off. Take quota figures from the provider.
+300 a day covers resets and onboarding, but not a job that mails on a timer. That is why `docs/05-forum-config.md` turns notification mail off. Take quota figures from the provider.
 
 ## Steps
 
-Do this early: none of it needs the host, and DNS propagation is then off the critical path.
+Do this early. None of it needs the host, and starting early takes DNS propagation off the critical path.
 
 1. Create an account and send a test message from the panel, to find out whether sending is held for review.
 2. **Senders, Domains & Dedicated IPs → Domains → Add a domain**: `forum.qupa-cafe.com`, the subdomain you send from, not the apex.
@@ -43,8 +43,8 @@ dig +short @1.1.1.1 TXT _dmarc.forum.qupa-cafe.com
 dig +short @1.1.1.1 TXT b1.forum-qupa-cafe-com.dkim.brevo.com    # k=rsa;p=<2048-bit key>
 ```
 
-Name the resolver, since a stale local negative cache looks like a missing record. The last query follows DKIM through to the key, which is the one that proves signing will work.
+Name the resolver, since a stale local negative cache looks like a missing record. The last query follows DKIM through to the key, and it is the check that proves signing will work.
 
 ## Then
 
-Send a test from Discourse's admin Email page and confirm `dkim=pass` with `d=forum.qupa-cafe.com`; `spf=none` is expected. Afterwards, a usage counter climbing while nobody joins means something is mailing on a timer, and resets will stop when the day's allowance runs out.
+Send a test from Discourse's admin Email page, and confirm `dkim=pass` with `d=forum.qupa-cafe.com`. `spf=none` is expected. After that, watch the usage counter. If it climbs while nobody joins, something is mailing on a timer, and resets will stop when the day's allowance runs out.
