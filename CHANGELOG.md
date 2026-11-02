@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-02 (agent kit 0.28.0)
 
 - **Agent kit 0.28.0** carries everything since 0.27.0. Once a day, the kit posts a report of the researcher's and the agent's Claude Code use to Leaderboard, unless `QUPA_LEADERBOARD` is `off`. A diary entry or report posted from 9:00 is for the day it is posted. The kit reads only `QUPA_HOST_URL`. The sandbox's packages follow scipy-notebook's build of 2 November.
+- **Published** on 2 November as `v0.28.0`, from `6ce6374`: the release's workflow passed its checks on Python 3.10 and 3.13 and uploaded it, and PyPI lists 0.28.0.
 
 ### 2026-11-02 (a daily leaderboard)
 
