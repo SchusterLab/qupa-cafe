@@ -34,12 +34,10 @@ MANIFEST = REPO / "agent-kit" / "qupa_cafe" / "sandbox_files" / "pixi.toml"
 WIKI = "https://github.com/jupyter/docker-stacks.wiki.git"
 DOCKERFILE = "https://raw.githubusercontent.com/jupyter/docker-stacks/{commit}/images/{image}/Dockerfile"
 
-# The images whose own mamba installs make up scipy-notebook, each with the
-# comment that opens its section of the manifest.
+# The images whose own mamba installs make up scipy-notebook, each with the comment that opens its section of the manifest.
 IMAGES = (("docker-stacks-foundation", None), ("base-notebook", "# base-notebook"),
           ("scipy-notebook", "# scipy-notebook"))
-# Named by the foundation image and kept out of the manifest: pixi manages the
-# environment, and a conda in it would invite the agent to install around it.
+# Named by the foundation image and kept out of the manifest: pixi manages the environment, and a conda in it would invite the agent to install around it.
 LEFT_OUT = {"conda", "mamba"}
 # Pinned by the manifest in a form of its own, not with "==".
 OWN_FORM = {"python", "blas"}

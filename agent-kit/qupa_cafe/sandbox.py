@@ -48,8 +48,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 if __package__ in (None, ""):
-    # Run as a script, which is how the hook is run: the package's parent, so
-    # that this is the same qupa_cafe the daemon imported.
+    # Run as a script, which is how the hook is run: the package's parent, so that this is the same qupa_cafe the daemon imported.
     sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
 from qupa_cafe import pixi_advice, sessions
@@ -59,8 +58,7 @@ FILES_DIR = PACKAGE_DIR / "sandbox_files"
 
 NL = chr(10)
 WINDOWS = os.name == "nt"
-# This kit running inside WSL, where Windows hands its commands to the Linux
-# sandbox, and where Windows' own PATH is appended to Linux's.
+# This kit running inside WSL, where Windows hands its commands to the Linux sandbox, and where Windows' own PATH is appended to Linux's.
 IN_WSL = sys.platform.startswith("linux") and "microsoft" in platform.release().lower()
 
 # The programs a shim in the workspace stands in for.
@@ -108,8 +106,7 @@ def ready(config: dict | None = None) -> bool:
         return False
     wsl = config.get("wsl")
     if wsl:
-        # The Linux side is not looked at, which would start the distribution
-        # on every command; the command fails there if it has gone.
+        # The Linux side is not looked at, which would start the distribution on every command; the command fails there if it has gone.
         return all(wsl.get(key) for key in ("exe", "distro", "config", "node", "run")) and Path(wsl["exe"]).is_file()
     if WINDOWS:
         # On Windows commands run only in WSL.
@@ -142,8 +139,7 @@ def wrapped(command: str, config: dict) -> str:
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
     wsl = config.get("wsl")
     if wsl:
-        # Git Bash would rewrite an argument that starts with / into a Windows
-        # path, and these are Linux paths.
+        # Git Bash would rewrite an argument that starts with / into a Windows path, and these are Linux paths.
         return " ".join(
             ["MSYS_NO_PATHCONV=1", "MSYS2_ARG_CONV_EXCL='*'", shell_quote(posix(wsl["exe"])), "-d", shell_quote(wsl["distro"]),
              "-e", shell_quote(wsl["node"]), shell_quote(wsl["run"]), shell_quote(wsl["config"]), encoded]
@@ -208,17 +204,13 @@ def decide(event: dict, config: dict | None) -> dict | None:
         return None
     writable = [config["workspace"], *agent_dirs(config)]
     protected = list(config.get("protected") or [])
-    # Elsewhere the file tools are refused, whatever a settings file in the
-    # agent's directory approves, so that they reach what a command reaches
-    # and no more; the reason says where to go instead.
+    # Elsewhere the file tools are refused, whatever a settings file in the agent's directory approves, so that they reach what a command reaches and no more; the reason says where to go instead.
     if tool in WRITE_TOOLS:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), protected, cwd):
             return answer("deny", f"{path} steers your wakes, so it is read-only here. Your researcher edits it.")
         if path and config.get("wsl") and within(str(path), [config["workspace"]], cwd):
-            # Claude Code asks before writing to a network path such as
-            # \\wsl.localhost, whatever the hook approves, and a wake has
-            # nobody to ask.
+            # Claude Code asks before writing to a network path such as \\wsl.localhost, whatever the hook approves, and a wake has nobody to ask.
             return answer("deny", f"Write files in {config['workspace']} with a command, as "
                                   f"{config['wsl']['workspace']}; Write and Edit work in {', '.join(agent_dirs(config)) or 'no directory here'}.")
         if path and within(str(path), writable, cwd):
@@ -354,8 +346,7 @@ def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
 def _tail(result: subprocess.CompletedProcess, lines: int = 3) -> str:
     text = (result.stderr or result.stdout or "").strip().splitlines()
     joined = NL.join("        " + line for line in text[-lines:])
-    # In what the console can print: pixi's errors draw boxes a legacy code
-    # page has no characters for.
+    # In what the console can print: pixi's errors draw boxes a legacy code page has no characters for.
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     return joined.encode(encoding, errors="replace").decode(encoding)
 
@@ -371,8 +362,7 @@ def git_bash() -> str | None:
     if git:
         root = Path(git).resolve().parent.parent
         candidates += [root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"]
-    # Git's own installer, for every user and for one, and the copy
-    # install_portable_git unpacks.
+    # Git's own installer, for every user and for one, and the copy install_portable_git unpacks.
     for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", "")):
         if base:
             candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
@@ -446,8 +436,7 @@ def find(name: str) -> str | None:
     which need not be on PATH."""
     search = None
     if IN_WSL:
-        # Not a Windows program WSL appended the directory of: Windows' npm
-        # is a shell script that would run Windows' node.
+        # Not a Windows program WSL appended the directory of: Windows' npm is a shell script that would run Windows' node.
         search = ":".join(d for d in os.environ.get("PATH", "").split(":") if not d.startswith("/mnt/"))
     found = shutil.which(name, path=search)
     if found:
@@ -458,8 +447,7 @@ def find(name: str) -> str | None:
     return None
 
 
-# Node.js, which the Discourse MCP server needs as well as the sandbox, by
-# command and the conda-forge package that provides it.
+# Node.js, which the Discourse MCP server needs as well as the sandbox, by command and the conda-forge package that provides it.
 NODE = {"node": "nodejs", "npm": "nodejs"}
 
 
@@ -556,12 +544,8 @@ def ensure_programs() -> str | None:
     return unpacked
 
 
-# Ubuntu 23.10 and later restrict unprivileged user namespaces through
-# AppArmor, and confine /usr/bin/bwrap so that what it starts has no
-# capabilities: the runtime's seccomp step, run inside bubblewrap, then fails
-# to make its own namespace, whatever the sysctl says. A root-owned copy of
-# that bubblewrap at a path of its own, with a profile allowing it user
-# namespaces, works with the restriction left on, and is the only exemption.
+# Ubuntu 23.10 and later restrict unprivileged user namespaces through AppArmor, and confine /usr/bin/bwrap so that what it starts has no capabilities: the runtime's seccomp step, run inside bubblewrap, then fails to make its own namespace, whatever the sysctl says.
+# A root-owned copy of that bubblewrap at a path of its own, with a profile allowing it user namespaces, works with the restriction left on, and is the only exemption.
 # Linux paths, named as POSIX paths so that they read the same wherever this runs.
 USERNS_SYSCTL = PurePosixPath("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
 APPARMOR_ENABLED = PurePosixPath("/sys/module/apparmor/parameters/enabled")
@@ -586,8 +570,7 @@ def userns_restricted() -> bool:
     bubblewrap cannot run the sandbox."""
     if not sys.platform.startswith("linux"):
         return False
-    # A kernel without AppArmor, such as WSL's, enforces no profile that
-    # Ubuntu installed.
+    # A kernel without AppArmor, such as WSL's, enforces no profile that Ubuntu installed.
     try:
         enabled = Path(APPARMOR_ENABLED).read_text(encoding="ascii").strip().upper().startswith("Y")
     except OSError:
@@ -704,9 +687,7 @@ def writable_agent_dirs(agent_dir: str) -> tuple[list[str], str]:
     return [str(agent)], ""
 
 
-# In the agent's directory, what steers later wakes or runs outside the
-# sandbox, kept read-only to it: the researcher's instructions, Claude Code's
-# and Codex's own settings and hooks, and the git hooks the next commit runs.
+# In the agent's directory, what steers later wakes or runs outside the sandbox, kept read-only to it: the researcher's instructions, Claude Code's and Codex's own settings and hooks, and the git hooks the next commit runs.
 PROTECTED_NAMES = (
     "QUPA.md", ".claude", ".codex", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
     ".venv", "venv", ".git/hooks", ".git/config",
@@ -726,12 +707,9 @@ def protected_paths(directories: list[str]) -> list[str]:
     return sorted(paths)
 
 
-# On Windows commands run in a Linux distribution in WSL 2, in the Linux
-# sandbox, which reads only what it is given. The daemon, Claude Code and the
-# file tools stay on Windows: the hook hands each command to wsl.exe. The Linux side is this
-# module, run by the distribution's python3 from where Windows has the kit, and
-# set up by its Linux code in a directory of its own, WSL_SANDBOX under the
-# distribution's home.
+# On Windows commands run in a Linux distribution in WSL 2, in the Linux sandbox, which reads only what it is given.
+# The daemon, Claude Code and the file tools stay on Windows: the hook hands each command to wsl.exe.
+# The Linux side is this module, run by the distribution's python3 from where Windows has the kit, and set up by its Linux code in a directory of its own, WSL_SANDBOX under the distribution's home.
 WSL_SANDBOX = ".local/share/qupa-cafe/windows-sandbox"
 
 
@@ -894,8 +872,7 @@ def write_workspace(workspace: Path) -> None:
         for name in ("pixi.toml", "pixi.lock"):
             shutil.copyfile(FILES_DIR / name, workspace / name)
         shutil.copyfile(FILES_DIR / "pixi.toml", workspace / KIT_MANIFEST_COPY)
-    # A researcher's global detached-environments would put the environment
-    # outside the workspace, where the sandbox cannot reach it.
+    # A researcher's global detached-environments would put the environment outside the workspace, where the sandbox cannot reach it.
     (workspace / ".pixi").mkdir(exist_ok=True)
     (workspace / ".pixi" / "config.toml").write_text("detached-environments = false" + NL, encoding="utf-8")
     for name in (".tmp", ".cache"):
@@ -914,8 +891,7 @@ def write_workspace(workspace: Path) -> None:
         path.chmod(0o755)
 
 
-# The kit's manifest as a workspace was last brought up to it, beside the
-# workspace's own, which the agent's `pixi add` and `pixi remove` change.
+# The kit's manifest as a workspace was last brought up to it, beside the workspace's own, which the agent's `pixi add` and `pixi remove` change.
 KIT_MANIFEST_COPY = ".qupa-kit-pixi.toml"
 
 
@@ -990,8 +966,7 @@ def setup(agent_dir: str, interactive: bool = False) -> bool:
     one."""
     # The projects the researcher let it read stay readable.
     projects = read_dirs(load_config() or {})
-    # Written again only once everything below has worked, so a setup that
-    # fails part-way leaves no sandbox half replaced.
+    # Written again only once everything below has worked, so a setup that fails part-way leaves no sandbox half replaced.
     config_path().unlink(missing_ok=True)
     writable, refused = writable_agent_dirs(agent_dir)
     if refused:
@@ -1028,8 +1003,7 @@ def wsl_install() -> str | None:
     print("  restart. It also asks you to choose a username and password for Ubuntu.")
     if input("  Install it now? [Y/n] ").strip().lower() not in ("", "y", "yes"):
         return None
-    # Not captured: its progress, the UAC prompt's outcome and Ubuntu's
-    # questions are the researcher's.
+    # Not captured: its progress, the UAC prompt's outcome and Ubuntu's questions are the researcher's.
     sys.stdout.flush()
     ran = subprocess.run([exe, "--install", "-d", "Ubuntu"])
     if ran.returncode != 0:
@@ -1085,9 +1059,7 @@ def install(writable: list[str], protected: list[str], projects: list[str]) -> b
         "run": str(runtime / "run.mjs"),
         "pixi": pixi,
         "bash": "/bin/bash",
-        # Where the runtime finds bwrap, socat and rg, which may be only in
-        # pixi's bin directory and not on the PATH a wake inherits; the
-        # exempted bubblewrap first, where AppArmor needs it.
+        # Where the runtime finds bwrap, socat and rg, which may be only in pixi's bin directory and not on the PATH a wake inherits; the exempted bubblewrap first, where AppArmor needs it.
         "path": ([str(LINUX_BWRAP.parent)] if userns_restricted() else [])
         + sorted({str(Path(find(name)).parent) for name in wanted_programs() if find(name)}),
         "programs": program_dirs(),

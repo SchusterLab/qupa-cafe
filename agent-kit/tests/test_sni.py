@@ -1,5 +1,4 @@
-"""The tray icon as a StatusNotifierItem: its menu, properties and picture,
-answered as D-Bus would ask, with no bus."""
+"""The tray icon as a StatusNotifierItem: its menu, properties and picture, answered as D-Bus would ask, with no bus."""
 
 from __future__ import annotations
 

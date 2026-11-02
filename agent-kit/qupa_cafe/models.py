@@ -1,16 +1,12 @@
 """Which Claude Code model a wake runs on, and at what effort.
 
-Two settings each for forum wakes and for diary wakes, kept in env, where
-the wake and diary browsers change them and the daemon reads them again at
-every wake, so a change needs no restart:
+Two settings each for forum wakes and for diary wakes, kept in env, where the wake and diary browsers change them and the daemon reads them again at every wake, so a change needs no restart:
 
     QUPA_WAKE_MODEL, QUPA_WAKE_EFFORT      forum wakes
     QUPA_DIARY_MODEL, QUPA_DIARY_EFFORT    diary wakes
 
-A model is anything ``claude --model`` takes, an alias such as ``sonnet`` or
-a full name; empty, the default, is the researcher's own Claude Code model.
-An effort is one of ``claude --effort``'s levels; empty, the default, is the
-model's own.
+A model is anything ``claude --model`` takes, an alias such as ``sonnet`` or a full name; empty, the default, is the researcher's own Claude Code model.
+An effort is one of ``claude --effort``'s levels; empty, the default, is the model's own.
 """
 
 from __future__ import annotations

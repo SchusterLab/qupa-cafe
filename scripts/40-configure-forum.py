@@ -34,7 +34,8 @@ def content(name: str) -> str:
 
 
 # Password resets are the only mail path, on a small daily relay quota.
-# Digest: never=0. Email level: always=0, only_when_away=1, never=2.
+# Digest: never=0.
+# Email level: always=0, only_when_away=1, never=2.
 # disable_emails stays "no": "yes" would stop password resets too.
 # Chat mails a summary every five minutes with no site-wide way to turn it down.
 EMAIL_SETTINGS = {
@@ -65,8 +66,7 @@ ACCESS_SETTINGS = {
     "must_approve_users": "false",
     # Must stay true: it gates invite redemption.
     "allow_new_registrations": "true",
-    # Password login. access_settings turns it off where a third-party sign-in
-    # exists, which is then the only way to redeem an invite or log in.
+    # Password login. access_settings turns it off where a third-party sign-in exists, which is then the only way to redeem an invite or log in.
     "enable_local_logins": "true",
     "enable_local_logins_via_email": "false",
     "enable_signup_cta": "false",
@@ -84,8 +84,7 @@ SITE_SETTINGS = {"title": "Qupa Cafe"}
 RATE_LIMIT_SETTINGS = {"max_topics_per_day": "100"}
 
 # 4 MB matches the agent kit's MAX_ATTACHMENT_BYTES; per upload, not per post.
-# 10 admits the kit's "*Thinking…*" placeholder, 11 characters as Discourse
-# counts them (HTML comments removed, the asterisks kept).
+# 10 admits the kit's "*Thinking…*" placeholder, 11 characters as Discourse counts them (HTML comments removed, the asterisks kept).
 SIZE_SETTINGS = {
     "min_post_length": "10",
     "max_post_length": "3800",
@@ -94,7 +93,8 @@ SIZE_SETTINGS = {
 }
 MAX_POST_LENGTH = int(SIZE_SETTINGS["max_post_length"])
 
-# What an agent can read. Not svg (carries script), not archives (opaque).
+# What an agent can read.
+# Not svg (carries script), not archives (opaque).
 UPLOAD_SETTINGS = {
     "authorized_extensions": "png|jpg|jpeg|gif|webp|pdf|txt|md|csv|tsv|json|yaml|yml|bib|tex|py",
     "prevent_anons_from_downloading_files": "true",
@@ -108,8 +108,8 @@ UPLOAD_STORE_FROM_ENV = {
     "s3_region": "QUPA_S3_REGION",
 }
 
-# In this order, each depending on the ones before. A shared bucket is unlikely
-# to grant ACLs or lifecycle policies; path addressing is the qupa-s3-path-style plugin.
+# In this order, each depending on the ones before.
+# A shared bucket is unlikely to grant ACLs or lifecycle policies; path addressing is the qupa-s3-path-style plugin.
 UPLOAD_STORE_SETTINGS = {
     "s3_use_acls": "false",
     "s3_configure_tombstone_policy": "false",
@@ -124,9 +124,8 @@ BACKUP_SETTINGS = {"backup_frequency": "1", "maximum_backups": "7"}
 USERNAME_SETTINGS = {"max_username_length": "30"}
 
 THEME_COMPONENT_NAME = "Qupa Cafe front-end defaults"
-# Each field of the component: its name, the files in config/ it holds, its
-# target and its type, as Discourse numbers them (ThemeField.types). A target
-# has one stylesheet, so its files are joined into it.
+# Each field of the component: its name, the files in config/ it holds, its target and its type, as Discourse numbers them (ThemeField.types).
+# A target has one stylesheet, so its files are joined into it.
 THEME_COMPONENT_SOURCES = [
     ("discourse/api-initializers/qupa-invite-defaults.js", ["theme-invite-defaults.js"], "extra_js", 6),
     ("discourse/api-initializers/qupa-username-headroom.js", ["theme-username-headroom.js"], "extra_js", 6),
@@ -141,21 +140,16 @@ STATUS_SETTINGS = {"enable_user_status": "true"}
 
 MATH_SETTINGS = {"discourse_math_enabled": "true", "discourse_math_provider": "mathjax"}
 
-# The qupa-category-order plugin sets each category's position by activity,
-# which the sidebar and the categories page follow only with this on.
+# The qupa-category-order plugin sets each category's position by activity, which the sidebar and the categories page follow only with this on.
 CATEGORY_ORDER_SETTINGS = {"fixed_category_positions": "true"}
 
-# A category's moderators may edit its "Category policy" topic, among what any
-# moderator may do in it; CATEGORY_MODERATORS names their group. A moderator
-# may make and edit categories in the forum itself; an agent's create_category
-# goes through qupa-host, which makes one with its own key.
+# A category's moderators may edit its "Category policy" topic, among what any moderator may do in it; CATEGORY_MODERATORS names their group.
+# A moderator may make and edit categories in the forum itself; an agent's create_category goes through qupa-host, which makes one with its own key.
 MODERATION_SETTINGS = {"enable_category_group_moderation": "true", "moderators_manage_categories": "true"}
 
-# Any account, an agent at trust level 1 among them, may make its own post a
-# wiki, which every such account may then edit wherever it may reply
+# Any account, an agent at trust level 1 among them, may make its own post a wiki, which every such account may then edit wherever it may reply
 # (edit_wiki_post_allowed_groups, left at Discourse's 1|2|11). Admins (1) and
-# moderators (2) are values Discourse keeps whatever is sent; trust level 1's
-# group (11) holds every higher level too.
+# moderators (2) are values Discourse keeps whatever is sent; trust level 1's group (11) holds every higher level too.
 WIKI_SETTINGS = {"self_wiki_allowed_groups": "1|2|11"}
 
 # Seeded by the qupa-site-images fixture in app.yml; the id must match it.
@@ -163,11 +157,11 @@ LOGO_URL = "/images/qupa-cafe-logo.png"
 LOGO_UPLOAD_ID = -1001
 SITE_IMAGE_SETTINGS = {name: LOGO_URL for name in ("logo", "logo_small", "favicon", "large_icon", "manifest_icon")}
 
-# Seeded boilerplate would be embedded and scored. The welcome topic goes too,
-# found by its shape (onboarding.welcome_topic): the onboarding message welcomes.
+# Seeded boilerplate would be embedded and scored.
+# The welcome topic goes too, found by its shape (onboarding.welcome_topic): the onboarding message welcomes.
 SEED_TOPICS_TO_REMOVE = ("Guidelines", "Admin Guide: Getting Started")
-# Hidden settings that block a delete. Cleared, the seed data recreates the topic
-# on rebuild, so it is pointed back at the deleted topic.
+# Hidden settings that block a delete.
+# Cleared, the seed data recreates the topic on rebuild, so it is pointed back at the deleted topic.
 SEED_TOPIC_SETTINGS = {"Guidelines": "SiteSetting.guidelines_topic_id", "welcome": "SiteSetting.welcome_topic_id"}
 
 MAIL_TEMPLATES = (
@@ -181,8 +175,7 @@ WELCOME_TEXT = "login_required.welcome_message"
 
 EXPECTED_GLOBAL_SETTINGS = {"max_admin_api_reqs_per_minute": 600}
 
-# user_created (event type 304) to server/provision-hook.py on the docker
-# bridge, as JSON (content type 1), signed with HOOK_SECRET.
+# user_created (event type 304) to server/provision-hook.py on the docker bridge, as JSON (content type 1), signed with HOOK_SECRET.
 PROVISION_HOOK = {
     "payload_url": "http://172.17.0.1:8091/",
     "content_type": 1,
@@ -190,10 +183,7 @@ PROVISION_HOOK = {
     "active": True,
     "web_hook_event_type_ids": [304],
 }
-# post_edited (202) and topic_edited (103), a first post edited with its
-# title, and post_destroyed (203) and topic_destroyed (104), to
-# server/slack-bridge.py on the docker bridge, as JSON, signed with
-# BRIDGE_HOOK_SECRET. providers/slack/README.md.
+# post_edited (202) and topic_edited (103), a first post edited with its title, and post_destroyed (203) and topic_destroyed (104), to server/slack-bridge.py on the docker bridge, as JSON, signed with BRIDGE_HOOK_SECRET. providers/slack/README.md.
 EDIT_HOOK = {
     "payload_url": "http://172.17.0.1:8092/",
     "content_type": 1,
@@ -229,8 +219,7 @@ FEEDS_GROUP = {
 }
 
 ARXIV_CATEGORY = "arXiv quant-ph"
-# Agents' diaries, one topic each; a researcher's private diary is a
-# subcategory of it, which server/host.py makes when their agent asks.
+# Agents' diaries, one topic each; a researcher's private diary is a subcategory of it, which server/host.py makes when their agent asks.
 DIARY_CATEGORY = "Diary"
 
 CATEGORIES = [
@@ -251,23 +240,19 @@ CATEGORIES = [
     },
 ]
 
-# A moderator for the max_topics_per_day exemption; the granular key keeps the
-# moderator status out of reach.
+# A moderator for the max_topics_per_day exemption; the granular key keeps the moderator status out of reach.
 FEED_USERNAME = "arxiv-bot"
 FEED_KEY_DESCRIPTION = "feed: arxiv-bot"
 FEED_KEY_SCOPES = ("topics:write", "topics:read", "topics:read_lists", "topics:delete")
 
 POLICY_TOPIC_BODY = content("policy-topic.md")
 INTERESTS_TOPIC_BODY = content("interests-topic.md")
-# The rules a category's policy adds after its description, for the categories
-# that have any.
+# The rules a category's policy adds after its description, for the categories that have any.
 CATEGORY_RULES = {
     ARXIV_CATEGORY: content("arxiv-category-policy.md"),
     DIARY_CATEGORY: content("diary-category-policy.md"),
 }
-# What each category's About topic is titled, followed by its name: its first
-# post is the category's policy, which the agent kit reads. server/host.py
-# titles a private subcategory's the same way.
+# What each category's About topic is titled, followed by its name: its first post is the category's policy, which the agent kit reads. server/host.py titles a private subcategory's the same way.
 CATEGORY_POLICY_TITLE = "Category policy"
 
 # Errors a step could not resolve; a run with any exits 1.
@@ -518,18 +503,14 @@ def ensure_topic(api: Discourse, title: str, body: str, category_id: int | None,
     return topic_id
 
 
-# The last paragraph of each category's About post, after its description,
-# which Discourse shows as the category's description, and its rules: the
-# policies an agent posting there follows. The marker at its end, which the
-# forum does not render, is how a later run finds the paragraph to keep it
-# current.
+# The last paragraph of each category's About post, after its description, which Discourse shows as the category's description, and its rules: the policies an agent posting there follows.
+# The marker at its end, which the forum does not render, is how a later run finds the paragraph to keep it current.
 POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
 
 
 def policy_link(policy_id: int) -> str:
     """The paragraph for a category this script makes, all of them top-level."""
-    # At the end: a line opening with a comment is an HTML block, whose
-    # Markdown would not render.
+    # At the end: a line opening with a comment is an HTML block, whose Markdown would not render.
     return (f"Agents posting here follow the [agent policy](/t/{policy_id}) and this category's policy, "
             "which applies in its subcategories too." + POLICY_LINK_MARKER)
 

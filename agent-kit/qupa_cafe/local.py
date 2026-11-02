@@ -1,12 +1,8 @@
 """The researcher's own instructions to their agent, from files on this machine.
 
-``QUPA.md`` is the one file: added to every wake prompt, the diary's included,
-and returned by `get_policy` beside the forum's policy. It is read from the
-home directory and then from the nearest enclosing directory below it that has
-one, the project's, the narrower last; a wake's project is the one enclosing
-the agent's own directory. Neither copy is part of the policy's version, so neither
-changes what the forum accepts: it overrides the policy's defaults, never its
-rules.
+``QUPA.md`` is the one file: added to every wake prompt, the diary's included, and returned by `get_policy` beside the forum's policy.
+It is read from the home directory and then from the nearest enclosing directory below it that has one, the project's, the narrower last; a wake's project is the one enclosing the agent's own directory.
+Neither copy is part of the policy's version, so neither changes what the forum accepts: it overrides the policy's defaults, never its rules.
 """
 
 from __future__ import annotations
@@ -22,8 +18,7 @@ PROMPT_FILE = "QUPA.md"
 # Not os.linesep, which would put a carriage return into a prompt on Windows.
 NL = chr(10)
 
-# Low enough that a log or dataset saved under the name is refused rather than
-# sent on every wake.
+# Low enough that a log or dataset saved under the name is refused rather than sent on every wake.
 MAX_LENGTH = 20000
 
 

@@ -2,17 +2,11 @@
 #
 # End-to-end test against a scratch forum.
 #
-# Creates an admin and an agent account, applies the forum configuration and
-# checks a second run changes nothing, then drives the agent kit against the
-# result: the policy fetch, a refused write with a stale version, an enforced write
-# and its attribution, a repeat with the same external_id, a policy edit that
-# invalidates the version, and one poll of the daemon without a forum host
-# and with an unreachable one.
+# Creates an admin and an agent account, applies the forum configuration and checks a second run changes nothing, then drives the agent kit against the result: the policy fetch, a refused write with a stale version, an enforced write and its attribution, a repeat with the same external_id, a policy edit that invalidates the version, and one poll of the daemon without a forum host and with an unreachable one.
 #
-# Run this on a DISPOSABLE forum. It creates accounts, categories, and topics,
-# and it is meant to be run repeatedly. Pointing it at the real forum would put
-# test garbage into the corpus the final assessment analyses -- which is the
-# main reason the scratch forum exists at all.
+# Run this on a DISPOSABLE forum.
+# It creates accounts, categories, and topics, and it is meant to be run repeatedly.
+# Pointing it at the real forum would put test garbage into the corpus the final assessment analyses -- which is the main reason the scratch forum exists at all.
 #
 # Usage, from the repository root on the scratch host:
 #
@@ -40,15 +34,13 @@ die()     { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Run with sudo: this shells into the container."
 
-# `launcher enter` is interactive, so everything server-side goes through
-# `docker exec` on the container instead.
+# `launcher enter` is interactive, so everything server-side goes through `docker exec` on the container instead.
 rails_runner() {
   docker exec -i app rails runner "$1" 2>/dev/null | tr -d '\r'
 }
 
 # 40-configure-forum.py as the scratch admin, its output into the file named.
-# Grep that file, not a pipe: under pipefail, a `grep -q` that stops reading
-# early fails the pipeline while the script is still writing to it.
+# Grep that file, not a pipe: under pipefail, a `grep -q` that stops reading early fails the pipeline while the script is still writing to it.
 configure() {
   DISCOURSE_URL="$FORUM_URL" \
   DISCOURSE_API_KEY="$ADMIN_KEY" \
@@ -76,8 +68,8 @@ docker ps --format '{{.Names}}' | grep -qx app || die "No container named 'app'.
 
 section "Admin account and key"
 
-# Programmatic rather than `rake admin:create`, which prompts. Like that task,
-# this sends no mail at all -- which matters on a scratch forum with no relay.
+# Programmatic rather than `rake admin:create`, which prompts.
+# Like that task, this sends no mail at all -- which matters on a scratch forum with no relay.
 ADMIN_KEY="$(rails_runner "
   user = User.find_by_email('$ADMIN_EMAIL') || User.create!(
     email: '$ADMIN_EMAIL', username: '$ADMIN_USERNAME',
@@ -87,11 +79,9 @@ ADMIN_KEY="$(rails_runner "
   user.update!(admin: true, active: true, approved: true)
   user.email_tokens.update_all(confirmed: true)
 
-  # A key's plaintext exists only on the object that just created it: the table
-  # stores key_hash, and ApiKey#key is not readable on a row loaded back. So an
-  # existing key cannot be reused -- it is revoked and replaced. That is the
-  # same 'shown once' property docs/06-agent-api.md describes, seen from the
-  # other side.
+  # A key's plaintext exists only on the object that just created it: the table stores key_hash, and ApiKey#key is not readable on a row loaded back.
+  # So an existing key cannot be reused -- it is revoked and replaced.
+  # That is the same 'shown once' property docs/06-agent-api.md describes, seen from the other side.
   ApiKey.where(description: 'scratch-integration').destroy_all
   key = ApiKey.create!(description: 'scratch-integration', created_by_id: user.id)
   puts key.key
@@ -137,9 +127,8 @@ fi
 
 section "Agent account and scoped key"
 
-# Trust level 1 is a minimum, not a throttle: the trust_level_N auto-groups are
-# used as values in Discourse's *_allowed_groups settings, so capabilities are
-# gated on them. See docs/06-agent-api.md.
+# Trust level 1 is a minimum, not a throttle: the trust_level_N auto-groups are used as values in Discourse's *_allowed_groups settings, so capabilities are gated on them.
+# See docs/06-agent-api.md.
 AGENT_KEY="$(rails_runner "
   agent = User.find_by_email('$AGENT_EMAIL') || User.create!(
     email: '$AGENT_EMAIL', username: '$AGENT_USERNAME',
@@ -171,9 +160,8 @@ IN_GROUP="$(rails_runner "
 [ "$IN_GROUP" = "yes" ] && ok "agent is in the agents group" || bad "agent is not in the agents group"
 
 # The bot? flag means "user id <= 0" and is reserved for system and discobot.
-# An API-created account gets a positive id and is permanently "human" to the
-# framework. Asserted here so that a future Discourse change surfaces as a test
-# failure rather than as a surprise in the docs.
+# An API-created account gets a positive id and is permanently "human" to the framework.
+# Asserted here so that a future Discourse change surfaces as a test failure rather than as a surprise in the docs.
 AGENT_ID="$(rails_runner "puts User.find_by_username('$AGENT_USERNAME').id")"
 if [ "${AGENT_ID:-0}" -gt 0 ]; then
   ok "agent id is positive ($AGENT_ID), so it cannot be flagged as a bot"
@@ -183,9 +171,8 @@ fi
 
 section "Group flair"
 
-# Membership grants the group's title but not its flair: the serializer reads
-# flair from user.flair_group, which stays nil until set. So re-running the
-# configure script after the agent exists is what turns the icon on.
+# Membership grants the group's title but not its flair: the serializer reads flair from user.flair_group, which stays nil until set.
+# So re-running the configure script after the agent exists is what turns the icon on.
 configure /tmp/configure-flair.log
 if grep -qE "flair_group_id|unchanged  $AGENT_USERNAME" /tmp/configure-flair.log; then
   ok "the configure script set or confirmed the agent's flair group"
@@ -217,8 +204,8 @@ call_tool() {
   mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"
 }
 
-# The tool result is a JSON string nested inside a JSON-RPC envelope, so its
-# quotes arrive escaped. Grepping the raw envelope misses everything; parse it.
+# The tool result is a JSON string nested inside a JSON-RPC envelope, so its quotes arrive escaped.
+# Grepping the raw envelope misses everything; parse it.
 mcp_field() {
   # $1 = envelope, $2 = dotted field path within the tool's own JSON payload
   printf '%s' "$1" | python3 -c '
@@ -261,8 +248,8 @@ fi
 
 section "Policy enforcement"
 
-# allow_uncategorized_topics defaults to false, so a category id is required for
-# every new topic. Omitting it returns 422 "Category can't be blank".
+# allow_uncategorized_topics defaults to false, so a category id is required for every new topic.
+# Omitting it returns 422 "Category can't be blank".
 CATEGORY_ID="$(rails_runner "puts Category.find_by(name: 'Research')&.id")"
 if [ -n "$CATEGORY_ID" ]; then
   ok "Research category is $CATEGORY_ID"
@@ -290,8 +277,7 @@ else
   bad "a stale policy_version was NOT refused: $STALE"
 fi
 
-# Match the title field, not the raw body: a search response echoes the query
-# back under "term", so the body always contains it.
+# Match the title field, not the raw body: a search response echoes the query back under "term", so the body always contains it.
 if grep -q '"title":"Should never be created"' <<< "$(admin_get "/search.json?q=Should+never+be+created")"; then
   bad "the refused topic exists on the forum"
 else
@@ -302,9 +288,8 @@ section "An enforced write"
 
 STAMP="$(date +%s)"
 TITLE="Scratch integration $STAMP"
-# Word characters and hyphens only, max 50: Discourse validates external_id
-# against /\A[\w-]+\z/. The normaliser in the MCP server covers agents that
-# do not know that; this test should not depend on it.
+# Word characters and hyphens only, max 50: Discourse validates external_id against /\A[\w-]+\z/.
+# The normaliser in the MCP server covers agents that do not know that; this test should not depend on it.
 EXTERNAL_ID="scratch-$STAMP"
 CREATE_ARGUMENTS="{\"title\":\"$TITLE\",\"raw\":\"Written by tests/scratch-integration.sh through the policy-gated write path.\",\"category\":$CATEGORY_ID,\"policy_version\":\"$RESEARCH_VERSION\",\"external_id\":\"$EXTERNAL_ID\"}"
 CREATED="$(call_tool create_topic "$CREATE_ARGUMENTS")"
@@ -337,8 +322,7 @@ REPEAT="$(call_tool create_topic "$CREATE_ARGUMENTS")"
 if [ "$(mcp_field "$REPEAT" result.idempotent)" = "True" ]; then
   ok "the same external_id resolves to the existing topic"
 else
-  # A daemon that dies between "accepted" and "recorded" restarts here, so this
-  # is the check that stops a duplicate landing in the research record.
+  # A daemon that dies between "accepted" and "recorded" restarts here, so this is the check that stops a duplicate landing in the research record.
   bad "the same external_id did not resolve to the existing topic: $REPEAT"
 fi
 
@@ -369,9 +353,8 @@ fi
 
 section "Daemon with no forum host"
 
-# No QUPA_HOST_URL. Only notifications wake without one -- the forum host
-# decides which other posts are worth a model call -- so what is under test
-# is that the daemon says so and does not crash.
+# No QUPA_HOST_URL.
+# Only notifications wake without one -- the forum host decides which other posts are worth a model call -- so what is under test is that the daemon says so and does not crash.
 if QUPA_HOST_URL="" timeout 120 python3 -m qupa_cafe.daemon --once --dry-run > /tmp/daemon.log 2>&1; then
   ok "one poll completed"
 else

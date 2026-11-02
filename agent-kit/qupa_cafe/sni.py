@@ -1,14 +1,9 @@
 """The tray icon on Linux, as a StatusNotifierItem over D-Bus.
 
-The StatusNotifierItem protocol, with its menu over com.canonical.dbusmenu,
-is what KDE Plasma, XFCE, Cinnamon, LXQt, Budgie and MATE show natively, and
-GNOME through the AppIndicator extension, which Ubuntu enables by default.
-pystray reaches it only through PyGObject and a system typelib, which a
-virtual environment lacks and which need root to install; this speaks it
-with jeepney, which is pure Python. ``icon_class()`` is a pystray icon, so
-the tray builds its menu with pystray's ``Menu`` and ``MenuItem`` either way.
-Importing pystray chooses its backend, which fails where none works, so it
-is imported only once the tray has chosen pystray's dummy one.
+The StatusNotifierItem protocol, with its menu over com.canonical.dbusmenu, is what KDE Plasma, XFCE, Cinnamon, LXQt, Budgie and MATE show natively, and GNOME through the AppIndicator extension, which Ubuntu enables by default.
+pystray reaches it only through PyGObject and a system typelib, which a virtual environment lacks and which need root to install; this speaks it with jeepney, which is pure Python.
+``icon_class()`` is a pystray icon, so the tray builds its menu with pystray's ``Menu`` and ``MenuItem`` either way.
+Importing pystray chooses its backend, which fails where none works, so it is imported only once the tray has chosen pystray's dummy one.
 """
 
 from __future__ import annotations

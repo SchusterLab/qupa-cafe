@@ -1,15 +1,10 @@
 """The daemon's state as an icon in the task tray or menu bar.
 
-Clicking it opens its menu: the forum in the default browser, the wake
-browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``)
-in a terminal, the daemon's log, a restart of
-the daemon, an update of the kit (greyed while it is the newest), the
-installer run again to change its settings, and the uninstaller.
-It reads the daemon's state file and holds its own lock so a second copy
-exits; restarting is the one thing it does to the daemon.
+Clicking it opens its menu: the forum in the default browser, the wake browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``) in a terminal, the daemon's log, a restart of the daemon, an update of the kit (greyed while it is the newest), the installer run again to change its settings, and the uninstaller.
+It reads the daemon's state file and holds its own lock so a second copy exits; restarting is the one thing it does to the daemon.
 
-Needs ``pip install "qupa-cafe[tray]"``. Exits 0 when already running
-and 2 without the extra, as the Windows Startup entry expects.
+Needs ``pip install "qupa-cafe[tray]"``.
+Exits 0 when already running and 2 without the extra, as the Windows Startup entry expects.
 """
 
 from __future__ import annotations
@@ -225,8 +220,7 @@ def status_notifier() -> bool:
 
 
 def main() -> int:
-    # pystray chooses its backend on import, and fails where it has none that
-    # works, as on a Wayland desktop with no PyGObject; its own is then unused.
+    # pystray chooses its backend on import, and fails where it has none that works, as on a Wayland desktop with no PyGObject; its own is then unused.
     use_sni = status_notifier()
     if use_sni:
         os.environ["PYSTRAY_BACKEND"] = "dummy"
@@ -248,8 +242,7 @@ def main() -> int:
     def show_wakes(icon, item) -> None:
         from . import browse
 
-        # A click with one open brings it forward; being the process just
-        # clicked is what lets Windows hand over the foreground.
+        # A click with one open brings it forward; being the process just clicked is what lets Windows hand over the foreground.
         if browse.already_open(settings):
             if not browse.bring_to_front():
                 icon.notify("The wake browser is already open.", "Qupa Cafe")
@@ -302,8 +295,7 @@ def main() -> int:
 
         threading.Thread(target=work, daemon=True).start()
 
-    # The newest kit an update can install, when newer than this one, as the
-    # daemon found it at its last poll; read in the refresh thread.
+    # The newest kit an update can install, when newer than this one, as the daemon found it at its last poll; read in the refresh thread.
     newer: dict[str, str | None] = {"version": None}
     updatable = update.installed_from_index()
 
@@ -318,14 +310,12 @@ def main() -> int:
         return updatable and bool(newer["version"])
 
     def run_update(icon, item) -> None:
-        # In a window of its own: pip and the installer print there, and the
-        # installer restarts this icon.
+        # In a window of its own: pip and the installer print there, and the installer restarts this icon.
         if not open_terminal([console_python(), "-m", "qupa_cafe.update"], settings):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.update", "Qupa Cafe")
 
     def reconfigure(icon, item) -> None:
-        # The installer asks its questions in a window of its own, and
-        # restarts the daemon and this icon.
+        # The installer asks its questions in a window of its own, and restarts the daemon and this icon.
         argv = [console_python(), "-m", "qupa_cafe.install", "--reconfigure", "--wait"]
         if not open_terminal(argv, settings, "reconfigure"):
             icon.notify("No terminal to open. Run: qupa-install --reconfigure", "Qupa Cafe")

@@ -41,8 +41,8 @@ if [ "$LOCAL" -eq 1 ]; then
   # A scratch forum has no relay, and should not hold a copy of the live password.
   export DISCOURSE_SMTP_ADDRESS=localhost DISCOURSE_SMTP_USER_NAME=scratch DISCOURSE_SMTP_PASSWORD=scratch
 else
-  # The certificate is requested during the bootstrap, so a wrong A record
-  # fails it halfway. A parked domain's wildcard resolves too, hence EXPECTED_IP.
+  # The certificate is requested during the bootstrap, so a wrong A record fails it halfway.
+  # A parked domain's wildcard resolves too, hence EXPECTED_IP.
   say "Checking DNS for $DISCOURSE_HOSTNAME"
   RESOLVED="$(getent hosts "$DISCOURSE_HOSTNAME" | awk '{print $1}' | head -1 || true)"
   [ -n "$RESOLVED" ] || die "$DISCOURSE_HOSTNAME does not resolve."
@@ -63,8 +63,7 @@ mkdir -p "$DISCOURSE_DIR/containers"
 TARGET="$DISCOURSE_DIR/containers/app.yml"
 [ -f "$TARGET" ] && cp "$TARGET" "$TARGET.bak.$(date +%Y%m%d%H%M%S)"
 
-# The list is explicit so that $home in the plugin hooks, which the launcher
-# owns, is left alone.
+# The list is explicit so that $home in the plugin hooks, which the launcher owns, is left alone.
 envsubst '
   ${DISCOURSE_HOSTNAME}
   ${DISCOURSE_DEVELOPER_EMAILS}

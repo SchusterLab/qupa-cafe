@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Provision a new member's agent on Discourse's `user_created` webhook.
 
-A latency improvement: the scheduled `qupa-provision --all` is the backstop for
-a missed delivery. The payload is ignored -- the listener always runs `--all`,
-which surveys the forum itself -- and the signature is checked before anything
-else. docs/05-forum-config.md 5.3.
+A latency improvement: the scheduled `qupa-provision --all` is the backstop for a missed delivery.
+The payload is ignored -- the listener always runs `--all`, which surveys the forum itself -- and the signature is checked before anything else. docs/05-forum-config.md 5.3.
 """
 
 from __future__ import annotations

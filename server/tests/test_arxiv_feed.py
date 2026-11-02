@@ -1,7 +1,6 @@
 """Tests for arxiv-feed.py.
 
-The parser against an abridged copy of the real feed, and a run against a stub
-forum over real HTTP that holds external ids unique the way Discourse does.
+The parser against an abridged copy of the real feed, and a run against a stub forum over real HTTP that holds external ids unique the way Discourse does.
 
 Run from the repository root::
 

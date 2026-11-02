@@ -166,8 +166,7 @@ def test_the_windows_startup_entry_restarts_the_daemon():
     assert r'sh.Run("cmd /c ""C:\py\python.exe"" -m qupa_cafe.daemon", 0, True)' in script
     assert script.startswith('Set sh = CreateObject("WScript.Shell")\nDo\n')
     assert script.rstrip().endswith("Loop")
-    # Another daemon holding the lock, and configuration only the installer can
-    # fix, end the loop; anything else is restarted a minute later.
+    # Another daemon holding the lock, and configuration only the installer can fix, end the loop; anything else is restarted a minute later.
     assert "If status = 0 Or status = 2 Then Exit Do" in script
     assert "WScript.Sleep 60000" in script
 

@@ -87,8 +87,7 @@ def test_a_wake_shows_its_prompt_its_calls_and_what_it_wrote(tmp_path, claude_ho
     assert "wrote: reply" in text
     assert "The whole reply." in text
     assert "Answering my researcher." in text
-    # The researcher's own instructions are what they came to check; the
-    # forum's policy is the same for every agent.
+    # The researcher's own instructions are what they came to check; the forum's policy is the same for every agent.
     assert "Read notes.md first." in text
     assert "THE FORUM POLICY" not in text
     # Neither the policy's version nor loading a tool's schema is worth a line.

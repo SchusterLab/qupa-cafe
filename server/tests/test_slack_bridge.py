@@ -1,8 +1,6 @@
 """Tests for slack-bridge.py.
 
-Against a stub forum over real HTTP, which keeps posts, topics, categories,
-groups and accounts the way Discourse reports them, and a fake Slack client
-that records every call. slack_sdk is not needed to run them.
+Against a stub forum over real HTTP, which keeps posts, topics, categories, groups and accounts the way Discourse reports them, and a fake Slack client that records every call. slack_sdk is not needed to run them.
 
 Run from the repository root::
 
@@ -164,12 +162,10 @@ class StubForum:
         self.edited_as: list[tuple[str, int, str]] = []
         self.deleted_as: list[tuple[str, int]] = []
         self.next_post = 100
-        # upload:// reference -> bytes; an image whose bytes are None is known
-        # to the forum but fails to download.
+        # upload:// reference -> bytes; an image whose bytes are None is known to the forum but fails to download.
         self.uploads: dict[str, bytes | None] = {}
         self.downloaded_as: list[str | None] = []
-        # Set to a host to serve uploads as secure_uploads does: a redirect to
-        # an address signed for the object store.
+        # Set to a host to serve uploads as secure_uploads does: a redirect to an address signed for the object store.
         self.object_store: str | None = None
         # (as whom, filename, bytes) for each file uploaded to it.
         self.uploaded: list[tuple[str, str, bytes]] = []
@@ -212,9 +208,8 @@ def serve(stub: StubForum):
             path = url.path
 
             if path in ("/posts.json", "/private-posts.json"):
-                # Newest first, 50 a page, as posts#latest. The public listing
-                # has regular posts only; the private one, as an admin sees it,
-                # has every private post, whispers included.
+                # Newest first, 50 a page, as posts#latest.
+                # The public listing has regular posts only; the private one, as an admin sees it, has every private post, whispers included.
                 private = path == "/private-posts.json"
                 listed = [
                     p for p in stub.posts
@@ -314,8 +309,7 @@ def serve(stub: StubForum):
             parsed = urllib.parse.parse_qs(body.decode())
             form = {k: v[0] for k, v in parsed.items()}
             if self.path == "/uploads/lookup-urls.json":
-                # As uploads#lookup_urls: the known ones, with the host the
-                # forum names itself by, which is not the one the bridge uses.
+                # As uploads#lookup_urls: the known ones, with the host the forum names itself by, which is not the one the bridge uses.
                 prefix = "/secure-uploads" if stub.object_store else "/uploads/default"
                 return self._json(200, [
                     {"short_url": short, "url": f"//forum.example{prefix}/original/1X/{short[len('upload://'):]}"}
@@ -573,8 +567,7 @@ def connect(tmp_path):
 
 @pytest.fixture
 def world(connect):
-    # `newest`, so that the history is the forum's past and every test below
-    # starts from a bridge that has relayed none of it.
+    # `newest`, so that the history is the forum's past and every test below starts from a bridge that has relayed none of it.
     stub, slack, bridge = connect(first_run="newest")
     bridge.poll()  # with `newest`, the first run only places the cursors
     return stub, slack, bridge
@@ -641,8 +634,7 @@ def test_a_new_forums_first_posts_reach_slack(connect):
     bridge.poll()
 
     assert any("Surface code thresholds" in m["text"] for m in parents(slack))
-    # The onboarding message is considered too, rather than skipped: it
-    # reaches Slack for whoever in it has an account there.
+    # The onboarding message is considered too, rather than skipped: it reaches Slack for whoever in it has an account there.
     assert bridge.state.cursor("pm_cursor") == stub.topics[40]["posts"][-1]["id"]
     # And once only: the cursor now stands after them.
     before = len(slack.messages) + len(slack.dms)
@@ -1040,8 +1032,7 @@ def test_a_dm_with_the_bot_is_a_private_message_with_your_agent(world):
     (note,) = in_thread(slack, "DUS", "7000.1")
     assert "sunada-agent" in note["text"]
 
-    # The agent answers on the forum, and the answer arrives in the thread
-    # under the agent's name, with no mention: it is the reader's own DM.
+    # The agent answers on the forum, and the answer arrives in the thread under the agent's name, with no mention: it is the reader's own DM.
     stub.post(topic_id, "sunada-agent", "Running it now; about an hour.")
     assert bridge.poll() == 1
     reply = in_thread(slack, "DUS", "7000.1")[-1]

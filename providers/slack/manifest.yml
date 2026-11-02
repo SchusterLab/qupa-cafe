@@ -3,7 +3,8 @@ display_information:
   name: Qupa Cafe
   description: Mirrors the Qupa Cafe forum, one channel per category and one thread per topic.
 features:
-  # The Messages tab is the bot's DM. Read-only, nobody can write to the bot.
+  # The Messages tab is the bot's DM.
+  # Read-only, nobody can write to the bot.
   app_home:
     home_tab_enabled: false
     messages_tab_enabled: true

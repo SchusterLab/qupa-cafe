@@ -148,9 +148,7 @@ def test_a_conforming_external_id_passes_through_unchanged():
 @pytest.mark.parametrize(
     "bad",
     [
-        # The natural instruction -- derive a key from what you are posting
-        # about -- produces exactly the strings Discourse rejects with 422
-        # 'External is invalid'.
+        # The natural instruction -- derive a key from what you are posting about -- produces exactly the strings Discourse rejects with 422 'External is invalid'.
         "scratch Scratch integration 1789",
         "has.dots", "has:colons", "has/slashes", "has(parens)",
         # A word character to Python, but not to Ruby.
@@ -210,10 +208,9 @@ def test_a_message_is_sent_as_a_private_message(forum):
 # ------------------------------------------------------------------- the norms
 
 
-# Conduct that the policy topic states. None of it may appear in the server's
-# own text: the policy is a topic edited without a release, so a paraphrase here
-# is a copy that goes stale silently. Matched case-insensitively against every
-# channel this server controls.
+# Conduct that the policy topic states.
+# None of it may appear in the server's own text: the policy is a topic edited without a release, so a paraphrase here is a copy that goes stale silently.
+# Matched case-insensitively against every channel this server controls.
 POLICY_CONDUCT = (
     "silence is",
     "prefer",
@@ -286,12 +283,10 @@ def _server_for(agent: str) -> QupaServer:
 @pytest.mark.parametrize(
     "requested, expected",
     [
-        # An agent need not know its researcher's account name, so omitting
-        # `to` means them.
+        # An agent need not know its researcher's account name, so omitting `to` means them.
         (None, ["rsmith"]),
         ([], ["rsmith"]),
-        # They cannot sign in as their agent, so a conversation it starts is
-        # invisible to them unless they are in it.
+        # They cannot sign in as their agent, so a conversation it starts is invisible to them unless they are in it.
         (["bob"], ["bob", "rsmith"]),
         # Not twice, whatever the case.
         (["RSmith"], ["RSmith"]),
@@ -574,8 +569,8 @@ def test_initialize_and_list_tools(forum):
     )
 
     assert responses[0]["result"]["serverInfo"]["name"] == "qupa-cafe"
-    # Sent with the handshake, so an agent learns to call get_policy before it
-    # has called anything. A client may ignore it, so nothing depends on it.
+    # Sent with the handshake, so an agent learns to call get_policy before it has called anything.
+    # A client may ignore it, so nothing depends on it.
     assert "get_policy" in responses[0]["result"]["instructions"]
     # The notification must produce no response at all.
     assert len(responses) == 2
@@ -686,12 +681,9 @@ def test_get_policy_returns_the_version_both_accounts_and_the_kit(forum):
     answer = _get_policy(url)
 
     assert answer["policy_version"] == POLICY_EDITED
-    # Both accounts, because a client need not forward the connection
-    # instructions, and an agent that cannot name its
-    # researcher cannot write to them.
+    # Both accounts, because a client need not forward the connection instructions, and an agent that cannot name its researcher cannot write to them.
     assert answer["you_post_as"] == "test-agent"
-    # Unset in the subprocess's environment, so it reports being untold rather
-    # than inventing "test" from the account name.
+    # Unset in the subprocess's environment, so it reports being untold rather than inventing "test" from the account name.
     assert answer["your_researcher"] is None
     # No file of the researcher's, which is most researchers, costs no tokens.
     assert answer["from_your_researcher"] is None
@@ -714,8 +706,7 @@ def test_get_policy_carries_the_researchers_own_instructions(forum, tmp_path):
     answer = _get_policy(url)
 
     assert "Cite the arXiv id." in answer["from_your_researcher"]
-    # And it is not part of what gates a write: the version is the forum's
-    # own, so nothing a researcher writes here can change what is accepted.
+    # And it is not part of what gates a write: the version is the forum's own, so nothing a researcher writes here can change what is accepted.
     assert "Cite the arXiv id." not in answer["policy"]
     assert answer["policy_version"] == POLICY_EDITED
 
@@ -731,8 +722,7 @@ def test_get_policy_returns_each_categorys_policy(forum):
         {"category": "arXiv quant-ph", "category_id": 8, "parent_category_id": None, "topic_id": 108,
          "policy": "Mention your researcher.", "policy_version": "2026-10-26T09:00:00.000Z"}
     ]
-    # A private message or an upload is in no category, so only the forum's
-    # policy applies to it.
+    # A private message or an upload is in no category, so only the forum's policy applies to it.
     assert answer["policy_version"] == POLICY_EDITED
 
 
@@ -923,8 +913,7 @@ def test_attaching_from_a_url_takes_only_http(forum):
 # --------------------------------------------------------------- encoding
 
 
-# Kept out of a docstring on purpose: these are the characters a physics forum
-# is made of, and the point is that they travel as themselves.
+# Kept out of a docstring on purpose: these are the characters a physics forum is made of, and the point is that they travel as themselves.
 PHYSICS = (
     "The dispersive shift is χ ≃ -g²E_C/[Δ(Δ - E_C)], "
     "with κ/2π ≈ 200 MHz — and λ/4 resonators."

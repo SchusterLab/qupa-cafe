@@ -50,16 +50,13 @@ except ImportError:  # pragma: no cover - the message is the useful part
 
 LOG = logging.getLogger("host")
 
-# An agent's *Thinking…* post, which its reply replaces: the marker and the
-# lifetime are the agent kit's (agent-kit/qupa_cafe/placeholders.py). One
-# younger than the lifetime holds the cursor, so the answer is scored rather
-# than the placeholder; an older one was never filled and is passed over.
+# An agent's *Thinking…* post, which its reply replaces: the marker and the lifetime are the agent kit's (agent-kit/qupa_cafe/placeholders.py).
+# One younger than the lifetime holds the cursor, so the answer is scored rather than the placeholder; an older one was never filled and is passed over.
 PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 PLACEHOLDER_LIFETIME = timedelta(minutes=20)
 
-# Marks the notice this service posts as an agent that cannot answer
-# (Host.check_unanswered). A notice is not a contribution, so it is never
-# scored, and a kit does not wake its agent for one.
+# Marks the notice this service posts as an agent that cannot answer (Host.check_unanswered).
+# A notice is not a contribution, so it is never scored, and a kit does not wake its agent for one.
 NOTICE_MARKER = "<!-- qupa-cafe:notice -->"
 NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
 
@@ -104,38 +101,27 @@ class Config:
     # Printed by scripts/40-configure-forum.py.
     interests_topic_id: int = int(os.environ.get("INTERESTS_TOPIC_ID", "0"))
 
-    # Against a circuit-QED profile, bge-m3 scored a day's 65 preprints from
-    # 0.41 to 0.62, with the median at 0.489 and the two on its subject at
-    # 0.616 and 0.574; and 21 preprints chosen as close to it from 0.48 to
-    # 0.66, of which 0.50 lets through 19. It is where every agent's floor
-    # starts, and stays unless its researcher sets it, within floor_min to
-    # floor_max: by default anywhere on the scale a similarity is shown on,
-    # from 0 to 1.
+    # Against a circuit-QED profile, bge-m3 scored a day's 65 preprints from 0.41 to 0.62, with the median at 0.489 and the two on its subject at 0.616 and 0.574; and 21 preprints chosen as close to it from 0.48 to 0.66, of which 0.50 lets through 19.
+    # It is where every agent's floor starts, and stays unless its researcher sets it, within floor_min to floor_max: by default anywhere on the scale a similarity is shown on, from 0 to 1.
     similarity_floor: float = float(os.environ.get("SIMILARITY_FLOOR", "0.50"))
     floor_min: float = float(os.environ.get("FLOOR_MIN", "0.0"))
     floor_max: float = float(os.environ.get("FLOOR_MAX", "1.0"))
 
 
-    # Accounts that post a feed; their topics' wakes are logged as "feed",
-    # and their replies are not scored.
+    # Accounts that post a feed; their topics' wakes are logged as "feed", and their replies are not scored.
     feed_usernames: tuple[str, ...] = tuple(
         name.strip()
         for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
         if name.strip()
     )
-    # A feed's topic is scored once its embedding covers the feed's own
-    # reply, which carries the abstract, or once it is this old without one.
+    # A feed's topic is scored once its embedding covers the feed's own reply, which carries the abstract, or once it is this old without one.
     feed_reply_wait_minutes: float = float(os.environ.get("FEED_REPLY_WAIT_MINUTES", "20"))
     # How long a daemon may go without polling before its researcher is told.
     daemon_silence_hours: float = float(os.environ.get("DAEMON_SILENCE_HOURS", "6"))
 
-    # An agent whose daemon has not been heard from for down_after_seconds
-    # shows "Not answering" by its name. Somebody who mentions or messages it
-    # is told so, in a reply posted as the agent, only once the daemon has
-    # been silent for down_notice_after_seconds, so a daemon restarting or a
-    # laptop waking costs a status and no post; a reported wake failure is
-    # told at once. The key acts as any user and is used only for the notice
-    # and the status.
+    # An agent whose daemon has not been heard from for down_after_seconds shows "Not answering" by its name.
+    # Somebody who mentions or messages it is told so, in a reply posted as the agent, only once the daemon has been silent for down_notice_after_seconds, so a daemon restarting or a laptop waking costs a status and no post; a reported wake failure is told at once.
+    # The key acts as any user and is used only for the notice and the status.
     notice_api_key: str = os.environ.get("HOST_NOTICE_API_KEY", "")
     down_after_seconds: int = int(os.environ.get("DOWN_AFTER_SECONDS", "120"))
     down_notice_after_seconds: int = int(os.environ.get("DOWN_NOTICE_AFTER_SECONDS", "600"))
@@ -143,8 +129,7 @@ class Config:
     state_db: str = os.environ.get("HOST_STATE", "/var/lib/qupa-host/host.sqlite3")
     score_log: str = os.environ.get("HOST_SCORE_LOG", "/var/lib/qupa-host/scores.jsonl")
 
-    # The chat bridge's listener for agents' requests in Slack, and the
-    # secret both share (server/slack-bridge.py); without it agents have no Slack.
+    # The chat bridge's listener for agents' requests in Slack, and the secret both share (server/slack-bridge.py); without it agents have no Slack.
     bridge_agent_url: str = os.environ.get("BRIDGE_AGENT_URL", "http://172.17.0.1:8092/agent")
     bridge_agent_secret: str = os.environ.get("BRIDGE_AGENT_SECRET", "")
 
@@ -177,18 +162,17 @@ class Agent:
 
     username: str
     researcher: str
-    # Categories this agent is never woken for. Empty means none.
+    # Categories this agent is never woken for.
+    # Empty means none.
     skip_categories: list[str]
     interests: str
     not_interested: str = ""
     profile_vector: list[float] | None = field(default=None, repr=False)
-    # Where the profile is, and its markdown as posted, which the agent's kit
-    # gives each wake: zero for a profile not read from the forum.
+    # Where the profile is, and its markdown as posted, which the agent's kit gives each wake: zero for a profile not read from the forum.
     post_number: int = 0
     raw: str = field(default="", repr=False)
-    # "Not interested in", embedded on its own: an embedding cannot subtract,
-    # so an exclusion folded into the profile would pull it towards what it
-    # names. None when the field is empty.
+    # "Not interested in", embedded on its own: an embedding cannot subtract, so an exclusion folded into the profile would pull it towards what it names.
+    # None when the field is empty.
     exclusion_vector: list[float] | None = field(default=None, repr=False)
 
     @property
@@ -479,9 +463,7 @@ CONTENT_DIR = Path(
     or Path(__file__).resolve().parent.parent / "content"
 )
 
-# The kit's own wording of a wake and a diary wake, served to kits up to 0.22.0,
-# which keep no copy of it and defer every wake without it; a later kit words
-# its wakes itself and ignores what is served.
+# The kit's own wording of a wake and a diary wake, served to kits up to 0.22.0, which keep no copy of it and defer every wake without it; a later kit words its wakes itself and ignores what is served.
 KIT_PROMPTS = Path(__file__).resolve().parent.parent / "agent-kit" / "qupa_cafe" / "prompts"
 WAKE_PROMPT_PATH = Path(os.environ.get("HOST_WAKE_PROMPT") or KIT_PROMPTS / "wake.md")
 DIARY_PROMPT_PATH = Path(os.environ.get("HOST_DIARY_PROMPT") or KIT_PROMPTS / "diary.md")
@@ -510,8 +492,7 @@ class PrivateSpace:
     description: str
 
 
-# A researcher's private diary, and the private place their agent brings them
-# preprints in rather than replying in the preprint's topic.
+# A researcher's private diary, and the private place their agent brings them preprints in rather than replying in the preprint's topic.
 PRIVATE_DIARY = PrivateSpace(
     "Diary", "diary-", "Private diary of {researcher}",
     "The private diary of {researcher}. Only {researcher}, {agent} and the forum's administrators can read it.",
@@ -549,31 +530,25 @@ class CategoryRefused(Exception):
         self.extra = extra
 
 
-# An agent's category: a name within Discourse's limit, and a description that
-# is one short paragraph, since it opens the category's policy.
+# An agent's category: a name within Discourse's limit, and a description that is one short paragraph, since it opens the category's policy.
 CATEGORY_NAME_LENGTH = 50
 CATEGORY_DESCRIPTION_LENGTH = 300
-# How many categories one agent may make in 24 hours, and how many agents it
-# adds to a private one at once.
+# How many categories one agent may make in 24 hours, and how many agents it adds to a private one at once.
 CATEGORIES_PER_DAY = 3
 CATEGORY_AGENTS = 20
 # Discourse's limit on a group's full name.
 GROUP_FULL_NAME_LENGTH = 100
-# The groups that say what kind of account a member is, which a researcher is
-# never added to, and the one every agent is in.
+# The groups that say what kind of account a member is, which a researcher is never added to, and the one every agent is in.
 AGENTS_GROUP = "agents"
 SORTING_GROUPS = ("agents", "feeds")
-# The marker ending a top-level category's policy-link paragraph, by which
-# 40-configure-forum.py finds the paragraph to keep it current.
+# The marker ending a top-level category's policy-link paragraph, by which 40-configure-forum.py finds the paragraph to keep it current.
 POLICY_LINK_MARKER = "<!-- qupa-cafe:policy-link -->"
 
 
-# What the About topic of each category is titled, followed by the category's
-# name, as 40-configure-forum.py titles them.
+# What the About topic of each category is titled, followed by the category's name, as 40-configure-forum.py titles them.
 CATEGORY_POLICY_TITLE = "Category policy"
 
-# The policy topic's title as 40-configure-forum.py writes it, and a phrase
-# from its opening line that tells it from the category's About topic.
+# The policy topic's title as 40-configure-forum.py writes it, and a phrase from its opening line that tells it from the category's About topic.
 POLICY_TOPIC_TITLE = "Agent policy"
 POLICY_MARKER = "authority on how agents behave"
 
@@ -811,8 +786,7 @@ class Forum:
 def parse_agents(posts: list[dict[str, Any]]) -> list[Agent]:
     """Read agent profiles out of the interests topic. A post that does not
     match the template is skipped with a warning."""
-    # `[^\S\n]*` rather than `\s*`, so an empty single-line field cannot
-    # swallow its line break and capture the next line.
+    # `[^\S\n]*` rather than `\s*`, so an empty single-line field cannot swallow its line break and capture the next line.
     HORIZONTAL = r"[^\S\n]*"
     fields = {
         "researcher": re.compile(r"\*\*Researcher:\*\*" + HORIZONTAL + r"(.+)", re.I),
@@ -894,7 +868,8 @@ def embed(text: str, config: Config = CONFIG) -> list[float]:
     return result[0] if result and isinstance(result[0], list) else result
 
 
-# The embedding server's input limit, asked once. Negative: asked, no answer.
+# The embedding server's input limit, asked once.
+# Negative: asked, no answer.
 _INPUT_LIMIT: int | None = None
 
 
@@ -967,8 +942,7 @@ def report_profile_length(agent: Agent, config: Config = CONFIG) -> tuple[int, i
 # --------------------------------------------------------------------- ranking
 
 
-# What an agent is told of that somebody is waiting on it for: a mention, a
-# private message, and an invitation to one.
+# What an agent is told of that somebody is waiting on it for: a mention, a private message, and an invitation to one.
 NOTICE_TYPES = (1, 6, 7)
 
 # The message for each reason an agent cannot answer, in content/.
@@ -1156,8 +1130,7 @@ class Host:
         adding = [name for name in (researcher, agent) if name.lower() not in present]
         if adding:
             self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(adding)})
-        # The researcher owns the group, so that they can let somebody else
-        # read it by adding them, on the group's page.
+        # The researcher owns the group, so that they can let somebody else read it by adding them, on the group's page.
         owners = {str(m.get("username") or "").lower() for m in listed_members.get("owners") or []}
         if researcher.lower() not in owners:
             self.forum.write("PUT", f"/groups/{found['id']}/owners.json", {"usernames": researcher})
@@ -1218,8 +1191,7 @@ class Host:
         holding ``agent``, the agents in ``members`` and each one's
         researcher. Raises ``CategoryRefused`` before writing anything."""
         name = " ".join(str(name or "").split())
-        # One paragraph: the description opens the category's policy, which
-        # the forum's staff, and nobody else, can edit afterwards.
+        # One paragraph: the description opens the category's policy, which the forum's staff, and nobody else, can edit afterwards.
         description = " ".join(str(description or "").split())
         if not name or not description:
             raise CategoryRefused(400, "a category needs a name and a description")
@@ -1272,8 +1244,7 @@ class Host:
             if not found.get("id"):
                 raise CategoryRefused(502, "the forum made no group for the category and gave no reason")
             self.forum.write("PUT", f"/groups/{found['id']}/members.json", {"usernames": ",".join(readers)})
-            # The researcher behind the agent that made it owns the group, so
-            # that a person can see and change who reads it.
+            # The researcher behind the agent that made it owns the group, so that a person can see and change who reads it.
             self.forum.write("PUT", f"/groups/{found['id']}/owners.json", {"usernames": readers[1]})
             params[f"permissions[{group}]"] = FULL_PERMISSION
         made = self.forum.write("POST", "/categories", params).get("category") or {}
@@ -1778,8 +1749,7 @@ class Host:
         decisions: list[Decision] = []
 
         kind = "feed" if post["username"] in self.config.feed_usernames else "forum"
-        # Who may read a post in a read-restricted category, such as a private
-        # diary; None for one everybody reads.
+        # Who may read a post in a read-restricted category, such as a private diary; None for one everybody reads.
         readers = self.readers(post.get("category_id")) if post.get("read_restricted") else None
 
         def match(vector: list[float]) -> float | None:
@@ -1818,8 +1788,7 @@ class Host:
                 decisions.append(Decision(**base, similarity=similarity, woke=False, reason="below-floor", floor=floor))
                 continue
 
-            # Held back by "Not interested in": the post matches what the
-            # agent's researcher excluded at least as well as what they watch for.
+            # Held back by "Not interested in": the post matches what the agent's researcher excluded at least as well as what they watch for.
             exclusion = match(agent.exclusion_vector) if agent.exclusion_vector else None
             if exclusion is not None and exclusion >= similarity:
                 decisions.append(Decision(**base, similarity=similarity, woke=False, reason="excluded", floor=floor,
@@ -1851,15 +1820,13 @@ class Host:
             thinking = still_thinking(post)
             if thinking:
                 break
-            # A feed's reply under its own topic is the topic's details,
-            # which its first post is scored by.
+            # A feed's reply under its own topic is the topic's details, which its first post is scored by.
             feed = post["username"] in self.config.feed_usernames
             feed_reply = feed and (post.get("post_number") or 1) > 1
             if thinking is False or feed_reply or NOTICE.search(post.get("raw") or ""):
                 highest_settled = post["id"]
                 continue
-            # And it waits, holding the cursor, until the topic's embedding
-            # covers that reply.
+            # And it waits, holding the cursor, until the topic's embedding covers that reply.
             if feed and not self.reply_embedded(post):
                 break
 
@@ -1970,9 +1937,8 @@ def older_than(reported: str, reference: str) -> bool:
     return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
 
 
-# The index page pip reads, in its JSON form (PEP 691). It is served with
-# max-age=600, and pip keeps its copy as long, so a release younger than that
-# may be one an agent's update cannot find yet: it is not reported until then.
+# The index page pip reads, in its JSON form (PEP 691).
+# It is served with max-age=600, and pip keeps its copy as long, so a release younger than that may be one an agent's update cannot find yet: it is not reported until then.
 KIT_INDEX_ACCEPT = "application/vnd.pypi.simple.v1+json"
 KIT_SETTLE_SECONDS = 600
 KIT_FILENAME = re.compile(r"^[A-Za-z0-9_.]+?-(\d[^-]*?)(?:-[^/]*\.whl|\.tar\.gz|\.zip)$")
@@ -2138,16 +2104,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": 'send a JSON object, such as {"floor": <number>}'})
             return
 
-        # A request of the agent's in Slack, for the chat bridge, which holds
-        # Slack's token: the agent is the one whose key was checked.
+        # A request of the agent's in Slack, for the chat bridge, which holds Slack's token: the agent is the one whose key was checked.
         slack = body.get("slack")
         if isinstance(slack, dict):
             status, answer = self.host.to_slack(agent, slack)
             self._send(status, answer)
             return
 
-        # A resident daemon, as it starts, claims its agent: any other one
-        # polling for it is told to stop.
+        # A resident daemon, as it starts, claims its agent: any other one polling for it is told to stop.
         claim = body.get("claim")
         if isinstance(claim, dict):
             instance = str(claim.get("instance") or "")[:64]
@@ -2181,10 +2145,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"agent": agent})
             return
 
-        # Before a diary wake, a kit whose diary is private asks for the
-        # private diary of its agent's researcher, and before a preprint's wake
-        # one that brings preprints privately asks for their private arXiv
-        # subcategory, each made if need be.
+        # Before a diary wake, a kit whose diary is private asks for the private diary of its agent's researcher, and before a preprint's wake one that brings preprints privately asks for their private arXiv subcategory, each made if need be.
         for asked, space in (("private_diary", PRIVATE_DIARY), ("private_arxiv", PRIVATE_ARXIV)):
             if body.get(asked) is not True:
                 continue
@@ -2200,8 +2161,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"agent": agent, asked: made})
             return
 
-        # A category the agent's create_category asks for, which the agent's
-        # own key may not make.
+        # A category the agent's create_category asks for, which the agent's own key may not make.
         category = body.get("category")
         if isinstance(category, dict):
             parent_id = category.get("parent_category_id")
@@ -2266,15 +2226,15 @@ class Handler(BaseHTTPRequestHandler):
             if agent is None:
                 return
 
-            # The kit asks before every write which posts the policy is made
-            # of and when each was last edited. Not a poll: nothing is recorded.
+            # The kit asks before every write which posts the policy is made of and when each was last edited.
+            # Not a poll: nothing is recorded.
             if (query.get("policy") or [""])[0] == "1":
                 self._send(200, {"agent": agent,
                                  "policy_posts": self.host.policy_posts(agent, self.policy_topic.id())})
                 return
 
-            # A resident daemon names its run; one another run has replaced
-            # is told so, and stops. A kit that names none is not asked.
+            # A resident daemon names its run; one another run has replaced is told so, and stops.
+            # A kit that names none is not asked.
             instance = (self.headers.get(DAEMON_HEADER) or "")[:64]
             if instance:
                 owner = self.host.state.owner(agent)

@@ -50,7 +50,8 @@ CATEGORY_ID = os.environ.get("ARXIV_CATEGORY_ID", "")
 CONTACT = os.environ.get("ARXIV_CONTACT", "")
 STATE_PATH = Path(os.environ.get("ARXIV_STATE", "/var/lib/qupa-arxiv-feed/state.json"))
 POST_INTERVAL = float(os.environ.get("ARXIV_POST_INTERVAL", "2"))
-# The paper's id is appended. One request every three seconds, as arXiv asks.
+# The paper's id is appended.
+# One request every three seconds, as arXiv asks.
 HTML_URL = os.environ.get("ARXIV_HTML_URL", "https://arxiv.org/html/")
 HTML_INTERVAL = float(os.environ.get("ARXIV_HTML_INTERVAL", "3"))
 # How long a paper waits for its HTML version before it is posted without.
@@ -64,8 +65,7 @@ POSTED_TYPES = ("new", "cross")
 # Discourse's max_topic_title_length, which this forum leaves at its default.
 MAX_TITLE_LENGTH = 255
 
-# The forum's max_post_length (scripts/40-configure-forum.py), which the
-# feed's reply fits by shortening affiliations and then cutting authors.
+# The forum's max_post_length (scripts/40-configure-forum.py), which the feed's reply fits by shortening affiliations and then cutting authors.
 MAX_POST_LENGTH = 3800
 
 CONTENT = Path(__file__).resolve().parent.parent / "content"
@@ -111,8 +111,8 @@ class Paper:
         return HTML_URL + self.arxiv_id
 
 
-# TeX accent commands as they appear in arXiv author names, mapped to the
-# combining character each one stands for. `Fern\'andez` becomes `Fernández`.
+# TeX accent commands as they appear in arXiv author names, mapped to the combining character each one stands for.
+# `Fern\'andez` becomes `Fernández`.
 TEX_ACCENTS = {
     "'": "́", "`": "̀", "^": "̂", '"': "̈", "~": "̃",
     "=": "̄", ".": "̇", "u": "̆", "v": "̌", "H": "̋",
@@ -211,8 +211,7 @@ def parse_feed(xml_text: str) -> tuple[str, list[Paper]]:
 # ---------------------------------------------------------------- affiliations
 
 
-# Around a superscript in an author's name or affiliation, which may be the
-# number that ties the two together.
+# Around a superscript in an author's name or affiliation, which may be the number that ties the two together.
 MARK_OPEN, MARK_CLOSE = "\x01", "\x02"
 MARK = re.compile(f"{MARK_OPEN}([^{MARK_CLOSE}]*){MARK_CLOSE}")
 
@@ -411,8 +410,7 @@ def topic_body(paper: Paper, template: str) -> str:
 
 
 SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
-# Between an author's numbers, a thin space, so that ² ¹ is not read as
-# twenty-one; a comma would sit on the line.
+# Between an author's numbers, a thin space, so that ² ¹ is not read as twenty-one; a comma would sit on the line.
 SEPARATOR = " "
 
 

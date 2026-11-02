@@ -43,8 +43,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PACKAGE_NAME = "qupa-cafe"
 
 CLAUDE_MCP_PATH = Path.home() / ".claude" / "qupa-cafe.mcp.json"
-# The skill that offers to post a finding, in every session's Claude Code, and
-# the kit's template of it.
+# The skill that offers to post a finding, in every session's Claude Code, and the kit's template of it.
 SKILL_PATH = Path.home() / ".claude" / "skills" / "qupa-cafe" / "SKILL.md"
 SKILL_TEMPLATE = PACKAGE_DIR / "skill" / "SKILL.md"
 
@@ -52,20 +51,17 @@ DAEMON_UNIT = "qupa-cafe-daemon"
 DAEMON_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
 DAEMON_VBS = "qupa-cafe-daemon.vbs"
 
-# DETACHED_PROCESS | CREATE_NO_WINDOW, for a process started on Windows that
-# outlives the installer and shows no console.
+# DETACHED_PROCESS | CREATE_NO_WINDOW, for a process started on Windows that outlives the installer and shows no console.
 WINDOWS_DETACHED = 0x00000008 | 0x08000000
 
-# A setup code is this, then the forum URL and the key, a newline between
-# them, in URL-safe base64 without padding: scripts/onboarding.py writes it.
+# A setup code is this, then the forum URL and the key, a newline between them, in URL-safe base64 without padding: scripts/onboarding.py writes it.
 SETUP_PREFIX = "qupa-setup-"
 
 CONFIG_DIR = Path.home() / ".config" / "qupa-cafe"
 PROFILE_PATH = CONFIG_DIR / "discourse-mcp-profile.json"
 ENV_PATH = CONFIG_DIR / "env"
 
-# Derived rather than asked for; changing HOST_PATH on the host strands
-# every installed kit. check_daemon_runs() catches a wrong path at install.
+# Derived rather than asked for; changing HOST_PATH on the host strands every installed kit. check_daemon_runs() catches a wrong path at install.
 def host_url_for(forum_url: str) -> str:
     return f"{forum_url.rstrip('/')}{HOST_PATH}"
 
@@ -76,8 +72,7 @@ def saved_host_url(env: dict[str, str]) -> str:
     return host_url_for(forum_url) if configured is None else configured
 
 
-# From a checkout, generated commands carry PYTHONPATH and a cwd; installed,
-# they must not.
+# From a checkout, generated commands carry PYTHONPATH and a cwd; installed, they must not.
 def running_installed() -> bool:
     return "site-packages" in PACKAGE_DIR.parts or "dist-packages" in PACKAGE_DIR.parts
 
@@ -301,8 +296,8 @@ Slack DM from the forum's app if the forum is mirrored into Slack.
     # What env says now, which Enter keeps at each question.
     before = env_values()
     current = setup_code(before["QUPA_FORUM_URL"], before["QUPA_API_KEY"]) if before.get("QUPA_FORUM_URL") and before.get("QUPA_API_KEY") else ""
-    # A working key also names the account. A forum URL pasted here is from a
-    # onboarding message that gives the URL and the key apart.
+    # A working key also names the account.
+    # A forum URL pasted here is from a onboarding message that gives the URL and the key apart.
     while True:
         entered = ask("Setup code", current, "the current one")
         found = read_setup_code(entered)
@@ -627,8 +622,7 @@ def write_env(settings: dict[str, str]) -> None:
         "# off, it is not woken for preprints. qupa_cafe/preprints.py.",
         f"{preprints.KEY}={settings.get('arxiv', preprints.PUBLIC)}",
     ]
-    # What the kit's other tools wrote there, such as the model a wake runs
-    # on, is kept; an older kit's name for QUPA_HOST_URL is not.
+    # What the kit's other tools wrote there, such as the model a wake runs on, is kept; an older kit's name for QUPA_HOST_URL is not.
     written = {line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
     kept = [f"{key}={value}" for key, value in env_values().items()
             if key not in written and key not in ("CLAUDE_CODE_GIT_BASH_PATH", OLD_HOST_URL_VARIABLE)]
@@ -692,8 +686,7 @@ def mcp_servers(settings: dict[str, str]) -> dict:
 
     return {
         "discourse": {
-            # By name when it is on PATH; by path when only the Node.js this
-            # installer put in pixi's bin directory provides it.
+            # By name when it is on PATH; by path when only the Node.js this installer put in pixi's bin directory provides it.
             "command": "npx" if shutil.which("npx") else (sandbox.find("npx") or "npx"),
             "args": ["-y", "@discourse/mcp", "--profile", str(PROFILE_PATH)],
         },
@@ -885,8 +878,7 @@ def stop_running_daemon() -> bool:
         print("  unloaded the running daemon, so the new one replaces it")
         return True
 
-    # Matched narrowly: a Python image, the module after `-m`, never this
-    # process or its parent.
+    # Matched narrowly: a Python image, the module after `-m`, never this process or its parent.
     stopped = False
     mine = {os.getpid(), os.getppid()}
     module = "qupa_cafe" + ".daemon"
@@ -1010,8 +1002,8 @@ WantedBy=default.target
 
         program_arguments = "\n".join(f"    <string>{a}</string>" for a in argv)
 
-        # The settings stay in ENV_PATH alone, which the daemon reads at
-        # start. One set here would win over an edit there.
+        # The settings stay in ENV_PATH alone, which the daemon reads at start.
+        # One set here would win over an edit there.
         environment = (
             "  <key>EnvironmentVariables</key>\n  <dict>\n"
             f"    <key>PYTHONPATH</key><string>{root}</string>\n  </dict>\n"
@@ -1041,8 +1033,7 @@ WantedBy=default.target
         )
         plist.chmod(0o600)
         print(f"  wrote {plist}")
-        # A loaded job keeps the plist it was loaded from, and loading it
-        # again fails, so a re-install unloads it first.
+        # A loaded job keeps the plist it was loaded from, and loading it again fails, so a re-install unloads it first.
         subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, text=True)
         run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
@@ -1421,9 +1412,8 @@ def claude_trusts(directory: str) -> bool:
         if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted")
     }
     here = Path(directory).resolve()
-    # Claude Code carries trust down from a folder, but not from the home
-    # directory or a folder above it: one under a trusted home is still asked
-    # about. A folder outside the home directory carries it as any other.
+    # Claude Code carries trust down from a folder, but not from the home directory or a folder above it: one under a trusted home is still asked about.
+    # A folder outside the home directory carries it as any other.
     home = Path.home().resolve()
     above = [path for path in here.parents if path != home and path not in home.parents]
     return any(_trust_key(str(path)) in trusted for path in (here, *above))

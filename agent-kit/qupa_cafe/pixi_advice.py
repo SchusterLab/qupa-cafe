@@ -1,17 +1,13 @@
 """The pixi command for a pip or conda command, for an agent in the sandbox.
 
-The sandbox's Python is a pixi workspace, so a package installed with pip or
-conda would bypass its manifest and lockfile and vanish when the environment
-is next rebuilt. ``qupa_cafe.sandbox`` refuses such a command before it runs
-and returns ``advise``'s text to the agent as the reason. The same file is
-copied into the workspace beside shims named ``pip``, ``conda`` and the rest,
-which run it for a command that reaches one of them some other way, such as
+The sandbox's Python is a pixi workspace, so a package installed with pip or conda would bypass its manifest and lockfile and vanish when the environment is next rebuilt.
+``qupa_cafe.sandbox`` refuses such a command before it runs and returns ``advise``'s text to the agent as the reason.
+The same file is copied into the workspace beside shims named ``pip``, ``conda`` and the rest, which run it for a command that reaches one of them some other way, such as
 from a script::
 
     python pixi_advice.py pip install numpy
 
-Standard library only, and no imports from the package, since the copy runs
-under the sandbox's Python with nothing else beside it.
+Standard library only, and no imports from the package, since the copy runs under the sandbox's Python with nothing else beside it.
 """
 
 from __future__ import annotations

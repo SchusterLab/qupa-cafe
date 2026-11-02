@@ -1,8 +1,6 @@
 """The sandbox's hook, and the pixi command it gives for a pip or conda one.
 
-What runs inside the sandbox is sandbox-runtime's, and it is checked where it
-runs: ``python -m qupa_cafe.sandbox check``, which qupa-install runs as its
-last step of setting it up.
+What runs inside the sandbox is sandbox-runtime's, and it is checked where it runs: ``python -m qupa_cafe.sandbox check``, which qupa-install runs as its last step of setting it up.
 """
 
 from __future__ import annotations
@@ -306,8 +304,7 @@ def test_a_claude_wake_with_the_sandbox_gets_its_hook(installed, tmp_path):
     hook = settings["hooks"]["PreToolUse"][0]
     assert "Bash" in hook["matcher"].split("|")
     assert hook["hooks"][0]["command"].endswith("hook")
-    # Bash runs only through the hook's approval, so a hook that does not run
-    # leaves no command running unsandboxed.
+    # Bash runs only through the hook's approval, so a hook that does not run leaves no command running unsandboxed.
     assert not any(tool.startswith("Bash") for tool in command[command.index("--allowedTools") + 1 :])
 
 
@@ -715,8 +712,7 @@ def test_a_kit_s_new_pins_reach_the_workspace_and_the_agent_s_own_packages_stay(
 
     assert add == ["pandas==3.1.0"]
     assert remove == ["xlrd"]
-    # A workspace an earlier kit made before the kit kept its copy: every pin
-    # that differs, and nothing removed.
+    # A workspace an earlier kit made before the kit kept its copy: every pin that differs, and nothing removed.
     assert sandbox.manifest_changes(kit_v2, None, workspace) == (["pandas==3.1.0"], [])
 
 

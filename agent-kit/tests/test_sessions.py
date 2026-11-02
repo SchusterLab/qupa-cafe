@@ -1,5 +1,4 @@
-"""Handing a post to one of the researcher's open sessions, and what happens
-when the session does not answer."""
+"""Handing a post to one of the researcher's open sessions, and what happens when the session does not answer."""
 
 from __future__ import annotations
 

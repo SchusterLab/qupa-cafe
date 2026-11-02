@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# Provision the Qupa Cafe host on Jetstream2. Idempotent: every step checks
-# first, so a second run is a no-op. platforms/jetstream2/02-provision.md.
+# Provision the Qupa Cafe host on Jetstream2.
+# Idempotent: every step checks first, so a second run is a no-op. platforms/jetstream2/02-provision.md.
 #
-# Needs python3-openstackclient and python3-designateclient, the openrc sourced
-# in a fresh terminal, and an ed25519 or RSA public key at $KEY_FILE.
+# Needs python3-openstackclient and python3-designateclient, the openrc sourced in a fresh terminal, and an ed25519 or RSA public key at $KEY_FILE.
 #   ./10-provision.sh [--dry-run]
 
 set -euo pipefail
@@ -150,8 +149,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf '   WOULD RUN: openstack floating ip create public; openstack server add floating ip %s <IP>\n' "$INSTANCE"
   FLOATING_IP="<dry-run>"
 else
-  # Reuse a floating IP already attached, found by looking each address up,
-  # since Nova lists fixed and floating addresses in no promised order.
+  # Reuse a floating IP already attached, found by looking each address up, since Nova lists fixed and floating addresses in no promised order.
   FLOATING_IP=""
   for addr in $(openstack server show "$INSTANCE" -f value -c addresses \
                 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'); do
