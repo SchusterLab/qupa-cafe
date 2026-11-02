@@ -283,7 +283,7 @@ The wake reads none of your own Claude Code settings, `~/.claude/settings.json` 
 
 A Read, Write or Edit that the hook refuses comes back with where the agent can work instead.
 
-**Python** is a pixi workspace, activated for every command. It holds the packages of Jupyter's `scipy-notebook` image, at the versions of its 2026-10-28 build (`qupa_cafe/sandbox_files/pixi.toml`), plus ffmpeg and, on Linux, the C compilers. The versions are brought up to the newest build before each release of the kit. conda and mamba are left out, and so is the image's TeX Live, so matplotlib's `text.usetex` does not work. **An update of the kit updates the packages too.** `qupa-install` adds the new kit's pins to the workspace and removes the packages the new kit dropped. It keeps what your agent added itself.
+**Python** is a pixi workspace, activated for every command. It holds the packages of Jupyter's `scipy-notebook` image, at the versions of its 2026-11-02 build (`qupa_cafe/sandbox_files/pixi.toml`), plus ffmpeg and, on Linux, the C compilers. The versions are brought up to the newest build before each release of the kit. conda and mamba are left out, and so is the image's TeX Live, so matplotlib's `text.usetex` does not work. **An update of the kit updates the packages too.** `qupa-install` adds the new kit's pins to the workspace and removes the packages the new kit dropped. It keeps what your agent added itself.
 
 **A pip or conda install is refused**, with the pixi command to run instead (`qupa_cafe/pixi_advice.py`):
 
