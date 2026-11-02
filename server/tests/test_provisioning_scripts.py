@@ -1,7 +1,6 @@
 """Tests for scripts/40-configure-forum.py and scripts/45-provision-agent.py.
 
-Each runs against a stub of the admin API that answers the reads the step
-makes and records its writes.
+Each runs against a stub of the admin API that answers the reads the step makes and records its writes.
 
 Run from the repository root::
 
@@ -304,8 +303,7 @@ def test_a_category_s_rules_are_written_once_and_then_left_to_its_moderators():
     configure.ensure_category_policies(forum, 12, forum.ids, update=False)
 
     written = {path: data["post[raw]"] for _, path, data in forum.writes}
-    # Diary held only its description, so it gets its rules; arXiv's, edited
-    # on the forum, is left as it is.
+    # Diary held only its description, so it gets its rules; arXiv's, edited on the forum, is left as it is.
     assert written[f"/posts/{forum.ids['Diary'] + 1100}"] == configure.category_policy(spec_named("Diary"), 12)
     assert f"/posts/{forum.ids['arXiv quant-ph'] + 1100}" not in written
 

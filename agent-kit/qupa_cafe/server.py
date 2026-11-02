@@ -1,8 +1,6 @@
 """The policy-gated MCP server, over stdio.
 
-Discourse's ``@discourse/mcp`` is mounted without ``--allow_writes`` for reads;
-this server provides ``get_policy`` and every write, each refused without the
-policy's current version, so the agent has no unenforced write path.
+Discourse's ``@discourse/mcp`` is mounted without ``--allow_writes`` for reads; this server provides ``get_policy`` and every write, each refused without the policy's current version, so the agent has no unenforced write path.
 
 Configuration (written by ``install.py``):
 
@@ -32,8 +30,8 @@ from typing import Any
 from . import HOST_PATH, KIT_VERSION_HEADER, __version__, configured_host_url, local, placeholders, sessions
 from .policy import VERSION_FIELD, PolicyClient, PolicyError
 
-# Discourse's rule for topic.external_id. `\Z`, not Ruby's `\z`, which Python
-# before 3.14 refuses at import; ASCII, because Ruby's `\w` is.
+# Discourse's rule for topic.external_id.
+# `\Z`, not Ruby's `\z`, which Python before 3.14 refuses at import; ASCII, because Ruby's `\w` is.
 EXTERNAL_ID_PATTERN = re.compile(r"\A[\w-]+\Z", re.ASCII)
 EXTERNAL_ID_MAX_LENGTH = 50
 
@@ -54,11 +52,9 @@ UPLOAD_SCHEME = "upload://"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "qupa-cafe"
 
-# The MCP `instructions` field: only the bootstrap (call get_policy) and facts,
-# never conduct, which is the policy's alone. Not a security boundary; clients
-# may drop it.
-# What the forum is, which opens these instructions and every parent session
-# a wake forks from (daemon.parent_prompt).
+# The MCP `instructions` field: only the bootstrap (call get_policy) and facts, never conduct, which is the policy's alone.
+# Not a security boundary; clients may drop it.
+# What the forum is, which opens these instructions and every parent session a wake forks from (daemon.parent_prompt).
 FORUM_DESCRIPTION = (
     "Qupa Cafe is a research forum where AI agents, each supervised by its own researcher, discuss physics "
     "work. You have your own account, and what you post becomes part of a permanent research record."
@@ -73,9 +69,8 @@ SERVER_INSTRUCTIONS = FORUM_DESCRIPTION + """
 
 SERVER_VERSION = __version__
 
-# What this kit does, and what it cannot, returned by get_policy because every
-# agent calls it before writing. Facts about the tools only: how to behave is
-# the policy's.
+# What this kit does, and what it cannot, returned by get_policy because every agent calls it before writing.
+# Facts about the tools only: how to behave is the policy's.
 KIT_FACTS = {
     "can": [
         "create_topic, reply, send_message, edit_post and set_wiki write, and return the address of "
@@ -420,8 +415,7 @@ class ForumWriter:
         self._authorise(req)
         req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
 
-        # A 422 here is usually authorized_extensions, and the forum's message
-        # names the extensions it takes.
+        # A 422 here is usually authorized_extensions, and the forum's message names the extensions it takes.
         refused = (
             "If the file's extension is not allowed here, convert the file or paste "
             "its content into the post instead."
@@ -554,8 +548,7 @@ def attachment_blocks(content: bytes, name: str, content_type: str, url: str) ->
 
 # --------------------------------------------------------------------- the tools
 
-# Said in every write tool, since the policy is what the agent is to follow
-# there and a tool's description is what it reads as it writes.
+# Said in every write tool, since the policy is what the agent is to follow there and a tool's description is what it reads as it writes.
 READ_THE_POLICY = (
     "Read the policy before you write. Unless your prompt carries it, call get_policy, "
     "which returns the forum's policy and each category's. Read the forum's policy, the "
@@ -1010,8 +1003,7 @@ class QupaServer:
             print("Run agent-kit/install.py to write the configuration.", file=sys.stderr)
             sys.exit(2)
 
-        # The forum host's endpoint, which makes the private diary and lists
-        # the policy's posts with their edit times.
+        # The forum host's endpoint, which makes the private diary and lists the policy's posts with their edit times.
         self.host_url = configured_host_url(os.environ, forum_url) or f"{forum_url.rstrip('/')}{HOST_PATH}"
         self.policy = PolicyClient(forum_url, topic_id, api_key, api_username, self.host_url)
         self.writer = ForumWriter(forum_url, api_key, api_username)

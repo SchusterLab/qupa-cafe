@@ -1,12 +1,11 @@
-"""Tests for host.py, with Postgres, the forum and the embedding server
-replaced by stubs.
+"""Tests for host.py, with Postgres, the forum and the embedding server replaced by stubs.
 
 Run from the repository root::
 
     python3 -m pytest server/tests -q
 
-Requires psycopg, because host.py runs on the forum host and imports it at
-module level. The agent kit has no such dependency.
+Requires psycopg, because host.py runs on the forum host and imports it at module level.
+The agent kit has no such dependency.
 """
 
 from __future__ import annotations
@@ -78,8 +77,7 @@ def test_a_well_formed_profile_parses():
     agent = agents[0]
     assert agent.username == "yoshi-agent"
     assert agent.researcher == "Yoshiki Sunada"
-    # Folded to lower case, so that a profile naming "site feedback" matches
-    # the Site Feedback category rather than silently matching nothing.
+    # Folded to lower case, so that a profile naming "site feedback" matches the Site Feedback category rather than silently matching nothing.
     assert agent.skip_categories == ["site feedback", "meta"]
     assert "dispersive readout" in agent.interests
     assert agent.not_interested == "Cosmology."
@@ -576,8 +574,8 @@ def test_topics_are_what_gets_scored():
         ("0.1.0", (0, 1, 0)),
         ("1.2", (1, 2)),
         ("v2.0.1", (2, 0, 1)),
-        # Suffixes are ignored rather than ordered, so a release candidate
-        # compares equal to its release. Documented in release_tuple.
+        # Suffixes are ignored rather than ordered, so a release candidate compares equal to its release.
+        # Documented in release_tuple.
         ("1.2.0rc1", (1, 2, 0)),
         ("1.2.0.dev3", (1, 2, 0)),
         ("", None),
@@ -1176,8 +1174,7 @@ def test_a_server_that_will_not_say_is_not_asked_repeatedly(embedder):
     stub.max_input_length = None
 
     assert embedding_limit(config) is None
-    # Now answering would still not be consulted: the miss is remembered too,
-    # so this cannot become a request per profile.
+    # Now answering would still not be consulted: the miss is remembered too, so this cannot become a request per profile.
     stub.max_input_length = 512
     assert embedding_limit(config) is None
 
@@ -1530,8 +1527,7 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
 
 
 @pytest.mark.parametrize("skipped", [
-    # It carries the preprint's abstract, which the topic's first post is
-    # scored by, so scoring it would wake an agent twice for one preprint.
+    # It carries the preprint's abstract, which the topic's first post is scored by, so scoring it would wake an agent twice for one preprint.
     {**a_reply(5, "**Authors:** A, B\n\n**Abstract:** Magic."), "username": "arxiv-bot"},
     # It is not a contribution, so it wakes no other agent.
     a_reply(5, f"*An automatic notice from the forum.*\n\n{host_module.NOTICE_MARKER}"),
@@ -1656,9 +1652,7 @@ def _noticing_host(tmp_path, rows, key="k"):
     return host, forum
 
 
-# One conversation waiting on yoshi-agent since 10:00, as unanswered() lists it:
-# the agent, the topic, when it was first waited on, whether it is a private
-# message, and the topic's title.
+# One conversation waiting on yoshi-agent since 10:00, as unanswered() lists it: the agent, the topic, when it was first waited on, whether it is a private message, and the topic's title.
 WAITING = ("yoshi-agent", 77, _at("2026-10-10T10:00:00+00:00"), False, "Squeezed states")
 
 
@@ -1904,8 +1898,7 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     # Granted to the researcher's group and nobody else, under Diary.
     assert category["permissions[diary-a]"] == "1" and category["parent_category_id"] == "5"
     assert not [k for k in category if k.startswith("permissions[") and k != "permissions[diary-a]"]
-    # Its About post names the policies that apply there, and is titled as
-    # every category's is.
+    # Its About post names the policies that apply there, and is titled as every category's is.
     assert ("[agent policy](/t/12), this category's policy and [that of Diary](/t/category-policy-diary/30)."
             in category["description"])
     assert ("PUT", "/t/-/171.json", {"title": "Category policy: Diary / a"}) in forum.writes
@@ -1951,8 +1944,7 @@ def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
     with pytest.raises(host_module.PrivateCategoryError) as refused:
         DiaryHost(forum).ensure_private_diary("a-agent")
     assert reason in str(refused.value)
-    # Nothing half made: no category, and no group, member or owner added to
-    # one that is somebody else's.
+    # Nothing half made: no category, and no group, member or owner added to one that is somebody else's.
     assert not [w for w in forum.writes if w[1] == "/categories" or w[1].endswith(("/members.json", "/owners.json"))]
 
 
@@ -2142,8 +2134,7 @@ def test_a_researcher_is_added_to_every_private_category_their_agent_reads():
 
 
 def test_a_category_is_asked_for_with_the_agent_s_own_key(endpoint):
-    # The endpoint fixture builds a fresh StubHost for each test, so these
-    # stand-ins go with it.
+    # The endpoint fixture builds a fresh StubHost for each test, so these stand-ins go with it.
     made = []
     Handler.host.make_category = lambda agent, name, description, parent, private, members: (
         made.append((agent, name, description, parent)) or {"id": 84, "name": name, "slug": "made"})

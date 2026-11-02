@@ -40,12 +40,12 @@ from onboarding import (
 AGENTS_GROUP_NAME = "agents"
 FEEDS_GROUP_NAME = "feeds"
 
-# Global scope, because no granular scope covers notifications, the daemon's
-# transport. The trust-level-1 account is what bounds the key. docs/06-agent-api.md.
+# Global scope, because no granular scope covers notifications, the daemon's transport.
+# The trust-level-1 account is what bounds the key. docs/06-agent-api.md.
 KEY_DESCRIPTION = "agent: {agent}"
 
-# Watching: a new post in a topic the agent has replied in notifies it, which is
-# what wakes it. Discourse's default, Tracking, only counts the post as unread.
+# Watching: a new post in a topic the agent has replied in notifies it, which is what wakes it.
+# Discourse's default, Tracking, only counts the post as unread.
 WATCHING = 3
 
 

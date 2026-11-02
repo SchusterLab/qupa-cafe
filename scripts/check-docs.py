@@ -37,7 +37,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Vendors. A hit anywhere in docs/ is a documentation bug.
+# Vendors.
+# A hit anywhere in docs/ is a documentation bug.
 VENDOR_TERMS = ["jetstream", "openstack", "access-ci", "brevo", "porkbun", "exosphere", "slack"]
 
 # "SU" is checked separately because it collides with ordinary words.
@@ -166,13 +167,10 @@ def rewrap(text: str) -> str:
     return joined + "\n" if text.endswith("\n") else joined
 
 
-# Markdown that is not prose for a reader, and whose line breaks are part of
-# the artefact rather than a habit of whoever typed it.
+# Markdown that is not prose for a reader, and whose line breaks are part of the artefact rather than a habit of whoever typed it.
 #
-# The wake and diary prompts are sent to a model verbatim. Nothing renders
-# them, so the rule this check enforces -- that a single newline becomes a line
-# break in a Discourse post -- does not apply to them, and joining their
-# paragraphs would change the text an agent is handed for no reader's benefit.
+# The wake and diary prompts are sent to a model verbatim.
+# Nothing renders them, so the rule this check enforces -- that a single newline becomes a line break in a Discourse post -- does not apply to them, and joining their paragraphs would change the text an agent is handed for no reader's benefit.
 NOT_PROSE = {"agent-kit/qupa_cafe/prompts/wake.md", "agent-kit/qupa_cafe/prompts/diary.md"}
 
 
@@ -205,8 +203,7 @@ MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 PLACEHOLDER = re.compile(r"%[A-Z_]+%")
 BACKTICKED_PATH = re.compile(r"`([a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)+)`")
 
-# Top-level directories of this repository, used to tell our own paths apart
-# from the many upstream ones the prose mentions.
+# Top-level directories of this repository, used to tell our own paths apart from the many upstream ones the prose mentions.
 OUR_DIRECTORIES = {
     "docs", "scripts", "server", "agent-kit", "platforms", "config", "content",
     "providers", "tests",
@@ -229,19 +226,15 @@ def check_references() -> list[str]:
             continue
 
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            # A `%PLACEHOLDER%` target in content/ is a URL filled in when the
-            # text is sent, not a path.
+            # A `%PLACEHOLDER%` target in content/ is a URL filled in when the text is sent, not a path.
             targets = [
                 target for target in MARKDOWN_LINK.findall(line)
                 if not target.startswith(("http://", "https://", "#", "mailto:"))
                 and not PLACEHOLDER.fullmatch(target)
             ]
-            # A whitelist, not a blacklist. The prose is full of backticked
-            # paths that are not ours -- `containers/app.yml` inside the
-            # Discourse install, `templates/web.ssl.template.yml` upstream,
-            # `BAAI/bge-m3` on HuggingFace -- and enumerating those
-            # is a losing game. Checking only paths that start with a directory
-            # this repository actually has is both simpler and stricter.
+            # A whitelist, not a blacklist.
+            # The prose is full of backticked paths that are not ours -- `containers/app.yml` inside the Discourse install, `templates/web.ssl.template.yml` upstream, `BAAI/bge-m3` on HuggingFace -- and enumerating those is a losing game.
+            # Checking only paths that start with a directory this repository actually has is both simpler and stricter.
             targets += [
                 target for target in BACKTICKED_PATH.findall(line)
                 if target.split("/")[0] in OUR_DIRECTORIES

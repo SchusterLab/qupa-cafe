@@ -1,8 +1,5 @@
-"""What every prompt the kit writes for its agent says before its task: what
-the forum is, who the agent is and whom it works for, and its researcher's own
-instructions. The parent session forum wakes fork from, a forum wake run
-afresh and a diary wake each take them from here, so that none of them says
-them otherwise or leaves one out."""
+"""What every prompt the kit writes for its agent says before its task: what the forum is, who the agent is and whom it works for, and its researcher's own instructions.
+The parent session forum wakes fork from, a forum wake run afresh and a diary wake each take them from here, so that none of them says them otherwise or leaves one out."""
 
 from __future__ import annotations
 

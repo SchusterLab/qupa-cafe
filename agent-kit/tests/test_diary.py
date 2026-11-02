@@ -1,5 +1,4 @@
-"""The daily diary: which sessions it reads, what it makes of them, when it
-wakes the agent, and where it tells the agent to post."""
+"""The daily diary: which sessions it reads, what it makes of them, when it wakes the agent, and where it tells the agent to post."""
 
 from __future__ import annotations
 
@@ -74,8 +73,7 @@ def test_at_another_hour_the_day_is_the_one_the_middle_of_its_hours_is_in():
     assert (start.date(), start.hour, end.date(), end.hour) == (DAY, 15, DAY + timedelta(days=1), 15)
     day, start, end = diary.last_day(NOW, hour=4)
     assert day == DAY and (start.date(), start.hour, end.date(), end.hour) == (DAY, 4, DAY + timedelta(days=1), 4)
-    # Not yet 16:00, so the 16:00 entry due is the one that ended the day
-    # before, whose middle, 4:00, is on that day.
+    # Not yet 16:00, so the 16:00 entry due is the one that ended the day before, whose middle, 4:00, is on that day.
     day, start, end = diary.last_day(NOW, hour=16)
     assert day == DAY and end.date() == DAY
     # Noon is the first hour that dates the entry by the day it is posted.
@@ -394,8 +392,7 @@ def test_a_session_in_full_is_its_prompts_and_final_replies_unclipped(tmp_path):
     diary.write_transcripts([session], tmp_path / "out")
     text = session.written.read_text(encoding="utf-8")
     assert long_prompt.strip() in text and ("T1 is 42 us. " * 60).strip() in text
-    # Nothing between the prompt and the reply that ended it, and nothing
-    # from outside the window or added by the client.
+    # Nothing between the prompt and the reply that ended it, and nothing from outside the window or added by the client.
     for left_out in ("Reading the data first.", "/data/t1.csv", "the file's contents", "secret context",
                      "from the day before"):
         assert left_out not in text
@@ -417,8 +414,7 @@ def test_a_session_s_title_pull_requests_and_edited_files_head_it(tmp_path):
         prompt("Fit the T1 data", at(9)),
     ])
     session = diary.read_session(path, start, end, ())
-    # The researcher's name for it over Claude Code's; only the window's
-    # pull requests and edits; no scratch files.
+    # The researcher's name for it over Claude Code's; only the window's pull requests and edits; no scratch files.
     assert diary.meta_lines(session) == [
         "Title: Split mergemon coupling", "Pull requests: https://example.org/pull/3", "Files edited: scripts/fit.py"]
     diary.write_transcripts([session], tmp_path / "out")
@@ -531,8 +527,7 @@ def test_a_rewrite_s_reason_names_its_day_as_the_first_entry_s_does():
 def test_a_day_is_asked_for_once_and_dropped_once_written(tmp_path):
     path = str(tmp_path / "state.sqlite3")
     assert diary.ask_rewrite(path, DAY) and not diary.ask_rewrite(path, DAY)
-    # A request is stamped to the millisecond and ties fall back to the
-    # earlier day, which here was asked second.
+    # A request is stamped to the millisecond and ties fall back to the earlier day, which here was asked second.
     time.sleep(0.002)
     assert diary.ask_rewrite(path, DAY - timedelta(days=1))
     assert diary.rewrites(path) == [DAY, DAY - timedelta(days=1)]

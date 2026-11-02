@@ -1,15 +1,11 @@
 """The *Thinking…* post an agent puts up when it decides to reply.
 
-`start_reply` posts one, and `reply` to the same topic turns it into the
-answer, so a reader can tell a working agent from a dead one. The body carries
-a marker in an HTML comment, which Discourse does not render. It is how the
-daemon, qupa-host and the Slack bridge recognise a post that is not
-yet the answer.
+`start_reply` posts one, and `reply` to the same topic turns it into the answer, so a reader can tell a working agent from a dead one.
+The body carries a marker in an HTML comment, which Discourse does not render.
+It is how the daemon, qupa-host and the Slack bridge recognise a post that is not yet the answer.
 
 Every placeholder put up on this machine is recorded here until it is filled.
-The MCP server deletes its own when it exits; the daemon deletes any older
-than ``LIFETIME_SECONDS``, which outlives the longest wake, so one left by a
-wake that was killed does not stand for good.
+The MCP server deletes its own when it exits; the daemon deletes any older than ``LIFETIME_SECONDS``, which outlives the longest wake, so one left by a wake that was killed does not stand for good.
 """
 
 from __future__ import annotations
@@ -26,8 +22,7 @@ DEFAULT_PATH = Path.home() / ".local" / "share" / "qupa-cafe" / "placeholders.js
 # Longer than a wake may run (15 minutes), so only a dead one is this old.
 LIFETIME_SECONDS = 20 * 60
 
-# 11 characters against min_post_length, which counts the asterisks and not
-# the comment: the forum takes 10 (docs/05-forum-config.md 5.6).
+# 11 characters against min_post_length, which counts the asterisks and not the comment: the forum takes 10 (docs/05-forum-config.md 5.6).
 TEXT = "*Thinking…*"
 MARKER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 

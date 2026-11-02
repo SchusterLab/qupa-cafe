@@ -1,17 +1,9 @@
 """The wake browser: every wake, newest first, and one wake's view.
 
-In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-``
-raise and lower the agent's relevance threshold, ``a`` steps what it does
-with a preprint (``qupa_cafe.preprints``), and Esc leaves; the tray
-icon's menu updates the kit and opens the daemon's log. In a wake ``↑``/``↓``
-scroll, Enter opens its session in Claude Code (attached to, while the wake
-still runs), and Esc goes back. In either, ``r`` has the daemon wake the
-agent again for the chosen wake's post, as ``QUPA.md`` says now, and ``t``
-then ``r``, ``i`` or ``h``
-asks the agent, in Claude Code, to change its interests post or
-``QUPA.md`` so that it replies to wakes like the chosen one, ignores them,
-or replies to them differently. Standard library only, drawn on the
-alternate screen.
+In the list ``↑``/``↓``, PgUp and PgDn choose, Enter reads, ``+`` and ``-`` raise and lower the agent's relevance threshold, ``a`` steps what it does with a preprint (``qupa_cafe.preprints``), and Esc leaves; the tray icon's menu updates the kit and opens the daemon's log.
+In a wake ``↑``/``↓`` scroll, Enter opens its session in Claude Code (attached to, while the wake still runs), and Esc goes back.
+In either, ``r`` has the daemon wake the agent again for the chosen wake's post, as ``QUPA.md`` says now, and ``t`` then ``r``, ``i`` or ``h`` asks the agent, in Claude Code, to change its interests post or ``QUPA.md`` so that it replies to wakes like the chosen one, ignores them, or replies to them differently.
+Standard library only, drawn on the alternate screen.
 """
 
 from __future__ import annotations
@@ -35,19 +27,17 @@ from .daemon import (
 # -------------------------------------------------------------------- keys
 
 
-# Key -> (action, hint on the bottom line), offered only once the threshold is
-# known; "=" and "_" are the unshifted keys.
+# Key -> (action, hint on the bottom line), offered only once the threshold is known; "=" and "_" are the unshifted keys.
 FLOOR_ACTIONS = {"+": "raise", "=": "raise", "-": "lower", "_": "lower"}
 
 # How far one press moves the threshold.
 FLOOR_STEP = 0.01
 
-# In the list or in a wake: tune the agent on posts like the chosen one, then
-# what to tune: whether and how it replies.
+# In the list or in a wake: tune the agent on posts like the chosen one, then what to tune: whether and how it replies.
 TUNE_KEY = "t"
 TUNE_CHOICES = {"r": "reply", "i": "ignore", "h": "how"}
-# The question, as (what it is about, the keys that answer it); the first is
-# drawn to stand out. Any other key cancels, without saying so.
+# The question, as (what it is about, the keys that answer it); the first is drawn to stand out.
+# Any other key cancels, without saying so.
 TUNE_QUESTION = (
     "Tune your agent on wakes like this one:",
     "r to reply to them · i to ignore them · h to change how it replies",
@@ -177,9 +167,7 @@ def read_key(timeout: float | None = None) -> str:
 
     import select
 
-    # From the descriptor, not sys.stdin: its buffer would take the whole of
-    # an arrow key's sequence on the first read, leaving select nothing to
-    # see, and the key would read as Escape.
+    # From the descriptor, not sys.stdin: its buffer would take the whole of an arrow key's sequence on the first read, leaving select nothing to see, and the key would read as Escape.
     fd = sys.stdin.fileno()
     if timeout is not None and not select.select([fd], [], [], timeout)[0]:
         return ""
@@ -217,8 +205,7 @@ class Terminal:
     def __enter__(self) -> "Terminal":
         self._saved = None
         if os.name == "nt":
-            # The Windows console prints escape sequences as text until told
-            # otherwise, again after Claude Code has had it.
+            # The Windows console prints escape sequences as text until told otherwise, again after Claude Code has had it.
             wakes.colour_wanted("always", sys.stdout)
         else:
             import termios
@@ -308,19 +295,16 @@ class Browser:
     viewing: bool = False
     scroll: int = 0
     message: str = ""
-    # What TUNE_KEY offered to tune, the keys that answer, and the question
-    # they answer, drawn in place of the message while it is open.
+    # What TUNE_KEY offered to tune, the keys that answer, and the question they answer, drawn in place of the message while it is open.
     subject: Subject | None = None
     choices: dict[str, str] = field(default_factory=dict)
     question: tuple[str, str] = ("", "")
     _detail: list[str] = field(default_factory=list)
     # Rows the list last had room for, which PgUp and PgDn move by.
     _room: int = 10
-    # The first row the list showed when last drawn, so that it moves only
-    # when the chosen row would leave the screen.
+    # The first row the list showed when last drawn, so that it moves only when the chosen row would leave the screen.
     _tops: dict[str, int] = field(default_factory=dict)
-    # The wake's lines as last drawn, folded to the width, and the page they
-    # were drawn in, which scrolling moves through.
+    # The wake's lines as last drawn, folded to the width, and the page they were drawn in, which scrolling moves through.
     _folded: tuple = ()
     _page: int = 0
 
@@ -622,8 +606,7 @@ def listing(cols: int, rows: int, header: list[str], what: str, count: int, line
     above = fold(status, cols) if status else [""]
     below = hint_lines(keys, cols)
     gone = fold(wakes.paint("  " + empty, "meta"), cols) if not count else []
-    # On a screen too short for it all, the box gives up its lines from the
-    # bottom up, keeping its title and its border, before the list goes.
+    # On a screen too short for it all, the box gives up its lines from the bottom up, keeping its title and its border, before the list goes.
     spare = rows - len(above) - len(below) - len(gone) - 3
     if spare < len(header):
         header = header[: max(spare - 1, 0)] + header[-1:] if spare >= 2 else []
@@ -690,9 +673,8 @@ def still_running(row: wakes.Row) -> bool:
     return started is not None and wakes.young(started)
 
 
-# A wake runs in dontAsk, which refuses every tool not approved beforehand,
-# and a resumed session keeps its mode. With the researcher there, Claude
-# Code asks them instead.
+# A wake runs in dontAsk, which refuses every tool not approved beforehand, and a resumed session keeps its mode.
+# With the researcher there, Claude Code asks them instead.
 RESUME_MODE = ["--permission-mode", "manual"]
 
 
@@ -704,9 +686,8 @@ def ask_command(row: wakes.Row, claude: str) -> tuple[list[str], bool]:
         live = next((s for s in background_sessions(claude) if s.get("sessionId") == row.session), None)
         if live is not None and live.get("state") not in ("done", "failed"):
             return [claude, "attach", str(live.get("id") or row.session[:8])], True
-    # The parent opens as a fork of its own: a turn typed into the parent
-    # itself would reach every later wake. Named as the parent is, so that
-    # the diary does not take it for its researcher's own work.
+    # The parent opens as a fork of its own: a turn typed into the parent itself would reach every later wake.
+    # Named as the parent is, so that the diary does not take it for its researcher's own work.
     fork = ["--fork-session", "--name", f"{PARENT_NAME} copy"] if wakes.is_parent(row) else []
     return [claude, "--resume", row.session, *fork, *RESUME_MODE], False
 
@@ -791,8 +772,7 @@ def subject_of_wake(item: Wake, agent_dir: str) -> Subject:
     )
 
 
-# What the researcher wants of posts like the chosen one, as the tuning
-# prompt opens with it and as the browser says it before Claude Code opens.
+# What the researcher wants of posts like the chosen one, as the tuning prompt opens with it and as the browser says it before Claude Code opens.
 TUNE_WISHES = {
     "reply": ("wants you to reply to posts like", "so that it replies to"),
     "ignore": ("wants you to leave alone posts like", "so that it ignores"),
@@ -876,11 +856,8 @@ def tune_command(subject: Subject, claude: str, prompt: str) -> list[str]:
     return [claude, prompt, *where, "--allowedTools", ",".join(CLAUDE_ALLOWED_TOOLS)]
 
 
-# Claude Code connects MCP servers in the background and sends a prompt given
-# on its command line at once, so a session started on one finds the forum's
-# tools missing until their servers are up, the discourse one started through
-# npx taking seconds. These make it wait for them first, for as long as it
-# gives a server to start.
+# Claude Code connects MCP servers in the background and sends a prompt given on its command line at once, so a session started on one finds the forum's tools missing until their servers are up, the discourse one started through npx taking seconds.
+# These make it wait for them first, for as long as it gives a server to start.
 PROMPTED_ENV = {"MCP_CONNECTION_NONBLOCKING": "0", "MCP_CONNECT_TIMEOUT_MS": "30000"}
 
 
@@ -976,8 +953,7 @@ def set_width(columns: int) -> None:
         if not kernel32.GetConsoleScreenBufferInfo(out, ctypes.byref(info)):
             return
         top, bottom = info.srWindow.Top, info.srWindow.Bottom
-        # The buffer is never narrower than the window: widen it first, then
-        # the window, then fit the buffer to the window.
+        # The buffer is never narrower than the window: widen it first, then the window, then fit the buffer to the window.
         kernel32.SetConsoleScreenBufferSize(out, Coord(max(columns, info.dwSize.X), info.dwSize.Y))
         kernel32.SetConsoleWindowInfo(out, True, ctypes.byref(Rect(0, top, columns - 1, bottom)))
         kernel32.SetConsoleScreenBufferSize(out, Coord(columns, info.dwSize.Y))

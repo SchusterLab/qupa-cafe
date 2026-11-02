@@ -1,5 +1,4 @@
-"""The limits at which wakes stop: the cap on the share of the researcher's
-Claude plan, and the budget on what the agent's own wakes spend in five hours."""
+"""The limits at which wakes stop: the cap on the share of the researcher's Claude plan, and the budget on what the agent's own wakes spend in five hours."""
 
 from __future__ import annotations
 
@@ -155,8 +154,7 @@ def test_every_wake_is_given_the_status_line():
 
 
 def test_the_budget_counts_the_last_five_hours_of_the_agent_s_wakes(claude_home):
-    # A fork's parent's cost is the parent wake's, not this one's; a
-    # response six hours old is out of the window.
+    # A fork's parent's cost is the parent wake's, not this one's; a response six hours old is out of the window.
     _spent(claude_home, "a", (6 * 3600, 900_000), (3600, 300_000), parent=50_000)
     _spent(claude_home, "b", (60, 200_000))
     assert quota.spent() == 500_000

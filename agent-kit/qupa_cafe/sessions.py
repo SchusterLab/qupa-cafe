@@ -1,16 +1,10 @@
 """The researcher's open Claude Code sessions a wake may hand a post to.
 
-A session registers with the qupa-cafe tool `register_session`, under the name
-other Claude Code sessions message it by, with its project and what it is
-working on. Its MCP server, one to a session, writes the entry here, adds each
-topic the session posts in, and removes the entry when the session ends; an
-entry whose server is no longer running is not listed.
+A session registers with the qupa-cafe tool `register_session`, under the name other Claude Code sessions message it by, with its project and what it is working on.
+Its MCP server, one to a session, writes the entry here, adds each topic the session posts in, and removes the entry when the session ends; an entry whose server is no longer running is not listed.
 
-Each wake's prompt lists them. The sandbox's hook lets a wake message only one
-of them, with a first line naming the post it hands over, and records the
-handoff here; once a handoff has waited ``WAIT_SECONDS``, or its session has
-ended, the daemon wakes the agent again for the post unless the agent has
-answered it.
+Each wake's prompt lists them.
+The sandbox's hook lets a wake message only one of them, with a first line naming the post it hands over, and records the handoff here; once a handoff has waited ``WAIT_SECONDS``, or its session has ended, the daemon wakes the agent again for the post unless the agent has answered it.
 """
 
 from __future__ import annotations

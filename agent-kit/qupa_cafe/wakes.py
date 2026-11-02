@@ -24,8 +24,7 @@ from pathlib import Path
 from . import daemon, diary
 from .daemon import Settings, load_env_file
 
-# A wake is stopped at this age, so one still marked running after it was
-# ended with the daemon rather than still going.
+# A wake is stopped at this age, so one still marked running after it was ended with the daemon rather than still going.
 WAKE_TIMEOUT_SECONDS = daemon.WAKE_TIMEOUT
 
 # How much of a tool's answer to show.
@@ -210,8 +209,7 @@ def connect(state_path: str) -> sqlite3.Connection | None:
         return None
 
 
-# Which wakes ``recent`` returns: all of them, those for the forum, which the
-# wake browser shows, or those for the diary, which the diary browser shows.
+# Which wakes ``recent`` returns: all of them, those for the forum, which the wake browser shows, or those for the diary, which the diary browser shows.
 ALL, FORUM, DIARY = "all", "forum", "diary"
 
 # How the journal tells a diary wake: no topic, and the diary's reason.
@@ -535,10 +533,8 @@ def count(tokens: int) -> str:
     return f"{tokens / 1_000_000:.1f}M"
 
 
-# What a token costs, as a multiple of an uncached input token of the same
-# model, at Anthropic's API prices: every current model's output costs five
-# times its input, and a cache write 1.25 times for the five-minute cache
-# and twice for the hour's. A cache read is a tenth, except on these models.
+# What a token costs, as a multiple of an uncached input token of the same model, at Anthropic's API prices: every current model's output costs five times its input, and a cache write 1.25 times for the five-minute cache and twice for the hour's.
+# A cache read is a tenth, except on these models.
 OUTPUT_WEIGHT = 5.0
 CACHE_WRITE_WEIGHT = {"ephemeral_5m_input_tokens": 1.25, "ephemeral_1h_input_tokens": 2.0}
 CACHE_READ_WEIGHT = {"claude-opus-5-5": 0.05, "claude-fable-5-1": 0.025, "claude-mythos-5-1": 0.025}
@@ -626,8 +622,7 @@ def read_transcript(path: Path, topic_id: int | None = None) -> Transcript:
             if not prompt:
                 prompt = content
             elif said_by_researcher(record, content):
-                # A later message: a tuning prompt, or what the researcher
-                # typed into the session.
+                # A later message: a tuning prompt, or what the researcher typed into the session.
                 lines += prompt_lines(content, True)
                 lines.append("")
             continue
@@ -683,8 +678,7 @@ def read_transcript(path: Path, topic_id: int | None = None) -> Transcript:
 
     while lines and not lines[-1]:
         lines.pop()
-    # A subagent's responses are the wake's too, and Claude Code keeps them
-    # beside the session's transcript, one file for each subagent.
+    # A subagent's responses are the wake's too, and Claude Code keeps them beside the session's transcript, one file for each subagent.
     for subagent in sorted((path.with_suffix("") / "subagents").glob("*.jsonl")):
         responses.update(subagent_responses(subagent))
     return Transcript(prompt, lines, wrote, usage_of(responses))
@@ -801,8 +795,7 @@ def spend(path: Path) -> list[tuple[float, float]]:
             if record.get("type") != "assistant" or not isinstance(message.get("usage"), dict) or at is None:
                 continue
             response = message.get("id") or f"{each.name} record {len(found)}"
-            # Claude Code writes one record per block of a response, each
-            # repeating its usage, so the first is kept.
+            # Claude Code writes one record per block of a response, each repeating its usage, so the first is kept.
             found.setdefault(response, (at.timestamp(), equivalent(message["usage"], str(message.get("model") or ""))))
     spent = list(found.values())
     if key is not None:
@@ -985,8 +978,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # The package's copy: the browser imports qupa_cafe.wakes, whose colour
-    # switch is not this __main__ module's.
+    # The package's copy: the browser imports qupa_cafe.wakes, whose colour switch is not this __main__ module's.
     from qupa_cafe.wakes import main as package_main
 
     sys.exit(package_main())

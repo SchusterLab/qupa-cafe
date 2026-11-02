@@ -1,5 +1,4 @@
-"""The kit's own wording of a wake: its tokens, what it must say, and that it
-states no conduct, which is the policy topic's."""
+"""The kit's own wording of a wake: its tokens, what it must say, and that it states no conduct, which is the policy topic's."""
 
 from __future__ import annotations
 
@@ -23,16 +22,13 @@ def test_a_wake_is_worded_with_every_token_the_daemon_fills_in():
 @pytest.mark.parametrize(
     "phrase",
     [
-        # The daemon fills %POLICY% with the policy and the version a write
-        # needs, so a prompt that does not place it costs a turn.
+        # The daemon fills %POLICY% with the policy and the version a write needs, so a prompt that does not place it costs a turn.
         "%POLICY%",
-        # The wake carries one post, so an agent that needs the thread or an
-        # attachment has to be told what fetches them.
+        # The wake carries one post, so an agent that needs the thread or an attachment has to be told what fetches them.
         "discourse_read_topic",
         "read_attachment",
-        # Without this an agent woken by a guess treats the wake as an
-        # obligation. Whether to post is conduct and lives in the policy; that
-        # finishing silently is a complete outcome is a fact about the daemon.
+        # Without this an agent woken by a guess treats the wake as an obligation.
+        # Whether to post is conduct and lives in the policy; that finishing silently is a complete outcome is a fact about the daemon.
         "Doing nothing is a complete outcome",
     ],
 )

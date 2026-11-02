@@ -53,26 +53,21 @@ FIRST_RUN = os.environ.get("SLACK_FIRST_RUN", "everything")
 STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/state.db"))
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "3600"))
-# How long an invite link lasts. Until then a newcomer who writes again is
-# given the same link, kept in the state file.
+# How long an invite link lasts.
+# Until then a newcomer who writes again is given the same link, kept in the state file.
 INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
 # A link this close to expiring is replaced rather than given out.
 INVITE_MARGIN_SECONDS = 3600
-# What an invitation links for what an agent of the newcomer's own could
-# reach on their computer.
+# What an invitation links for what an agent of the newcomer's own could reach on their computer.
 SAFETY_URL = os.environ.get("BRIDGE_SAFETY_URL", "https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run")
 SAFETY_LINE = (f"Before you run an AI agent of your own, read <{SAFETY_URL}|the project's README>. It says what "
                "the agent can reach on your computer.")
-# The forum's webhook for edits and deletions, on the docker bridge, signed
-# with BRIDGE_HOOK_SECRET; without a secret no listener starts and forum edits
-# and deletions stay on the forum.
+# The forum's webhook for edits and deletions, on the docker bridge, signed with BRIDGE_HOOK_SECRET; without a secret no listener starts and forum edits and deletions stay on the forum.
 HOOK_HOST = os.environ.get("BRIDGE_HOOK_HOST", "172.17.0.1")
 HOOK_PORT = int(os.environ.get("BRIDGE_HOOK_PORT", "8092"))
 HOOK_SECRET = os.environ.get("BRIDGE_HOOK_SECRET", "")
-# Each event the webhook reports: what the bridge does about it, and the key
-# of its payload naming the post or topic. A first post edited with its
-# topic's title is reported as the topic's; a topic deleted is reported as its
-# first post's deletion too.
+# Each event the webhook reports: what the bridge does about it, and the key of its payload naming the post or topic.
+# A first post edited with its topic's title is reported as the topic's; a topic deleted is reported as its first post's deletion too.
 HOOK_EVENTS = {
     "post_edited": ("post", "post"),
     "topic_edited": ("topic", "topic"),
@@ -82,9 +77,7 @@ HOOK_EVENTS = {
 HOOK_LABELS = {"post": "edit of post", "topic": "edit of topic", "post-deleted": "deletion of post",
                "topic-deleted": "deletion of topic"}
 
-# Agents' own requests, forwarded by the forum host (server/host.py) to
-# ``/agent`` on the same listener and signed with BRIDGE_AGENT_SECRET; without
-# it no agent reads or writes in Slack.
+# Agents' own requests, forwarded by the forum host (server/host.py) to ``/agent`` on the same listener and signed with BRIDGE_AGENT_SECRET; without it no agent reads or writes in Slack.
 AGENT_SECRET = os.environ.get("BRIDGE_AGENT_SECRET", "")
 AGENT_SECRET_HEADER = "X-Qupa-Agent-Secret"
 # What an agent may write in one Slack message, and read in one request.
@@ -101,11 +94,9 @@ AGENT_SUFFIX = "-agent"
 
 UPLOAD_SCHEME = "upload://"
 
-# An agent's *Thinking…* post, which its reply replaces by an edit: the marker
-# is the agent kit's (agent-kit/qupa_cafe/placeholders.py). Its copy in Slack is
-# updated to the answer by watching it, with or without the edit webhook, and
-# deleted with it. One not filled in a day is given up on; the kit deletes it
-# long before.
+# An agent's *Thinking…* post, which its reply replaces by an edit: the marker is the agent kit's (agent-kit/qupa_cafe/placeholders.py).
+# Its copy in Slack is updated to the answer by watching it, with or without the edit webhook, and deleted with it.
+# One not filled in a day is given up on; the kit deletes it long before.
 PLACEHOLDER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 PLACEHOLDER_SLACK_TEXT = "_Thinking…_"
 PLACEHOLDER_WATCH_SECONDS = 86400
@@ -122,15 +113,13 @@ UNUSABLE_ACCOUNT = (
 )
 
 MEMBERSHIP_TTL_SECONDS = 600
-# A name a group's cached members lack reads the group again, at most this
-# often, so an agent provisioned a moment ago is known as one.
+# A name a group's cached members lack reads the group again, at most this often, so an agent provisioned a moment ago is known as one.
 MEMBERSHIP_MISS_SECONDS = 30
 
 MAX_PAGES_PER_POLL = 20
 
-# Files are carried both ways, up to this many a post, which is also Slack's
-# limit a message. The forum takes 4 MB a file and refuses more itself, so the
-# byte ceiling is only against a misconfigured one.
+# Files are carried both ways, up to this many a post, which is also Slack's limit a message.
+# The forum takes 4 MB a file and refuses more itself, so the byte ceiling is only against a misconfigured one.
 MAX_FILES_PER_POST = 10
 MAX_FILE_BYTES = 8 * 1024 * 1024
 # Where a Slack file's bytes are read from; the bot token goes nowhere else.
@@ -608,8 +597,7 @@ class Forum:
 
 _MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^\s)]+)\)")
 _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^\s)]+)\)")
-# The files the bridge uploads after a post: the forum's own, images and
-# attachments alike.
+# The files the bridge uploads after a post: the forum's own, images and attachments alike.
 _UPLOADED_FILE = re.compile(r"!?\[([^\]\n]*)\]\((upload://[^\s)]+)\)")
 _MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
 # A fence's language, which Slack has no place for and shows as the first line.
@@ -620,14 +608,11 @@ _UPLOAD = re.compile(r"(?<!!)\[([^\]|\n]*)(?:\|[^\]\n]*)?\]\(upload://[^)]+\)")
 _HTML_LINK = re.compile(r"""<a\s[^>]*?href\s*=\s*(["'])([^"'\s]+)\1[^>]*>(.*?)</a\s*>""", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-# Slack has no superscript, so the digits of one become superscript digits and
-# anything else in it, such as the commas between them, stays as it is.
+# Slack has no superscript, so the digits of one become superscript digits and anything else in it, such as the commas between them, stays as it is.
 _HTML_SUP = re.compile(r"<sup>([^<]*)</sup>", re.IGNORECASE)
 SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
-# A mention as Discourse finds one: not inside a word or an address, and a
-# username ends in a letter, digit or underscore, so a full stop after it is
-# the sentence's. The first group is what to step over: code, and the tokens
-# Slack's text is left with, which are all in angle brackets.
+# A mention as Discourse finds one: not inside a word or an address, and a username ends in a letter, digit or underscore, so a full stop after it is the sentence's.
+# The first group is what to step over: code, and the tokens Slack's text is left with, which are all in angle brackets.
 _FORUM_MENTION = re.compile(
     r"(```.*?```|~~~.*?~~~|`[^`\n]+`|<[^>\n]*>)|(?<![\w@/.])@(\w(?:[\w.-]*\w)?)",
     re.DOTALL,
@@ -852,8 +837,7 @@ class Bridge:
         self._conversations: dict[str, Cached] = {}
         self._last_category_sync = 0.0
         self.bot_user_id: str | None = None
-        # Forum edits the webhook reported, as ("post" or "topic", id), in
-        # the order they came, carried at the next poll.
+        # Forum edits the webhook reported, as ("post" or "topic", id), in the order they came, carried at the next poll.
         self._edits: dict[tuple[str, int], None] = {}
         self._edits_lock = threading.Lock()
 
@@ -986,8 +970,8 @@ class Bridge:
                 return None
             if "name_taken" not in str(exc):
                 raise
-            # Made by hand, or the state file was lost: adopt it. A private
-            # one is found only if the bot is in it.
+            # Made by hand, or the state file was lost: adopt it.
+            # A private one is found only if the bot is in it.
             channel_id = self.find_channel(name, private)
             if not channel_id:
                 if private:
@@ -1167,9 +1151,7 @@ class Bridge:
         if not channel_id:
             return "a private category with no channel"
 
-        # The first post is the thread's parent; a feed topic's waits for a
-        # reply from somebody other than the feed, which brings it and the
-        # feed's own replies before it.
+        # The first post is the thread's parent; a feed topic's waits for a reply from somebody other than the feed, which brings it and the feed's own replies before it.
         feed = self.is_feed(topic.get("opener") or "")
         if (post.get("post_number") or 1) == 1:
             if feed:
@@ -1305,8 +1287,7 @@ class Bridge:
                     continue
                 stored = posixpath.basename(short_url.removeprefix(UPLOAD_SCHEME))
                 # The stored name's extension, which is the file's type: a
-                # name such as "Fig. 2, arXiv:2610.10432v1" only looks as if
-                # it had one, and Slack types a file by its name.
+                # name such as "Fig. 2, arXiv:2610.10432v1" only looks as if it had one, and Slack types a file by its name.
                 extension = posixpath.splitext(stored)[1]
                 if not name:
                     filename = stored
@@ -1750,8 +1731,7 @@ class Bridge:
         channel_id = event.get("channel") or ""
         user = event["user"]
         if self.state.category_for(channel_id) is None:
-            # A channel someone added the bot to for agents: only the answers
-            # to an agent's message are carried, to the agent.
+            # A channel someone added the bot to for agents: only the answers to an agent's message are carried, to the agent.
             ask = self.answer_to(event)
             if ask and subtype in (None, "thread_broadcast", "file_share"):
                 return self.relay_answer(ask, event)
@@ -1970,8 +1950,7 @@ class Bridge:
             settled = self.stop_or_start(event)
             if settled:
                 return settled
-        # An answer to an agent's DM goes to that agent; a member's own
-        # messages outside its thread go to their own agent.
+        # An answer to an agent's DM goes to that agent; a member's own messages outside its thread go to their own agent.
         ask = self.answer_to(event)
         if ask and (not account or not top_level):
             return self.relay_answer(ask, event)

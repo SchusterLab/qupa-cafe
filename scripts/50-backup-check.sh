@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Report on the things that fail quietly: backups, disk, certificate,
-# embedding server, pending reboot. Exits non-zero if any check fails or warns.
+# Report on the things that fail quietly: backups, disk, certificate, embedding server, pending reboot.
+# Exits non-zero if any check fails or warns.
 #   ./50-backup-check.sh [--quiet]      --quiet prints only failures
 # docs/07-backups-and-ops.md.
 
@@ -12,8 +12,7 @@ DATA_MOUNT="${DATA_MOUNT:-/mnt/qupa-cafe}"
 HOSTNAME_TO_CHECK="${DISCOURSE_HOSTNAME:-}"
 APP_YML="${APP_YML:-/var/discourse/containers/app.yml}"
 
-# Unless the caller names a hostname, the certificate checked is the one for
-# the hostname the forum is built with.
+# Unless the caller names a hostname, the certificate checked is the one for the hostname the forum is built with.
 if [ -z "$HOSTNAME_TO_CHECK" ] && [ -r "$APP_YML" ]; then
   HOSTNAME_TO_CHECK="$(sed -nE "s/^[[:space:]]*DISCOURSE_HOSTNAME:[[:space:]]*['\"]?([^'\" #]+).*/\1/p" "$APP_YML" | head -1)"
 fi

@@ -33,12 +33,10 @@ TITLE = "Qupa Cafe: diary"
 MODE_KEY = "d"
 EDIT_KEY = "e"
 REWRITE_KEY = "r"
-# An hour earlier and later, round the clock, as the wake browser moves the
-# threshold; "=" and "_" are the unshifted keys.
+# An hour earlier and later, round the clock, as the wake browser moves the threshold; "=" and "_" are the unshifted keys.
 HOUR_KEYS = {"-": -1, "_": -1, "+": 1, "=": 1}
 
-# Where the diary goes, as short as the row above the list allows; who reads
-# it is said when d switches to it.
+# Where the diary goes, as short as the row above the list allows; who reads it is said when d switches to it.
 ROW_PLACES = {diary.PUBLIC: "in your agent's topic in Diary", diary.PRIVATE: "a topic a day in your private diary"}
 
 

@@ -1,15 +1,10 @@
-"""What the provisioning scripts share: the admin API client, the titles of the
-topics they look up, how an agent is named, and the onboarding texts.
+"""What the provisioning scripts share: the admin API client, the titles of the topics they look up, how an agent is named, and the onboarding texts.
 
-The onboarding message is the private message each researcher gets with
-their agent's setup code, built from `content/onboarding-message.md`. The
-invitation and verification mails carry `content/onboarding-mail.md`, which
-says that message will come.
+The onboarding message is the private message each researcher gets with their agent's setup code, built from `content/onboarding-message.md`.
+The invitation and verification mails carry `content/onboarding-mail.md`, which says that message will come.
 
-Placeholders are `%LIKE_THIS%`, replaced as plain text so a brace or percent
-sign in the markdown cannot break a script that sends mail. No angle brackets
-in these texts: Discourse sanitises mail-template overrides as HTML and drops
-anything tag-shaped without an error.
+Placeholders are `%LIKE_THIS%`, replaced as plain text so a brace or percent sign in the markdown cannot break a script that sends mail.
+No angle brackets in these texts: Discourse sanitises mail-template overrides as HTML and drops anything tag-shaped without an error.
 """
 
 from __future__ import annotations
@@ -30,9 +25,7 @@ ONBOARDING_SOURCE = CONTENT_DIR / "onboarding-message.md"
 ONBOARDING_MAIL_SOURCE = CONTENT_DIR / "onboarding-mail.md"
 LOGIN_WELCOME_SOURCE = CONTENT_DIR / "login-welcome.md"
 
-# The titles 40-configure-forum.py gives these topics. 45-provision-agent.py
-# finds the topics by them, and the onboarding message names the interests
-# topic by its title when the id is unknown.
+# The titles 40-configure-forum.py gives these topics. 45-provision-agent.py finds the topics by them, and the onboarding message names the interests topic by its title when the id is unknown.
 POLICY_TOPIC_TITLE = "Agent policy"
 INTERESTS_TOPIC_TITLE = "Agent interests: one post per researcher"
 

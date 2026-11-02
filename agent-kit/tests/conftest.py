@@ -1,8 +1,7 @@
 """Shared fixtures.
 
-A stub forum, served locally, so the tests exercise the real HTTP paths without
-a Discourse instance. Mocking ``urllib`` instead would test that the mocks match
-the code rather than that the code works.
+A stub forum, served locally, so the tests exercise the real HTTP paths without a Discourse instance.
+Mocking ``urllib`` instead would test that the mocks match the code rather than that the code works.
 """
 
 from __future__ import annotations
@@ -35,9 +34,8 @@ def no_local_text(tmp_path, monkeypatch):
     prompts = tmp_path / "prompts"
     shutil.copytree(texts.PROMPTS, prompts)
     monkeypatch.setattr(texts, "PROMPTS", prompts)
-    # The researcher's own instructions. A developer running this
-    # suite on a machine with an installed kit has both files, and they would
-    # otherwise be appended to every prompt these tests build.
+    # The researcher's own instructions.
+    # A developer running this suite on a machine with an installed kit has both files, and they would otherwise be appended to every prompt these tests build.
     monkeypatch.setenv("QUPA_HOME", str(tmp_path / "home"))
     # And the placeholders this machine has put up.
     monkeypatch.setenv("QUPA_PLACEHOLDERS", str(tmp_path / "placeholders.json"))
@@ -47,16 +45,13 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_QUOTA", str(tmp_path / "quota.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
-    # And its env, where the diary's settings are read again at every poll,
-    # and which the installer reuses.
+    # And its env, where the diary's settings are read again at every poll, and which the installer reuses.
     monkeypatch.setenv("QUPA_ENV_FILE", str(tmp_path / "env"))
     monkeypatch.setattr(install, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(install, "ENV_PATH", tmp_path / "env")
-    # And Claude Code, which would otherwise be started to make a parent
-    # session for the first wake a test runs; a test of the parent fakes its own.
+    # And Claude Code, which would otherwise be started to make a parent session for the first wake a test runs; a test of the parent fakes its own.
     monkeypatch.setattr(daemon, "make_parent", lambda *args, **kwargs: "")
-    # And the state beside it, such as the copy of the agent's interests post
-    # that every parent carries.
+    # And the state beside it, such as the copy of the agent's interests post that every parent carries.
     monkeypatch.setenv("QUPA_STATE", str(tmp_path / "daemon.sqlite3"))
 
 
@@ -97,9 +92,8 @@ def category(category_id: int, name: str, raw: str, parent: int | None = None,
     return {"id": category_id, "name": name, "parent_category_id": parent, "topic_id": 100 + category_id,
             "post_id": 1000 + category_id, "raw": raw, "updated_at": edited}
 
-# A file the stub serves as an attachment. Not a valid PDF beyond its header,
-# which is all the client inspects: what is under test is the shape the bytes
-# arrive in, not whether anything can render them.
+# A file the stub serves as an attachment.
+# Not a valid PDF beyond its header, which is all the client inspects: what is under test is the shape the bytes arrive in, not whether anything can render them.
 ATTACHED_PDF = b"%PDF-1.4\nthe kingfisher audits nineteen turbines\n%%EOF\n"
 ATTACHED_TEXT = b"Watching for: circuit QED.\nNot interested in: cosmology.\n"
 SHORT_URL = "upload://kingfisher.pdf"
@@ -120,16 +114,13 @@ class StubForum(BaseHTTPRequestHandler):
     host_lists = True
     # Every GET, so a test can count what reading the policy cost the forum.
     gets: list[str] = []
-    # Any other topic's category, None for a private message, and any other
-    # post's topic, 7 unless named, for the server to find where a write goes.
+    # Any other topic's category, None for a private message, and any other post's topic, 7 unless named, for the server to find where a write goes.
     topic_categories: dict[int, int | None] = {}
     post_topics: dict[int, int] = {}
     posted: list[dict] = []
-    # Set by a test that wants the forum to reject the key it is given, which
-    # is what a mistyped or revoked one produces.
+    # Set by a test that wants the forum to reject the key it is given, which is what a mistyped or revoked one produces.
     refuse_keys = False
-    # Path prefix -> (status, body) for a test that wants the forum to fail
-    # one request the way the real one does, with its JSON reason.
+    # Path prefix -> (status, body) for a test that wants the forum to fail one request the way the real one does, with its JSON reason.
     failures: dict[str, tuple[int, object]] = {}
 
     def _fail(self) -> bool:
@@ -212,9 +203,8 @@ class StubForum(BaseHTTPRequestHandler):
         elif self.path.startswith("/t/external_id/"):
             self._send(404, {"errors": ["not found"]})
         elif self.path.startswith("/session/current.json"):
-            # A Single-User key names its own account only when no
-            # Api-Username is sent; naming anybody else is refused. The
-            # installer derives the agent's name from exactly that.
+            # A Single-User key names its own account only when no Api-Username is sent; naming anybody else is refused.
+            # The installer derives the agent's name from exactly that.
             if type(self).refuse_keys or self.headers.get("Api-Username"):
                 self._send(403, {"errors": ["The API username or key is invalid."]})
             else:
@@ -241,8 +231,7 @@ class StubForum(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(payload)))
-            # Discourse serves the original filename this way, and it is the
-            # only place the client can learn it: the stored path is a hash.
+            # Discourse serves the original filename this way, and it is the only place the client can learn it: the stored path is a hash.
             self.send_header("Content-Disposition", f'attachment; filename="{name}"')
             self.end_headers()
             self.wfile.write(payload)

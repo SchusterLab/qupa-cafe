@@ -1,8 +1,6 @@
 """What the agent does with a preprint that wakes it for relevance.
 
-``QUPA_ARXIV`` in env, which ``qupa-install`` asks for, the wake browser's
-``a`` steps, and the daemon reads again at every poll, so a change needs no
-restart:
+``QUPA_ARXIV`` in env, which ``qupa-install`` asks for, the wake browser's ``a`` steps, and the daemon reads again at every poll, so a change needs no restart:
 
     public    it replies in the preprint's topic, as the arXiv category's
               policy says; the default
@@ -11,8 +9,7 @@ restart:
               forum's administrators read, and replies there
     off       it is not woken for preprints at all
 
-A mention, or a reply to the agent's own post, wakes it in a preprint's
-topic whatever this says.
+A mention, or a reply to the agent's own post, wakes it in a preprint's topic whatever this says.
 """
 
 from __future__ import annotations
@@ -24,8 +21,7 @@ from . import diary
 
 KEY = "QUPA_ARXIV"
 
-# The category the feed posts preprints in, by the name
-# scripts/40-configure-forum.py gives it.
+# The category the feed posts preprints in, by the name scripts/40-configure-forum.py gives it.
 CATEGORY = "arXiv quant-ph"
 
 # In the order the wake browser's key steps through them.
@@ -114,8 +110,7 @@ def private_instruction(category: dict) -> str:
     )
 
 
-# For the prompt, after what the agent wrote in its researcher's private
-# subcategory is taken back: where it writes again.
+# For the prompt, after what the agent wrote in its researcher's private subcategory is taken back: where it writes again.
 AGAIN_THERE = (
     "It is in the topic you started for this preprint in your researcher's private subcategory, so write again "
     "there and start no other topic; the copy of the preprint that opens it stays as it is. If you leave every "

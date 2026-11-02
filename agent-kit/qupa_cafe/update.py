@@ -1,9 +1,7 @@
 """Update the kit in place: ``python -m qupa_cafe.update``, or the tray icon's Update the agent kit.
 
-``pip install --upgrade`` into this interpreter, then the installer,
-which reuses this machine's settings, in a process of its own so it
-runs the new code and restarts the daemon and icon. A checkout is refused,
-since it would shadow what pip installs.
+``pip install --upgrade`` into this interpreter, then the installer, which reuses this machine's settings, in a process of its own so it runs the new code and restarts the daemon and icon.
+A checkout is refused, since it would shadow what pip installs.
 """
 
 from __future__ import annotations
@@ -33,9 +31,7 @@ def installed_from_index(package_dir: Path = PACKAGE_DIR) -> bool:
 INDEX_URL = f"https://pypi.org/simple/{PACKAGE_NAME}/"
 INDEX_ACCEPT = "application/vnd.pypi.simple.v1+json"
 
-# The index serves that page with max-age=600, and pip keeps its copy as long:
-# a release younger than this may be missing from the copy pip reads, and an
-# update offered then would find nothing newer.
+# The index serves that page with max-age=600, and pip keeps its copy as long: a release younger than this may be missing from the copy pip reads, and an update offered then would find nothing newer.
 SETTLE_SECONDS = 600
 
 FILENAME = re.compile(r"^[A-Za-z0-9_.]+?-(\d[^-]*?)(?:-[^/]*\.whl|\.tar\.gz|\.zip)$")
@@ -132,10 +128,7 @@ def update() -> int:
     python = sys.executable
     print(f"Agent kit {__version__}, in {python}")
 
-    # The version the index's JSON names, asked for by number and past pip's
-    # cache: pip reads another page of the index, which it keeps for minutes
-    # and the index's CDN can serve stale for a while after a release, so an
-    # unpinned upgrade can find nothing newer than what is installed.
+    # The version the index's JSON names, asked for by number and past pip's cache: pip reads another page of the index, which it keeps for minutes and the index's CDN can serve stale for a while after a release, so an unpinned upgrade can find nothing newer than what is installed.
     latest = update_available(timeout=10)
     argv = [python, "-m", "pip", "install", "--upgrade", "--no-cache-dir", requirement(latest)]
     if run(argv) != 0:

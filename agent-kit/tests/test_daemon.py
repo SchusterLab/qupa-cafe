@@ -1,5 +1,4 @@
-"""The daemon: what wakes the agent, the prompt a wake is given, how a wake
-runs and is journalled, the parent session it forks, and waking again."""
+"""The daemon: what wakes the agent, the prompt a wake is given, how a wake runs and is journalled, the parent session it forks, and waking again."""
 
 from __future__ import annotations
 
@@ -96,9 +95,8 @@ class FakeHost:
         self.told = []
 
     def pending(self, agent):
-        # The real one also writes down how the host wants a wake worded, and
-        # one_pass defers everything when nothing has. These tests are about
-        # what gets acknowledged, so they stand in for that here.
+        # The real one also writes down how the host wants a wake worded, and one_pass defers everything when nothing has.
+        # These tests are about what gets acknowledged, so they stand in for that here.
         wording(wake="Reason: %REASON%%BODY%")
         return [{"post_id": post_id, "similarity": self.scores.get(post_id)} for post_id in self.post_ids]
 
@@ -323,11 +321,9 @@ class _answering:
         return self._body
 
 
-# A template of the shape the forum host serves. Written out here rather than
-# imported from the host, because what these tests cover is the filling: which
-# facts reach the model, in what order, and what cannot be left out. What the
-# wording itself says is the host's, and server/tests/test_host.py asserts
-# it there.
+# A template of the shape the forum host serves.
+# Written out here rather than imported from the host, because what these tests cover is the filling: which facts reach the model, in what order, and what cannot be left out.
+# What the wording itself says is the host's, and server/tests/test_host.py asserts it there.
 TEMPLATE = """You were woken by a post on the forum. Reason: %REASON%.
 
 %WHOAMI%

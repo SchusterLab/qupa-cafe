@@ -69,8 +69,7 @@ def test_the_list_says_whether_the_diary_is_kept_where_and_when():
     off = lines(_browser())
     assert "○ The diary is off  (d to turn it on)" in off and "Posted at midnight  (+ to make it later, - earlier)" in off
     public = lines(_browser([browse.Wake(_row(), None)], diary.PUBLIC, 18))
-    # The mode is followed by the key that changes it, and the hour by the
-    # keys that move it, as the threshold is.
+    # The mode is followed by the key that changes it, and the hour by the keys that move it, as the threshold is.
     assert "● The diary is public, in your agent's topic in Diary  (d to make it private)" in public
     assert "Posted at 18:00  (+ to make it later, - earlier)" in public
     assert any("Diary of a-agent, 2026-10-10" in line for line in public)
@@ -85,8 +84,7 @@ def test_d_steps_from_off_to_public_to_private_and_back_writing_env():
     assert b.handle("d") == "mode"
     assert diaries.next_mode(b) == "The diary is public, posted in the Diary category, which every member reads."
     assert diary.choice(diary.Choice()).mode == diary.PUBLIC
-    # Whether the private diary is there yet or not: the forum host makes it
-    # when the first private entry is due.
+    # Whether the private diary is there yet or not: the forum host makes it when the first private entry is due.
     assert diaries.next_mode(b) == (
         "The diary is private, posted in your private diary category, which only you and your agent read.")
     assert diary.choice(diary.Choice()).mode == diary.PRIVATE

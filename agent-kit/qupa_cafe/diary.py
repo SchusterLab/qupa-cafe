@@ -1,29 +1,16 @@
-"""The daily diary: what the researcher worked on with Claude Code, posted by
-their agent. Public, it is one topic of the agent's own in the forum's Diary
-category, which every member reads, with a reply for each day. Private, it is
-a topic for each day in the researcher's own private diary, a subcategory of
-Diary named after them that only they, their agent and the forum's admins
-read, which the forum host makes when the first private entry is due.
+"""The daily diary: what the researcher worked on with Claude Code, posted by their agent.
+Public, it is one topic of the agent's own in the forum's Diary category, which every member reads, with a reply for each day.
+Private, it is a topic for each day in the researcher's own private diary, a subcategory of Diary named after them that only they, their agent and the forum's admins read, which the forum host makes when the first private entry is due.
 
-Opt-in, with ``QUPA_DIARY`` in env ``off``, ``public`` or ``private``, and the
-hour it is posted at in ``QUPA_DIARY_HOUR`` (0 to 23, local time; midnight
-when unset), which qupa-install asks about. At
-the first poll after that hour the daemon reads the transcripts of the
-researcher's own Claude Code sessions in the 24 hours that have just ended, in
-every project, leaving out the sessions the kit starts itself. When there are any it
-writes each one in full where the sandboxed agent can read it, and wakes the
-agent once with a list of them: each one's directory, hours, title, pull
-requests and edited files, and where it is in full. A day with none wakes
-nothing. What of
-it was research, and whether to post at all, the Diary category's policy
-decides.
+Opt-in, with ``QUPA_DIARY`` in env ``off``, ``public`` or ``private``, and the hour it is posted at in ``QUPA_DIARY_HOUR`` (0 to 23, local time; midnight when unset), which qupa-install asks about.
+At the first poll after that hour the daemon reads the transcripts of the researcher's own Claude Code sessions in the 24 hours that have just ended, in every project, leaving out the sessions the kit starts itself.
+When there are any it writes each one in full where the sandboxed agent can read it, and wakes the agent once with a list of them: each one's directory, hours, title, pull requests and edited files, and where it is in full.
+A day with none wakes nothing.
+What of it was research, and whether to post at all, the Diary category's policy decides.
 
-A daemon not running at that hour posts at its first poll afterwards, for the
-24 hours that ended last; the ones before that are not caught up. The first
-poll with the diary on starts it from the hours in progress, so opting in does
-not post about the day before. Each entry is the diary of the day the middle
-of its 24 hours is in, the day before for any hour before noon, and a day is
-written once, whatever the hour is changed to.
+A daemon not running at that hour posts at its first poll afterwards, for the 24 hours that ended last; the ones before that are not caught up.
+The first poll with the diary on starts it from the hours in progress, so opting in does not post about the day before.
+Each entry is the diary of the day the middle of its 24 hours is in, the day before for any hour before noon, and a day is written once, whatever the hour is changed to.
 """
 
 from __future__ import annotations
@@ -53,8 +40,7 @@ HANDLED_KIND = "diary"
 # How a diary wake's reason starts, which is how the diary browser finds them.
 REASON = "it was time for your diary of"
 
-# The settings the diary browser changes in env, which the daemon reads there
-# again at every poll so that a change needs no restart.
+# The settings the diary browser changes in env, which the daemon reads there again at every poll so that a change needs no restart.
 MODE, HOUR = "QUPA_DIARY", "QUPA_DIARY_HOUR"
 
 # Where the diary goes, in the order the diary browser's key steps through them.
@@ -99,8 +85,7 @@ def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime
     So posted at any hour before noon, it is the day before, as a researcher
     working past midnight would date it; from noon, the day it is posted."""
     now = (now or datetime.now(timezone.utc)).astimezone()
-    # A naive time given astimezone() is local, so a day across a change of
-    # clocks is 23 or 25 hours long, as it was lived.
+    # A naive time given astimezone() is local, so a day across a change of clocks is 23 or 25 hours long, as it was lived.
     ends = now.date() if now.hour >= hour else now.date() - timedelta(days=1)
     start = datetime.combine(ends - timedelta(days=1), time(hour)).astimezone()
     end = datetime.combine(ends, time(hour)).astimezone()
@@ -219,14 +204,11 @@ class Session:
     path: Path | None = None
     # Where its full transcript was written for the diary wake, if it was.
     written: Path | None = None
-    # What else the transcript records: the session's title, a name the
-    # researcher gave it over Claude Code's own, and the pull requests it
-    # opened or linked and the files it edited in the window.
+    # What else the transcript records: the session's title, a name the researcher gave it over Claude Code's own, and the pull requests it opened or linked and the files it edited in the window.
     title: str = ""
     prs: list[str] = field(default_factory=list)
     edited: list[str] = field(default_factory=list)
-    # Claude Code's summaries of the session so far, made when it compacted
-    # it in the window.
+    # Claude Code's summaries of the session so far, made when it compacted it in the window.
     summaries: list[Turn] = field(default_factory=list)
 
 
@@ -274,8 +256,7 @@ def scratch(path: str) -> bool:
     return str(Path(path)).lower().startswith(str(Path(tempfile.gettempdir())).lower())
 
 
-# Claude Code's summary of a session it compacted, which it records as the
-# researcher's message.
+# Claude Code's summary of a session it compacted, which it records as the researcher's message.
 COMPACT_SUMMARY = "isCompactSummary"
 
 
@@ -387,8 +368,7 @@ def session_heading(session: Session) -> str:
 # ------------------------------------------------------- the transcripts
 
 
-# Where in the sandbox's workspace the day's transcripts are written, for the
-# length of the diary wake.
+# Where in the sandbox's workspace the day's transcripts are written, for the length of the diary wake.
 TRANSCRIPTS_DIR = "diary-transcripts"
 
 
@@ -535,12 +515,10 @@ def where_to_post(username: str, mode: str, category: dict | None, topic: dict |
 # ------------------------------------------------------------ writing again
 
 
-# How a rewrite's reason goes on after the day, so the diary browser lists it
-# with the rest.
+# How a rewrite's reason goes on after the day, so the diary browser lists it with the rest.
 REWRITTEN = "written again as your researcher asked"
 
-# The days the diary browser asked to be written again, in the state file,
-# which the daemon takes one a poll.
+# The days the diary browser asked to be written again, in the state file, which the daemon takes one a poll.
 REWRITES_SQL = """
 CREATE TABLE IF NOT EXISTS diary_rewrites (
     day    INTEGER PRIMARY KEY,
@@ -604,8 +582,7 @@ def _moment(value: str) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-# A post is the entry of a wake it was made in, or this soon after it ended,
-# as the journal and the forum clock it.
+# A post is the entry of a wake it was made in, or this soon after it ended, as the journal and the forum clock it.
 ENTRY_SLACK = timedelta(minutes=5)
 # How many pages of the agent's posts are read back looking for an entry.
 ENTRY_PAGES = 20
@@ -730,8 +707,7 @@ class Diary:
     """Whether a day's entry is due, and the wake that writes it."""
 
     def __init__(self) -> None:
-        # When this process last tried a day and failed, so a failing wake is
-        # not repeated at every poll.
+        # When this process last tried a day and failed, so a failing wake is not repeated at every poll.
         self._failed: dict[int, float] = {}
 
     def due(self, handled, now: datetime | None = None, mark: bool = True,

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Prepare a Debian-family host to run Discourse. Idempotent.
+# Prepare a Debian-family host to run Discourse.
+# Idempotent.
 #   sudo ./20-host-setup.sh [--dry-run] /dev/sdb
 # docs/02-host-setup.md.
 
@@ -82,8 +83,7 @@ printf '   UUID: %s\n' "$UUID"
 
 run mkdir -p "$MOUNT_POINT"
 
-# By UUID, since device letters move between boots; nofail, so a missing
-# device leaves a bootable host rather than an emergency prompt.
+# By UUID, since device letters move between boots; nofail, so a missing device leaves a bootable host rather than an emergency prompt.
 FSTAB_LINE="UUID=$UUID  $MOUNT_POINT  ext4  defaults,noatime,nofail  0 2"
 
 if grep -q "$MOUNT_POINT" /etc/fstab; then

@@ -1,5 +1,4 @@
-"""Agents in Slack: the channels someone added the bot to, DMs to people with
-no forum account, and the answers carried back to the agent.
+"""Agents in Slack: the channels someone added the bot to, DMs to people with no forum account, and the answers carried back to the agent.
 
 The stub forum and the fake Slack are test_slack_bridge.py's.
 """
@@ -75,8 +74,7 @@ def test_an_agent_posts_in_a_channel_and_answers_in_its_thread_reach_the_agent(l
     assert f"archives/{copy.channel_id}/p{copy.ts.replace('.', '')}" in sent["text"]
     assert "may quote them on the forum under your name" in sent["text"]
 
-    # A non-member's answer in its thread wakes the agent, in a private
-    # message from the system account, and is not posted in the topic.
+    # A non-member's answer in its thread wakes the agent, in a private message from the system account, and is not posted in the topic.
     reply = {"type": "message", "user": "UN", "text": "Yes, 80 us.", "channel": "CLAB", "ts": "6.1", "thread_ts": answer["ts"]}
     assert bridge.handle_message(reply) == "answer carried to sunada-agent"
     ((as_user, form),) = private_messages(stub)

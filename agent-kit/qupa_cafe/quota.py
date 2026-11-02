@@ -1,24 +1,15 @@
 """A cap on the share of the researcher's Claude plan that wakes may reach.
 
-``QUPA_QUOTA_CAP`` in env, which the wake browser's ``c`` steps and the
-daemon reads again before every wake, so a change needs no restart: a
-percentage from 1 to 100, or empty for none, and 80 when env has none. No
-wake starts while the plan's five-hour or weekly usage is at or above it,
-and a wake running when a reading shows it reached is stopped.
+``QUPA_QUOTA_CAP`` in env, which the wake browser's ``c`` steps and the daemon reads again before every wake, so a change needs no restart: a percentage from 1 to 100, or empty for none, and 80 when env has none.
+No wake starts while the plan's five-hour or weekly usage is at or above it, and a wake running when a reading shows it reached is stopped.
 
-The usage is the plan's, the researcher's own sessions and the agent's
-wakes together, as Claude Code shows it in ``/usage``. Claude Code gives it
-only to a status line command, and only on a Pro or Max plan, so every wake
-is given this module as its status line, which records each reading in
-``quota.json`` beside the daemon's state. A reading is as recent as the last
-wake's; a window whose reset time has passed counts as unused until the next
-reading. With no reading, as on an API key, the cap holds nothing back.
+The usage is the plan's, the researcher's own sessions and the agent's wakes together, as Claude Code shows it in ``/usage``.
+Claude Code gives it only to a status line command, and only on a Pro or Max plan, so every wake is given this module as its status line, which records each reading in ``quota.json`` beside the daemon's state.
+A reading is as recent as the last wake's; a window whose reset time has passed counts as unused until the next reading.
+With no reading, as on an API key, the cap holds nothing back.
 
-``QUPA_WAKE_BUDGET``, which the browser's ``b`` steps, 1M when env has none,
-is the agent's alone: what its wakes may spend in any five
-hours, counted from their own transcripts as the wake browser counts a
-wake's cost. It holds wakes back and stops a running one the same way,
-until enough of that spending is five hours old.
+``QUPA_WAKE_BUDGET``, which the browser's ``b`` steps, 1M when env has none, is the agent's alone: what its wakes may spend in any five hours, counted from their own transcripts as the wake browser counts a wake's cost.
+It holds wakes back and stops a running one the same way, until enough of that spending is five hours old.
 
     python -m qupa_cafe.quota       # a status line: reads Claude Code's JSON on stdin
 """
@@ -33,8 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in (None, ""):
-    # Run as a script, which is how Claude Code runs a status line: the
-    # package's parent, so that this is the same qupa_cafe the daemon imported.
+    # Run as a script, which is how Claude Code runs a status line: the package's parent, so that this is the same qupa_cafe the daemon imported.
     sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
 from qupa_cafe import diary
@@ -49,9 +39,7 @@ DEFAULT = "80"
 # The windows Claude Code reports, and their names for a person.
 WINDOWS = {"five_hour": "five-hour", "seven_day": "weekly"}
 
-# The budget: what the agent's wakes may spend in any five hours, in
-# input-token equivalents as the wake browser counts a wake's cost
-# (qupa_cafe.wakes.equivalent), such as 500k or 1M; empty for none.
+# The budget: what the agent's wakes may spend in any five hours, in input-token equivalents as the wake browser counts a wake's cost (qupa_cafe.wakes.equivalent), such as 500k or 1M; empty for none.
 BUDGET_KEY = "QUPA_WAKE_BUDGET"
 BUDGETS = ("", "250k", "500k", "1M", "2M", "5M")
 # The budget while env does not name one.
@@ -174,8 +162,7 @@ def spending(now: float | None = None, path: str | None = None) -> list[tuple[fl
 
     now = time.time() if now is None else now
     since = now - BUDGET_SECONDS
-    # A response in the window can belong to a wake that started up to the
-    # longest a wake may run before it.
+    # A response in the window can belong to a wake that started up to the longest a wake may run before it.
     started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(since - wakes.WAKE_TIMEOUT_SECONDS))
     found: list[tuple[float, float]] = []
     for session in wakes.sessions_since(path or state_path(), started):

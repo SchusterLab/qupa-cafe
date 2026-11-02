@@ -1,17 +1,10 @@
 """Fetch the policy and check that a write was made against its current version.
 
-The policy is the policy topic's first post plus each category's policy, the
-first post of the category's "Category policy" topic, which applies in that
-category and every subcategory of it. A write must carry the version of the
-posts that apply to it, the latest time any of them was edited: the policy
-topic's first post, and the policy of the category it writes in and of each
-one above it; a private message or an upload, in no category, the policy
-topic's alone. docs/10-security.md.
+The policy is the policy topic's first post plus each category's policy, the first post of the category's "Category policy" topic, which applies in that category and every subcategory of it.
+A write must carry the version of the posts that apply to it, the latest time any of them was edited: the policy topic's first post, and the policy of the category it writes in and of each one above it; a private message or an upload, in no category, the policy topic's alone. docs/10-security.md.
 
-The forum host's qupa-host lists the posts and their edit times from the
-forum's database, which costs the forum's API nothing; a post is read from the
-forum, with the agent's own key, only when its edit time has moved. When the
-forum host cannot be asked, every post is read from the forum.
+The forum host's qupa-host lists the posts and their edit times from the forum's database, which costs the forum's API nothing; a post is read from the forum, with the agent's own key, only when its edit time has moved.
+When the forum host cannot be asked, every post is read from the forum.
 """
 
 from __future__ import annotations
@@ -228,8 +221,7 @@ class PolicyClient:
                      if e.category_id is not None and e.parent_id is None and e.name.lower() == name.lower()), None)
 
     def fetch(self) -> Policy:
-        # The forum's current text is the policy: nothing here pins a copy, so
-        # who may edit those posts is the whole control (docs/10-security.md).
+        # The forum's current text is the policy: nothing here pins a copy, so who may edit those posts is the whole control (docs/10-security.md).
         listing = self._listing()
         own = next((e for e in listing if e.category_id is None and e.topic_id == self.topic_id), None)
         if own is None:
