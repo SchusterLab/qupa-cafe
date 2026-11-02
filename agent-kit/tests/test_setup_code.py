@@ -116,11 +116,21 @@ def test_the_diary_is_asked_for_with_where_it_goes(monkeypatch, capsys, answer, 
     answers = {"Setup code": [CODE], **({"Diary": [answer], hour: ["24", "18"]} if answer else {})}
     settings, asked = interactive(monkeypatch, answers, DIARIES)
     assert "Diary" in asked and settings["diary"] == mode
-    # Asked again for an hour out of range, and not asked with no diary.
+    # Asked again for an hour out of range. With no diary it is asked once
+    # all the same, for the leaderboard, which is on by default.
     assert settings["diary_hour"] == ("18" if answer else "0")
-    assert asked.count(hour) == (2 if answer else 0)
+    assert asked.count(hour) == (2 if answer else 1)
+    assert settings["leaderboard"] == "on"
     out = capsys.readouterr().out
     assert "1  public: in your agent's topic in Diary" in out and "2  private: in a topic for each day" in out and "3  off: no diary" in out
+
+
+def test_with_neither_the_diary_nor_the_leaderboard_no_hour_is_asked(monkeypatch):
+    hour = "At which hour, 0 to 23, your time"
+    settings, asked = interactive(monkeypatch, {"Setup code": [CODE], "Leaderboard": ["2"]}, DIARIES)
+    assert settings["leaderboard"] == "off" and hour not in asked
+    install.write_env(settings)
+    assert "QUPA_LEADERBOARD=off" in install.ENV_PATH.read_text(encoding="utf-8").splitlines()
 
 
 def test_a_forum_with_no_diary_asks_nothing(monkeypatch):

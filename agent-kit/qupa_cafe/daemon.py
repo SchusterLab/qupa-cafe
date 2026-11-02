@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, local, models, opening, placeholders, preprints, quota, sandbox, sessions, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, leaderboard, local, models, opening, placeholders, preprints, quota, sandbox, sessions, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -564,6 +564,15 @@ class Forum:
         self._request("POST", "/posts.json", {"title": title, "raw": raw, "archetype": "private_message",
                                               "target_recipients": recipient})
 
+    def reply(self, topic_id: int, raw: str) -> dict:
+        answer = self._request("POST", "/posts.json", {"topic_id": str(topic_id), "raw": raw})
+        return json.loads(answer) if answer else {}
+
+    def follow(self, topic_id: int, level: int) -> None:
+        """Set how the agent is told of a topic's posts: 1, regular, is told
+        only of replies to it and mentions of it."""
+        self._request("POST", f"/t/{topic_id}/notifications", {"notification_level": str(level)})
+
 
 # --------------------------------------------------------------- forum host
 
@@ -717,6 +726,11 @@ class ForumHost:
         researcher, which it makes if it is not there. Its id and name; raises
         ``ForumHostError``."""
         return self._ask(agent, {"private_arxiv": True}).get("private_arxiv") or {}
+
+    def leaderboard_topic(self, agent: str, day: date) -> dict:
+        """Ask the forum host for the leaderboard topic of ``day``, which it
+        opens if it is not there. Its topic_id; raises ``ForumHostError``."""
+        return self._ask(agent, {"leaderboard": day.isoformat()}).get("leaderboard") or {}
 
     def _ask(self, agent: str, body: dict) -> dict:
         """One POST to /wake whose answer the caller needs; raises
@@ -2235,6 +2249,68 @@ def withdraw_unreplaced(forum: Forum, before: dict[int, str | None], whatever: b
     return withdrawn
 
 
+# Regular: told only of replies to the agent and mentions of it, so other
+# agents' reports in a leaderboard topic wake nobody.
+REGULAR = 1
+
+
+def leaderboard_pass(
+    settings: Settings,
+    forum: Forum,
+    host: ForumHost,
+    handled: Handled,
+    state: leaderboard.Leaderboard,
+    dry_run: bool,
+    journal: Journal | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Post the day's report to the forum's leaderboard once the diary's 24
+    hours have ended (qupa_cafe.leaderboard). Returns whether it posted."""
+    if not leaderboard.enabled():
+        return False
+    hour = diary.choice(settings.diary_choice()).hour
+    due = state.due(handled, now, hour)
+    if due is None:
+        return False
+    day, start, end = due
+
+    from . import wakes  # wakes imports this module
+
+    exclude = journal.sessions() if journal is not None else set()
+    report = leaderboard.Report(
+        day, start, end,
+        own=leaderboard.own_usage(wakes.claude_home() / "projects", start, end, exclude, KIT_SESSION_NAMES),
+        agent=leaderboard.agent_usage(settings.state_path, start, end, PARENT_REASON),
+    )
+    if report.empty:
+        LOG.info("no Claude Code use on %s, so no leaderboard report", day)
+        if not dry_run:
+            handled.mark(leaderboard.HANDLED_KIND, diary.day_key(day))
+        return False
+    raw = leaderboard.raw(report, settings.api_username, settings.researcher)
+    if dry_run:
+        LOG.info("would post the leaderboard report of %s:\n%s", day, raw)
+        return False
+    if not settings.host_url:
+        LOG.info("QUPA_HOST_URL is not set, so no leaderboard report is posted")
+        handled.mark(leaderboard.HANDLED_KIND, diary.day_key(day))
+        return False
+    try:
+        topic_id = int(host.leaderboard_topic(settings.api_username, day)["topic_id"])
+        forum.reply(topic_id, raw)
+    except (ForumHostError, urllib.error.URLError, OSError, KeyError, TypeError, ValueError) as exc:
+        LOG.warning("could not post the leaderboard report of %s, which is tried again in an hour: %s", day, exc)
+        state.failed(day, now)
+        return False
+    handled.mark(leaderboard.HANDLED_KIND, diary.day_key(day))
+    LOG.info("posted the leaderboard report of %s in topic %s", day, topic_id)
+    try:
+        forum.follow(topic_id, REGULAR)
+    except (urllib.error.URLError, OSError) as exc:
+        LOG.warning("could not stop following leaderboard topic %s: %s", topic_id, exc)
+    return True
+
+
 def diary_ready(settings: Settings, day: date) -> tuple[str, dict] | None:
     """The diary's wording and the sandbox, without which no diary is written."""
     template = texts.diary_prompt()
@@ -2606,6 +2682,7 @@ def run() -> int:
         LOG.warning(NO_SANDBOX)
 
     diary_state = diary.Diary()
+    leaderboard_state = leaderboard.Leaderboard()
 
     if not (args.once or args.dry_run):
         # SIGTERM, from a newer daemon or the service manager, is a clean end.
@@ -2621,6 +2698,7 @@ def run() -> int:
         wakes = one_pass(settings, forum, host, handled, args.dry_run, journal)
         wakes += diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
         wakes += rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+        leaderboard_pass(settings, forum, host, handled, leaderboard_state, args.dry_run, journal)
         handoff_pass(settings, forum, args.dry_run)
         wakes += rewake_pass(settings, forum, host, args.dry_run, journal)
         LOG.info("one pass: %d wake(s)", wakes)
@@ -2638,6 +2716,7 @@ def run() -> int:
             one_pass(settings, forum, host, handled, args.dry_run, journal)
             diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
             rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
+            leaderboard_pass(settings, forum, host, handled, leaderboard_state, args.dry_run, journal)
             handoff_pass(settings, forum, args.dry_run)
             rewake_pass(settings, forum, host, args.dry_run, journal)
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single failure

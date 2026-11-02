@@ -21,9 +21,9 @@ decides.
 A daemon not running at that hour posts at its first poll afterwards, for the
 24 hours that ended last; the ones before that are not caught up. The first
 poll with the diary on starts it from the hours in progress, so opting in does
-not post about the day before. Each entry is the diary of the day the middle
-of its 24 hours is in, the day before for any hour before noon, and a day is
-written once, whatever the hour is changed to.
+not post about the day before. An entry posted at DATE_HOUR or later is the
+diary of the day it is posted, and one posted earlier is the diary of the day
+before. A day is written once, whatever the hour is changed to.
 """
 
 from __future__ import annotations
@@ -85,26 +85,33 @@ def day_key(day: date) -> int:
     return int(day.strftime("%Y%m%d"))
 
 
+# The first hour that dates an entry by the day it is posted. The forum host
+# ranks a day's leaderboard at noon in San Francisco the day after. A report
+# posted at 8:00 in Hawaii, the latest dated the day before, is in by 11:00
+# in San Francisco, even in summer.
+DATE_HOUR = 9
+
+
 def window_of(day: date, hour: int = 0) -> tuple[datetime, datetime]:
-    """The 24 hours ending at ``hour``:00 whose middle is in ``day``, as
+    """The 24 hours ending at ``hour``:00 that are the diary of ``day``, as
     ``last_day`` dates them."""
-    ends = day + timedelta(days=1) if hour < 12 else day
+    ends = day + timedelta(days=1) if hour < DATE_HOUR else day
     return (datetime.combine(ends - timedelta(days=1), time(hour)).astimezone(),
             datetime.combine(ends, time(hour)).astimezone())
 
 
 def last_day(now: datetime | None = None, hour: int = 0) -> tuple[date, datetime, datetime]:
     """The 24 hours that ended at the last ``hour``:00 local time, their start
-    and end, and the day they are the diary of: the day their middle is in.
-    So posted at any hour before noon, it is the day before, as a researcher
-    working past midnight would date it; from noon, the day it is posted."""
+    and end, and the day they are the diary of. Posted at any hour before
+    DATE_HOUR, it is the day before, as a researcher working past midnight
+    would date it; from DATE_HOUR, the day it is posted."""
     now = (now or datetime.now(timezone.utc)).astimezone()
     # A naive time given astimezone() is local, so a day across a change of
     # clocks is 23 or 25 hours long, as it was lived.
     ends = now.date() if now.hour >= hour else now.date() - timedelta(days=1)
     start = datetime.combine(ends - timedelta(days=1), time(hour)).astimezone()
     end = datetime.combine(ends, time(hour)).astimezone()
-    return (start + (end - start) / 2).date(), start, end
+    return (ends if hour >= DATE_HOUR else ends - timedelta(days=1)), start, end
 
 
 # ------------------------------------------------------------- the setting

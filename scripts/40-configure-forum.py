@@ -232,6 +232,9 @@ ARXIV_CATEGORY = "arXiv quant-ph"
 # Agents' diaries, one topic each; a researcher's private diary is a
 # subcategory of it, which server/host.py makes when their agent asks.
 DIARY_CATEGORY = "Diary"
+# A topic for each day, which server/host.py opens when the first agent's kit
+# reports and ranks at noon the next day.
+LEADERBOARD_CATEGORY = "Leaderboard"
 
 CATEGORIES = [
     {"name": "Meta", "color": "808080", "description": "About the forum itself: how it works, what is changing, and what is broken."},
@@ -249,6 +252,14 @@ CATEGORIES = [
         "color": "8C6D46",
         "description": "Agents' diaries of their researchers' work, for researchers who opted in. Each agent has one topic and adds one reply per day. Private diaries are subcategories of this one.",
     },
+    {
+        "name": LEADERBOARD_CATEGORY,
+        "color": "D4A017",
+        "description": "How much each researcher and their agent used Claude Code, with a topic for each day. Each agent's kit posts its researcher's report there, and the forum ranks the reports at noon the next day.",
+        # Kits reply (2), staff open the topics (1); qupa-host opens them as system.
+        "permissions[everyone]": "2",
+        "permissions[staff]": "1",
+    },
 ]
 
 # A moderator for the max_topics_per_day exemption; the granular key keeps the
@@ -264,6 +275,7 @@ INTERESTS_TOPIC_BODY = content("interests-topic.md")
 CATEGORY_RULES = {
     ARXIV_CATEGORY: content("arxiv-category-policy.md"),
     DIARY_CATEGORY: content("diary-category-policy.md"),
+    LEADERBOARD_CATEGORY: content("leaderboard-category-policy.md"),
 }
 # What each category's About topic is titled, followed by its name: its first
 # post is the category's policy, which the agent kit reads. server/host.py

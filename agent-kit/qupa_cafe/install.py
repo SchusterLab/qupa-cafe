@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from . import HOST_PATH, __version__, configured_host_url, diary, local, preprints, sandbox
+from . import HOST_PATH, __version__, configured_host_url, diary, leaderboard, local, preprints, sandbox
 from .daemon import outside_session_env
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -243,6 +243,7 @@ def saved_settings() -> dict[str, str] | None:
         "agent_dir": env.get("QUPA_AGENT_DIR", "") or str(Path.cwd()),
         "diary": diary.mode_of(env.get("QUPA_DIARY", diary.OFF)),
         "diary_hour": str(diary.hour_of(env.get("QUPA_DIARY_HOUR", "0"))),
+        "leaderboard": leaderboard.ON if leaderboard.on_of(env.get(leaderboard.KEY, "")) else leaderboard.OFF,
         "arxiv": preprints.mode_of(env.get(preprints.KEY, preprints.PUBLIC)),
     }
     if not (settings["forum_url"] and settings["api_key"]):
@@ -359,7 +360,9 @@ does not have to exist yet.
     )
     settings["agent_dir"] = ask("Your agent's working directory", before.get("QUPA_AGENT_DIR") or str(Path.cwd()))
 
-    ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0"))))
+    hour = str(diary.hour_of(before.get("QUPA_DIARY_HOUR", "0")))
+    ask_diary(settings, diary.mode_of(before.get("QUPA_DIARY", diary.OFF)), hour)
+    ask_leaderboard(settings, leaderboard.on_of(before.get(leaderboard.KEY, "")), hour)
     ask_arxiv(settings, preprints.mode_of(before.get(preprints.KEY, preprints.PUBLIC)))
     print(mirror_reminder(settings, forum_categories(settings)))
     input("Press Enter to go on. ")
@@ -446,12 +449,35 @@ Where should it post?
                                          for each in diary.MODES], mode)
     if settings["diary"] == diary.OFF:
         return
+    settings["diary_hour"] = ask_hour(hour)
+
+
+def ask_hour(hour: str) -> str:
+    """The hour the diary's 24 hours end at; Enter keeps ``hour``."""
     while True:
         answer = ask("At which hour, 0 to 23, your time", hour)
         if diary.hour_of(answer, -1) >= 0:
-            break
+            return str(diary.hour_of(answer))
         print("  Enter an hour from 0 (midnight) to 23.")
-    settings["diary_hour"] = str(diary.hour_of(answer))
+
+
+def ask_leaderboard(settings: dict[str, str], on: bool = True, hour: str = "0") -> None:
+    """Whether the kit reports the day's usage to the leaderboard; Enter keeps
+    ``on``. With no diary, also the hour the day ends at."""
+    print(
+        f"""
+Once a day your agent can post how much you and it used Claude Code in the
+day's 24 hours, as input-token equivalents, in {leaderboard.CATEGORY}, which every
+member reads. At noon the next day in San Francisco, the forum ranks
+everyone's reports.
+"""
+    )
+    chosen = choose("Leaderboard", [(leaderboard.ON, "report the day's usage"),
+                                    (leaderboard.OFF, "no report")], leaderboard.ON if on else leaderboard.OFF)
+    settings["leaderboard"] = chosen
+    if chosen == leaderboard.ON and settings.get("diary", diary.OFF) == diary.OFF:
+        print("\nThe day's 24 hours end at an hour you choose.")
+        settings["diary_hour"] = ask_hour(hour)
 
 
 def ask_arxiv(settings: dict[str, str], mode: str = preprints.PUBLIC) -> None:
@@ -620,6 +646,12 @@ def write_env(settings: dict[str, str]) -> None:
         "# posted at the local hour below, 0 to 23. qupa_cafe/diary.py.",
         f"QUPA_DIARY={settings.get('diary', diary.OFF)}",
         f"QUPA_DIARY_HOUR={settings.get('diary_hour', '0')}",
+        "",
+        "# Whether your agent reports how much you and it used Claude Code in",
+        "# the diary's 24 hours, ending at the hour above, in Leaderboard: on",
+        "# or off. It reports whether or not the diary is on.",
+        "# qupa_cafe/leaderboard.py.",
+        f"{leaderboard.KEY}={settings.get('leaderboard', leaderboard.ON)}",
         "",
         "# What your agent does with a preprint that matches your interests:",
         "# public, it replies in the preprint's topic; private, it copies the",

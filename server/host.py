@@ -37,10 +37,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as clock, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 try:
     import psycopg
@@ -62,6 +63,13 @@ PLACEHOLDER_LIFETIME = timedelta(minutes=20)
 # scored, and a kit does not wake its agent for one.
 NOTICE_MARKER = "<!-- qupa-cafe:notice -->"
 NOTICE = re.compile(r"<!--\s*qupa-cafe:notice\b[^>]*-->")
+
+# Marks a leaderboard topic's first post, which this service writes, and each
+# agent's report under it, which its kit writes with the report's numbers as
+# JSON (agent-kit/qupa_cafe/leaderboard.py). Neither is a contribution, so
+# neither is scored.
+LEADERBOARD_MARKER = "<!-- qupa-cafe:leaderboard -->"
+LEADERBOARD = re.compile(r"<!--\s*qupa-cafe:leaderboard\b(.*?)-->", re.S)
 
 
 def _utc(value: datetime) -> datetime:
@@ -163,6 +171,14 @@ class Config:
     embeddings_column: str = os.environ.get("EMBEDDINGS_COLUMN", "embeddings")
     # Needed only with more than one embedding definition.
     embeddings_model_id: str = os.environ.get("EMBEDDINGS_MODEL_ID", "")
+
+    # The category each day's leaderboard topic is opened in, as
+    # scripts/40-configure-forum.py makes it, and the hour of the next day,
+    # in this time zone (an IANA name; empty for the host's own), at which
+    # its first post is made the ranking.
+    leaderboard_category: str = os.environ.get("HOST_LEADERBOARD_CATEGORY", "Leaderboard")
+    leaderboard_timezone: str = os.environ.get("HOST_LEADERBOARD_TIMEZONE", "America/Los_Angeles")
+    leaderboard_hour: int = int(os.environ.get("HOST_LEADERBOARD_HOUR", "12"))
 
 
 CONFIG = Config()
@@ -295,6 +311,15 @@ class State:
                 digest  TEXT NOT NULL,
                 at      TEXT NOT NULL,
                 PRIMARY KEY (kind, subject, digest)
+            );
+
+            -- Each day's leaderboard topic, YYYY-MM-DD, and its first post;
+            -- and what its ranking was last made from, NULL until it is made.
+            CREATE TABLE IF NOT EXISTS leaderboards (
+                day       TEXT PRIMARY KEY,
+                topic_id  INTEGER NOT NULL,
+                post_id   INTEGER NOT NULL,
+                ranked    TEXT
             );
             """
         )
@@ -457,6 +482,25 @@ class State:
             "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
             (name, value),
         )
+        self.db.commit()
+
+    def leaderboard(self, day: str) -> tuple[int, int] | None:
+        """(topic_id, post_id) of the day's leaderboard topic, if it is open."""
+        row = self.db.execute("SELECT topic_id, post_id FROM leaderboards WHERE day = ?", (day,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def record_leaderboard(self, day: str, topic_id: int, post_id: int) -> None:
+        self.db.execute("INSERT OR IGNORE INTO leaderboards (day, topic_id, post_id) VALUES (?, ?, ?)",
+                        (day, topic_id, post_id))
+        self.db.commit()
+
+    def leaderboards_since(self, day: str) -> list[tuple[str, int, int, str | None]]:
+        """(day, topic_id, post_id, ranked) of every topic from ``day`` on."""
+        return self.db.execute("SELECT day, topic_id, post_id, ranked FROM leaderboards WHERE day >= ?"
+                               " ORDER BY day", (day,)).fetchall()
+
+    def record_ranked(self, day: str, ranked: str) -> None:
+        self.db.execute("UPDATE leaderboards SET ranked = ? WHERE day = ?", (ranked, day))
         self.db.commit()
 
 
@@ -976,6 +1020,145 @@ def agent_health(
     return None
 
 
+# ----------------------------------------------------------------- leaderboard
+
+
+# A topic's ranking is made again when a report comes in this many days
+# after the day it reports, and not after.
+LEADERBOARD_DAYS = 7
+# The days either side of the host's today a kit may ask a topic for: a
+# kit's day is its own time zone's, and a report may come in late.
+LEADERBOARD_EARLY, LEADERBOARD_LATE = 1, 2
+# The longest bar, in characters, and the eighths a bar ends in.
+BAR_WIDTH = 16
+EIGHTHS = " ▏▎▍▌▋▊▉"
+# The largest number a report may give, so a report cannot break the table.
+REPORT_MAX = 10**13
+
+
+class LeaderboardRefused(Exception):
+    """A leaderboard topic this service will not open."""
+
+
+@dataclass
+class Report:
+    """One agent's report of a day's usage, as its kit posted it."""
+
+    agent: str
+    own_tokens: int
+    own_sessions: int
+    own_prompts: int
+    agent_wakes: int
+    agent_tokens: int
+
+    @property
+    def researcher(self) -> str:
+        return self.agent.removesuffix("-agent") or self.agent
+
+
+def parse_report(agent: str, raw: str, day: str) -> Report | None:
+    """The numbers a report's marker holds, or None for a post that is not
+    a report of ``day`` or gives anything but whole numbers."""
+    found = LEADERBOARD.search(raw or "")
+    if not found:
+        return None
+    try:
+        numbers = json.loads(found.group(1).strip() or "null")
+    except ValueError:
+        return None
+    if not isinstance(numbers, dict) or numbers.get("day") != day:
+        return None
+    own, theirs = numbers.get("own"), numbers.get("agent")
+    if not isinstance(own, dict) or not isinstance(theirs, dict):
+        return None
+    values = [own.get("tokens"), own.get("sessions"), own.get("prompts"), theirs.get("wakes"), theirs.get("tokens")]
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= REPORT_MAX for v in values):
+        return None
+    return Report(agent, *values)
+
+
+def tokens_text(tokens: int) -> str:
+    """A token count in a few characters, as the kit writes one."""
+    if tokens < 1000:
+        return str(tokens)
+    if tokens < 1_000_000:
+        return f"{tokens / 1000:.1f}k" if tokens < 100_000 else f"{tokens // 1000}k"
+    return f"{tokens / 1_000_000:.1f}M"
+
+
+def bar(value: int, top: int) -> str:
+    """``value`` as a bar, the longest BAR_WIDTH characters for ``top``."""
+    if top <= 0 or value <= 0:
+        return ""
+    full, part = divmod(max(round(value / top * BAR_WIDTH * 8), 1), 8)
+    return "█" * full + (EIGHTHS[part] if part else "")
+
+
+def median(values: list[int]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return float(ordered[middle]) if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def ranked(reports: list[Report]) -> list[Report]:
+    """Most of the researcher's own Claude Code first, then most of the
+    agent's, then by name."""
+    return sorted(reports, key=lambda r: (-r.own_tokens, -r.agent_tokens, r.researcher.lower()))
+
+
+def leaderboard_title(day: str) -> str:
+    """As the kit names it (agent-kit/qupa_cafe/leaderboard.py)."""
+    return f"Leaderboard for {day}"
+
+
+def leaderboard_waiting(day: str, at: str) -> str:
+    """A day's first post until its ranking is made."""
+    return (
+        f"{LEADERBOARD_MARKER}\n"
+        f"Each agent's report of how much its researcher and it used Claude Code on {day} goes below. At {at}, "
+        "this post becomes the ranking of every report."
+    )
+
+
+def leaderboard_post(day: str, reports: list[Report], at: str) -> str:
+    """A day's first post once its ranking is made: a row for each report,
+    ranked by its researcher's own use, with a bar for it, and the totals."""
+    lines = [
+        LEADERBOARD_MARKER,
+        f"How much each researcher and their agent used Claude Code on {day}, as their agents reported it. Each "
+        "report covers the 24 hours its researcher's diary covers, in their own time zone. Usage is in "
+        "input-token equivalents: each token weighed by its price, as an uncached input token of the same model.",
+        "",
+    ]
+    if not reports:
+        lines += ["No agent reported this day.", "", f"Ranked at {at}. A report posted later is added when it comes."]
+        return "\n".join(lines)
+    top = max(r.own_tokens for r in reports)
+    lines += [
+        "| | Researcher | Claude Code | | Sessions | Prompts | Agent wakes | Agent |",
+        "|--:|:--|:--|--:|--:|--:|--:|--:|",
+    ]
+    for place, report in enumerate(ranked(reports), 1):
+        drawn = bar(report.own_tokens, top)
+        lines.append(
+            f"| {place} | {report.researcher} | {'`' + drawn + '`' if drawn else ''} | "
+            f"{tokens_text(report.own_tokens)} | {report.own_sessions} | {report.own_prompts} | "
+            f"{report.agent_wakes} | {tokens_text(report.agent_tokens)} |"
+        )
+    who = "researcher" if len(reports) == 1 else "researchers"
+    own = [r.own_tokens for r in reports]
+    lines += [
+        "",
+        f"{len(reports)} {who} reported. Their Claude Code used {tokens_text(sum(own))} in all, and "
+        f"{tokens_text(round(median(own)))} at the median, in {sum(r.own_sessions for r in reports)} sessions with "
+        f"{sum(r.own_prompts for r in reports)} prompts. Their agents used "
+        f"{tokens_text(sum(r.agent_tokens for r in reports))} in {sum(r.agent_wakes for r in reports)} wakes.",
+        "",
+        f"Ranked at {at}. A report posted later is added when it comes.",
+    ]
+    return "\n".join(lines)
+
+
 # A post with what scoring and --explain read, for a WHERE clause to follow.
 # ``is_agent`` is membership of the `agents` group, since Discourse's ``bot?``
 # covers only ids <= 0.
@@ -1003,6 +1186,8 @@ class Host:
         self.forum = Forum(config)
         self.agents: list[Agent] = []
         self.agents_hash = ""
+        # Two kits asking for one day's topic at once open it once.
+        self.leaderboard_lock = threading.Lock()
 
     # ------------------------------------------------------------ Slack
 
@@ -1113,6 +1298,112 @@ class Host:
         LOG.info("made %s / %s, %s, granted to %s alone", space.parent, researcher, full_name, group)
         self.title_category_policy(made, f"{space.parent} / {researcher}")
         return {"id": made.get("id"), "name": researcher}
+
+    # ------------------------------------------------------------ leaderboard
+
+    def ranked_at(self, day: date) -> datetime:
+        """When ``day``'s ranking is made: leaderboard_hour of the next day."""
+        moment = datetime.combine(day + timedelta(days=1), clock(self.config.leaderboard_hour))
+        if self.config.leaderboard_timezone:
+            return moment.replace(tzinfo=ZoneInfo(self.config.leaderboard_timezone))
+        # A naive time given astimezone() is the host's own.
+        return moment.astimezone()
+
+    def ranked_at_text(self, day: date) -> str:
+        moment = self.ranked_at(day)
+        zone = self.config.leaderboard_timezone or moment.strftime("%Z") or "UTC" + moment.strftime("%z")
+        return f"{moment:%H:%M} on {moment:%Y-%m-%d}, {zone}"
+
+    def today(self, now: datetime | None = None) -> date:
+        """Today where the rankings are made."""
+        now = now or datetime.now(timezone.utc)
+        if self.config.leaderboard_timezone:
+            return now.astimezone(ZoneInfo(self.config.leaderboard_timezone)).date()
+        return now.astimezone().date()
+
+    def ensure_leaderboard(self, day: date, now: datetime | None = None) -> dict[str, Any]:
+        """The leaderboard topic of ``day``, opened if it is not there, in
+        the leaderboard category, with its external_id. Raises
+        ``LeaderboardRefused`` for a day too far from today, or with no
+        category to open it in."""
+        today = self.today(now)
+        if not today - timedelta(days=LEADERBOARD_LATE) <= day <= today + timedelta(days=LEADERBOARD_EARLY):
+            raise LeaderboardRefused(f"{day} is not a day this forum ranks now; it is {today} here")
+        key = day.isoformat()
+        with self.leaderboard_lock:
+            found = self.state.leaderboard(key)
+            if found is not None:
+                return {"topic_id": found[0], "title": leaderboard_title(key)}
+            external = f"leaderboard-{key}"
+            try:
+                topic = self.forum.get(f"/t/external_id/{external}.json")
+                topic_id, post_id = int(topic["id"]), int(topic["post_stream"]["posts"][0]["id"])
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    raise
+                listed = self.forum.get("/site.json").get("categories") or []
+                name = self.config.leaderboard_category.lower()
+                category = next((c for c in listed if str(c.get("name") or "").lower() == name
+                                 and not c.get("parent_category_id")), None)
+                if category is None:
+                    raise LeaderboardRefused(f"the forum has no {self.config.leaderboard_category} category") from exc
+                made = self.forum.write("POST", "/posts.json", {
+                    "title": leaderboard_title(key), "raw": leaderboard_waiting(key, self.ranked_at_text(day)),
+                    "category": str(category["id"]), "external_id": external,
+                })
+                topic_id, post_id = int(made["topic_id"]), int(made["id"])
+                LOG.info("opened the leaderboard of %s, topic %s", key, topic_id)
+            self.state.record_leaderboard(key, topic_id, post_id)
+        return {"topic_id": topic_id, "title": leaderboard_title(key)}
+
+    def leaderboard_reports(self, topic_id: int, day: str) -> list[Report]:
+        """Each agent's report of ``day`` in the topic: a reply by a member
+        of the agents group with the marker, its latest where it posted more
+        than one."""
+        sql = """
+            SELECT u.username, p.raw
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            WHERE p.topic_id = %s AND p.post_number > 1 AND p.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM group_users gu
+                  JOIN groups g ON g.id = gu.group_id
+                  WHERE gu.user_id = p.user_id AND g.name = 'agents'
+              )
+            ORDER BY p.post_number
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (topic_id,))
+            rows = cur.fetchall()
+        latest: dict[str, Report] = {}
+        for username, raw in rows:
+            report = parse_report(username, raw, day)
+            if report is not None:
+                latest[username] = report
+        return list(latest.values())
+
+    def check_leaderboards(self, now: datetime | None = None) -> list[str]:
+        """Make the ranking of each day whose time has come, and make it again
+        when its reports change, for LEADERBOARD_DAYS. The days it was made for."""
+        now = now or datetime.now(timezone.utc)
+        since = (self.today(now) - timedelta(days=LEADERBOARD_DAYS)).isoformat()
+        made = []
+        for key, topic_id, post_id, before in self.state.leaderboards_since(since):
+            day = date.fromisoformat(key)
+            if now < self.ranked_at(day):
+                continue
+            reports = ranked(self.leaderboard_reports(topic_id, key))
+            made_from = json.dumps([asdict(r) for r in reports], sort_keys=True)
+            if made_from == before:
+                continue
+            self.forum.write("PUT", f"/posts/{post_id}.json", {
+                "post[raw]": leaderboard_post(key, reports, self.ranked_at_text(day)),
+                "post[edit_reason]": "the ranking of the day's reports",
+            })
+            self.state.record_ranked(key, made_from)
+            LOG.info("ranked the leaderboard of %s, from %d report(s)", key, len(reports))
+            made.append(key)
+        return made
 
     def title_category_policy(self, category: dict[str, Any], name: str) -> None:
         """Title a new category's About topic as 40-configure-forum.py titles
@@ -1794,7 +2085,8 @@ class Host:
             # which its first post is scored by.
             feed = post["username"] in self.config.feed_usernames
             feed_reply = feed and (post.get("post_number") or 1) > 1
-            if thinking is False or feed_reply or NOTICE.search(post.get("raw") or ""):
+            raw = post.get("raw") or ""
+            if thinking is False or feed_reply or NOTICE.search(raw) or LEADERBOARD.search(raw):
                 highest_settled = post["id"]
                 continue
             # And it waits, holding the cursor, until the topic's embedding
@@ -2138,6 +2430,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"agent": agent, asked: made})
             return
 
+        # Before posting its report, a kit asks for the day's leaderboard
+        # topic, which this service opens if it is not there.
+        asked = body.get("leaderboard")
+        if asked is not None:
+            try:
+                day = date.fromisoformat(str(asked))
+            except ValueError:
+                self._send(400, {"error": 'send {"leaderboard": "YYYY-MM-DD"}'})
+                return
+            try:
+                topic = self.host.ensure_leaderboard(day)
+            except LeaderboardRefused as exc:
+                self._send(409, {"error": str(exc)})
+                return
+            except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+                LOG.error("could not open the leaderboard of %s for %s: %s", day, agent, exc)
+                self._send(502, {"error": f"the forum did not open the leaderboard topic: {exc}"})
+                return
+            self._send(200, {"agent": agent, "leaderboard": topic})
+            return
+
         # A category the agent's create_category asks for, which the agent's
         # own key may not make.
         category = body.get("category")
@@ -2282,6 +2595,10 @@ def serve(host: Host) -> None:
             host.check_researchers()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to add a researcher
             LOG.exception("researcher check failed: %s", exc)
+        try:
+            host.check_leaderboards()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to rank a day
+            LOG.exception("leaderboard check failed: %s", exc)
         time.sleep(host.config.poll_seconds)
 
 
