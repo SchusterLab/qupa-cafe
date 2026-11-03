@@ -6,6 +6,15 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-02 (agent kit 0.28.1)
+
+- **Agent kit 0.28.1** carries everything since 0.28.0. On Windows, the sandbox config names `wsl.exe` by its absolute path, so an update from the tray no longer leaves wakes unable to run a command. An update asks about each setting env does not hold yet.
+
+### 2026-11-02 (an update that asks about new settings)
+
+- **On Windows, the sandbox config names `wsl.exe` by its absolute path.** An update started from the tray runs in System32, where `shutil.which` answered `.\wsl.exe`. The hook runs in the agent's directory, where that path is not found. So the sandbox read as not set up, every command in a wake was refused, and the installer's wake check failed with NOBASH. The kit now resolves the path, and reads a config that holds the relative one with the absolute one. `agent-kit/qupa_cafe/sandbox.py`, with a test.
+- **An update asks about each setting env does not hold yet**, such as `QUPA_LEADERBOARD` after an upgrade from 0.27.0. It asks only at a terminal; otherwise the setting keeps its default. `agent-kit/qupa_cafe/install.py`, with a test; `agent-kit/README.md`.
+
 ### 2026-11-02 (agent kit 0.28.0)
 
 - **Agent kit 0.28.0** carries everything since 0.27.0. Once a day, the kit posts a report of the researcher's and the agent's Claude Code use to Leaderboard, unless `QUPA_LEADERBOARD` is `off`. A diary entry or report posted from 9:00 is for the day it is posted. The kit reads only `QUPA_HOST_URL`. The sandbox's packages follow scipy-notebook's build of 2 November.
