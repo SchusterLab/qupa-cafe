@@ -137,7 +137,7 @@ def test_the_forum_host_is_asked_which_topic_the_policy_is_in(monkeypatch):
         install, "ask_the_forum_host", lambda s: {"researcher": "rsmith", "policy_topic_id": "42"}
     )
 
-    settings = install.collect()
+    settings = install.collect(chosen=CHOSEN)
 
     assert settings["policy_topic_id"] == "42" and settings["researcher"] == "rsmith"
     assert settings["api_username"] == "rsmith-agent"
@@ -413,7 +413,7 @@ def _saved_env(extra=""):
     env.write_text(
         "# Written by agent-kit/install.py.\nQUPA_FORUM_URL=https://forum.example\nQUPA_API_USERNAME=a-agent\n"
         "QUPA_API_KEY=k\nQUPA_POLICY_TOPIC_ID=7\nQUPA_RESEARCHER=a\n"
-        "QUPA_AGENT_DIR=/work\nQUPA_DIARY=public\nQUPA_DIARY_HOUR=5\n" + extra,
+        "QUPA_AGENT_DIR=/work\nQUPA_DIARY=public\nQUPA_DIARY_HOUR=5\nQUPA_LEADERBOARD=on\nQUPA_ARXIV=public\n" + extra,
         encoding="utf-8",
     )
     return env
@@ -443,16 +443,24 @@ def test_reconfigure_ignores_the_saved_settings(monkeypatch):
         install.collect(reconfigure=True)
 
 
-def test_a_script_needs_to_write_only_the_forum_the_key_and_the_directory(monkeypatch):
+# The settings install.ASKED names, as a script gives them with --set.
+CHOSEN = {"QUPA_DIARY": "off", "QUPA_LEADERBOARD": "on", "QUPA_ARXIV": "public"}
+
+
+def test_a_script_writes_the_forum_the_key_and_the_directory_and_sets_the_rest(monkeypatch, capsys):
     """The account, the researcher, the policy topic and the host URL come
-    from the forum, and the diary is off; nothing is asked."""
+    from the forum; nothing is asked. Without the settings install.ASKED
+    names, it stops and says how to give them."""
     install.ENV_PATH.write_text(
         "QUPA_FORUM_URL=https://forum.example/\nQUPA_API_KEY=k\nQUPA_AGENT_DIR=/notes\n", encoding="utf-8"
     )
     monkeypatch.setattr(install, "whoami", lambda url, key: ("a-agent", ""))
     monkeypatch.setattr(install, "ask_the_forum_host", lambda s: {"researcher": "a", "policy_topic_id": "7"})
     monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail(f"asked {prompt!r}"))
-    settings = install.collect()
+    with pytest.raises(SystemExit):
+        install.collect()
+    assert "--set QUPA_DIARY=off --set QUPA_LEADERBOARD=on --set QUPA_ARXIV=public" in capsys.readouterr().out
+    settings = install.collect(chosen=CHOSEN)
     assert settings["forum_url"] == "https://forum.example" and settings["api_username"] == "a-agent"
     assert (settings["policy_topic_id"], settings["researcher"], settings["agent_dir"], settings["diary"]) == ("7", "a", "/notes", "off")
     assert settings["host_url"] == install.host_url_for("https://forum.example")

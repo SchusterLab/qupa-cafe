@@ -142,7 +142,8 @@ def test_an_update_keeps_the_diary_as_it_was(monkeypatch):
     """qupa-update re-runs the installer, which takes the settings in env."""
     install.ENV_PATH.write_text(
         f"QUPA_FORUM_URL={URL}\nQUPA_API_KEY=k\nQUPA_API_USERNAME=sunada-agent\n"
-        "QUPA_RESEARCHER=sunada\nQUPA_POLICY_TOPIC_ID=11\nQUPA_DIARY=private\nQUPA_DIARY_HOUR=18\n",
+        "QUPA_RESEARCHER=sunada\nQUPA_POLICY_TOPIC_ID=11\nQUPA_DIARY=private\nQUPA_DIARY_HOUR=18\n"
+        "QUPA_LEADERBOARD=on\nQUPA_ARXIV=public\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(install, "whoami", lambda url, key: ("sunada-agent", ""))
@@ -172,6 +173,70 @@ def test_an_update_at_a_terminal_asks_only_what_env_does_not_hold(monkeypatch):
     asked.clear()
     install.collect()
     assert asked == []
+
+
+# What the installer writes to env without asking the researcher a question
+# that keeps a default: the account, from the setup code and the forum, and
+# what follows from it.
+NOT_ASKED = {"QUPA_FORUM_URL", "QUPA_API_USERNAME", "QUPA_API_KEY", "QUPA_POLICY_TOPIC_ID",
+             "QUPA_RESEARCHER", "QUPA_HOST_URL", "QUPA_MCP_CONFIG", "QUPA_AGENT_DIR", "QUPA_DIARY_HOUR"}
+
+
+def test_every_setting_the_installer_writes_is_asked_on_an_update_or_named_here(monkeypatch):
+    """A new setting fails this until it is in install.ASKED, which an update
+    asks about when env lacks it, or in NOT_ASKED."""
+    settings, _ = interactive(monkeypatch, {"Setup code": [CODE]}, DIARIES)
+    install.write_env(settings)
+    written = set(install.env_values())
+    assert written - NOT_ASKED == set(install.ASKED)
+
+
+@pytest.mark.parametrize("key", install.ASKED)
+def test_an_update_asks_about_each_setting_env_lacks(monkeypatch, key):
+    settings, _ = interactive(monkeypatch, {"Setup code": [CODE]}, DIARIES)
+    install.write_env(settings)
+    kept = [line for line in install.ENV_PATH.read_text(encoding="utf-8").splitlines() if not line.startswith(key + "=")]
+    install.ENV_PATH.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(install, "ask", lambda prompt, default="", shown="": asked.append(prompt) or default)
+    install.collect()
+    assert asked
+
+
+def test_with_nobody_at_a_terminal_an_update_stops_and_says_what_to_ask_and_how_to_set_it(monkeypatch, capsys):
+    """A Claude Code session that ran the update reads this, asks its
+    researcher, and runs the command it gives."""
+    install.ENV_PATH.write_text(
+        f"QUPA_FORUM_URL={URL}\nQUPA_API_KEY={KEY}\nQUPA_API_USERNAME=sunada-agent\n"
+        "QUPA_RESEARCHER=sunada\nQUPA_POLICY_TOPIC_ID=11\nQUPA_DIARY=off\nQUPA_DIARY_HOUR=0\nQUPA_ARXIV=private\n",
+        encoding="utf-8",
+    )
+    _forum_answers(monkeypatch, DIARIES)
+    monkeypatch.setattr(install, "interactive", lambda: False)
+    monkeypatch.setattr(install, "ask", lambda *a, **k: pytest.fail("asked with nobody at a terminal"))
+    before = install.ENV_PATH.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        install.collect()
+    assert stopped.value.code == 2 and install.ENV_PATH.read_text(encoding="utf-8") == before
+    out = capsys.readouterr().out
+    assert "nothing was written" in out and "ask them" in out and "QUPA_LEADERBOARD, now on:" in out and "off: no report" in out
+    # With the diary off, the hour the leaderboard's day ends at is asked too.
+    assert "QUPA_DIARY_HOUR, now 0:" in out
+    line = out.strip().splitlines()[-1].strip()
+    assert line.endswith("-m qupa_cafe.install --set QUPA_LEADERBOARD=on --set QUPA_DIARY_HOUR=0")
+    # The researcher's answers, given as the command says.
+    chosen = install.read_set(["QUPA_LEADERBOARD=off", "QUPA_DIARY_HOUR=17"])
+    settings = install.collect(chosen=chosen)
+    assert "ask them" not in capsys.readouterr().out
+    install.write_env(settings)
+    env = install.env_values()
+    assert (env["QUPA_LEADERBOARD"], env["QUPA_DIARY_HOUR"], env["QUPA_ARXIV"]) == ("off", "17", "private")
+
+
+@pytest.mark.parametrize("pair", ["QUPA_API_KEY=x", "QUPA_LEADERBOARD=maybe", "QUPA_DIARY_HOUR=24", "QUPA_ARXIV="])
+def test_set_takes_only_a_setting_it_names_at_a_value_it_offers(pair):
+    with pytest.raises(ValueError):
+        install.read_set([pair])
 
 
 def test_reconfiguring_offers_what_env_says_at_each_question(monkeypatch, capsys):

@@ -3,7 +3,8 @@
 
 Asks for the agent's setup code, which holds the forum URL and the agent's
 key, or takes the settings in env: an earlier run's, or a script's, which
-needs only QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR. It verifies them
+writes QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR and gives the settings
+ASKED names with --set. It verifies them
 by fetching the policy, writes the configuration for Claude Code, sets up the sandbox the agent's commands run in, and registers
 the daemon: a systemd user unit, a launchd agent, or a Startup-folder entry on
 Windows, which needs no elevation. Without the sandbox it stops, having
@@ -14,6 +15,7 @@ registered nothing.
     --wait                           # wait for Enter at the end
     --no-service                     # configure, register nothing
     --skip-wake-check                # do not wake the agent once at the end
+    --set QUPA_LEADERBOARD=off       # choose a setting without being asked
 """
 
 from __future__ import annotations
@@ -229,8 +231,7 @@ def env_values(path: Path | None = None) -> dict[str, str]:
 def saved_settings() -> dict[str, str] | None:
     """The settings in env, completed from the forum, while their key still
     works: an earlier run's, so that running it again asks nothing, or a
-    script's, which needs to write only QUPA_FORUM_URL, QUPA_API_KEY and
-    QUPA_AGENT_DIR. None where there is no key or it no longer works."""
+    script's, which writes QUPA_FORUM_URL, QUPA_API_KEY and QUPA_AGENT_DIR. None where there is no key or it no longer works."""
     env = env_values()
     settings = {
         "forum_url": env.get("QUPA_FORUM_URL", "").rstrip("/"),
@@ -268,13 +269,79 @@ def interactive() -> bool:
     return bool(sys.stdin and sys.stdin.isatty())
 
 
+# The settings qupa-install asks the researcher about. An update asks about
+# each one that env does not hold yet, so a setting a newer kit adds is asked
+# for once. Each new setting goes here, with its question in ask_new_settings.
+ASKED = (diary.MODE, leaderboard.KEY, preprints.KEY)
+
+# Each setting --set takes, with the settings field it fills.
+SETTABLE = {diary.MODE: "diary", diary.HOUR: "diary_hour", leaderboard.KEY: "leaderboard", preprints.KEY: "arxiv"}
+
+
+def offered(key: str) -> list[tuple[str, str]]:
+    """The values of one of ASKED, each with what it does."""
+    if key == diary.MODE:
+        return [(each, diary.Choice(each).where() if each != diary.OFF else "no diary") for each in diary.MODES]
+    if key == leaderboard.KEY:
+        return [(leaderboard.ON, "report the day's usage"), (leaderboard.OFF, "no report")]
+    return [(each, f"it {preprints.DOES[each]}") for each in preprints.MODES]
+
+
+def read_set(given: list[str]) -> dict[str, str]:
+    """``--set KEY=VALUE`` pairs, by key; ValueError for anything else."""
+    chosen = {}
+    for pair in given:
+        key, _, value = pair.partition("=")
+        key, value = key.strip(), value.strip()
+        if key not in SETTABLE:
+            raise ValueError(f"{key} is not a setting --set takes: {', '.join(SETTABLE)}")
+        if key == diary.HOUR:
+            if diary.hour_of(value, -1) < 0:
+                raise ValueError(f"{key} is an hour from 0 to 23, not {value!r}")
+            value = str(diary.hour_of(value))
+        elif value not in [each for each, _ in offered(key)]:
+            raise ValueError(f"{key} is one of {', '.join(each for each, _ in offered(key))}, not {value!r}")
+        chosen[key] = value
+    return chosen
+
+
+def command(chosen: dict[str, str]) -> str:
+    """The command that runs this installer with ``chosen`` set."""
+    python = f'"{sys.executable}"' if " " in sys.executable else sys.executable
+    return f"{python} -m qupa_cafe.install " + " ".join(f"--set {key}={value}" for key, value in chosen.items())
+
+
+def tell_unasked(settings: dict[str, str], missing: list[str]) -> None:
+    """With nobody at a terminal, what to ask the researcher, and the command
+    that sets their answers. A Claude Code session that ran the update reads
+    this and asks."""
+    print("\nThis kit has settings that nobody was at a terminal to choose, so nothing was written.")
+    print("If you are running this for a researcher, ask them about each one:")
+    chosen = {}
+    for key in missing:
+        default = settings[SETTABLE[key]]
+        print(f"\n  {key}, now {default}:")
+        for value, does in offered(key):
+            print(f"    {value}: {does}")
+        chosen[key] = default
+    day_ends = diary.MODE in missing or leaderboard.KEY in missing
+    if day_ends and settings["diary"] == diary.OFF:
+        print(f"\n  {diary.HOUR}, now {settings['diary_hour']}: the hour, 0 to 23, at which the day's 24 hours end.")
+        chosen[diary.HOUR] = settings["diary_hour"]
+    print("\nThen run this, with their answers in place of the defaults:")
+    print(f"\n  {command(chosen)}")
+
+
 def ask_new_settings(settings: dict[str, str], env: dict[str, str]) -> None:
     """Ask the questions whose setting env does not hold yet, such as one a
-    newer kit added, when somebody is at a terminal. Otherwise each keeps its
-    default."""
-    missing = [key for key in (diary.MODE, leaderboard.KEY, preprints.KEY) if key not in env]
-    if not missing or not interactive():
+    newer kit added. With nobody at a terminal, say what to ask and the
+    --set that gives the answers, and stop with nothing written."""
+    missing = [key for key in ASKED if key not in env]
+    if not missing:
         return
+    if not interactive():
+        tell_unasked(settings, missing)
+        sys.exit(2)
     print("\nThis kit has settings that your env does not hold yet.")
     hour = settings["diary_hour"]
     if diary.MODE in missing:
@@ -286,16 +353,21 @@ def ask_new_settings(settings: dict[str, str], env: dict[str, str]) -> None:
         ask_arxiv(settings, settings["arxiv"])
 
 
-def collect(reconfigure: bool = False) -> dict[str, str]:
+def collect(reconfigure: bool = False, chosen: dict[str, str] | None = None) -> dict[str, str]:
+    """The settings, asked for or from env. ``chosen``, from --set, overrides
+    env's and is not asked about."""
+    chosen = chosen or {}
     if not reconfigure:
         settings = saved_settings()
         if settings:
+            for key, value in chosen.items():
+                settings[SETTABLE[key]] = value
             print(
                 f"\nUsing the settings in {ENV_PATH}: {settings['api_username']} on {settings['forum_url']},"
                 f"\nworking in {settings['agent_dir']}, diary {settings['diary']}."
                 "\nTo change them, run qupa-install --reconfigure."
             )
-            ask_new_settings(settings, env_values())
+            ask_new_settings(settings, {**env_values(), **chosen})
             return settings
 
     if not interactive():
@@ -464,8 +536,7 @@ project, and posts what you worked on. A day with no sessions gets no entry.
 Where should it post?
 """
     )
-    settings["diary"] = choose("Diary", [(each, diary.Choice(each).where() if each != diary.OFF else "no diary")
-                                         for each in diary.MODES], mode)
+    settings["diary"] = choose("Diary", offered(diary.MODE), mode)
     if settings["diary"] == diary.OFF:
         return
     settings["diary_hour"] = ask_hour(hour)
@@ -491,8 +562,7 @@ member reads. At noon the next day in San Francisco, the forum ranks
 everyone's reports.
 """
     )
-    chosen = choose("Leaderboard", [(leaderboard.ON, "report the day's usage"),
-                                    (leaderboard.OFF, "no report")], leaderboard.ON if on else leaderboard.OFF)
+    chosen = choose("Leaderboard", offered(leaderboard.KEY), leaderboard.ON if on else leaderboard.OFF)
     settings["leaderboard"] = chosen
     if chosen == leaderboard.ON and settings.get("diary", diary.OFF) == diary.OFF:
         print("\nThe day's 24 hours end at an hour you choose.")
@@ -508,7 +578,7 @@ When a new preprint in {preprints.CATEGORY} matches your interests, your agent
 can tell you about it. Where should it?
 """
     )
-    settings["arxiv"] = choose("Preprints", [(each, f"it {preprints.DOES[each]}") for each in preprints.MODES], mode)
+    settings["arxiv"] = choose("Preprints", offered(preprints.KEY), mode)
 
 
 # ----------------------------------------------------------------------- verify
@@ -680,7 +750,7 @@ def write_env(settings: dict[str, str]) -> None:
     ]
     # What the kit's other tools wrote there, such as the model a wake runs
     # on, is kept.
-    written = {line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
+    written ={line.partition("=")[0] for line in lines if "=" in line and not line.startswith("#")}
     kept = [f"{key}={value}" for key, value in env_values().items()
             if key not in written and key != "CLAUDE_CODE_GIT_BASH_PATH"]
     if kept:
@@ -1601,7 +1671,15 @@ def main() -> int:
     parser.add_argument(
         "--wait", action="store_true", help="wait for Enter at the end, in a window opened for it"
     )
+    parser.add_argument(
+        "--set", action="append", default=[], metavar="KEY=VALUE",
+        help=f"choose a setting without being asked, with the others from env: {', '.join(SETTABLE)}",
+    )
     args = parser.parse_args()
+    try:
+        args.chosen = read_set(args.set)
+    except ValueError as problem:
+        parser.error(str(problem))
     try:
         return install(args)
     finally:
@@ -1619,7 +1697,7 @@ def pause() -> None:
 
 
 def install(args: argparse.Namespace) -> int:
-    settings = collect(args.reconfigure)
+    settings = collect(args.reconfigure, getattr(args, "chosen", {}))
 
     print("\nVerifying credentials by fetching the policy...")
     if not verify(settings):

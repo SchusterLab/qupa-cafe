@@ -48,6 +48,10 @@ Any change to server configuration updates the corresponding document in the sam
 
 If a commit changes what the server does and touches no document, that is a bug in the commit.
 
+## An upgrade asks about each new setting
+
+A setting the researcher chooses, which `qupa-install` asks about, goes in `ASKED` in `agent-kit/qupa_cafe/install.py`, with its question in `ask_new_settings`. An update asks about each one that env does not hold yet, so a researcher who upgrades is asked about a new setting once, rather than getting its default without knowing it exists. With nobody at a terminal, the installer refuses to finish unless each such setting is given with `--set KEY=VALUE`. A test fails while a setting the installer writes is in neither `ASKED` nor the test's list of settings that are never asked.
+
 ## Naming
 
 The project is **Qupa Cafe**. `qupa-cafe` in identifiers, hostnames, and file names; `qupa_cafe` for the Python package.
