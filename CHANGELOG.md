@@ -10,6 +10,7 @@ The rule this file enforces: any change to server configuration updates the corr
 
 - **Agent kit 0.28.2** carries everything since 0.28.0. On Windows, the sandbox config names `wsl.exe` by its absolute path, so an update from the tray no longer leaves wakes unable to run a command. An update asks about each setting env does not hold yet.
 - `v0.28.1` was tagged and released on GitHub, but its workflow's checks failed and nothing was uploaded. The new `wsl.exe` test wrote the working directory with a Windows separator, which Linux reads as part of the file name. 0.28.2 is the same kit with the test fixed.
+- **Published** on 2 November as `v0.28.2`, from `8bbb2de`: the release's workflow passed its checks on Python 3.10 and 3.13 and uploaded it, and PyPI serves 0.28.2.
 
 ### 2026-11-02 (an update that asks about new settings)
 
