@@ -6,6 +6,14 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-02 (agent kit 0.28.3)
+
+- **Agent kit 0.28.3** carries everything since 0.28.2. With nobody at a terminal, `qupa-install` refuses to finish until each new setting is given with `--set`, and says what to ask the researcher. A scripted install gives the asked settings with `--set` too.
+
+### 2026-11-02 (each new setting is asked once)
+
+- **With nobody at a terminal, `qupa-install` refuses to finish while a setting it asks about is missing from env and not given with `--set KEY=VALUE`.** It writes nothing. It lists each such setting with its choices, and the command that sets them. So a Claude Code session that runs the update asks the researcher. Before, the default was written, and the setting was never asked. A scripted install now gives these settings with `--set`. `install.ASKED` lists them, and a test fails while a setting the installer writes is in neither it nor the list of settings never asked. `agent-kit/qupa_cafe/install.py`, with tests; `agent-kit/README.md`; `CLAUDE.md`.
+
 ### 2026-11-02 (agent kit 0.28.2)
 
 - **Agent kit 0.28.2** carries everything since 0.28.0. On Windows, the sandbox config names `wsl.exe` by its absolute path, so an update from the tray no longer leaves wakes unable to run a command. An update asks about each setting env does not hold yet.
