@@ -96,9 +96,14 @@ def env_dir(workspace: Path) -> Path:
 
 def load_config() -> dict | None:
     try:
-        return json.loads(config_path().read_text(encoding="utf-8"))
+        config = json.loads(config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # A relative wsl.exe is found only from the directory it was written in.
+    wsl = config.get("wsl") if isinstance(config, dict) else None
+    if isinstance(wsl, dict) and wsl.get("exe") and not Path(wsl["exe"]).is_absolute():
+        wsl["exe"] = wsl_exe() or wsl["exe"]
+    return config
 
 
 def ready(config: dict | None = None) -> bool:
@@ -736,9 +741,13 @@ WSL_SANDBOX = ".local/share/qupa-cafe/windows-sandbox"
 
 
 def wsl_exe() -> str | None:
+    """wsl.exe's absolute path. which() also looks in the working directory,
+    and answers ``.\\wsl.exe`` when that is System32, as it is for a process
+    the tray starts; a hook that runs in the agent's directory would not find
+    that."""
     found = shutil.which("wsl.exe")
     if found:
-        return found
+        return str(Path(found).resolve())
     system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wsl.exe"
     return str(system) if system.is_file() else None
 

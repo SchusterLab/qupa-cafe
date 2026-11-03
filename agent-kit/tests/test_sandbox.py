@@ -535,6 +535,23 @@ def test_a_sandbox_in_wsl_is_ready_without_starting_the_distribution(through_wsl
     assert not sandbox.ready(through_wsl)
 
 
+def test_wsl_exe_is_written_and_read_as_an_absolute_path(through_wsl, monkeypatch, tmp_path):
+    """which() answers .\\wsl.exe from System32, where the tray starts the
+    installer; the hook runs in the agent's directory."""
+    exe = Path(through_wsl["wsl"]["exe"])
+    monkeypatch.chdir(exe.parent)
+    # As which() does: relative from the directory that holds it, absolute from PATH elsewhere.
+    monkeypatch.setattr(sandbox.shutil, "which",
+                        lambda name: ".\\" + exe.name if Path.cwd() == exe.parent else str(exe))
+    assert sandbox.wsl_exe() == str(exe.resolve())
+    # A config already written with the relative path is read with the absolute one.
+    written = dict(through_wsl, wsl=dict(through_wsl["wsl"], exe=r".\wsl.exe"))
+    sandbox.config_path().write_text(json.dumps(written), encoding="utf-8")
+    monkeypatch.chdir(tmp_path / "research")
+    config = sandbox.load_config()
+    assert config["wsl"]["exe"] == str(exe.resolve()) and sandbox.ready(config)
+
+
 def test_the_file_tools_keep_to_the_windows_paths(through_wsl):
     research = through_wsl["agent_dirs"][0]
     assert _decision(sandbox.decide(_file("Write", Path(research) / "a.txt", research), through_wsl)) == "allow"

@@ -268,6 +268,24 @@ def interactive() -> bool:
     return bool(sys.stdin and sys.stdin.isatty())
 
 
+def ask_new_settings(settings: dict[str, str], env: dict[str, str]) -> None:
+    """Ask the questions whose setting env does not hold yet, such as one a
+    newer kit added, when somebody is at a terminal. Otherwise each keeps its
+    default."""
+    missing = [key for key in (diary.MODE, leaderboard.KEY, preprints.KEY) if key not in env]
+    if not missing or not interactive():
+        return
+    print("\nThis kit has settings that your env does not hold yet.")
+    hour = settings["diary_hour"]
+    if diary.MODE in missing:
+        ask_diary(settings, settings["diary"], hour)
+        hour = settings["diary_hour"]
+    if leaderboard.KEY in missing:
+        ask_leaderboard(settings, settings["leaderboard"] == leaderboard.ON, hour)
+    if preprints.KEY in missing:
+        ask_arxiv(settings, settings["arxiv"])
+
+
 def collect(reconfigure: bool = False) -> dict[str, str]:
     if not reconfigure:
         settings = saved_settings()
@@ -277,6 +295,7 @@ def collect(reconfigure: bool = False) -> dict[str, str]:
                 f"\nworking in {settings['agent_dir']}, diary {settings['diary']}."
                 "\nTo change them, run qupa-install --reconfigure."
             )
+            ask_new_settings(settings, env_values())
             return settings
 
     if not interactive():

@@ -152,6 +152,28 @@ def test_an_update_keeps_the_diary_as_it_was(monkeypatch):
     assert "QUPA_DIARY=private" in written and "QUPA_DIARY_HOUR=18" in written
 
 
+def test_an_update_at_a_terminal_asks_only_what_env_does_not_hold(monkeypatch):
+    """A newer kit's setting, here the leaderboard, is asked once; the
+    settings env holds are not."""
+    install.ENV_PATH.write_text(
+        f"QUPA_FORUM_URL={URL}\nQUPA_API_KEY={KEY}\nQUPA_API_USERNAME=sunada-agent\n"
+        "QUPA_RESEARCHER=sunada\nQUPA_POLICY_TOPIC_ID=11\nQUPA_DIARY=private\nQUPA_DIARY_HOUR=18\nQUPA_ARXIV=private\n",
+        encoding="utf-8",
+    )
+    asked = []
+    _forum_answers(monkeypatch, DIARIES)
+    monkeypatch.setattr(install, "ask", lambda prompt, default="", shown="": asked.append(prompt) or ("2" if prompt == "Leaderboard" else default))
+    settings = install.collect()
+    assert asked == ["Leaderboard"]
+    assert (settings["leaderboard"], settings["diary"], settings["diary_hour"], settings["arxiv"]) == ("off", "private", "18", "private")
+    install.write_env(settings)
+    assert "QUPA_LEADERBOARD=off" in install.ENV_PATH.read_text(encoding="utf-8").splitlines()
+    # With every setting in env, nothing is asked.
+    asked.clear()
+    install.collect()
+    assert asked == []
+
+
 def test_reconfiguring_offers_what_env_says_at_each_question(monkeypatch, capsys):
     """Enter keeps it, the setup code included, which is not shown."""
     install.ENV_PATH.write_text(
