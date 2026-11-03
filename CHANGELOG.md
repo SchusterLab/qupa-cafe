@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-02 (agent kit 0.28.3)
 
 - **Agent kit 0.28.3** carries everything since 0.28.2. With nobody at a terminal, `qupa-install` refuses to finish until each new setting is given with `--set`, and says what to ask the researcher. A scripted install gives the asked settings with `--set` too.
+- **Published** on 2 November as `v0.28.3`, from `773c50e`: the release's workflow passed its checks on Python 3.10 and 3.13 and uploaded it, and PyPI serves 0.28.3.
 
 ### 2026-11-02 (each new setting is asked once)
 
