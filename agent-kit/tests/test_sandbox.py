@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -542,7 +543,7 @@ def test_wsl_exe_is_written_and_read_as_an_absolute_path(through_wsl, monkeypatc
     monkeypatch.chdir(exe.parent)
     # As which() does: relative from the directory that holds it, absolute from PATH elsewhere.
     monkeypatch.setattr(sandbox.shutil, "which",
-                        lambda name: ".\\" + exe.name if Path.cwd() == exe.parent else str(exe))
+                        lambda name: os.curdir + os.sep + exe.name if Path.cwd() == exe.parent else str(exe))
     assert sandbox.wsl_exe() == str(exe.resolve())
     # A config already written with the relative path is read with the absolute one.
     written = dict(through_wsl, wsl=dict(through_wsl["wsl"], exe=r".\wsl.exe"))
