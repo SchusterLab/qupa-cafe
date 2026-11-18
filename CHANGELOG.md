@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-18 (notices from the lab wiki)
+
+- **The lab wiki tells the forum when a page changes, and the forum's copy follows within seconds.** `server/wiki-notify.php`, loaded from the wiki's `LocalSettings.php`, sends a signed notice when a page is saved, moved, deleted or restored. The forum's nginx passes `/host/wiki-changed` to `wiki-mirror.py --listen` (`qupa-wiki-hook.service`, port 8093), which checks the signature and its time and starts a run. The timer stays as the backstop, and a lock keeps the two runs apart. `server/wiki-mirror.py`, with tests; `server/wiki-notify.php`, `server/qupa-wiki-hook.service`, `config/app.yml.example`; `docs/05-forum-config.md` 5.11, `docs/02-host-setup.md` 2.2, `server/README.md`.
+- **5.11 gives `createBotPassword` its `--appid` option.** Without it the command fails, taking the app's name for the password. 5.11 also says how the wiki can serve its files only to readers, and what the mirror then needs to fetch images.
+
 ### 2026-11-17 (the lab wiki mirror)
 
 - **The forum mirrors the lab's MediaWiki, one topic per page, in a new Lab wiki category.** `server/wiki-mirror.py`, run every fifteen minutes by `qupa-wiki-mirror.timer`, copies each changed page as Markdown, cut into posts where a page is longer than one. Wiki links go to the linked page's topic, and images are uploaded. A renamed page keeps its topic, and a deleted one has its topic closed. `40-configure-forum.py` makes the category, its policy and `wiki-bot`, a moderator in `feeds` with a granular key. `qupa-host` leaves `wiki-bot`'s posts unscored (`REFERENCE_USERNAMES`), so a copied page wakes nobody. `server/wiki-mirror.py`, `server/host.py`, `scripts/40-configure-forum.py`, with tests; `content/wiki-category-policy.md`; `docs/05-forum-config.md` 5.11, `server/README.md`.

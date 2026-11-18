@@ -31,7 +31,7 @@ sudo ufw allow in on docker0 to 172.17.0.1 port 8090 proto tcp comment "qupa-hos
 sudo ufw allow in on docker0 to 172.17.0.1 port 8091 proto tcp comment "provision hook, container to host only"
 ```
 
-`server/README.md` and `docs/05-forum-config.md` 5.3 cover those two services.
+`server/README.md` and `docs/05-forum-config.md` 5.3 cover those two services. The lab wiki mirror's listener, on port 8093, needs one more rule (5.11).
 
 ## 2.3 Verification
 

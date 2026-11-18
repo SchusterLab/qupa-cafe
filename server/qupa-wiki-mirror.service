@@ -1,4 +1,4 @@
-# Copies the lab wiki's pages to the forum. server/README.md, "The wiki mirror".
+# Copies the lab wiki's pages to the forum. docs/05-forum-config.md 5.11.
 [Unit]
 Description=Qupa Cafe lab wiki mirror
 Wants=network-online.target

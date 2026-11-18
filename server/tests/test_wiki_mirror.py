@@ -314,3 +314,80 @@ def test_one_page_that_fails_does_not_stop_the_rest(world):
     wiki.listed = {7: {"title": "Broken page here", "revid": 70}, 8: {"title": "Fine page here", "revid": 80}}
     wiki.html_by_title["Fine page here"] = page("<p>Fine.</p>")
     assert mirror.run() == ["Fine page here"]
+
+
+# ---------------------------------------------------------- the wiki's notices
+
+SECRET = "a-secret-of-some-length"
+
+
+def signed(body: dict, secret: str = SECRET) -> tuple[bytes, str]:
+    import hashlib
+    import hmac
+    import json
+    raw = json.dumps(body).encode()
+    return raw, "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+
+
+def test_a_notice_is_taken_only_signed_with_the_secret_and_recent():
+    raw, signature = signed({"event": "edit", "at": 1000})
+    assert wm.verify_notice(raw, signature, SECRET, now=1010) == ""
+    assert "signature" in wm.verify_notice(raw, signed({"event": "edit", "at": 1000}, "another secret")[1], SECRET, now=1010)
+    assert "signature" in wm.verify_notice(raw + b" ", signature, SECRET, now=1010)
+    assert "signature" in wm.verify_notice(raw, "", SECRET, now=1010)
+    assert "from now" in wm.verify_notice(raw, signature, SECRET, now=1000 + wm.HOOK_MAX_AGE + 1)
+    assert "from now" in wm.verify_notice(raw, signature, SECRET, now=1000 - wm.HOOK_MAX_AGE - 1)
+    untimed, untimed_signature = signed({"event": "edit"})
+    assert "no time" in wm.verify_notice(untimed, untimed_signature, SECRET, now=1010)
+
+
+def test_the_listener_starts_a_run_only_for_a_good_notice():
+    import threading
+    import urllib.error
+    import urllib.request
+    noticed = []
+    server = wm.ThreadingHTTPServer(("127.0.0.1", 0), wm.hook_handler(SECRET, lambda: noticed.append(1), clock=lambda: 1010))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+
+    def post(raw: bytes, signature: str) -> int:
+        request = urllib.request.Request(url, data=raw, headers={"X-Qupa-Signature": signature})
+        try:
+            return urllib.request.urlopen(request, timeout=5).status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    try:
+        raw, signature = signed({"event": "edit", "at": 1000})
+        assert post(raw, "sha256=0") == 403 and noticed == []
+        assert post(b"x" * (wm.HOOK_MAX_BODY + 1), signature) == 413 and noticed == []
+        assert post(raw, signature) == 202 and noticed == [1]
+        assert urllib.request.urlopen(url + "health", timeout=5).read() == b"ok"
+    finally:
+        server.shutdown()
+
+
+def test_notices_during_a_run_start_one_more_run_after_it():
+    import threading
+    import time
+    started, release = [], threading.Event()
+
+    def run():
+        started.append(time.monotonic())
+        if len(started) == 1:
+            release.wait(5)
+
+    runs = wm.Runs(run, settle=0)
+    threading.Thread(target=runs.loop, daemon=True).start()
+    runs.notify()
+    deadline = time.monotonic() + 5
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    for _ in range(3):
+        runs.notify()
+    release.set()
+    deadline = time.monotonic() + 5
+    while len(started) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)
+    assert len(started) == 2

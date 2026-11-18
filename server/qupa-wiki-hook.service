@@ -1,0 +1,22 @@
+# Answers the lab wiki's notices that a page changed, each starting a run of
+# the mirror. qupa-wiki-mirror.timer stays the backstop. docs/05-forum-config.md 5.11.
+[Unit]
+Description=Qupa Cafe lab wiki notices
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+User=qupa-wiki-mirror
+EnvironmentFile=/etc/qupa-cafe/wiki-mirror.env
+ExecStart=/usr/bin/python3 /opt/qupa-cafe/server/wiki-mirror.py --listen
+StateDirectory=qupa-wiki-mirror
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

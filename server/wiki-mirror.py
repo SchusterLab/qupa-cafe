@@ -12,19 +12,26 @@ Each topic carries the page's id as its ``external_id``, so a renamed page
 keeps its topic and a lost state file finds the topics again. A wiki link to
 another page links to that page's topic. Images shown on a page are uploaded
 to the forum; other files are linked on the wiki. A page deleted on the wiki
-has its topic closed with a note. server/README.md, "The wiki mirror".
+has its topic closed with a note.
+
+With --listen, it answers the wiki's notices that a page changed, and each
+starts a run within seconds; the timer's runs stay as the backstop for a lost
+notice. docs/05-forum-config.md 5.11.
 
 Usage::
 
     python3 wiki-mirror.py              # mirror what changed
     python3 wiki-mirror.py --dry-run    # print what would be written, change nothing
     python3 wiki-mirror.py --page "BlueFors1" --dry-run   # one page's Markdown
+    python3 wiki-mirror.py --listen     # run on each of the wiki's notices
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import hmac
 import http.cookiejar
 import json
 import logging
@@ -32,6 +39,7 @@ import mimetypes
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,8 +47,14 @@ import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # not on Linux, where the mirror runs; the tests run anywhere
+    fcntl = None
 
 LOG = logging.getLogger("wiki-mirror")
 
@@ -72,6 +86,20 @@ MAX_UPLOAD_BYTES = 4096 * 1024
 # An image too big to upload is fetched scaled to this width.
 SCALED_WIDTH = 1600
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+# The wiki's notices that a page changed (server/wiki-notify.php), which the
+# forum's nginx passes on from /host/wiki-changed. Each is signed with the
+# secret the wiki and the mirror share, and starts a run within seconds.
+HOOK_HOST = os.environ.get("WIKI_HOOK_HOST", "172.17.0.1")
+HOOK_PORT = int(os.environ.get("WIKI_HOOK_PORT", "8093"))
+HOOK_SECRET = os.environ.get("WIKI_HOOK_SECRET", "")
+# A notice signed further than this from now is refused, so that one recorded
+# on the way cannot be sent again later.
+HOOK_MAX_AGE = 300
+HOOK_MAX_BODY = 4096
+# One change on the wiki can fire more than one hook, such as a move and the
+# redirect it leaves, so a run waits this long for the rest before it starts.
+HOOK_SETTLE = float(os.environ.get("WIKI_HOOK_SETTLE", "3"))
 
 
 # ------------------------------------------------------------- HTML to Markdown
@@ -846,23 +874,141 @@ class Mirror:
         return done
 
 
+@contextlib.contextmanager
+def one_run_at_a_time(state_path: Path) -> Iterator[None]:
+    """Hold the lock beside the state file, so that the timer's run and the
+    listener's never write the same topics at once. A run that finds the lock
+    held waits for it."""
+    if fcntl is None:
+        yield
+        return
+    with open(state_path.with_suffix(".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def sync(dry_run: bool = False, only: str | None = None) -> list[str]:
+    """One run: log in to the wiki, and write what changed."""
+    with one_run_at_a_time(STATE_PATH):
+        wiki = Wiki(WIKI_URL, WIKI_USERNAME, WIKI_PASSWORD)
+        wiki.login()
+        mirror = Mirror(wiki, Forum(FORUM_URL, API_KEY, API_USERNAME, dry_run=dry_run), STATE_PATH, CATEGORY_ID)
+        done = mirror.run(only=only)
+    LOG.info("%d page(s) written", len(done))
+    return done
+
+
+# ------------------------------------------------------- the wiki's notices
+
+
+class Runs:
+    """Runs started by notices, one at a time. Notices that arrive during a run
+    start one more run after it, which sees what they announced."""
+
+    def __init__(self, run: Callable[[], object], settle: float = HOOK_SETTLE) -> None:
+        self.run, self.settle = run, settle
+        self.pending = threading.Event()
+
+    def notify(self) -> None:
+        self.pending.set()
+
+    def loop(self) -> None:
+        while True:
+            self.pending.wait()
+            time.sleep(self.settle)
+            self.pending.clear()
+            try:
+                self.run()
+            except Exception as exc:  # noqa: BLE001 - the timer's next run is the backstop
+                LOG.error("the run a notice started failed: %s", exc, exc_info=LOG.isEnabledFor(logging.DEBUG))
+
+
+def verify_notice(raw: bytes, signature: str, secret: str, now: float) -> str:
+    """Why the notice is refused, or "" if it is the wiki's and recent."""
+    expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature.encode(), expected.encode()):
+        return "signature did not verify"
+    try:
+        signed_at = float(json.loads(raw)["at"])
+    except (ValueError, KeyError, TypeError):
+        return "no time in the notice"
+    if abs(now - signed_at) > HOOK_MAX_AGE:
+        return f"signed {now - signed_at:.0f} s from now"
+    return ""
+
+
+def hook_handler(secret: str, notify: Callable[[], None],
+                 clock: Callable[[], float] = time.time) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: str) -> None:
+            payload = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
+            length = int(self.headers.get("Content-Length") or 0)
+            # Read before answering, up to a limit, so that the sender sees the
+            # answer rather than a reset connection.
+            raw = self.rfile.read(min(length, 16 * HOOK_MAX_BODY)) if length else b""
+            if length > HOOK_MAX_BODY:
+                self._send(413, "too long")
+                return
+            refused = verify_notice(raw, self.headers.get("X-Qupa-Signature", ""), secret, clock())
+            if refused:
+                LOG.warning("notice refused: %s", refused)
+                self._send(403, "refused")
+                return
+            try:
+                event = str(json.loads(raw).get("event") or "a change")
+            except (ValueError, AttributeError):
+                event = "a change"
+            LOG.info("the wiki reported %s", event[:40])
+            notify()
+            self._send(202, "accepted")
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's interface
+            self._send(200, "ok") if self.path == "/health" else self._send(404, "not found")
+
+        def log_message(self, fmt: str, *args) -> None:
+            LOG.debug("%s - %s", self.address_string(), fmt % args)
+
+    return Handler
+
+
+def listen() -> None:
+    """Answer the wiki's notices until stopped, each starting a run."""
+    runs = Runs(sync)
+    threading.Thread(target=runs.loop, daemon=True).start()
+    httpd = ThreadingHTTPServer((HOOK_HOST, HOOK_PORT), hook_handler(HOOK_SECRET, runs.notify))
+    LOG.info("listening for the wiki's notices on %s:%d", HOOK_HOST, HOOK_PORT)
+    httpd.serve_forever()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print what would be written, change nothing")
     parser.add_argument("--page", help="mirror only the page with this title")
+    parser.add_argument("--listen", action="store_true", help="answer the wiki's notices, each starting a run")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if os.environ.get("WIKI_DEBUG") else logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s")
     missing = [name for name, value in (("WIKI_URL", WIKI_URL), ("WIKI_USERNAME", WIKI_USERNAME),
                                          ("WIKI_PASSWORD", WIKI_PASSWORD), ("WIKI_CATEGORY_ID", CATEGORY_ID))
                if not value] + ([] if args.dry_run or API_KEY else ["DISCOURSE_API_KEY"])
+    if args.listen and len(HOOK_SECRET) < 16:
+        missing.append("WIKI_HOOK_SECRET (16 characters or more)")
     if missing:
         print(f"ERROR: set {', '.join(missing)}.", file=sys.stderr)
         return 2
-    wiki = Wiki(WIKI_URL, WIKI_USERNAME, WIKI_PASSWORD)
-    wiki.login()
-    mirror = Mirror(wiki, Forum(FORUM_URL, API_KEY, API_USERNAME, dry_run=args.dry_run), STATE_PATH, CATEGORY_ID)
-    done = mirror.run(only=args.page)
-    LOG.info("%d page(s) written", len(done))
+    if args.listen:
+        listen()
+        return 0
+    sync(dry_run=args.dry_run, only=args.page)
     return 0
 
 

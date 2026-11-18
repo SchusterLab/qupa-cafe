@@ -363,9 +363,9 @@ The dry run reads the live feed and each paper's HTML version, and writes nothin
 
 ## 5.11 The lab wiki mirror
 
-> **Status:** The mirror has copied all 150 pages of the lab's wiki to a scratch forum, and has edited, retitled, closed and reopened topics there. It logged in to the wiki as a person, not with a bot password, and ran by hand rather than from its timer. It has not run on the forum, and the category's chat channel has not been seen.
+> **Status:** The mirror has copied all 150 pages of the lab's wiki to a scratch forum, logged in as a person, and has edited, retitled, closed and reopened topics there. On a scratch MediaWiki 1.43, it logged in with a bot password and fetched an image through `img_auth.php`. An edit and a move there reached the scratch forum within four seconds, through its nginx. Nothing here has run on the forum or from the timer, and the category's chat channel has not been seen.
 
-Each page of the lab's MediaWiki becomes a topic in **Lab wiki**, titled "<page> (lab wiki page)". The wiki stays where pages are edited. `server/wiki-mirror.py` copies them, and `server/qupa-wiki-mirror.timer` starts it every fifteen minutes. A run logs in to the wiki and lists its pages. It fetches each page whose revision changed, as HTML from the wiki's REST API, which needs MediaWiki 1.35 or later. It turns the HTML into Markdown and writes it to the page's topic. A run that finds no change costs a login and two lists.
+Each page of the lab's MediaWiki becomes a topic in **Lab wiki**, titled "<page> (lab wiki page)". The wiki stays where pages are edited. `server/wiki-mirror.py` copies them. The wiki tells it when a page changes ("Notices from the wiki" below), and `server/qupa-wiki-mirror.timer` also starts it every fifteen minutes, in case a notice is lost. A run logs in to the wiki and lists its pages. It fetches each page whose revision changed, as HTML from the wiki's REST API, which needs MediaWiki 1.35 or later. It turns the HTML into Markdown and writes it to the page's topic. A run that finds no change costs a login and two lists.
 
 **A page longer than one post goes on in the next posts.** The forum caps a post at 3,800 characters (5.2), and a long procedure runs to five or six posts. Each part opens with a line saying which part of which page it is, and links the page on the wiki. Parts break at section headings where they can, and a heading always stays with what it heads. A list breaks only before one of its own items. A table too wide for a post, such as a comparison of several recipes, is written out row by row, as a heading with a line for each column. These first posts are the mirror's own, and it edits them in place. Replies after them are discussion. A page that grows past its posts goes on in a new post after the replies.
 
@@ -383,10 +383,36 @@ On the wiki, the mirror needs an account that can read and do nothing else. An a
 
 ```bash
 php maintenance/run.php createAndPromote QupaMirror '<a long random password>'
-php maintenance/run.php createBotPassword --grants basic QupaMirror mirror
+php maintenance/run.php createBotPassword --appid mirror --grants basic QupaMirror
 ```
 
 The second command prints the bot password. The mirror logs in with it as `QupaMirror@mirror`, through the API's `action=login`. The account's own password is never used. Special:BotPasswords on the wiki makes the same bot password in a browser.
+
+### Notices from the wiki
+
+`server/wiki-notify.php` runs on the wiki. When a page is saved, moved, deleted or restored, it sends the forum a notice, after the editor's page has been answered. The notice names no page. It holds the kind of change and the time, signed with a secret the wiki and the mirror share. The forum's nginx passes `/host/wiki-changed` to `wiki-mirror.py --listen` (`server/qupa-wiki-hook.service`) on `172.17.0.1:8093`. The listener refuses a notice whose signature does not verify, or which was signed more than five minutes from now. A good notice starts a run three seconds later, which asks the wiki what changed. Notices during a run start one more run after it, and a run never overlaps the timer's, since both hold a lock beside the state file.
+
+An admin of the wiki makes the secret, with `openssl rand -hex 24`, and copies `server/wiki-notify.php` into the wiki's directory. Then, at the end of `LocalSettings.php`:
+
+```php
+$wgQupaCafeNotifyUrl = 'https://forum.example.com/host/wiki-changed';
+$wgQupaCafeNotifySecret = '<the secret>';
+require_once __DIR__ . '/wiki-notify.php';
+```
+
+The URL must be `https`, since the forum answers plain HTTP with a redirect, which the wiki does not follow with the notice. A notice that does not arrive costs nothing but time, and the wiki logs it in its `qupacafe` debug log.
+
+### Files behind the wiki's login
+
+A wiki that needs a login for its pages can still serve its uploaded files to anyone, from the web server's `images` directory. MediaWiki serves them only to readers through `img_auth.php` ([Manual:Image authorization](https://www.mediawiki.org/wiki/Manual:Image_authorization)), with `$wgUploadPath = "$wgScriptPath/img_auth.php";` and the web server refusing the directory. MediaWiki takes a bot password's session only at `api.php` and `rest.php`, so `img_auth.php` would refuse the mirror's images. This line in `LocalSettings.php` lets `img_auth.php` take it too, and the session's basic grant still lets it only read:
+
+```php
+if ( MW_ENTRY_POINT === 'img_auth' ) {
+	$wgSessionProviders[MediaWiki\Session\BotPasswordSessionProvider::class]['args'][0]['isApiRequest'] = true;
+}
+```
+
+Without it, the mirror links each image on the wiki instead of uploading it.
 
 ### Installing it
 
@@ -406,14 +432,28 @@ DISCOURSE_URL=https://forum.example.com
 DISCOURSE_API_KEY=<the key 40-configure-forum.py printed for wiki-bot>
 DISCOURSE_API_USERNAME=wiki-bot
 WIKI_CATEGORY_ID=<the Lab wiki category id it printed>
+WIKI_HOOK_SECRET=<the secret the wiki signs its notices with>
 ```
 
 ```bash
-sudo install -m 644 /opt/qupa-cafe/server/qupa-wiki-mirror.service /opt/qupa-cafe/server/qupa-wiki-mirror.timer /etc/systemd/system/
+sudo install -m 644 /opt/qupa-cafe/server/qupa-wiki-mirror.service /opt/qupa-cafe/server/qupa-wiki-mirror.timer /opt/qupa-cafe/server/qupa-wiki-hook.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemd-run --pipe --wait -p User=qupa-wiki-mirror -p EnvironmentFile=/etc/qupa-cafe/wiki-mirror.env -p StateDirectory=qupa-wiki-mirror \
   python3 /opt/qupa-cafe/server/wiki-mirror.py --page "Main Page" --dry-run
 sudo systemctl enable --now qupa-wiki-mirror.timer
+sudo ufw allow in on docker0 to 172.17.0.1 port 8093 proto tcp comment "wiki mirror notices, container to host only"
+sudo systemctl enable --now qupa-wiki-hook
 ```
+
+The forum's nginx serves `/host/wiki-changed` from the `run:` block of `config/app.yml.example`, at the next rebuild. To serve it without one, add the location to the running container's `conf.d/outlets/server/50-host.conf` and reload nginx:
+
+```bash
+sudo docker cp location.conf app:/tmp/location.conf
+sudo docker exec app sh -c 'cat /tmp/location.conf >> /etc/nginx/conf.d/outlets/server/50-host.conf'
+sudo docker exec app nginx -t
+sudo docker exec app nginx -s reload
+```
+
+Here `location.conf` holds the `location = /host/wiki-changed` block from `config/app.yml.example`. An unsigned notice then answers 403: `curl -s -o /dev/null -w '%{http_code}\n' -X POST -d '{"at":1}' https://forum.example.com/host/wiki-changed`.
 
 The dry run logs in to the wiki, prints the Main Page's posts as they would be written, and writes nothing. The first run of the timer copies every page, two seconds or so each. Check the runs with `journalctl -u qupa-wiki-mirror --since today`, which logs each page written and ends with how many. `WIKI_NAMESPACES` (`0`) chooses the namespaces mirrored, and `WIKI_POST_INTERVAL` (1 second) paces the posts.
