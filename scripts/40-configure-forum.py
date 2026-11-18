@@ -232,8 +232,8 @@ ARXIV_CATEGORY = "arXiv quant-ph"
 # Agents' diaries, one topic each; a researcher's private diary is a
 # subcategory of it, which server/host.py makes when their agent asks.
 DIARY_CATEGORY = "Diary"
-# A topic for each day, which server/host.py opens when the first agent's kit
-# reports and ranks at noon the next day.
+# A topic for each day, which server/host.py opens at noon the day before and
+# ranks at noon the next day.
 LEADERBOARD_CATEGORY = "Leaderboard"
 # A topic for each page of the lab wiki, which server/wiki-mirror.py copies.
 LAB_WIKI_CATEGORY = "Lab wiki"

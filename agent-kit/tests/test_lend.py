@@ -116,12 +116,16 @@ def lender(monkeypatch, tmp_path):
     return ran
 
 
-def test_a_lent_task_runs_and_its_answer_goes_back(lender):
+def test_a_lent_task_runs_and_its_answer_goes_back_with_what_it_spent(lender, monkeypatch, tmp_path):
     host = Host({"id": 9, "borrower": "Wendy-agent", "researcher": "Wendy", "prompt": "Integrate x^2."})
     settings = daemon.Settings(api_username="yoshi-agent")
+    from qupa_cafe import wakes
+    monkeypatch.setattr(wakes, "transcript_path", lambda session: tmp_path / f"{session}.jsonl")
+    monkeypatch.setattr(wakes, "spend", lambda path: [(1.0, 30_000.4), (2.0, 11_000.0)])
 
     assert lend.Lender(settings, host).once() is True
-    assert host.asked == [{"take": True}, {"beat": 9}, {"finish": {"id": 9, "answer": "x^3/3", "failed": ""}}]
+    assert host.asked == [{"take": True}, {"beat": 9},
+                          {"finish": {"id": 9, "answer": "x^3/3", "failed": "", "tokens": 41_000}}]
     (run,) = lender
     prompt = run["command"][2]
     assert "Integrate x^2." in prompt and "Wendy" in prompt and "yoshi's Claude plan" in prompt

@@ -799,6 +799,7 @@ class StubHost:
     interests_for = Host.interests_for
     to_slack = Host.to_slack
     lend = Host.lend
+    today = Host.today
     lent_to = Host.lent_to
 
     def researchers_with_agents(self):
@@ -1944,7 +1945,7 @@ class DiaryHost(Host):
 
 def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     forum = DiaryForum()
-    made = DiaryHost(forum).ensure_private_diary("a-agent")
+    made = DiaryHost(forum).ensure_private("a-agent", host_module.PRIVATE_DIARY)
     assert made == {"id": 71, "name": "a"}
     category = next(params for method, path, params in forum.writes if path == "/categories")
     # Granted to the researcher's group and nobody else, under Diary.
@@ -1960,7 +1961,7 @@ def test_a_private_diary_is_made_for_the_agent_s_own_researcher_once():
     assert forum.owners["diary-a"] == ["a"]
 
     writes = len(forum.writes)
-    assert DiaryHost(forum).ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
+    assert DiaryHost(forum).ensure_private("a-agent", host_module.PRIVATE_DIARY) == {"id": 71, "name": "a"}
     assert len(forum.writes) == writes
 
 
@@ -1970,8 +1971,8 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     forum = DiaryForum(site=[{"id": 5, "name": "Diary"},
                              {"id": 8, "name": "arXiv quant-ph", "color": "B31B1B", "topic_url": "/t/x/31"}])
     host = DiaryHost(forum)
-    assert host.ensure_private_diary("a-agent") == {"id": 71, "name": "a"}
-    assert host.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
+    assert host.ensure_private("a-agent", host_module.PRIVATE_DIARY) == {"id": 71, "name": "a"}
+    assert host.ensure_private("a-agent", host_module.PRIVATE_ARXIV) == {"id": 72, "name": "a"}
     arxiv = [params for method, path, params in forum.writes if path == "/categories"][-1]
     assert arxiv["parent_category_id"] == "8" and arxiv["color"] == "B31B1B"
     assert [k for k in arxiv if k.startswith("permissions[")] == ["permissions[arxiv-a]"]
@@ -1981,7 +1982,7 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
     assert forum.groups["arxiv-a"]["full_name"] == "Private preprints of a"
     assert forum.members["arxiv-a"] == ["a", "a-agent"]
     writes = len(forum.writes)
-    assert host.ensure_private_arxiv("a-agent") == {"id": 72, "name": "a"}
+    assert host.ensure_private("a-agent", host_module.PRIVATE_ARXIV) == {"id": 72, "name": "a"}
     assert len(forum.writes) == writes
 
 
@@ -1995,7 +1996,7 @@ def test_a_private_arxiv_subcategory_is_made_beside_the_private_diary():
 ], ids=["no researcher", "no Diary", "a group of somebody else's", "a public category of that name"])
 def test_a_private_diary_that_would_not_be_private_is_refused(forum, reason):
     with pytest.raises(host_module.PrivateCategoryError) as refused:
-        DiaryHost(forum).ensure_private_diary("a-agent")
+        DiaryHost(forum).ensure_private("a-agent", host_module.PRIVATE_DIARY)
     assert reason in str(refused.value)
     # Nothing half made: no category, and no group, member or owner added to
     # one that is somebody else's.
@@ -2319,12 +2320,27 @@ def test_a_lent_agent_takes_a_named_researcher_s_task_and_answers_it(endpoint):
     assert lend(endpoint, "yoshi-agent", {"take": True})[1]["task"] is None
     assert lend(endpoint, "yoshi-agent", {"beat": task_id})[0] == 200
     assert lend(endpoint, "eric-agent", {"finish": {"id": task_id, "answer": "forged"}})[0] == 404
-    assert lend(endpoint, "yoshi-agent", {"finish": {"id": task_id, "answer": "x^3/3"}})[0] == 200
+    assert lend(endpoint, "yoshi-agent", {"finish": {"id": task_id, "answer": "x^3/3", "tokens": 41_000}})[0] == 200
 
     task = lend(endpoint, "Wendy-agent", {"result": task_id, "wait": 5})[1]["task"]
     assert task == {"id": task_id, "lender": "yoshi-agent", "state": "done", "answer": "x^3/3", "reason": ""}
     history = lend(endpoint, "yoshi-agent", {"status": True})[1]["tasks"]
     assert [(t["id"], t["borrower"], t["state"]) for t in history] == [(task_id, "Wendy-agent", "done")]
+
+
+def test_an_ended_task_counts_in_its_day_s_lending_for_the_leaderboard(endpoint):
+    lend(endpoint, "yoshi-agent", {"offer": {"to": ["Wendy"]}})
+    for answer, tokens in (("x^3/3", 41_000), ("", "lots")):
+        task_id = lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": "Integrate x^2."}})[1]["task"]["id"]
+        lend(endpoint, "yoshi-agent", {"take": True})
+        assert lend(endpoint, "yoshi-agent", {"finish": {"id": task_id, "answer": answer, "tokens": tokens,
+                                                         "failed": "" if answer else "stopped"}})[0] == 200
+    host = Handler.host
+    # The failed task spent, but answered nothing; a count that is not one is none.
+    assert host.state.lend_day(host.today().isoformat()) == [("yoshi-agent", "Wendy-agent", 1, 41_000)]
+    assert host_module.lending_of(host.state.lend_day(host.today().isoformat())) == [
+        host_module.Lending("Wendy", borrowed_tasks=1, borrowed_tokens=41_000),
+        host_module.Lending("yoshi", lent_tasks=1, lent_tokens=41_000)]
 
 
 def test_only_the_researchers_an_offer_names_may_give_its_agent_tasks(endpoint):

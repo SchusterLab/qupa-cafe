@@ -353,6 +353,18 @@ class State:
                 finished_at TEXT
             );
             CREATE INDEX IF NOT EXISTS lend_tasks_by_lender ON lend_tasks (lender, state);
+
+            -- What each lent agent did for each borrower on a leaderboard
+            -- day, for that day's ranking: the tasks it answered, and the
+            -- tokens its tasks spent, answered or not, as its kit counted them.
+            CREATE TABLE IF NOT EXISTS lend_days (
+                day      TEXT NOT NULL,
+                lender   TEXT NOT NULL,
+                borrower TEXT NOT NULL,
+                answered INTEGER NOT NULL DEFAULT 0,
+                tokens   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, lender, borrower)
+            );
             """
         )
         self.db.commit()
@@ -543,6 +555,21 @@ class State:
         ).rowcount
         self.db.commit()
         return bool(changed)
+
+    def tally_lend(self, day: str, lender: str, borrower: str, answered: bool, tokens: int) -> None:
+        """Count an ended task in its day's lending."""
+        self.db.execute(
+            "INSERT INTO lend_days (day, lender, borrower, answered, tokens) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(day, lender, borrower) DO UPDATE SET answered = answered + excluded.answered, "
+            "tokens = tokens + excluded.tokens",
+            (day, lender, borrower, int(answered), tokens),
+        )
+        self.db.commit()
+
+    def lend_day(self, day: str) -> list[tuple[str, str, int, int]]:
+        """(lender, borrower, answered, tokens) of each pair that ended a task on ``day``."""
+        return self.db.execute("SELECT lender, borrower, answered, tokens FROM lend_days WHERE day = ? "
+                               "ORDER BY lender, borrower", (day,)).fetchall()
 
     def lend_history(self, lender: str, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.db.execute(
@@ -744,12 +771,12 @@ CATEGORIES_PER_DAY = 3
 CATEGORY_AGENTS = 20
 # Discourse's limit on a group's full name.
 GROUP_FULL_NAME_LENGTH = 100
-# The groups that say what kind of account a member is, which a researcher is
-# never added to, and the one every agent is in.
-AGENTS_GROUP = "agents"
 # Days after an agent is made that its researcher is reminded to set it up,
 # while no daemon has polled for it.
 UNSET_REMINDER_DAYS = (1, 7)
+# The groups that say what kind of account a member is, which a researcher is
+# never added to, and the one every agent is in.
+AGENTS_GROUP = "agents"
 SORTING_GROUPS = ("agents", "feeds")
 # The marker ending a top-level category's policy-link paragraph, by which
 # 40-configure-forum.py finds the paragraph to keep it current.
@@ -1236,6 +1263,35 @@ class Report:
         return self.agent.removesuffix("-agent") or self.agent
 
 
+@dataclass
+class Lending:
+    """What one researcher's lent agent did for others on a day, and what
+    agents lent to them did for them, from the tasks that ended that day."""
+
+    researcher: str
+    lent_tasks: int = 0
+    lent_tokens: int = 0
+    borrowed_tasks: int = 0
+    borrowed_tokens: int = 0
+
+
+def lending_of(rows: Iterable[tuple[str, str, int, int]]) -> list[Lending]:
+    """Each researcher's Lending, by name, from State.lend_day's rows."""
+    found: dict[str, Lending] = {}
+
+    def of(agent: str) -> Lending:
+        name = agent.removesuffix("-agent") or agent
+        return found.setdefault(name.lower(), Lending(name))
+
+    for lender, borrower, answered, tokens in rows:
+        mine, theirs = of(lender), of(borrower)
+        mine.lent_tasks += answered
+        mine.lent_tokens += tokens
+        theirs.borrowed_tasks += answered
+        theirs.borrowed_tokens += tokens
+    return sorted(found.values(), key=lambda each: each.researcher.lower())
+
+
 # The numbers of a report's ``own`` that a kit may leave out, in Report's order.
 REPORT_OPTIONAL = ("tool_calls", "subagents", "web_calls", "browser_calls", "longest_run", "active_minutes",
                    "peak_sessions", "model_calls", "unattended_calls")
@@ -1311,13 +1367,19 @@ class Figure:
         return f"![{self.alt}{size}]({self.short_url})"
 
 
-def leaderboard_figures(day: str, reports: list[Report]) -> list[tuple[str, bytes]]:
+def leaderboard_figures(day: str, reports: list[Report], lending: list[Lending] = ()) -> list[tuple[str, bytes]]:
     """The day's figures, as (alt text, PNG): how much each researcher used
-    and how they worked. Each panel ranks the researchers by its number."""
+    and how they worked, and, on a day a lent agent ended a task, how
+    agents were lent. Each panel ranks the researchers by its number."""
     import plots  # beside this file; it imports matplotlib only to draw
 
-    return plots.figures([report.researcher for report in reports], reports, f"How much Claude Code each researcher used on {day}",
+    made = plots.figures([report.researcher for report in reports], reports,
+                         f"How much Claude Code each researcher used on {day}",
                          f"How each researcher worked with Claude Code on {day}")
+    if lending:
+        title = f"How researchers lent their agents on {day}"
+        made.append((title, plots.lending_figure([each.researcher for each in lending], list(lending), title)))
+    return made
 
 
 def leaderboard_post(day: str, reports: list[Report], at: str, figures: Iterable[Figure] = ()) -> str:
@@ -1499,8 +1561,13 @@ class Host:
             reason = str(finish.get("failed") or "")[:300]
             if not answer and not reason:
                 reason = "the lent agent gave no answer"
+            tokens = finish.get("tokens")
+            tokens = tokens if _count(tokens) else 0
             if not state.finish_lend_task(agent, task_id, answer, reason):
                 return 404, {"error": "no such running task of yours"}
+            ended = state.lend_task(task_id)
+            if ended is not None:
+                state.tally_lend(self.today().isoformat(), agent, ended["borrower"], not reason, tokens)
             LOG.info("%s %s task %d", agent, "failed" if reason else "finished", task_id)
             return 200, {"agent": agent}
 
@@ -1525,15 +1592,6 @@ class Host:
         if not candidate:
             return None
         return candidate if self.forum.user(candidate) else None
-
-    def ensure_private_diary(self, agent: str) -> dict[str, Any]:
-        """The private diary of ``agent``'s researcher, made if it is not there."""
-        return self.ensure_private(agent, PRIVATE_DIARY)
-
-    def ensure_private_arxiv(self, agent: str) -> dict[str, Any]:
-        """The private subcategory of arXiv quant-ph that ``agent`` brings its
-        researcher preprints in, made if it is not there."""
-        return self.ensure_private(agent, PRIVATE_ARXIV)
 
     def ensure_private(self, agent: str, space: PrivateSpace) -> dict[str, Any]:
         """``space`` for ``agent``'s researcher, made if it is not there: a
@@ -1700,11 +1758,15 @@ class Host:
             if now < self.ranked_at(day):
                 continue
             reports = ranked(self.leaderboard_reports(topic_id, key))
-            made_from = json.dumps([asdict(r) for r in reports], sort_keys=True)
+            lending = lending_of(self.state.lend_day(key))
+            made_from = [asdict(r) for r in reports]
+            if lending:
+                made_from = {"reports": made_from, "lending": [asdict(each) for each in lending]}
+            made_from = json.dumps(made_from, sort_keys=True)
             if made_from == before:
                 continue
             figures = []
-            for number, (alt, png) in enumerate(leaderboard_figures(key, reports) if reports else [], 1):
+            for number, (alt, png) in enumerate(leaderboard_figures(key, reports, lending) if reports else [], 1):
                 uploaded = self.forum.upload(f"leaderboard-{key}-{number}.png", png, "image/png")
                 figures.append(Figure(alt, str(uploaded["short_url"]), int(uploaded.get("width") or 0),
                                       int(uploaded.get("height") or 0)))

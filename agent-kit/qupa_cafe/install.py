@@ -754,7 +754,7 @@ def write_env(settings: dict[str, str]) -> None:
     kept = [f"{key}={value}" for key, value in env_values().items()
             if key not in written and key != "CLAUDE_CODE_GIT_BASH_PATH"]
     if kept:
-        lines += ["", "# Set in the wake and diary browsers."] + kept
+        lines += ["", "# Set in the wake, diary and lending browsers."] + kept
     if settings.get("git_bash"):
         lines += [
             "",
@@ -965,21 +965,6 @@ def start_daemon_now() -> bool:
     return True
 
 
-def daemon_already_running() -> bool:
-    """Whether a resident daemon holds the lock, asked by trying to take it."""
-    from .daemon import Settings, claim_single_instance, lock_path
-
-    settings = Settings()
-    held = claim_single_instance(settings)
-    if held is False:
-        return True
-    if held is not None:
-        held.close()
-        try:
-            lock_path(settings).unlink()
-        except OSError:
-            pass
-    return False
 
 
 def stop_running_daemon() -> bool:

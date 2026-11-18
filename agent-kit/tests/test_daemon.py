@@ -18,7 +18,7 @@ import pytest
 
 import qupa_cafe.daemon as daemon
 from conftest import POLICY_EDITED, POLICY_TEXT, POLICY_TOPIC_ID, category, refused, serving, wording
-from qupa_cafe import placeholders, preprints, texts, tray, wakes
+from qupa_cafe import local, placeholders, preprints, texts, tray, wakes
 from qupa_cafe.server import FORUM_DESCRIPTION
 from qupa_cafe.daemon import (
     EDITED,
@@ -1181,7 +1181,7 @@ def test_a_daemon_on_this_machine_holding_the_lock_is_stopped(tmp_path, monkeypa
 def test_a_forked_prompt_points_to_the_parent_for_what_it_holds(monkeypatch):
     """The policy, the researcher's instructions and the sandbox's notice are
     in the parent; the post, its framing and the agent's name stay."""
-    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
+    monkeypatch.setattr(local, "instructions", lambda project=None: "RESEARCHER SAYS")
     prompt = build_prompt(Settings(), "you were mentioned", TOPIC, TEMPLATE, "THE POLICY", forked=True)
     assert daemon.IN_PARENT in prompt and daemon.DATA_NOTICE in prompt
     assert "THE POLICY" not in prompt and "RESEARCHER SAYS" not in prompt
@@ -1191,7 +1191,7 @@ def test_a_forked_prompt_points_to_the_parent_for_what_it_holds(monkeypatch):
 
 
 def test_the_parent_holds_what_every_fork_shares(monkeypatch):
-    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "RESEARCHER SAYS")
+    monkeypatch.setattr(local, "instructions", lambda project=None: "RESEARCHER SAYS")
     settings = Settings(api_username="a-agent", researcher="a")
     prompt = daemon.parent_prompt(settings, "THE POLICY", daemon.sandbox_config(settings))
     assert prompt.startswith(FORUM_DESCRIPTION) and daemon.PARENT_MARK in prompt
@@ -1318,7 +1318,7 @@ def test_a_background_session_can_be_ended_by_what_it_said(monkeypatch):
 
 
 def test_the_parent_says_when_the_researcher_has_written_nothing(monkeypatch):
-    monkeypatch.setattr(daemon.local, "instructions", lambda project=None: "")
+    monkeypatch.setattr(local, "instructions", lambda project=None: "")
     settings = Settings(api_username="a-agent")
     assert "there is no QUPA.md" in daemon.parent_prompt(settings, "P", daemon.sandbox_config(settings))
 

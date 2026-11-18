@@ -23,7 +23,6 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from . import local, models, preprints, quota, wakes

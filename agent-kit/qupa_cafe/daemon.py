@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, leaderboard, local, models, opening, placeholders, preprints, quota, sandbox, sessions, texts
+from . import DAEMON_HEADER, KIT_VERSION_HEADER, __version__, configured_host_url, diary, leaderboard, models, opening, placeholders, preprints, quota, sandbox, sessions, texts
 
 LOG = logging.getLogger("qupa-daemon")
 
@@ -591,8 +591,6 @@ class ForumHost:
         self._told_about_upgrade = False
         # The agent's floor and its range, from the last poll.
         self.policy: dict = {}
-        # The posts that did not wake the agent, from the last poll; None from
-        # a host that does not serve them.
         # This run's name, set by a resident daemon once it has claimed the
         # agent, and where the daemon that has since taken it runs.
         self.instance = ""
@@ -1034,12 +1032,15 @@ def sessions_text(settings: Settings, topic_id: object, post_number: object) -> 
 # among Claude Code's background sessions.
 WAKE_NAME = "qupa wake:"
 
-# The other sessions the kit starts: the installer's check, and tuning from
-# the wake browser. The diary leaves out every session named one of these.
+# The other sessions the kit starts: the installer's check, tuning from the
+# wake browser, the wakes' parent, and a task another researcher gave the
+# agent lent to them. The diary and the leaderboard report leave out every
+# session named one of these.
 CHECK_NAME = "qupa check"
 TUNE_NAME = "qupa tune:"
 PARENT_NAME = "qupa parent"
-KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME, PARENT_NAME)
+LENT_NAME = "qupa lent task"
+KIT_SESSION_NAMES = (WAKE_NAME, CHECK_NAME, TUNE_NAME, PARENT_NAME, LENT_NAME)
 
 
 @dataclass

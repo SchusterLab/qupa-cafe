@@ -54,7 +54,7 @@ POLL_SECONDS = 10
 # How long a lent task may run.
 TASK_TIMEOUT = 30 * 60
 # A lent task's background session is named this, then the task.
-TASK_NAME = "qupa lent task"
+TASK_NAME = daemon.LENT_NAME
 
 # A borrower's subagent for each agent lent to them.
 AGENT_PREFIX = "qupa-lent-"
@@ -109,6 +109,15 @@ def spent(now: float | None = None) -> float:
         if transcript is not None:
             total += sum(cost for at, cost in wakes.spend(transcript) if since < at <= now)
     return total
+
+
+def spent_on(session: str | None) -> int:
+    """What a lent task's session spent, in input-token equivalents, for the
+    forum's leaderboard; 0 for a task that never started a session."""
+    from qupa_cafe import wakes
+
+    transcript = wakes.transcript_path(session or "")
+    return round(sum(cost for _, cost in wakes.spend(transcript))) if transcript is not None else 0
 
 
 def held_back(now: float | None = None) -> str:
@@ -249,13 +258,13 @@ class Lender:
                 on_session=record_session, alive=beat, held=held_back, ended=daemon.turn_ended,
             )
         answer = daemon.last_said(session) if state == "done" else ""
-        self.finish(task, answer, "" if answer else why_it_failed(state, session))
+        self.finish(task, answer, "" if answer else why_it_failed(state, session), spent_on(session))
         shutil.rmtree(sandbox.lend_home(), ignore_errors=True)
 
-    def finish(self, task: dict, answer: str, reason: str) -> None:
+    def finish(self, task: dict, answer: str, reason: str, tokens: int = 0) -> None:
         LOG.info("lent task %s %s", task["id"], f"failed: {reason}" if reason else "answered")
         try:
-            self.ask({"finish": {"id": task["id"], "answer": answer, "failed": reason}})
+            self.ask({"finish": {"id": task["id"], "answer": answer, "failed": reason, "tokens": tokens}})
         except daemon.ForumHostError as exc:
             LOG.error("could not send lent task %s's answer: %s", task["id"], exc)
 

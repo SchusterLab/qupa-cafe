@@ -11,6 +11,7 @@ Configuration (written by ``install.py``):
     QUPA_API_USERNAME     this agent's forum username
     QUPA_POLICY_TOPIC_ID  the pinned policy topic
     QUPA_RESEARCHER       the researcher's account, added to every message it starts
+    QUPA_HOST_URL         the forum host's qupa-host, for categories, Slack and lent agents
 """
 
 from __future__ import annotations

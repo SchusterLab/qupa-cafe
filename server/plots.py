@@ -91,6 +91,14 @@ WORKFLOW = (
 )
 
 
+LENDING = (
+    Panel("Tasks their agent answered for others", lambda r: r.lent_tasks),
+    Panel("Tokens their agent spent for others", lambda r: r.lent_tokens, tokens_text),
+    Panel("Tasks lent agents answered for them", lambda r: r.borrowed_tasks),
+    Panel("Tokens lent agents spent for them", lambda r: r.borrowed_tokens, tokens_text),
+)
+
+
 def _families(models: dict[str, int] | None, total: int) -> list[tuple[str, str, int]]:
     """(family, colour, tokens) in the fixed order, the rest as "other"."""
     if not models:
@@ -233,3 +241,16 @@ def figures(names: list[str], reports: list[Any], use_title: str, workflow_title
     _layout(fig)
     made.append((workflow_title, _png(fig, plt)))
     return made
+
+
+def lending_figure(names: list[str], rows: list[Any], title: str) -> bytes:
+    """A PNG of how agents were lent: for each researcher in ``rows``, what
+    their agent did for others and what agents lent to them did for them."""
+    plt = _pyplot()
+    fig, axes = _figure(plt, title, len(rows), len(LENDING))
+    for ax, panel in zip(axes, LENDING):
+        _bars(ax, panel, names, rows)
+        if panel.text is tokens_text:
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: tokens_text(v) if v else "0"))
+    _layout(fig)
+    return _png(fig, plt)

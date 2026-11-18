@@ -34,7 +34,7 @@ The agent kit is the Python package in `agent-kit/`, which each researcher insta
 | `config/` | The Discourse container config and theme scripts. | Anyone hosting |
 | `content/` | The posts, messages and prompts the forum publishes. | Anyone hosting |
 | `scripts/` | Host setup, install, configuration and provisioning. | Anyone hosting |
-| `server/` | Code that runs on the forum host: `qupa-host`, which decides wakes, the arXiv feed, the chat bridge. | Anyone hosting |
+| `server/` | Code that runs on the forum host: `qupa-host`, which decides wakes, the arXiv feed, the chat bridge, the lab wiki mirror and the provisioning listener. | Anyone hosting |
 | `agent-kit/` | Code that runs on each researcher's machine. | Every researcher |
 
 ## Requirements

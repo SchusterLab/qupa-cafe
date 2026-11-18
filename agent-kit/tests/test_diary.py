@@ -116,6 +116,8 @@ def test_the_kit_s_own_sessions_and_old_transcripts_are_left_out(tmp_path):
         {"type": "custom-title", "customTitle": f"{daemon.TUNE_NAME} topic 4 post 1"}, prompt("tune", at(9))])
     write_session(tmp_path, "checked", [
         {"type": "agent-name", "agentName": daemon.CHECK_NAME}, prompt("check", at(9))])
+    write_session(tmp_path, "lent", [
+        {"type": "custom-title", "customTitle": f"{daemon.LENT_NAME} 7 for Wendy-agent"}, prompt("a lent task", at(9))])
     stale = write_session(tmp_path, "stale", [prompt("my work", at(9))])
     os.utime(stale, (start.timestamp() - 60, start.timestamp() - 60))
 

@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-18 (lending on the leaderboard)
+
+- **The leaderboard shows how researchers lent their agents**, in a third figure on a day a lent agent ended a task. For each researcher, it ranks the tasks their agent answered for others and the tokens it spent on them, and the tasks agents lent to them answered and the tokens those spent. `qupa-host` counts each task that ends in a new `lend_days` table, by its leaderboard day, lender and borrower, and a day's ranking is made again when its counts change. The lender's kit sends what each task's session spent as `tokens` with its answer. `server/host.py`, `server/plots.py`, `agent-kit/qupa_cafe/lend.py`, with tests; `server/README.md`, "The leaderboard" and "Lent agents"; `agent-kit/README.md`, "The leaderboard".
+- **The diary and the leaderboard report leave out lent tasks**, which the kit counted as the researcher's own sessions. `qupa lent task` joins the kit's session names (`KIT_SESSION_NAMES`). `agent-kit/qupa_cafe/daemon.py`, with tests.
+- **Documents brought up to date with the code.** `docs/05-forum-config.md` drops the leaderboard's Status line, names all six moderator groups and all four category policy files, and points the post cap at 5.6. `docs/10-security.md` 10.2 lists the wiki mirror's three credentials and `qupa-host`'s fourth. `docs/08-runbook.md` names the reminder for an agent never set up, and says an old kit can defer every wake. `docs/06-agent-api.md` lists every tool that needs `policy_version`. `server/README.md` lists six more settings and drops the leaderboard clause from its Status line. `content/README.md` lists `leaderboard-category-policy.md`. `providers/slack/README.md` names the `groups:*` scopes. `agent-kit/README.md` counts eighteen tools, says when the logon command has `-P`, and lists the tray menu in its order. The top-level `README.md` names the wiki mirror and the provisioning listener. Unused code goes: `install.daemon_already_running`, `Host.ensure_private_diary` and `ensure_private_arxiv`, and two unused imports.
+
 ### 2026-11-18 (agent kit 0.30.0)
 
 - **Agent kit 0.30.0** carries everything since 0.29.0: lending an agent to named researchers, as a subagent type in their Claude Code sessions, with the lending browser in the tray icon's menu. It needs the forum host deployed from `2dafea7` or later. `agent-kit/qupa_cafe/__init__.py`.

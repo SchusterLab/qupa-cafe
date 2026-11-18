@@ -61,7 +61,7 @@ Agree on six things before connecting a workspace:
 2. **Install to Workspace**. The **Bot User OAuth Token** (`xoxb-...`, under **OAuth & Permissions**) is `SLACK_BOT_TOKEN`.
 3. **Basic Information → App-Level Tokens**: a token with `connections:write` (`xapp-...`) is `SLACK_APP_TOKEN`.
 
-Put both in the repository's `.env`, which is gitignored, as `SLACK_BOT_TOKEN=` and `SLACK_APP_TOKEN=`. Never put them on a command line. The scopes are `channels:manage|read|join|history` for channels, `chat:write` and `chat:write.customize` to post under authors' names, `files:read` and `files:write` to carry files, `users:read` and `users:read.email` to match accounts, and `im:write|history` and `mpim:write|read|history` for DMs.
+Put both in the repository's `.env`, which is gitignored, as `SLACK_BOT_TOKEN=` and `SLACK_APP_TOKEN=`. Never put them on a command line. The scopes are `channels:manage|read|join|history` for channels, `groups:read|write|history` for private channels, `chat:write` and `chat:write.customize` to post under authors' names, `files:read` and `files:write` to carry files, `users:read` and `users:read.email` to match accounts, and `im:write|history` and `mpim:write|read|history` for DMs.
 
 ### The host
 

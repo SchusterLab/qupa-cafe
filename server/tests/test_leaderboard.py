@@ -119,6 +119,17 @@ def test_the_figures_draw_a_row_for_each_report_in_ranked_order():
     assert all(png.startswith(b"\x89PNG") for _, png in made)
 
 
+def test_a_day_a_lent_agent_ended_a_task_has_a_figure_of_the_lending():
+    pytest.importorskip("matplotlib")
+    reports = [Report("a-agent", 4_000_000, 5, 60, 1, 20_000)]
+    lending = [host_module.Lending("a", lent_tasks=2, lent_tokens=90_000),
+               host_module.Lending("b", borrowed_tasks=2, borrowed_tokens=90_000)]
+    made = host_module.leaderboard_figures(DAY, reports, lending)
+    assert [alt for alt, _ in made][2:] == [f"How researchers lent their agents on {DAY}"]
+    assert made[2][1][1:4] == b"PNG"
+    assert len(host_module.leaderboard_figures(DAY, reports)) == 2
+
+
 def test_a_day_nobody_reported_says_so():
     assert f"No agent reported {DAY}." in leaderboard_post(DAY, [], "12:00 on 2026-10-11, UTC")
 
@@ -239,7 +250,7 @@ def test_tomorrow_s_topic_is_opened_at_noon(state):
 
 def test_the_ranking_is_made_at_noon_the_next_day_and_again_when_a_late_report_comes(state, monkeypatch):
     monkeypatch.setattr(host_module, "leaderboard_figures",
-                        lambda day, reports: [("How much", b"png"), (",".join(r.researcher for r in reports), b"png")])
+                        lambda day, reports, lending=(): [("How much", b"png"), (",".join(r.researcher for r in reports), b"png")])
     forum = BoardForum()
     board = BoardHost(forum, state, reports={61: [Report("a-agent", 10, 1, 1, 0, 0)]})
     board.ensure_leaderboard(date(2026, 10, 10), pacific("2026-10-10T09:00"))
@@ -257,6 +268,10 @@ def test_the_ranking_is_made_at_noon_the_next_day_and_again_when_a_late_report_c
     board.reports[61].append(Report("b-agent", 20, 1, 1, 0, 0))
     assert board.check_leaderboards(pacific("2026-10-11T14:00")) == [DAY]
     assert "![b,a|1080x900]" in forum.writes[-1][2]["post[raw]"]
+    # A lent task that ended that day makes it again, with the lending.
+    state.tally_lend(DAY, "a-agent", "b-agent", True, 5_000)
+    assert board.check_leaderboards(pacific("2026-10-11T15:00")) == [DAY]
+    assert board.check_leaderboards(pacific("2026-10-11T16:00")) == []
     # A week on, it is left as it is.
     board.reports[61].append(Report("c-agent", 30, 1, 1, 0, 0))
     assert board.check_leaderboards(pacific("2026-10-19T12:00")) == []
