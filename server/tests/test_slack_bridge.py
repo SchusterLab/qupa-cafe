@@ -1395,6 +1395,24 @@ def test_a_dm_from_someone_with_no_account_is_answered_with_how_to_join(world):
     assert slack.messages == []
 
 
+def test_somebody_from_another_workspace_of_the_organization_cannot_join(world):
+    """A channel shared across an Enterprise Grid brings in people from other
+    workspaces, whom Slack does not mark as guests."""
+    stub, slack, bridge = world
+    bridge.team_id = "TLAB"
+    slack.people["UO"] = {"id": "UO", "team_id": "TOTHER", "enterprise_user": {"teams": ["TOTHER"]},
+                          "profile": {"email": "other@uni.edu", "real_name": "Other Person"}}
+    slack.people["UN"].update(team_id="TOTHER", enterprise_user={"teams": ["TOTHER", "TLAB"]})
+    assert bridge.handle_message(dm("UO", "join", "7400.1")) == "not joined: another workspace"
+    assert bridge.handle_message(dm("UO", "Hello?", "7400.2")) == "no account, another workspace"
+    assert "Only full members of this workspace" in in_thread(slack, "DUO", "7400.2")[0]["text"]
+    channel = slack.channels["qupa-research"]
+    assert bridge.handle_join({"type": "member_joined_channel", "user": "UO", "channel": channel}).startswith("not told")
+    # A member of both joins.
+    assert bridge.handle_message(dm("UN", "join", "7400.3")) == "joined as Newcomer"
+    assert [a["email"] for a in stub.accounts] == ["new@uni.edu"]
+
+
 def test_a_slack_guest_cannot_join(world):
     stub, slack, bridge = world
     start_thread(stub, bridge)

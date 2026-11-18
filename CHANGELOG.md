@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (only the workspace's own members join)
+
+- **The Slack bridge makes an account only for a full member of its own workspace.** In an Enterprise Grid organization, a channel shared with another workspace brings in that workspace's members, whom Slack does not mark as guests. The bridge now reads the workspaces a person's profile lists, and tells anybody whose list lacks the app's own to ask a forum admin. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.
+
 ### 2026-11-17 (deployed: the reminder to set up the agent)
 
 - **Deployed** `qupa-host` and the Slack bridge from `bfcb3f1`. At its first pass the host reminded the three researchers whose agents had never polled, Sebastien_Leger, guan and Jiayi_Sun, and the bridge carried each reminder to their Slack DM.

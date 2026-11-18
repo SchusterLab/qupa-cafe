@@ -849,6 +849,8 @@ class Bridge:
         self._conversations: dict[str, Cached] = {}
         self._last_category_sync = 0.0
         self.bot_user_id: str | None = None
+        # The workspace the app is installed in; only its full members join.
+        self.team_id: str | None = None
         # Forum edits the webhook reported, as ("post" or "topic", id), in
         # the order they came, carried at the next poll.
         self._edits: dict[tuple[str, int], None] = {}
@@ -2071,6 +2073,17 @@ class Bridge:
                 return candidate
         raise CannotCarry("The forum has no free username for you. Ask a forum admin for an account.")
 
+    def outside(self, profile: dict) -> str | None:
+        """Why somebody may not join by themselves: a guest, or somebody from
+        another workspace of the same organization, as a channel shared
+        across an Enterprise Grid brings in. None for a full member."""
+        if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
+            return "a guest"
+        teams = (profile.get("enterprise_user") or {}).get("teams") or [profile.get("team_id")]
+        if self.team_id and self.team_id not in teams:
+            return "another workspace"
+        return None
+
     def offerable(self, slack_user: str) -> bool:
         """A full member of the workspace with an address and no forum account."""
         try:
@@ -2079,8 +2092,7 @@ class Bridge:
             return False
         if account or not email:
             return False
-        profile = self.slack.users_info(user=slack_user).get("user") or {}
-        return not (profile.get("is_restricted") or profile.get("is_ultra_restricted"))
+        return not self.outside(self.slack.users_info(user=slack_user).get("user") or {})
 
     def send_offer(self, slack_user: str, lead: str) -> bool:
         """How to join, in the bot's DM with the person, after ``lead``."""
@@ -2102,9 +2114,11 @@ class Bridge:
             tell(f"{closed} Slack has no email address for you, so ask a forum admin for an account.")
             return "no account, no email"
         profile = self.slack.users_info(user=slack_user).get("user") or {}
-        if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
-            tell(f"{closed} Guests in this workspace cannot join by themselves, so ask a forum admin for an account.")
-            return "no account, a guest"
+        why = self.outside(profile)
+        if why:
+            tell(f"{closed} Only full members of this workspace can join by themselves, so ask a forum admin for "
+                 "an account.")
+            return f"no account, {why}"
         if in_dm:
             tell(f"{closed} {self.join_text()}")
             self.state.record_offer(slack_user, time.time())
@@ -2125,9 +2139,10 @@ class Bridge:
             tell("Slack has no email address for you, so ask a forum admin for an account.")
             return "not joined: no email"
         profile = self.slack.users_info(user=slack_user).get("user") or {}
-        if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
-            tell("Guests in this workspace cannot join by themselves, so ask a forum admin for an account.")
-            return "not joined: a guest"
+        why = self.outside(profile)
+        if why:
+            tell("Only full members of this workspace can join by themselves, so ask a forum admin for an account.")
+            return f"not joined: {why}"
         details = profile.get("profile") or {}
         name = details.get("real_name") or profile.get("real_name") or details.get("display_name") or ""
         try:
@@ -2416,7 +2431,7 @@ class Bridge:
         label = self.agent_label(agent)
         links = self.topic_links(body)
         joining = ""
-        if email and not self.state.offered(slack_user):
+        if email and not self.state.offered(slack_user) and not self.outside(person):
             joining = ("To answer on the forum yourself, reply *join* here. This app then makes you a forum "
                           "account from your Slack account, and you log in with Slack.")
         parts = [
@@ -2714,7 +2729,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(forum, slack)
 
     bridge = Bridge(forum, slack, State(STATE_PATH))
-    bridge.bot_user_id = slack.auth_test().get("user_id")
+    auth = slack.auth_test()
+    bridge.bot_user_id, bridge.team_id = auth.get("user_id"), auth.get("team_id")
     bridge.sync_categories(force=True)
     listen_for_edits(bridge)
     connect_slack(bridge)
