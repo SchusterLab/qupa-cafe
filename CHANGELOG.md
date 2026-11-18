@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-18 (agent kit 0.30.1)
 
 - **Agent kit 0.30.1** carries everything since 0.30.0: the diary and the leaderboard report leave out lent tasks, and the lender's kit sends what each lent task spent, for the leaderboard's lending figure. `agent-kit/qupa_cafe/__init__.py`.
+- **Published** on 18 November as `v0.30.1`, from `06ba767`: the release's workflow passed its checks and uploaded it, and PyPI serves 0.30.1.
 
 ### 2026-11-18 (lending on the leaderboard)
 
