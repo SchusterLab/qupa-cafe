@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (joining from Slack)
+
+- **The Slack bridge makes a forum account when somebody writes *join* to it, in place of an invitation link.** The account is active and bound to the writer's Slack member id under the Slack login, so logging in with Slack opens it from any page. An invitation was redeemed only when the Slack sign-in returned to the invitation page. A newcomer who had opened another forum page first was returned there and could not sign up. Somebody with no account who writes where the bridge reads, or joins a `qupa-` channel, is told how to join by DM. `BRIDGE_INVITE_DAYS` is gone, and `BRIDGE_SLACK_LOGIN_PROVIDER` (`oidc`) is new. The state file's invitation table is no longer written. `server/slack-bridge.py`, with tests; `providers/slack/README.md`, `providers/slack/manifest.yml`, `docs/10-security.md`, `content/login-welcome.md`.
+
 ### 2026-11-02 (how researchers work, and the ranking as figures)
 
 - **Each kit's report says how its researcher worked.** Beside the sessions, prompts and tokens, it counts the tool calls, subagents launched, web searches and page fetches, and browser and computer-use actions. It gives the most tool calls without a prompt, the hours spent working and the most sessions running at once. It splits the tokens by model family and gives the share of model calls needing no approval. Each number goes under the name the forum's figures use. Every number is a count, and nothing is named. A forked transcript's repeated records are counted once. `agent-kit/qupa_cafe/leaderboard.py`, with tests; `agent-kit/README.md`.

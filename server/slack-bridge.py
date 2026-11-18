@@ -27,6 +27,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -53,13 +54,16 @@ FIRST_RUN = os.environ.get("SLACK_FIRST_RUN", "everything")
 STATE_PATH = Path(os.environ.get("BRIDGE_STATE", "/var/lib/qupa-slack-bridge/state.db"))
 POLL_SECONDS = float(os.environ.get("BRIDGE_POLL_SECONDS", "15"))
 CATEGORY_SYNC_SECONDS = float(os.environ.get("BRIDGE_CATEGORY_SYNC_SECONDS", "3600"))
-# How long an invite link lasts. Until then a newcomer who writes again is
-# given the same link, kept in the state file.
-INVITE_DAYS = float(os.environ.get("BRIDGE_INVITE_DAYS", "7"))
-# A link this close to expiring is replaced rather than given out.
-INVITE_MARGIN_SECONDS = 3600
-# What an invitation links for what an agent of the newcomer's own could
-# reach on their computer.
+# The word, alone in a DM with the bot, that asks for a forum account.
+JOIN_WORDS = {"join", "join."}
+# A username the bridge makes is at most this long, so that its agent's
+# `<username>-agent` fits the forum's 30 characters.
+USERNAME_MAX = 24
+# The provider name Discourse gives the Slack login, and under which an
+# account is bound to its Slack member id.
+SLACK_LOGIN_PROVIDER = os.environ.get("BRIDGE_SLACK_LOGIN_PROVIDER", "oidc")
+# What a new member is linked to, for what an agent of their own could reach
+# on their computer.
 SAFETY_URL = os.environ.get("BRIDGE_SAFETY_URL", "https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run")
 SAFETY_LINE = (f"Before you run an AI agent of your own, read <{SAFETY_URL}|the project's README>. It says what "
                "the agent can reach on your computer.")
@@ -176,9 +180,6 @@ class State:
                 CREATE TABLE IF NOT EXISTS from_slack (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
                     raw TEXT, files TEXT);
-                -- An invitation is a link handed to its invitee, reused until it expires.
-                CREATE TABLE IF NOT EXISTS invites (
-                    email TEXT PRIMARY KEY, invited_at REAL NOT NULL, link TEXT, expires_at REAL);
                 CREATE TABLE IF NOT EXISTS placeholders (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
                     thread_ts TEXT NOT NULL, topic_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -194,8 +195,8 @@ class State:
                     channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, ts TEXT NOT NULL, agent TEXT NOT NULL,
                     person TEXT, at REAL NOT NULL, message_topic INTEGER, acknowledged INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (channel_id, thread_ts));
-                -- Everybody the bot has written to unasked: when it sent them
-                -- their invitation, and whether they said stop.
+                -- Everybody the bot has written to unasked: when it told them
+                -- how to join the forum, and whether they said stop.
                 CREATE TABLE IF NOT EXISTS contacts (
                     slack_user TEXT PRIMARY KEY, invited_at REAL, stopped INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS copies (
@@ -319,24 +320,6 @@ class State:
     def drop_copy(self, post_id: int) -> None:
         self._run("DELETE FROM copies WHERE post_id = ?", post_id)
 
-    def invite_for(self, email: str, now: float) -> tuple[str, float] | None:
-        """(link, expires_at) of an invitation with time left on it."""
-        row = self._one("SELECT link, expires_at FROM invites WHERE email = ?", email.lower())
-        if not row or not row[0] or (row[1] or 0) - now < INVITE_MARGIN_SECONDS:
-            return None
-        return row[0], row[1]
-
-    def record_invite(self, email: str, link: str, expires_at: float, when: float) -> None:
-        self._run(
-            "INSERT INTO invites (email, invited_at, link, expires_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(email) DO UPDATE SET invited_at = excluded.invited_at, "
-            "link = excluded.link, expires_at = excluded.expires_at",
-            email.lower(),
-            when,
-            link,
-            expires_at,
-        )
-
     def record_ask(self, channel_id: str, thread_ts: str, ts: str, agent: str, person: str | None, when: float) -> None:
         """A message an agent wrote, its thread's replies now the agent's. A
         later one in the same thread by another agent takes the thread over."""
@@ -377,11 +360,12 @@ class State:
     def acknowledge(self, channel_id: str, thread_ts: str) -> None:
         self._run("UPDATE asks SET acknowledged = 1 WHERE channel_id = ? AND thread_ts = ?", channel_id, thread_ts)
 
-    def invited_by_dm(self, slack_user: str) -> float | None:
+    def offered(self, slack_user: str) -> float | None:
+        """When the bot told them, unasked, how to join the forum."""
         row = self._one("SELECT invited_at FROM contacts WHERE slack_user = ?", slack_user)
         return row[0] if row else None
 
-    def record_dm_invitation(self, slack_user: str, when: float) -> None:
+    def record_offer(self, slack_user: str, when: float) -> None:
         self._run(
             "INSERT INTO contacts (slack_user, invited_at) VALUES (?, ?) "
             "ON CONFLICT(slack_user) DO UPDATE SET invited_at = excluded.invited_at",
@@ -556,12 +540,25 @@ class Forum:
     def add_to_message(self, topic_id: int, username: str) -> dict:
         return self.request("POST", f"/t/{topic_id}/invite.json", {"user": username})
 
-    def invite(self, email: str, expires_at: float) -> dict:
-        """An invitation bound to ``email``, mailed to nobody: its link is the
-        answer's ``link``. Asked again for the same address, the forum gives
-        the same invitation with the new expiry."""
-        expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_at))
-        return self.request("POST", "/invites.json", {"email": email, "skip_email": "true", "expires_at": expires})
+    def username_free(self, username: str) -> bool:
+        return bool(self.request("GET", "/u/check_username.json?" + urllib.parse.urlencode({"username": username}))
+                    .get("available"))
+
+    def create_account(self, username: str, name: str, email: str, slack_user: str) -> dict:
+        """An active account, bound to the Slack member id under the Slack
+        login, so that logging in with Slack opens it from any page. The
+        password is required and never used: the forum has no local logins.
+        Raises ``Refused`` with the forum's reason when it refuses."""
+        made = self.request("POST", "/users.json", {
+            "username": username, "name": name, "email": email, "password": secrets.token_urlsafe(32),
+            "active": "true", "approved": "true", f"external_ids[{SLACK_LOGIN_PROVIDER}]": slack_user,
+        })
+        # With hide_email_address_taken, a taken address answers success
+        # and not active, and makes nothing.
+        if not made.get("success") or not made.get("active"):
+            reason = made.get("message") or json.dumps(made.get("errors") or {})
+            raise Refused(f"POST /users.json refused: {reason}", 200, reason)
+        return made
 
     def lookup_uploads(self, short_urls: list[str]) -> dict[str, str]:
         """``upload://`` references, as raw markdown has them, to the paths
@@ -951,7 +948,7 @@ class Bridge:
                 raise Unusable(f"{name} is not a person's account")
             if not account.get("active", True) or account.get("suspended_till"):
                 raise Unusable(f"{name} is suspended or not yet active")
-            # Only a hit is cached: an invitee posts again once they have joined.
+            # Only a hit is cached: a newcomer posts again once they have joined.
             self._forum_users[slack_user] = Cached((account, email))
         return account, email
 
@@ -1765,17 +1762,17 @@ class Bridge:
         def tell(text: str) -> None:
             self.ephemeral(channel_id, user, None if top_level else thread_ts, text)
 
-        # Anyone without an account is answered with an invitation, wherever they wrote.
+        # Anyone without an account is told how to join, wherever they wrote.
         try:
             account, email = self.forum_user_for(user)
         except Unusable as exc:
             tell(UNUSABLE_ACCOUNT)
             return f"refused: {exc}"
         if not account:
-            outcome = self.invite(user, email, tell)
+            outcome = self.no_account(user, email, tell)
             # Under a newcomer's own message in a channel, not in a topic's thread.
-            if top_level and outcome in ("no account, invited", "no account, invited already"):
-                self.announce_invitations(channel_id, event.get("ts"), user)
+            if top_level and outcome in ("no account, told how to join", "no account, told already"):
+                self.announce_joining(channel_id, event.get("ts"), user)
             return outcome
 
         if top_level:
@@ -1970,13 +1967,15 @@ class Bridge:
             settled = self.stop_or_start(event)
             if settled:
                 return settled
+            if (event.get("text") or "").strip().lower() in JOIN_WORDS:
+                return self.join(user, email, tell)
         # An answer to an agent's DM goes to that agent; a member's own
         # messages outside its thread go to their own agent.
         ask = self.answer_to(event)
         if ask and (not account or not top_level):
             return self.relay_answer(ask, event)
         if not account:
-            return self.invite(user, email, tell, in_dm=True)
+            return self.no_account(user, email, tell, in_dm=True)
 
         if not top_level:
             topic_id = self.state.topic_for(channel_id, thread_ts)
@@ -2044,137 +2043,134 @@ class Bridge:
         except Exception:
             return "someone"
 
-    def invitation_link(self, email: str) -> tuple[str, float, bool]:
-        """(link, expires_at, made now) of the invitation bound to ``email``,
-        which only signing up with Slack redeems. Raises ``CannotCarry`` with
-        what to tell the person when the forum will not make one."""
-        now = time.time()
-        held = self.state.invite_for(email, now)
-        if held:
-            return held[0], held[1], False
-        expires_at = now + INVITE_DAYS * 86400
-        try:
-            link = self.forum.invite(email, expires_at).get("link")
-        except (Refused, Transient) as exc:
-            LOG.error("cannot invite %s: %s", email, exc)
-            raise CannotCarry("The forum would not make you an invitation just now. Ask a forum admin for one.") from exc
-        if not link:
-            LOG.error("the forum's invitation for %s has no link", email)
-            raise CannotCarry("The forum would not make you an invitation just now. Ask a forum admin for one.")
-        self.state.record_invite(email, link, expires_at, now)
-        return link, expires_at, True
+    def join_text(self) -> str:
+        return ("To join the forum, reply *join* here. This app then makes you a forum account from your Slack "
+                "account, and you log in with Slack.")
 
-    @staticmethod
-    def invitation_text(link: str, expires_at: float) -> str:
-        until = time.gmtime(expires_at)
+    def joined_text(self, username: str) -> str:
         return (
-            f"Here is your invitation to the forum: {link}\n"
-            f"Only your Slack account can use it, and it works until {until.tm_mday} {time.strftime('%B', until)}. "
-            "Open it and sign up with Slack. After that, a reply in a topic's thread in a "
-            f"`{CHANNEL_PREFIX}` channel reaches the forum under your name, and so does a message to this app.\n"
-            + SAFETY_LINE
+            f"Your forum account is ready, as @{username}. Open {self.forum.base_url} and log in with Slack. "
+            f"A reply in a topic's thread in a `{self.prefix}` channel now reaches the forum under your name, "
+            "and so does a message to this app.\n" + SAFETY_LINE
         )
 
-    def invitable(self, slack_user: str) -> str | None:
-        """The Slack address of a full member of the workspace with no forum
-        account, whom the bot may invite; None for anybody else."""
+    def username_for(self, name: str, email: str) -> str:
+        """A free username from the person's Slack name, as ``Wendy_Wan``, or
+        else from their address; a number is added when it is taken."""
+        base = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")[:USERNAME_MAX].rstrip("_")
+        if len(base) < 3:
+            base = re.sub(r"[^A-Za-z0-9]+", "_", email.split("@")[0]).strip("_")[:USERNAME_MAX].rstrip("_")
+        base = base or "member"
+        for number in range(1, 100):
+            tail = "" if number == 1 else str(number)
+            candidate = base[: USERNAME_MAX - len(tail)] + tail
+            if self.forum.username_free(candidate):
+                return candidate
+        raise CannotCarry("The forum has no free username for you. Ask a forum admin for an account.")
+
+    def offerable(self, slack_user: str) -> bool:
+        """A full member of the workspace with an address and no forum account."""
         try:
             account, email = self.forum_user_for(slack_user)
         except Unusable:
-            return None
+            return False
         if account or not email:
-            return None
+            return False
         profile = self.slack.users_info(user=slack_user).get("user") or {}
-        if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
-            return None
-        return email
+        return not (profile.get("is_restricted") or profile.get("is_ultra_restricted"))
 
-    def send_invitation(self, slack_user: str, email: str, lead: str) -> bool:
-        """The invitation, in the bot's DM with the person, after ``lead``."""
+    def send_offer(self, slack_user: str, lead: str) -> bool:
+        """How to join, in the bot's DM with the person, after ``lead``."""
         try:
-            link, expires_at, _ = self.invitation_link(email)
-        except CannotCarry:
-            return False
-        try:
-            self.slack.chat_postMessage(
-                channel=self.dm_with(slack_user), text=f"{lead}\n\n{self.invitation_text(link, expires_at)}",
-                unfurl_links=False,
-            )
+            self.slack.chat_postMessage(channel=self.dm_with(slack_user), text=f"{lead}\n\n{self.join_text()}",
+                                        unfurl_links=False)
         except Exception as exc:
-            LOG.warning("cannot send %s their invitation: %s", slack_user, exc)
+            LOG.warning("cannot tell %s how to join: %s", slack_user, exc)
             return False
-        self.state.record_dm_invitation(slack_user, time.time())
+        self.state.record_offer(slack_user, time.time())
         return True
 
-    def invite(self, slack_user: str, email: str | None, tell: Callable[[str], None], in_dm: bool = False) -> str:
+    def no_account(self, slack_user: str, email: str | None, tell: Callable[[str], None], in_dm: bool = False) -> str:
         """Answer somebody with no account who wrote to the bot, or in one of
-        its channels: their invitation goes to their DM with the bot the first
-        time, and again only once it has expired."""
-        closed = "Nothing was posted. The forum is invite-only, and you have no account on it yet."
+        its channels, with how to join: in a channel, in their DM with the bot
+        the first time."""
+        closed = "Nothing was posted. You have no forum account yet."
         if not email:
-            tell(f"{closed} Slack has no email address for you, so ask a forum admin for an invitation.")
+            tell(f"{closed} Slack has no email address for you, so ask a forum admin for an account.")
             return "no account, no email"
-
-        # Guests are not invited.
         profile = self.slack.users_info(user=slack_user).get("user") or {}
         if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
-            tell(f"{closed} Guests in this workspace are not invited automatically, so ask a forum admin for an invitation.")
+            tell(f"{closed} Guests in this workspace cannot join by themselves, so ask a forum admin for an account.")
             return "no account, a guest"
-
-        held = self.state.invite_for(email, time.time())
-        if held and self.state.invited_by_dm(slack_user):
-            until = time.gmtime(held[1])
-            where = "earlier in this conversation" if in_dm else "in your DM with this app"
-            tell(f"{closed} Your invitation is {where}, until {until.tm_mday} {time.strftime('%B', until)}.")
-            return "no account, invited already"
-        try:
-            link, expires_at, _ = self.invitation_link(email)
-        except CannotCarry as exc:
-            tell(f"{closed} {exc}")
-            return "no account, invite failed"
         if in_dm:
-            tell(f"{closed} {self.invitation_text(link, expires_at)}")
-            self.state.record_dm_invitation(slack_user, time.time())
-            return "no account, invited"
-        if not self.send_invitation(slack_user, email, closed):
-            tell(f"{closed} The forum would not make you an invitation just now. Ask a forum admin for one.")
-            return "no account, invite failed"
-        tell(f"{closed} Your invitation is in your DM with this app.")
-        return "no account, invited"
+            tell(f"{closed} {self.join_text()}")
+            self.state.record_offer(slack_user, time.time())
+            return "no account, told how to join"
+        if self.state.offered(slack_user):
+            tell(f"{closed} To join, reply *join* in your DM with this app.")
+            return "no account, told already"
+        if self.send_offer(slack_user, closed):
+            tell(f"{closed} How to join is in your DM with this app.")
+        else:
+            tell(f"{closed} To join, message this app *join*.")
+        return "no account, told how to join"
 
-    def announce_invitations(self, channel: str, thread_ts: str | None, slack_user: str) -> None:
+    def join(self, slack_user: str, email: str | None, tell: Callable[[str], None]) -> str:
+        """*join* from somebody with no account: their account, made now, and
+        how to log in."""
+        if not email:
+            tell("Slack has no email address for you, so ask a forum admin for an account.")
+            return "not joined: no email"
+        profile = self.slack.users_info(user=slack_user).get("user") or {}
+        if profile.get("is_restricted") or profile.get("is_ultra_restricted"):
+            tell("Guests in this workspace cannot join by themselves, so ask a forum admin for an account.")
+            return "not joined: a guest"
+        details = profile.get("profile") or {}
+        name = details.get("real_name") or profile.get("real_name") or details.get("display_name") or ""
+        try:
+            username = self.username_for(name, email)
+            self.forum.create_account(username, name or username, email, slack_user)
+        except CannotCarry as exc:
+            tell(str(exc))
+            return "not joined: no free username"
+        except (Refused, Transient) as exc:
+            LOG.error("cannot make an account for %s: %s", slack_user, exc)
+            tell("The forum would not make your account just now. Try *join* again later, or ask a forum admin.")
+            return "not joined: the forum refused"
+        LOG.info("made the account %s for %s", username, slack_user)
+        tell(self.joined_text(username))
+        return f"joined as {username}"
+
+    def announce_joining(self, channel: str, thread_ts: str | None, slack_user: str) -> None:
         """In public, in the thread of a newcomer's message in a channel: that
-        they were sent an invitation, and that anyone else can be."""
+        they were told how to join, and that anyone else can."""
         try:
             self.slack.chat_postMessage(
                 channel=channel, thread_ts=thread_ts, unfurl_links=False,
                 text=(
-                    f"<@{slack_user}> your invitation to the forum is in your DM with this app.\n\n"
-                    "For anyone else who wants to join: the forum is invite-only, but any member of this workspace "
-                    f"can get an invitation. To get one, join or write in one of the `{self.prefix}` channels, or "
-                    "message this app directly. The app then sends you an invitation link by DM. Open the link and "
-                    "sign up with Slack, and your forum account is made from your Slack account."
+                    f"<@{slack_user}> how to join the forum is in your DM with this app.\n\n"
+                    "For anyone else who wants to join: any member of this workspace can. Message this app *join*, "
+                    "and it makes you a forum account from your Slack account. You then log in with Slack."
                 ),
             )
         except Exception as exc:
-            LOG.warning("cannot announce %s's invitation in %s: %s", slack_user, channel, exc)
+            LOG.warning("cannot announce how %s can join in %s: %s", slack_user, channel, exc)
 
     def handle_join(self, event: dict) -> str:
         """Somebody joined one of the bot's channels: a full member of the
-        workspace with no forum account is sent their invitation, once."""
+        workspace with no forum account is told how to join, once."""
         user = event.get("user") or ""
         channel_id = event.get("channel") or ""
         if user == self.bot_user_id or self.state.category_for(channel_id) is None:
             return "not a bridged channel"
-        if self.state.invited_by_dm(user) or self.state.stopped(user):
-            return "invited already"
-        email = self.invitable(user)
-        if not email:
-            return "not invited: a forum member, a guest, or no address"
+        if self.state.offered(user) or self.state.stopped(user):
+            return "told already"
+        if not self.offerable(user):
+            return "not told: a forum member, a guest, or no address"
         name = self.channel_label(channel_id)
         lead = (f"Welcome to {name}. This channel copies a category of Qupa Cafe, a research forum where AI agents "
                 "work for researchers. Once you join the forum, what you write in a topic's thread here is posted there.")
-        return "invited" if self.send_invitation(user, email, lead) else "invitation failed"
+        return "told how to join" if self.send_offer(user, lead) else "could not tell"
 
     def channel_label(self, channel_id: str) -> str:
         try:
@@ -2394,7 +2390,7 @@ class Bridge:
 
     def agent_message(self, agent: str, body: dict) -> dict:
         """A DM to somebody in the workspace with no forum account, signed as
-        the agent; with their invitation the first time the bot writes to them."""
+        the agent; with how to join the forum the first time the bot writes to them."""
         person = self.find_person(body.get("person"))
         slack_user = person.get("id") or ""
         profile = person.get("profile") or {}
@@ -2416,20 +2412,15 @@ class Bridge:
         text = self.agent_text(body)
         label = self.agent_label(agent)
         links = self.topic_links(body)
-        invitation = ""
-        if email and not self.state.invited_by_dm(slack_user):
-            try:
-                link, expires_at, _ = self.invitation_link(email)
-                until = time.gmtime(expires_at)
-                invitation = (f"To answer on the forum yourself, use this invitation: {link}\nOnly your Slack account "
-                              f"can use it, and it works until {until.tm_mday} {time.strftime('%B', until)}.\n{SAFETY_LINE}")
-            except CannotCarry:
-                invitation = ""
+        joining = ""
+        if email and not self.state.offered(slack_user):
+            joining = ("To answer on the forum yourself, reply *join* here. This app then makes you a forum "
+                          "account from your Slack account, and you log in with Slack.")
         parts = [
             f"*{label}* writes to you from Qupa Cafe, a research forum where AI agents work for researchers:",
             text, links,
             "Your reply here goes to the agent. It may quote your reply on the forum under your name.",
-            invitation,
+            joining,
             "Reply *stop* and no agent will message you again.",
         ]
         channel_id = self.dm_with(slack_user)
@@ -2440,9 +2431,10 @@ class Bridge:
         ts = result["ts"]
         now = time.time()
         self.state.record_ask(channel_id, ts, ts, agent, slack_user, now)
-        if invitation:
-            self.state.record_dm_invitation(slack_user, now)
-        return {"sent": True, "to": shown, "ts": ts, "invited": bool(invitation), "url": self.permalink(channel_id, ts)}
+        if joining:
+            self.state.record_offer(slack_user, now)
+        # "invited": whether the DM said how to join, as kits read it.
+        return {"sent": True, "to": shown, "ts": ts, "invited": bool(joining), "url": self.permalink(channel_id, ts)}
 
     def stop_or_start(self, event: dict) -> str | None:
         """``stop`` or ``start``, alone in a DM with the bot, from anybody."""

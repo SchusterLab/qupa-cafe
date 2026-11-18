@@ -47,7 +47,7 @@ settings:
       - message.groups
       - message.im
       - message.mpim
-      # Somebody joining a qupa- channel, sent their invitation.
+      # Somebody joining a qupa- channel, told how to join.
       - member_joined_channel
   interactivity:
     is_enabled: false
