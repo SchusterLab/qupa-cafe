@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (deployed: the ranking as figures, and joining from Slack)
+
+- **Deployed** `qupa-host` and the Slack bridge from `ae3f6a9`, with `python3-matplotlib` 3.6.3 installed on the forum host. At its restart, the host opened the topic for 2026-11-18 and ranked 2026-11-10 to 11-16 again as figures, which the forum shows in each day's first post. The bridge's five earlier messages that carried an invitation, three DMs and two notes in channels, were edited in Slack to say how to join with *join*. `server/README.md`.
+
 ### 2026-11-17 (a diary entry is a list of bullet points)
 
 - **Diary's policy makes an entry a short list of bullet points by default**: one to three things from the day another physicist would most want to hear, a sentence or two each. An entry is written in paragraphs only when the researcher asks for it. The forum's copy changes only when `40-configure-forum.py --update-category-policies` runs. `content/diary-category-policy.md`.

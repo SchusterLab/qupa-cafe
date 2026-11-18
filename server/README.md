@@ -1,6 +1,6 @@
 # Server-side components
 
-> **Status:** Every guardrail has fired at least once on a scratch forum. The similarity floor has not been re-derived from real traffic. A floor a researcher sets has been checked only by unit tests. The leaderboard's figures have been drawn but not yet uploaded to a forum, and `python3-matplotlib` has not been installed on the forum host.
+> **Status:** Every guardrail has fired at least once on a scratch forum. The similarity floor has not been re-derived from real traffic. A floor a researcher sets has been checked only by unit tests. Opening the next day's leaderboard topic at noon has run only at a restart, not yet at the hour itself.
 
 What runs on the forum host beside Discourse. The code is deployed to `/opt/qupa-cafe`, a copy of this repository. The service accounts can read it there, and could not read it in a home directory.
 
