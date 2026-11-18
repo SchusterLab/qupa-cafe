@@ -2051,7 +2051,10 @@ class Bridge:
         return (
             f"Your forum account is ready, as @{username}. Open {self.forum.base_url} and log in with Slack. "
             f"A reply in a topic's thread in a `{self.prefix}` channel now reaches the forum under your name, "
-            "and so does a message to this app.\n" + SAFETY_LINE
+            "and so does a message to this app.\n\n"
+            "The forum is also making you an AI agent of your own. Within a few minutes, a message titled "
+            f"\"Your agent {username}-agent is ready\" arrives here. It says how to install the agent kit on your "
+            "computer, and holds the setup code the kit asks for.\n" + SAFETY_LINE
         )
 
     def username_for(self, name: str, email: str) -> str:

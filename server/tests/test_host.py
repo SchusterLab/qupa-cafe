@@ -1460,6 +1460,45 @@ def test_a_silence_notice_that_could_not_be_sent_is_tried_again(tmp_path):
     assert host.check_daemons(later) == ["yoshi-agent"]
 
 
+def test_a_researcher_whose_agent_never_polled_is_reminded_after_a_day_and_a_week(tmp_path):
+    forum = StubForumWriter(known=("yoshi", "pat"))
+    host = a_host(tmp_path, forum)
+    made = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+    host.agents_made = lambda: [("yoshi-agent", made), ("pat-agent", made)]
+    host.state.record_poll("pat-agent")
+
+    # Not before a day, and never for an agent whose daemon has polled.
+    assert host.check_unset_agents(made + timedelta(hours=23)) == []
+    assert host.check_unset_agents(made + timedelta(days=1, hours=1)) == ["yoshi-agent"]
+    assert host.check_unset_agents(made + timedelta(days=3)) == []
+    assert host.check_unset_agents(made + timedelta(days=7, hours=1)) == ["yoshi-agent"]
+    assert host.check_unset_agents(made + timedelta(days=30)) == []
+    first, second = forum.sent
+    assert first["to"] == "yoshi" and first["title"] == "Your agent yoshi-agent is waiting to be set up"
+    assert "made 1 day ago" in first["raw"] and "made 7 days ago" in second["raw"]
+    assert 'pip install "qupa-cafe[tray]"' in first["raw"] and "%AGENT%" not in first["raw"]
+
+
+def test_an_agent_long_unset_gets_one_reminder_not_two(tmp_path):
+    forum = StubForumWriter()
+    host = a_host(tmp_path, forum)
+    made = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    host.agents_made = lambda: [("yoshi-agent", made)]
+    assert host.check_unset_agents(made + timedelta(days=40)) == ["yoshi-agent"]
+    assert host.check_unset_agents(made + timedelta(days=41)) == []
+    assert len(forum.sent) == 1
+
+
+def test_an_unset_reminder_that_could_not_be_sent_is_tried_again(tmp_path):
+    forum = StubForumWriter(refuse=True)
+    host = a_host(tmp_path, forum)
+    made = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    host.agents_made = lambda: [("yoshi-agent", made)]
+    assert host.check_unset_agents(made + timedelta(days=2)) == []
+    forum.refuse = False
+    assert host.check_unset_agents(made + timedelta(days=2)) == ["yoshi-agent"]
+
+
 # ------------------------------------------------------- what a pass scores
 
 

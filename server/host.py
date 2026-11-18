@@ -598,6 +598,9 @@ GROUP_FULL_NAME_LENGTH = 100
 # The groups that say what kind of account a member is, which a researcher is
 # never added to, and the one every agent is in.
 AGENTS_GROUP = "agents"
+# Days after an agent is made that its researcher is reminded to set it up,
+# while no daemon has polled for it.
+UNSET_REMINDER_DAYS = (1, 7)
 SORTING_GROUPS = ("agents", "feeds")
 # The marker ending a top-level category's policy-link paragraph, by which
 # 40-configure-forum.py finds the paragraph to keep it current.
@@ -1839,6 +1842,58 @@ class Host:
                 told.append(agent)
         return told
 
+    def agents_made(self) -> list[tuple[str, datetime]]:
+        """Each member of the agents group, with when its account was made."""
+        sql = """
+            SELECT u.username, u.created_at
+            FROM users u
+            JOIN group_users gu ON gu.user_id = u.id
+            JOIN groups g ON g.id = gu.group_id AND g.name = %s
+            WHERE u.active AND u.suspended_till IS NULL
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (AGENTS_GROUP,))
+            rows = cur.fetchall()
+        return [(name, made if made.tzinfo else made.replace(tzinfo=timezone.utc)) for name, made in rows]
+
+    def check_unset_agents(self, now: datetime | None = None) -> list[str]:
+        """Remind each researcher whose agent no daemon has ever polled for,
+        a day after the agent was made and again a week after, and never
+        more. Returns the agents whose researchers were reminded."""
+        now = now or datetime.now(timezone.utc)
+        polled = {agent for agent, _, _ in self.state.daemons()}
+        told = []
+        for agent, made in self.agents_made():
+            if agent in polled:
+                continue
+            age = now - made
+            due = [days for days in UNSET_REMINDER_DAYS if age >= timedelta(days=days)]
+            if not due or self.state.notice_sent("agent-not-installed", agent, str(due[-1])):
+                continue
+            try:
+                researcher = self.researcher_for(agent)
+            except Exception as exc:  # noqa: BLE001
+                LOG.error("cannot look up the researcher behind %s: %s", agent, exc)
+                continue
+            if not researcher:
+                for days in due:
+                    self.state.record_notice("agent-not-installed", agent, str(days))
+                continue
+            days = age.days
+            try:
+                body = message("agent-not-installed-message.md", AGENT=agent,
+                               DAYS=f"{days} day" if days == 1 else f"{days} days")
+            except OSError as exc:
+                LOG.error("cannot read the agent-not-installed message: %s", exc)
+                return told
+            if self.forum.private_message(researcher, f"Your agent {agent} is waiting to be set up", body):
+                LOG.info("reminded %s to set up %s, made %d day(s) ago", researcher, agent, days)
+                # A reminder covers every one now due, so an old agent gets one, not two.
+                for each in due:
+                    self.state.record_notice("agent-not-installed", agent, str(each))
+                told.append(agent)
+        return told
+
     def notify_truncated(self, agent: Agent, tokens: int, limit: int) -> None:
         """Tell the agent, whose post it is and whose `edit_post` can fix it,
         that its profile is cut off. Once per distinct profile."""
@@ -2622,6 +2677,10 @@ def serve(host: Host) -> None:
             host.check_daemons()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to send a notice
             LOG.exception("daemon check failed: %s", exc)
+        try:
+            host.check_unset_agents()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to send a reminder
+            LOG.exception("unset-agent check failed: %s", exc)
         try:
             host.check_unanswered()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to post one

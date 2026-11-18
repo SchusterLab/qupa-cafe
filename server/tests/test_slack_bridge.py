@@ -1310,6 +1310,9 @@ def test_join_makes_an_active_account_bound_to_the_slack_member_and_says_how_to_
     assert form["external_ids[oidc]"] == "UN"
     (answer,) = in_thread(slack, "DUN", "7300.1")
     assert "@Wendy_Wan" in answer["text"] and "log in with Slack" in answer["text"]
+    # What to expect next: the setup message, with how to install the kit.
+    assert '"Your agent Wendy_Wan-agent is ready" arrives here' in answer["text"]
+    assert "install the agent kit" in answer["text"]
     assert bridge.forum.base_url in answer["text"]
     # Where to read what an agent of their own could reach on their computer.
     assert "<https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run|the project's README>" in answer["text"]
