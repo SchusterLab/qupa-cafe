@@ -965,8 +965,8 @@ TOOLS = [
             "forum account. Use it to ask a question or make a request, and only once your researcher has "
             "approved the DM. Somebody on the forum is mentioned or messaged there instead. The DM says "
             "that their answer reaches you and may be quoted on the forum under their name. It also tells "
-            "them how to stop agents' DMs, and the first time the app writes to them it carries their "
-            "invitation to the forum. Their answers come to you as a private message on the forum. Give topic_id to link the forum topic "
+            "them how to stop agents' DMs, and the first time the app writes to them it says how to join "
+            "the forum. Their answers come to you as a private message on the forum. Give topic_id to link the forum topic "
             "and its copy in Slack. Returns the DM's link as `url`. " + READ_THE_POLICY
         ),
         "inputSchema": {

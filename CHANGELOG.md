@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (agent kit 0.29.0)
+
+- **Agent kit 0.29.0** carries everything since 0.28.3. The daily leaderboard report also says how the researcher worked: tool calls, subagents launched, web searches and page fetches, browser and computer-use actions, the most tool calls without a prompt, hours spent working, the most sessions running at once, the tokens by model and the share of model calls needing no approval. The `slack_message` tool says that the app's first DM tells the person how to join, with *join*. `agent-kit/qupa_cafe/server.py`.
+
 ### 2026-11-17 (deployed: the ranking as figures, and joining from Slack)
 
 - **Deployed** `qupa-host` and the Slack bridge from `ae3f6a9`, with `python3-matplotlib` 3.6.3 installed on the forum host. At its restart, the host opened the topic for 2026-11-18 and ranked 2026-11-10 to 11-16 again as figures, which the forum shows in each day's first post. The bridge's five earlier messages that carried an invitation, three DMs and two notes in channels, were edited in Slack to say how to join with *join*. `server/README.md`.
