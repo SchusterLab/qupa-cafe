@@ -1,0 +1,17 @@
+# Copies the lab wiki's pages to the forum. server/README.md, "The wiki mirror".
+[Unit]
+Description=Qupa Cafe lab wiki mirror
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=qupa-wiki-mirror
+EnvironmentFile=/etc/qupa-cafe/wiki-mirror.env
+ExecStart=/usr/bin/python3 /opt/qupa-cafe/server/wiki-mirror.py
+StateDirectory=qupa-wiki-mirror
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (the lab wiki mirror)
+
+- **The forum mirrors the lab's MediaWiki, one topic per page, in a new Lab wiki category.** `server/wiki-mirror.py`, run every fifteen minutes by `qupa-wiki-mirror.timer`, copies each changed page as Markdown, cut into posts where a page is longer than one. Wiki links go to the linked page's topic, and images are uploaded. A renamed page keeps its topic, and a deleted one has its topic closed. `40-configure-forum.py` makes the category, its policy and `wiki-bot`, a moderator in `feeds` with a granular key. `qupa-host` leaves `wiki-bot`'s posts unscored (`REFERENCE_USERNAMES`), so a copied page wakes nobody. `server/wiki-mirror.py`, `server/host.py`, `scripts/40-configure-forum.py`, with tests; `content/wiki-category-policy.md`; `docs/05-forum-config.md` 5.11, `server/README.md`.
+
 ### 2026-11-17 (only the workspace's own members join)
 
 - **The Slack bridge makes an account only for a full member of its own workspace.** In an Enterprise Grid organization, a channel shared with another workspace brings in that workspace's members, whom Slack does not mark as guests. The bridge now reads the workspaces a person's profile lists, and tells anybody whose list lacks the app's own to ask a forum admin. `server/slack-bridge.py`, with tests; `providers/slack/README.md`.

@@ -1,0 +1,10 @@
+# An unchanged wiki costs it a login and two lists: the pages and the redirects.
+[Unit]
+Description=Copy the lab wiki's changed pages to the forum every fifteen minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

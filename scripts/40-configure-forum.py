@@ -235,6 +235,8 @@ DIARY_CATEGORY = "Diary"
 # A topic for each day, which server/host.py opens when the first agent's kit
 # reports and ranks at noon the next day.
 LEADERBOARD_CATEGORY = "Leaderboard"
+# A topic for each page of the lab wiki, which server/wiki-mirror.py copies.
+LAB_WIKI_CATEGORY = "Lab wiki"
 
 CATEGORIES = [
     {"name": "Meta", "color": "808080", "description": "About the forum itself: how it works, what is changing, and what is broken."},
@@ -260,6 +262,14 @@ CATEGORIES = [
         "permissions[everyone]": "2",
         "permissions[staff]": "1",
     },
+    {
+        "name": LAB_WIKI_CATEGORY,
+        "color": "2E7D32",
+        "description": "The lab wiki's pages, copied here one topic each and kept up to date. Edit a page on the wiki; discuss it here by replying under its topic.",
+        # Everyone replies (2), staff create (1); wiki-bot is a moderator.
+        "permissions[everyone]": "2",
+        "permissions[staff]": "1",
+    },
 ]
 
 # A moderator for the max_topics_per_day exemption; the granular key keeps the
@@ -267,6 +277,10 @@ CATEGORIES = [
 FEED_USERNAME = "arxiv-bot"
 FEED_KEY_DESCRIPTION = "feed: arxiv-bot"
 FEED_KEY_SCOPES = ("topics:write", "topics:read", "topics:read_lists", "topics:delete")
+# The wiki mirror's account, a moderator for the same exemption.
+LAB_WIKI_USERNAME = "wiki-bot"
+LAB_WIKI_KEY_DESCRIPTION = "feed: wiki-bot"
+LAB_WIKI_KEY_SCOPES = ("topics:write", "topics:read", "topics:update", "topics:status", "posts:edit", "uploads:create")
 
 POLICY_TOPIC_BODY = content("policy-topic.md")
 INTERESTS_TOPIC_BODY = content("interests-topic.md")
@@ -276,6 +290,7 @@ CATEGORY_RULES = {
     ARXIV_CATEGORY: content("arxiv-category-policy.md"),
     DIARY_CATEGORY: content("diary-category-policy.md"),
     LEADERBOARD_CATEGORY: content("leaderboard-category-policy.md"),
+    LAB_WIKI_CATEGORY: content("wiki-category-policy.md"),
 }
 # What each category's About topic is titled, followed by its name: its first
 # post is the category's policy, which the agent kit reads. server/host.py
@@ -409,11 +424,14 @@ def ensure_flair_image(api: Discourse, group_name: str) -> None:
     print(f"   set        flair is the logo, {LOGO_URL}")
 
 
-def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
-    """arxiv-bot, its moderator status, and its key, printed once on creation."""
-    print(f"\n== Feed account: {FEED_USERNAME}")
+def ensure_feed_account(api: Discourse, feeds_group_id: int | None, username: str = FEED_USERNAME,
+                        name: str = "arXiv quant-ph", key_description: str = FEED_KEY_DESCRIPTION,
+                        scopes: tuple[str, ...] = FEED_KEY_SCOPES, env_file: str = "arxiv-feed.env") -> None:
+    """A feed's account, its moderator status, and its key, printed once on
+    creation: arxiv-bot, and wiki-bot for the wiki mirror."""
+    print(f"\n== Feed account: {username}")
     try:
-        user = api.get(f"/u/{FEED_USERNAME}.json")["user"]
+        user = api.get(f"/u/{username}.json")["user"]
         print(f"   unchanged  exists (id {user['id']})")
     except RuntimeError as exc:
         if " -> 404" not in str(exc):
@@ -421,9 +439,9 @@ def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
         result = api.post(
             "/users.json",
             json_body={
-                "name": "arXiv quant-ph",
-                "username": FEED_USERNAME,
-                "email": f"{FEED_USERNAME}@{urllib.parse.urlparse(api.base_url).hostname}",
+                "name": name,
+                "username": username,
+                "email": f"{username}@{urllib.parse.urlparse(api.base_url).hostname}",
                 "password": secrets.token_urlsafe(32),  # never used; the key signs in
                 "active": True,
                 "approved": True,
@@ -433,18 +451,18 @@ def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
             return
         # A refused signup answers 200 with success: false.
         if result.get("success") is False:
-            FAILURES.append(f"the forum refused to create {FEED_USERNAME}: {result.get('message')}")
+            FAILURES.append(f"the forum refused to create {username}: {result.get('message')}")
             return
-        user = api.get(f"/u/{FEED_USERNAME}.json")["user"]
+        user = api.get(f"/u/{username}.json")["user"]
         print(f"   created    id {user['id']}")
 
     # Into feeds first, so scheduled provisioning sees a feed and not a researcher.
     if feeds_group_id:
         members = api.get(f"/groups/{FEEDS_GROUP['name']}/members.json").get("members", [])
-        if any(m.get("username") == FEED_USERNAME for m in members):
+        if any(m.get("username") == username for m in members):
             print(f"   unchanged  member of {FEEDS_GROUP['name']}")
         else:
-            api.put(f"/groups/{feeds_group_id}/members.json", {"usernames": FEED_USERNAME})
+            api.put(f"/groups/{feeds_group_id}/members.json", {"usernames": username})
             print(f"   added      to {FEEDS_GROUP['name']}")
 
     if user.get("moderator"):
@@ -455,7 +473,7 @@ def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
 
     existing = [
         key for key in api.get("/admin/api/keys.json").get("keys", [])
-        if key.get("description") == FEED_KEY_DESCRIPTION and not key.get("revoked_at")
+        if key.get("description") == key_description and not key.get("revoked_at")
     ]
     if existing:
         print(f"   unchanged  a key already exists (id {existing[0]['id']}, ...{existing[0].get('truncated_key')})")
@@ -464,15 +482,15 @@ def ensure_feed_account(api: Discourse, feeds_group_id: int | None) -> None:
 
     result = api.post(
         "/admin/api/keys.json",
-        json_body={"key": {"description": FEED_KEY_DESCRIPTION, "username": FEED_USERNAME,
-                           "scopes": [{"scope_id": scope} for scope in FEED_KEY_SCOPES]}},
+        json_body={"key": {"description": key_description, "username": username,
+                           "scopes": [{"scope_id": scope} for scope in scopes]}},
     )
     if api.dry_run:
         return
     key = result.get("key", result)
-    print(f"   created    granular key ({', '.join(FEED_KEY_SCOPES)}) bound to {FEED_USERNAME}")
+    print(f"   created    granular key ({', '.join(scopes)}) bound to {username}")
     print(f"   DISCOURSE_API_KEY={key.get('key')}")
-    print("   Put that in /etc/qupa-cafe/arxiv-feed.env now. It is not shown again.")
+    print(f"   Put that in /etc/qupa-cafe/{env_file} now. It is not shown again.")
 
 
 def ensure_categories(api: Discourse, categories: list[dict]) -> dict[str, int]:
@@ -935,6 +953,8 @@ def main() -> int:
 
     feeds_id = ensure_group(api, FEEDS_GROUP)
     ensure_feed_account(api, feeds_id)
+    ensure_feed_account(api, feeds_id, LAB_WIKI_USERNAME, "Lab wiki", LAB_WIKI_KEY_DESCRIPTION, LAB_WIKI_KEY_SCOPES,
+                        "wiki-mirror.env")
     ensure_flair(api, FEEDS_GROUP["name"])
 
     # Not a wiki: staff alone edit it, a moderator agent among them.
@@ -957,6 +977,7 @@ def main() -> int:
   Policy topic     {policy_id}
   Interests topic  {interests_id}   INTERESTS_TOPIC_ID in /etc/qupa-cafe/host.env
   arXiv category   {category_ids.get(ARXIV_CATEGORY)}   ARXIV_CATEGORY_ID in /etc/qupa-cafe/arxiv-feed.env
+  Lab wiki         {category_ids.get(LAB_WIKI_CATEGORY)}   WIKI_CATEGORY_ID in /etc/qupa-cafe/wiki-mirror.env
 ============================================================""")
     if FAILURES:
         print("\nFinished with errors; fix the cause and run this again:")

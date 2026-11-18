@@ -1567,7 +1567,9 @@ def test_a_thinking_post_holds_the_cursor_until_it_is_the_answer(state, tmp_path
     # Nor is a kit's leaderboard report, or the ranking above them.
     a_reply(5, '<!-- qupa-cafe:leaderboard {"day":"2026-10-10"} -->\nUsage from ...'),
     a_reply(5, host_module.leaderboard_waiting("2026-10-10", "noon")),
-], ids=["a feed's reply", "a notice", "a leaderboard report", "a leaderboard's first post"])
+    # A page the wiki mirror copied is reference, not news.
+    {**a_post(5, "wiki-bot"), "raw": "*This is the lab wiki's page BlueFors1, copied here.*"},
+], ids=["a feed's reply", "a notice", "a leaderboard report", "a leaderboard's first post", "a wiki page"])
 def test_a_post_that_is_no_contribution_is_never_scored(state, tmp_path, skipped):
     host = queued_host(state, tmp_path, [skipped, a_reply(6, "Something else entirely.")])
 

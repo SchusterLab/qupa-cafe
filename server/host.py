@@ -131,6 +131,13 @@ class Config:
         for name in os.environ.get("FEED_USERNAMES", "arxiv-bot").split(",")
         if name.strip()
     )
+    # Accounts that copy reference material, such as the lab wiki's pages:
+    # their posts wake nobody, and replies to them are scored as any post.
+    reference_usernames: tuple[str, ...] = tuple(
+        name.strip()
+        for name in os.environ.get("REFERENCE_USERNAMES", "wiki-bot").split(",")
+        if name.strip()
+    )
     # A feed's topic is scored once its embedding covers the feed's own
     # reply, which carries the abstract, or once it is this old without one.
     feed_reply_wait_minutes: float = float(os.environ.get("FEED_REPLY_WAIT_MINUTES", "20"))
@@ -2180,7 +2187,8 @@ class Host:
             feed = post["username"] in self.config.feed_usernames
             feed_reply = feed and (post.get("post_number") or 1) > 1
             raw = post.get("raw") or ""
-            if thinking is False or feed_reply or NOTICE.search(raw) or LEADERBOARD.search(raw):
+            reference = post["username"] in self.config.reference_usernames
+            if thinking is False or feed_reply or reference or NOTICE.search(raw) or LEADERBOARD.search(raw):
                 highest_settled = post["id"]
                 continue
             # And it waits, holding the cursor, until the topic's embedding
