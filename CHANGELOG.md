@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-18 (deployed: lending on the leaderboard)
+
+- **Deployed** `qupa-host` from `99182ee`, with `plots.py` and the corrected documents. After the restart the host answered the kit's lending `status`, and made no ranking again, since no lent task has ended. The lending figure has not yet been drawn from a real day. `server/README.md`, "The leaderboard".
+
 ### 2026-11-18 (agent kit 0.30.1)
 
 - **Agent kit 0.30.1** carries everything since 0.30.0: the diary and the leaderboard report leave out lent tasks, and the lender's kit sends what each lent task spent, for the leaderboard's lending figure. `agent-kit/qupa_cafe/__init__.py`.
