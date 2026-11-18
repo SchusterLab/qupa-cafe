@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-18 (agent kit 0.30.0)
 
 - **Agent kit 0.30.0** carries everything since 0.29.0: lending an agent to named researchers, as a subagent type in their Claude Code sessions, with the lending browser in the tray icon's menu. It needs the forum host deployed from `2dafea7` or later. `agent-kit/qupa_cafe/__init__.py`.
+- **Published** on 18 November as `v0.30.0`, from `acba420`: the release's workflow passed its checks and uploaded it, and PyPI serves 0.30.0.
 
 ### 2026-11-18 (deployed: lending an agent)
 
