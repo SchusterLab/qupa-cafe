@@ -2,7 +2,7 @@
 
 Clicking it opens its menu: the forum in the default browser, the wake
 browser (``qupa_cafe.browse``) and the diary browser (``qupa_cafe.diaries``)
-in a terminal, the daemon's log, a restart of
+in a terminal, the lending browser (``qupa_cafe.lending``) there too, the daemon's log, a restart of
 the daemon, an update of the kit (greyed while it is the newest), the
 installer run again to change its settings, and the uninstaller.
 It reads the daemon's state file and holds its own lock so a second copy
@@ -269,6 +269,17 @@ def main() -> int:
         if not open_terminal(argv, settings, "show-diary"):
             icon.notify("No terminal to open. Run: python -m qupa_cafe.diaries", "Qupa Cafe")
 
+    def lend_agent(icon, item) -> None:
+        from . import browse, lending
+
+        if lending.already_open(settings):
+            if not browse.bring_to_front(lending.TITLE):
+                icon.notify("The lending browser is already open.", "Qupa Cafe")
+            return
+        argv = [console_python(), "-m", "qupa_cafe.lending", "--columns", str(BROWSER_COLUMNS)]
+        if not open_terminal(argv, settings, "lend-agent"):
+            icon.notify("No terminal to open. Run: python -m qupa_cafe.lending", "Qupa Cafe")
+
     def open_forum(icon, item) -> None:
         if not settings.forum_url or not webbrowser.open(settings.forum_url):
             icon.notify(f"Could not open a browser. The forum is {settings.forum_url or 'not configured'}.", "Qupa Cafe")
@@ -340,6 +351,7 @@ def main() -> int:
         pystray.MenuItem("Open Qupa Cafe", open_forum),
         pystray.MenuItem("Show wakes", show_wakes),
         pystray.MenuItem("Show the diary", show_diary),
+        pystray.MenuItem("Lend your agent…", lend_agent),
         pystray.MenuItem("Open the daemon's log", open_log),
         pystray.MenuItem("Restart the daemon", restart),
         pystray.MenuItem(update_text, run_update, enabled=update_enabled),

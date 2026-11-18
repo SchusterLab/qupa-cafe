@@ -18,6 +18,12 @@
 // (SYSTEM_READ). It runs on Linux and macOS, and in WSL, where Windows hands
 // its commands. Variables that look like credentials are not passed in.
 //
+// A task another researcher gives an agent its researcher lends has a
+// configuration of its own (lend-config.json): its workspace is the task's
+// home, it has no agent directory or projects, and config.env_workspace names
+// the wakes' workspace, whose environment it runs in and reads, and nothing
+// else of.
+//
 // qupa-install writes config.json; qupa_cafe.sandbox calls this script.
 
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
@@ -56,6 +62,20 @@ function quote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
+// The workspace whose pixi environment a command runs in: a lent task's
+// config.env_workspace, else its own workspace.
+function envWorkspace(config) {
+  return config.env_workspace ?? config.workspace;
+}
+
+// What a lent task reads of the wakes' workspace: its environment, and none
+// of the files the wakes keep there.
+function environmentPaths(config) {
+  if (!config.env_workspace) return [];
+  const ws = config.env_workspace;
+  return ['pixi.toml', 'pixi.lock', '.pixi', '.qupa-bin'].map(name => path.join(ws, name));
+}
+
 function sandboxConfig(config, bridge) {
   const network = { allowedDomains: [], deniedDomains: [], deniedResolvedAddresses: PRIVATE_RANGES };
   return {
@@ -69,6 +89,7 @@ function sandboxConfig(config, bridge) {
       allowRead: [
         ...(SYSTEM_READ[process.platform] ?? []),
         config.workspace,
+        ...environmentPaths(config),
         path.dirname(config.run),
         path.dirname(config.pixi),
         ...(config.programs ?? []),
@@ -95,8 +116,8 @@ function prelude(config) {
     // No display: a figure is saved, never shown.
     'export MPLBACKEND=Agg',
     `export PATH=${quote(path.dirname(config.pixi))}:"$PATH"`,
-    `eval "$(pixi shell-hook --manifest-path ${quote(path.join(ws, 'pixi.toml'))} --shell bash)" || exit 1`,
-    `export PATH=${quote(path.join(ws, '.qupa-bin'))}:"$PATH"`,
+    `eval "$(pixi shell-hook --manifest-path ${quote(path.join(envWorkspace(config), 'pixi.toml'))} --shell bash)" || exit 1`,
+    `export PATH=${quote(path.join(envWorkspace(config), '.qupa-bin'))}:"$PATH"`,
     `cd ${quote((config.agent_dirs ?? [])[0] ?? ws)} || exit 1`,
   ];
   return lines.join('\n');

@@ -35,6 +35,8 @@ KIT_ROOT = Path(__file__).resolve().parent.parent
 
 TOOL_NAMES = {
     "get_policy",
+    "lent_agent_run",
+    "lent_agent_result",
     "register_session",
     "create_topic",
     "reply",

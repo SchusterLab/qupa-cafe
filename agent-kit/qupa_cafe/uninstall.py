@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import install, sandbox
+from . import configured_host_url, daemon, install, lend, sandbox
 from .install import CLAUDE_MCP_PATH, CONFIG_DIR, SKILL_PATH, DAEMON_PLIST, DAEMON_UNIT, DAEMON_VBS, TRAY_DESKTOP, TRAY_PLIST, TRAY_VBS
 
 DATA_DIR = Path.home() / ".local" / "share" / "qupa-cafe"
@@ -142,6 +142,23 @@ def main() -> int:
             install.pause()
 
 
+def withdraw_lending() -> None:
+    """Stop lending the agent, if its researcher does, since no daemon here
+    will run the tasks; a host that cannot be asked is told nothing."""
+    values = install.env_values()
+    settings = daemon.Settings(forum_url=values.get("QUPA_FORUM_URL", ""), api_key=values.get("QUPA_API_KEY", ""),
+                               api_username=values.get("QUPA_API_USERNAME", ""),
+                               host_url=configured_host_url(values) or "")
+    if not settings.host_url or not settings.api_key:
+        return
+    try:
+        said = daemon.ForumHost(settings)._ask(settings.api_username, {"lend": {"withdraw": True}})  # noqa: SLF001
+    except daemon.ForumHostError:
+        return
+    if said.get("failed") is not None:
+        print(f"  {settings.api_username} is no longer lent to anybody")
+
+
 def uninstall(yes: bool) -> int:
     agent_dir = install.env_values().get("QUPA_AGENT_DIR", "")
     print(
@@ -162,6 +179,9 @@ def uninstall(yes: bool) -> int:
     unregister_tray()
     unregister_daemon()
     unregister_servers()
+    withdraw_lending()
+    for path in lend.remove_agents():
+        print(f"  removed {path}, the subagent of an agent lent to you")
 
     print("\nDeleting the kit's files...")
     # Before DATA_DIR, which holds the configuration that says where it is.

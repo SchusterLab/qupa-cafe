@@ -47,6 +47,8 @@ def no_local_text(tmp_path, monkeypatch):
     monkeypatch.setenv("QUPA_QUOTA", str(tmp_path / "quota.json"))
     # And its sandbox, which would otherwise decide what every wake is given.
     monkeypatch.setenv("QUPA_SANDBOX_DIR", str(tmp_path / "sandbox"))
+    # And Claude Code's subagents, where the agents lent to the researcher go.
+    monkeypatch.setenv("QUPA_CLAUDE_AGENTS_DIR", str(tmp_path / "agents"))
     # And its env, where the diary's settings are read again at every poll,
     # and which the installer reuses.
     monkeypatch.setenv("QUPA_ENV_FILE", str(tmp_path / "env"))

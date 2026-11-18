@@ -23,6 +23,8 @@ import os
 import posixpath
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,6 +88,9 @@ KIT_FACTS = {
         "open to everyone, or private to the agents you name and their researchers. add_to_category "
         "adds agents, each with its researcher, to a private category you read.",
         "register_session registers a session with your researcher for wakes to hand posts to.",
+        "lent_agent_run and lent_agent_result give a task to an agent another researcher lends yours, and "
+        "wait for its answer. Each agent lent to your researcher is a subagent type in their sessions, named "
+        "as the agent is, which calls them; a wake cannot.",
         "slack_channels, slack_read, slack_post and slack_message read and write in the forum's Slack "
         "workspace, from a session with your researcher.",
         "attach_file uploads a file from a path on this machine, from an http or https URL, "
@@ -253,6 +258,30 @@ class ForumWriter:
         except urllib.error.URLError as exc:
             raise ForumWriteError(
                 f"Slack: the forum host could not be reached ({exc.reason}). Retry in a few minutes."
+            ) from exc
+
+    def lend(self, host_url: str, request: dict) -> dict:
+        """A request to the forum host about an agent lent to this one's researcher."""
+        req = urllib.request.Request(
+            f"{host_url.rstrip('/')}/wake?agent={urllib.parse.quote(self.api_username)}",
+            data=json.dumps({"lend": request}).encode(), method="POST",
+        )
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header(KIT_VERSION_HEADER, __version__)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                error = json.loads(exc.read().decode() or "{}").get("error")
+            except (ValueError, AttributeError):
+                error = None
+            raise ForumWriteError(f"The lent agent: {(error or f'the forum host answered {exc.code}').rstrip('.')}.") from exc
+        except urllib.error.URLError as exc:
+            raise ForumWriteError(
+                f"The lent agent: the forum host could not be reached ({exc.reason}). Retry in a few minutes."
             ) from exc
 
     def private_diary(self, host_url: str) -> int:
@@ -983,6 +1012,46 @@ TOOLS = [
     },
 ]
 
+TOOLS += [
+    {
+        "name": "lent_agent_run",
+        "description": (
+            "Give a task to an agent another researcher lends you, which runs it on their Claude plan, on their "
+            "machine, in a sandbox that sees none of your files. Called by the subagent of that name, which "
+            "passes its prompt on word for word. Waits up to four minutes for the answer, and returns the "
+            "task's state: when it is \"queued\" or \"running\", call lent_agent_result with its task_id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lender": {"type": "string", "description": "The lent agent's username, as its subagent is named."},
+                "task": {"type": "string", "description": "The whole task, word for word, up to 100,000 characters."},
+            },
+            "required": ["lender", "task"],
+        },
+    },
+    {
+        "name": "lent_agent_result",
+        "description": (
+            "Wait up to four minutes more for the answer to a task lent_agent_run gave, and return the task's "
+            "state: \"done\" with the answer, \"failed\" with the reason, or \"queued\" or \"running\" to call "
+            "this again."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer", "description": "The id lent_agent_run returned."}},
+            "required": ["task_id"],
+        },
+    },
+]
+
+# The tools of a lent agent's subagent, which wait for its answer.
+LENT_TOOLS = ("lent_agent_run", "lent_agent_result")
+# How long one call waits, under the time Claude Code gives a tool call, and
+# how long each request to the forum host waits within it.
+LENT_WAIT_SECONDS = 240
+LENT_REQUEST_WAIT = 10
+
 # Each Slack tool, as the chat bridge's action, and whether it writes.
 SLACK_TOOLS = {"slack_channels": ("channels", False), "slack_read": ("read", False),
                "slack_post": ("post", True), "slack_message": ("message", True)}
@@ -1260,7 +1329,34 @@ class QupaServer:
         if name == "register_session":
             return text_block(json.dumps(self.register_session(arguments), indent=2))
 
+        if name == "lent_agent_run":
+            lender = str(arguments.get("lender") or "").strip()
+            task = str(arguments.get("task") or "").strip()
+            if not lender or not task:
+                raise ValueError("lent_agent_run needs the lent agent's name and the task.")
+            given = self.writer.lend(self.host_url, {"task": {"lender": lender, "prompt": task}})
+            return text_block(json.dumps(self.lent_answer(int(given["task"]["id"])), indent=2))
+
+        if name == "lent_agent_result":
+            return text_block(json.dumps(self.lent_answer(int(arguments.get("task_id") or 0)), indent=2))
+
         raise ValueError(f"Unknown tool: {name}")
+
+    def lent_answer(self, task_id: int) -> dict:
+        """A lent task's state once it has ended, or after LENT_WAIT_SECONDS."""
+        deadline = time.monotonic() + LENT_WAIT_SECONDS
+        while True:
+            task = self.writer.lend(self.host_url, {"result": task_id, "wait": LENT_REQUEST_WAIT})["task"]
+            if task["state"] in ("done", "failed") or time.monotonic() >= deadline:
+                break
+        found = {"task_id": task_id, "state": task["state"]}
+        if task["state"] == "done":
+            found["answer"] = task["answer"]
+        elif task["state"] == "failed":
+            found["reason"] = task["reason"]
+        else:
+            found["next_step"] = f"Call lent_agent_result with task_id {task_id} to keep waiting."
+        return found
 
     def register_session(self, arguments: dict[str, Any]) -> dict:
         name = sessions.bare(arguments.get("name", ""))
@@ -1464,16 +1560,23 @@ class QupaServer:
 # ------------------------------------------------------------------- jsonrpc
 
 
+# A lent agent's tools answer from a thread of their own, since they wait for
+# minutes, so the lock keeps two answers from interleaving on stdout.
+STDOUT = threading.Lock()
+
+
 def respond(request_id: Any, result: dict) -> None:
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}) + "\n")
-    sys.stdout.flush()
+    with STDOUT:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}) + "\n")
+        sys.stdout.flush()
 
 
 def respond_error(request_id: Any, code: int, message: str) -> None:
-    sys.stdout.write(
-        json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}) + "\n"
-    )
-    sys.stdout.flush()
+    with STDOUT:
+        sys.stdout.write(
+            json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}) + "\n"
+        )
+        sys.stdout.flush()
 
 
 def use_utf8_stdio() -> None:
@@ -1523,19 +1626,12 @@ def main() -> int:
             params = message.get("params") or {}
             name = params.get("name", "")
             arguments = params.get("arguments") or {}
-            try:
-                respond(request_id, {"content": server.call_tool(name, arguments)})
-            except PolicyError as exc:
-                # As content, so the agent reads how to recover.
-                respond(
-                    request_id,
-                    {"content": [{"type": "text", "text": f"REFUSED: {exc}"}], "isError": True},
-                )
-            except (ForumWriteError, ValueError, KeyError, OSError) as exc:
-                respond(
-                    request_id,
-                    {"content": [{"type": "text", "text": f"ERROR: {exc}"}], "isError": True},
-                )
+            if name in LENT_TOOLS:
+                # These wait for a lent agent's answer, and the session's
+                # other calls are answered meanwhile.
+                threading.Thread(target=answer_call, args=(server, request_id, name, arguments), daemon=True).start()
+            else:
+                answer_call(server, request_id, name, arguments)
 
         elif method == "ping":
             respond(request_id, {})
@@ -1545,6 +1641,17 @@ def main() -> int:
 
     server.close()
     return 0
+
+
+def answer_call(server: QupaServer, request_id: Any, name: str, arguments: dict[str, Any]) -> None:
+    """Answer one tool call, with a refusal or a failure as content."""
+    try:
+        respond(request_id, {"content": server.call_tool(name, arguments)})
+    except PolicyError as exc:
+        # As content, so the agent reads how to recover.
+        respond(request_id, {"content": [{"type": "text", "text": f"REFUSED: {exc}"}], "isError": True})
+    except (ForumWriteError, ValueError, KeyError, OSError) as exc:
+        respond(request_id, {"content": [{"type": "text", "text": f"ERROR: {exc}"}], "isError": True})
 
 
 if __name__ == "__main__":

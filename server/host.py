@@ -328,6 +328,31 @@ class State:
                 post_id   INTEGER NOT NULL,
                 ranked    TEXT
             );
+
+            -- An agent its researcher lends, and the researchers whose
+            -- sessions may give it tasks, as a JSON list of their usernames.
+            CREATE TABLE IF NOT EXISTS lend_offers (
+                lender     TEXT PRIMARY KEY,
+                borrowers  TEXT NOT NULL,
+                note       TEXT NOT NULL DEFAULT '',
+                offered_at TEXT NOT NULL
+            );
+
+            -- Each task given to a lent agent, until a day after it ended.
+            CREATE TABLE IF NOT EXISTS lend_tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                lender      TEXT NOT NULL,
+                borrower    TEXT NOT NULL,
+                prompt      TEXT NOT NULL,
+                state       TEXT NOT NULL DEFAULT 'queued',
+                answer      TEXT NOT NULL DEFAULT '',
+                reason      TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                started_at  TEXT,
+                beat_at     TEXT,
+                finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS lend_tasks_by_lender ON lend_tasks (lender, state);
             """
         )
         self.db.commit()
@@ -428,6 +453,123 @@ class State:
             "ON CONFLICT(agent, topic_id) DO UPDATE SET reason = excluded.reason, at = excluded.at",
             (agent, topic_id, reason, datetime.now(timezone.utc).isoformat()),
         )
+        self.db.commit()
+
+    # -- lent agents
+
+    def lend_offer(self, lender: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT borrowers, note, offered_at FROM lend_offers WHERE lender = ?",
+                              (lender,)).fetchone()
+        return {"lender": lender, "to": json.loads(row[0]), "note": row[1], "offered_at": row[2]} if row else None
+
+    def set_lend_offer(self, lender: str, borrowers: list[str], note: str) -> None:
+        self.db.execute(
+            "INSERT INTO lend_offers (lender, borrowers, note, offered_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(lender) DO UPDATE SET borrowers = excluded.borrowers, note = excluded.note, "
+            "offered_at = excluded.offered_at",
+            (lender, json.dumps(sorted(set(borrowers))), note, datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+
+    def withdraw_lend_offer(self, lender: str) -> int:
+        """End the offer; the tasks not yet taken fail. How many did."""
+        self.db.execute("DELETE FROM lend_offers WHERE lender = ?", (lender,))
+        failed = self.db.execute(
+            "UPDATE lend_tasks SET state = 'failed', reason = ?, finished_at = ? WHERE lender = ? AND state = 'queued'",
+            (f"{lender}'s researcher stopped lending it", datetime.now(timezone.utc).isoformat(), lender),
+        ).rowcount
+        self.db.commit()
+        return failed
+
+    def offers_to(self, researcher: str) -> list[dict[str, Any]]:
+        """The offers that name ``researcher``."""
+        rows = self.db.execute("SELECT lender, borrowers, note FROM lend_offers ORDER BY lender").fetchall()
+        return [{"lender": lender, "note": note} for lender, borrowers, note in rows
+                if researcher.lower() in {name.lower() for name in json.loads(borrowers)}]
+
+    def add_lend_task(self, lender: str, borrower: str, prompt: str) -> int:
+        cursor = self.db.execute(
+            "INSERT INTO lend_tasks (lender, borrower, prompt, created_at) VALUES (?, ?, ?, ?)",
+            (lender, borrower, prompt, datetime.now(timezone.utc).isoformat()),
+        )
+        self.db.commit()
+        return int(cursor.lastrowid)
+
+    def open_lend_tasks(self, lender: str, borrower: str) -> int:
+        """How many of ``borrower``'s tasks for ``lender`` have not ended."""
+        return self.db.execute(
+            "SELECT count(*) FROM lend_tasks WHERE lender = ? AND borrower = ? AND state IN ('queued', 'running')",
+            (lender, borrower),
+        ).fetchone()[0]
+
+    def lend_task(self, task_id: int) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT id, lender, borrower, prompt, state, answer, reason, created_at, started_at, finished_at "
+            "FROM lend_tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        keys = ("id", "lender", "borrower", "prompt", "state", "answer", "reason", "created_at", "started_at",
+                "finished_at")
+        return dict(zip(keys, row)) if row else None
+
+    def take_lend_task(self, lender: str) -> dict[str, Any] | None:
+        """The oldest task queued for ``lender``, now running, or None."""
+        row = self.db.execute(
+            "SELECT id FROM lend_tasks WHERE lender = ? AND state = 'queued' ORDER BY id LIMIT 1", (lender,)
+        ).fetchone()
+        if row is None:
+            return None
+        now = datetime.now(timezone.utc).isoformat()
+        taken = self.db.execute(
+            "UPDATE lend_tasks SET state = 'running', started_at = ?, beat_at = ? WHERE id = ? AND state = 'queued'",
+            (now, now, row[0]),
+        ).rowcount
+        self.db.commit()
+        return self.lend_task(row[0]) if taken else None
+
+    def beat_lend_task(self, lender: str, task_id: int) -> bool:
+        changed = self.db.execute(
+            "UPDATE lend_tasks SET beat_at = ? WHERE id = ? AND lender = ? AND state = 'running'",
+            (datetime.now(timezone.utc).isoformat(), task_id, lender),
+        ).rowcount
+        self.db.commit()
+        return bool(changed)
+
+    def finish_lend_task(self, lender: str, task_id: int, answer: str, reason: str) -> bool:
+        """End a running task: done with its answer, or failed with why."""
+        changed = self.db.execute(
+            "UPDATE lend_tasks SET state = ?, answer = ?, reason = ?, finished_at = ? "
+            "WHERE id = ? AND lender = ? AND state = 'running'",
+            ("failed" if reason else "done", answer, reason, datetime.now(timezone.utc).isoformat(), task_id, lender),
+        ).rowcount
+        self.db.commit()
+        return bool(changed)
+
+    def lend_history(self, lender: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT id, borrower, state, reason, created_at, finished_at, length(prompt), length(answer) "
+            "FROM lend_tasks WHERE lender = ? ORDER BY id DESC LIMIT ?", (lender, limit),
+        ).fetchall()
+        keys = ("id", "borrower", "state", "reason", "created_at", "finished_at", "prompt_length", "answer_length")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def expire_lend_tasks(self, now: datetime | None = None) -> None:
+        """Fail a task no lender took in time, or whose lender stopped
+        answering, and forget a task's text a day after it ended."""
+        now = now or datetime.now(timezone.utc)
+        untaken = (now - timedelta(seconds=LEND_TAKE_SECONDS)).isoformat()
+        silent = (now - timedelta(seconds=LEND_SILENT_SECONDS)).isoformat()
+        ended = (now - timedelta(seconds=LEND_KEEP_SECONDS)).isoformat()
+        stamp = now.isoformat()
+        self.db.execute(
+            "UPDATE lend_tasks SET state = 'failed', finished_at = ?, reason = ? WHERE state = 'queued' AND created_at < ?",
+            (stamp, f"the lender's machine did not take it within {LEND_TAKE_SECONDS // 60} minutes; its daemon "
+                    "may not be running, or its researcher's plan may be at the limit they lend up to", untaken),
+        )
+        self.db.execute(
+            "UPDATE lend_tasks SET state = 'failed', finished_at = ?, reason = ? WHERE state = 'running' AND beat_at < ?",
+            (stamp, "the lender's machine stopped answering while it ran the task", silent),
+        )
+        self.db.execute("DELETE FROM lend_tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (ended,))
         self.db.commit()
 
     def latest_failure(self, agent: str) -> tuple[str, str] | None:
@@ -1252,6 +1394,127 @@ class Host:
 
     # ------------------------------------------------------------ notices
 
+    # ------------------------------------------------------- lent agents
+
+    def lend(self, agent: str, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """A request about lending an agent, from ``agent``, whose key was
+        checked: its researcher offering it or withdrawing it, its daemon
+        taking and answering the tasks given it, or a borrower's session
+        giving one and waiting for the answer. agent-kit/README.md, "Lending
+        your agent"."""
+        state = self.state
+        state.expire_lend_tasks()
+
+        offer = request.get("offer")
+        if isinstance(offer, dict):
+            names = offer.get("to")
+            if not isinstance(names, list) or not names or not all(isinstance(n, str) and n.strip() for n in names):
+                return 400, {"error": "name the researchers who may give your agent tasks, as {\"to\": [<usernames>]}"}
+            if self.researcher_for(agent) is None:
+                return 403, {"error": f"{agent} is not <researcher>-agent for a researcher on this forum"}
+            found = {n: None if n.strip().endswith("-agent") else self.forum.user(n.strip()) for n in names}
+            unknown = [n for n, user in found.items() if not user]
+            if unknown:
+                return 400, {"error": f"not a researcher on this forum: {', '.join(unknown)}. Name researchers, "
+                                      "not their agents"}
+            note = str(offer.get("note") or "").strip()[:300]
+            # As the forum spells each name, which a borrower is matched to whatever its case.
+            state.set_lend_offer(agent, [str(user.get("username") or n).strip() for n, user in found.items()], note)
+            LOG.info("%s is lent to %s", agent, ", ".join(names))
+            return 200, {"agent": agent, "offer": state.lend_offer(agent)}
+
+        if request.get("withdraw") is True:
+            failed = state.withdraw_lend_offer(agent)
+            LOG.info("%s is no longer lent; %d queued task(s) failed", agent, failed)
+            return 200, {"agent": agent, "offer": None, "failed": failed}
+
+        if request.get("status") is True:
+            return 200, {"agent": agent, "offer": state.lend_offer(agent), "tasks": state.lend_history(agent)}
+
+        # Whom an agent can be lent to, for the kit's lending browser.
+        if request.get("researchers") is True:
+            return 200, {"agent": agent, "researchers": [
+                {"username": username, "name": name} for username, name in self.researchers_with_agents()
+                if f"{username}-agent".lower() != agent.lower()]}
+
+        task = request.get("task")
+        if isinstance(task, dict):
+            lender = str(task.get("lender") or "").strip()
+            prompt = str(task.get("prompt") or "").strip()
+            if not lender or not prompt:
+                return 400, {"error": "send {\"task\": {\"lender\": <agent>, \"prompt\": <the task>}}"}
+            if len(prompt) > LEND_TEXT_CHARS:
+                return 413, {"error": f"a task is at most {LEND_TEXT_CHARS:,} characters; this one is {len(prompt):,}"}
+            standing = state.lend_offer(lender)
+            researcher = self.researcher_for(agent)
+            if standing is None or researcher is None or researcher.lower() not in {n.lower() for n in standing["to"]}:
+                return 403, {"error": f"{lender} is not lent to you now"}
+            if state.open_lend_tasks(lender, agent) >= LEND_OPEN_TASKS:
+                return 429, {"error": f"you have {LEND_OPEN_TASKS} tasks with {lender} already; wait for one to end"}
+            task_id = state.add_lend_task(lender, agent, prompt)
+            LOG.info("%s gave %s task %d (%d characters)", agent, lender, task_id, len(prompt))
+            return 200, {"agent": agent, "task": {"id": task_id, "state": "queued"}}
+
+        if "result" in request:
+            try:
+                task_id = int(request["result"])
+                wait = min(max(float(request.get("wait") or 0), 0.0), LEND_WAIT_SECONDS)
+            except (TypeError, ValueError):
+                return 400, {"error": "send {\"result\": <task id>, \"wait\": <seconds>}"}
+            deadline = time.monotonic() + wait
+            while True:
+                found = state.lend_task(task_id)
+                if found is None or found["borrower"] != agent:
+                    return 404, {"error": f"no task {task_id} of yours: it may have ended more than a day ago"}
+                if found["state"] in ("done", "failed") or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.5)
+                state.expire_lend_tasks()
+            return 200, {"agent": agent, "task": {k: found[k] for k in ("id", "lender", "state", "answer", "reason")}}
+
+        # The lender's daemon.
+        if request.get("take") is True:
+            if state.lend_offer(agent) is None:
+                return 200, {"agent": agent, "task": None}
+            taken = state.take_lend_task(agent)
+            if taken is None:
+                return 200, {"agent": agent, "task": None}
+            LOG.info("%s took task %d from %s", agent, taken["id"], taken["borrower"])
+            return 200, {"agent": agent, "task": {"id": taken["id"], "borrower": taken["borrower"],
+                                                  "researcher": self.researcher_for(taken["borrower"]) or "",
+                                                  "prompt": taken["prompt"]}}
+        if "beat" in request:
+            try:
+                ok = state.beat_lend_task(agent, int(request["beat"]))
+            except (TypeError, ValueError):
+                return 400, {"error": "send {\"beat\": <task id>}"}
+            return (200, {"agent": agent}) if ok else (404, {"error": "no such running task of yours"})
+        finish = request.get("finish")
+        if isinstance(finish, dict):
+            try:
+                task_id = int(finish["id"])
+            except (KeyError, TypeError, ValueError):
+                return 400, {"error": "send {\"finish\": {\"id\": <task id>, \"answer\": <text>}}"}
+            answer = str(finish.get("answer") or "")[:LEND_TEXT_CHARS]
+            reason = str(finish.get("failed") or "")[:300]
+            if not answer and not reason:
+                reason = "the lent agent gave no answer"
+            if not state.finish_lend_task(agent, task_id, answer, reason):
+                return 404, {"error": "no such running task of yours"}
+            LOG.info("%s %s task %d", agent, "failed" if reason else "finished", task_id)
+            return 200, {"agent": agent}
+
+        return 400, {"error": "a lend request is offer, withdraw, status, researchers, task, result, take, beat or finish"}
+
+    def lent_to(self, agent: str) -> list[dict[str, Any]]:
+        """The agents lent to ``agent``'s researcher, for its daemon's poll.
+        From the names alone, which the offer checked against the forum, so a
+        poll costs the forum nothing."""
+        if not agent.endswith("-agent"):
+            return []
+        return [{**offer, "researcher": offer["lender"].removesuffix("-agent")}
+                for offer in self.state.offers_to(agent.removesuffix("-agent"))]
+
     def researcher_for(self, agent: str) -> str | None:
         """The researcher behind `<researcher>-agent`, checked against the
         forum. None for a name that cannot be inverted or names nobody."""
@@ -1849,6 +2112,22 @@ class Host:
                 told.append(agent)
         return told
 
+    def researchers_with_agents(self) -> list[tuple[str, str]]:
+        """Each researcher whose `<researcher>-agent` is in the agents group,
+        as (username, name), by username."""
+        sql = """
+            SELECT r.username, coalesce(r.name, '')
+            FROM users a
+            JOIN group_users gu ON gu.user_id = a.id
+            JOIN groups g ON g.id = gu.group_id AND g.name = %s
+            JOIN users r ON r.username_lower = left(a.username_lower, length(a.username_lower) - 6)
+            WHERE a.username_lower LIKE '%%-agent' AND a.active AND r.active AND r.suspended_till IS NULL
+            ORDER BY r.username_lower
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(sql, (AGENTS_GROUP,))
+            return [(username, name) for username, name in cur.fetchall()]
+
     def agents_made(self) -> list[tuple[str, datetime]]:
         """Each member of the agents group, with when its account was made."""
         sql = """
@@ -2276,8 +2555,22 @@ class KeyChecker:
 KIT_VERSION_HEADER = "X-Kit-Version"
 # The chat bridge's header for the secret it shares with this host.
 BRIDGE_AGENT_SECRET_HEADER = "X-Qupa-Agent-Secret"
-# A request's body: a message an agent writes in Slack, with room to spare.
-MAX_BODY_BYTES = 16384
+# A request's body: a task for a lent agent, or its answer, with room to spare.
+MAX_BODY_BYTES = 262144
+
+# Lent agents. A task, and an answer, as text of at most this many characters.
+LEND_TEXT_CHARS = 100_000
+# A borrower's tasks for one lender that may be queued or running at once.
+LEND_OPEN_TASKS = 3
+# A queued task fails if the lender's machine has not taken it this soon, and
+# a running one if the machine has not said it is still at it for this long.
+LEND_TAKE_SECONDS = 15 * 60
+LEND_SILENT_SECONDS = 3 * 60
+# A task's text is kept this long after it ended, for its borrower to read.
+LEND_KEEP_SECONDS = 24 * 3600
+# The longest a borrower's request waits for an answer: under nginx's
+# proxy_read_timeout of 15 seconds.
+LEND_WAIT_SECONDS = 10
 # A resident daemon's name for its run, as agent-kit/qupa_cafe/__init__.py sends it.
 DAEMON_HEADER = "X-Qupa-Daemon"
 
@@ -2478,6 +2771,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(status, answer)
             return
 
+        # Lending an agent, giving a lent agent a task, and running one.
+        lend = body.get("lend")
+        if isinstance(lend, dict):
+            status, answer = self.host.lend(agent, lend)
+            self._send(status, answer)
+            return
+
         # A resident daemon, as it starts, claims its agent: any other one
         # polling for it is told to stop.
         claim = body.get("claim")
@@ -2651,6 +2951,8 @@ class Handler(BaseHTTPRequestHandler):
                 "pending": self.host.pending_for(agent),
                 "policy": self.host.floor_for(agent),
                 "interests": self.host.interests_for(agent),
+                "lent_to_you": self.host.lent_to(agent),
+                "lending": self.host.state.lend_offer(agent) is not None,
             }
             if upgrade:
                 payload["upgrade"] = upgrade

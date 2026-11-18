@@ -798,6 +798,18 @@ class StubHost:
     floor_for = Host.floor_for
     interests_for = Host.interests_for
     to_slack = Host.to_slack
+    lend = Host.lend
+    lent_to = Host.lent_to
+
+    def researchers_with_agents(self):
+        return [("Wendy", "Wendy Wan"), ("yoshi", "Yoshi")]
+
+    class forum:
+        """Every name is a user of the forum but "nobody"."""
+
+        @staticmethod
+        def user(name):
+            return None if name.lower() == "nobody" else {"username": name}
 
     def researcher_for(self, agent: str) -> str:
         return agent.removesuffix("-agent")
@@ -2274,3 +2286,89 @@ def test_a_slack_request_goes_to_the_bridge_as_the_agent_whose_key_was_checked(e
 def test_without_the_bridges_secret_agents_have_no_slack(endpoint):
     status, answer = post_wake(endpoint, {"slack": {"action": "channels"}})
     assert status == 503 and "no Slack workspace" in answer["error"]
+
+
+# ------------------------------------------------------------ lent agents
+
+
+def lend(base: str, agent: str, request: dict) -> tuple[int, dict]:
+    """A POST to /wake of ``{"lend": request}``, as ``agent``."""
+    return _answer(urllib.request.Request(
+        f"{base}/wake?agent={agent}", data=json.dumps({"lend": request}).encode(),
+        headers={"Content-Type": "application/json", **AUTH}, method="POST"))
+
+
+def test_a_lent_agent_takes_a_named_researcher_s_task_and_answers_it(endpoint):
+    status, said = lend(endpoint, "yoshi-agent", {"offer": {"to": ["Wendy"], "note": "numerics"}})
+    assert status == 200 and said["offer"]["to"] == ["Wendy"]
+
+    # The borrower's daemon sees it at its poll; nobody else's does.
+    seen = _answer(urllib.request.Request(f"{endpoint}/wake?agent=Wendy-agent", headers=AUTH))[1]
+    assert seen["lent_to_you"] == [{"lender": "yoshi-agent", "note": "numerics", "researcher": "yoshi"}]
+    assert _answer(urllib.request.Request(f"{endpoint}/wake?agent=eric-agent", headers=AUTH))[1]["lent_to_you"] == []
+
+    status, said = lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": "Integrate x^2."}})
+    assert status == 200
+    task_id = said["task"]["id"]
+    assert lend(endpoint, "Wendy-agent", {"result": task_id})[1]["task"]["state"] == "queued"
+    # Nobody else reads it.
+    assert lend(endpoint, "eric-agent", {"result": task_id})[0] == 404
+
+    status, said = lend(endpoint, "yoshi-agent", {"take": True})
+    assert said["task"] == {"id": task_id, "borrower": "Wendy-agent", "researcher": "Wendy", "prompt": "Integrate x^2."}
+    assert lend(endpoint, "yoshi-agent", {"take": True})[1]["task"] is None
+    assert lend(endpoint, "yoshi-agent", {"beat": task_id})[0] == 200
+    assert lend(endpoint, "eric-agent", {"finish": {"id": task_id, "answer": "forged"}})[0] == 404
+    assert lend(endpoint, "yoshi-agent", {"finish": {"id": task_id, "answer": "x^3/3"}})[0] == 200
+
+    task = lend(endpoint, "Wendy-agent", {"result": task_id, "wait": 5})[1]["task"]
+    assert task == {"id": task_id, "lender": "yoshi-agent", "state": "done", "answer": "x^3/3", "reason": ""}
+    history = lend(endpoint, "yoshi-agent", {"status": True})[1]["tasks"]
+    assert [(t["id"], t["borrower"], t["state"]) for t in history] == [(task_id, "Wendy-agent", "done")]
+
+
+def test_only_the_researchers_an_offer_names_may_give_its_agent_tasks(endpoint):
+    assert lend(endpoint, "yoshi-agent", {"offer": {"to": ["nobody"]}})[0] == 400
+    assert lend(endpoint, "yoshi-agent", {"offer": {"to": ["Wendy-agent"]}})[0] == 400
+    assert lend(endpoint, "yoshi-agent", {"offer": {"to": []}})[0] == 400
+    assert lend(endpoint, "eric-agent", {"task": {"lender": "yoshi-agent", "prompt": "hi"}})[0] == 403
+
+    lend(endpoint, "yoshi-agent", {"offer": {"to": ["wendy"]}})
+    assert lend(endpoint, "eric-agent", {"task": {"lender": "yoshi-agent", "prompt": "hi"}})[0] == 403
+    too_long = "x" * (host_module.LEND_TEXT_CHARS + 1)
+    assert lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": too_long}})[0] == 413
+    for _ in range(host_module.LEND_OPEN_TASKS):
+        assert lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": "hi"}})[0] == 200
+    assert lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": "hi"}})[0] == 429
+
+
+def test_withdrawing_fails_the_tasks_not_yet_taken_and_hides_the_agent(endpoint):
+    lend(endpoint, "yoshi-agent", {"offer": {"to": ["wendy"]}})
+    task_id = lend(endpoint, "Wendy-agent", {"task": {"lender": "yoshi-agent", "prompt": "hi"}})[1]["task"]["id"]
+
+    assert lend(endpoint, "yoshi-agent", {"withdraw": True})[1]["failed"] == 1
+    task = lend(endpoint, "Wendy-agent", {"result": task_id})[1]["task"]
+    assert task["state"] == "failed" and "stopped lending" in task["reason"]
+    assert _answer(urllib.request.Request(f"{endpoint}/wake?agent=Wendy-agent", headers=AUTH))[1]["lent_to_you"] == []
+    assert lend(endpoint, "yoshi-agent", {"take": True})[1]["task"] is None
+
+
+def test_a_task_nobody_takes_or_whose_lender_goes_silent_fails_and_is_forgotten_a_day_later(state):
+    state.set_lend_offer("yoshi-agent", ["wendy"], "")
+    untaken = state.add_lend_task("yoshi-agent", "Wendy-agent", "one")
+    running = state.add_lend_task("yoshi-agent", "Wendy-agent", "two")
+    state.db.execute("UPDATE lend_tasks SET state = 'running', beat_at = ? WHERE id = ?",
+                     (datetime.now(timezone.utc).isoformat(), running))
+    later = datetime.now(timezone.utc) + timedelta(seconds=host_module.LEND_TAKE_SECONDS + 1)
+
+    state.expire_lend_tasks(later)
+    assert "did not take it" in state.lend_task(untaken)["reason"]
+    assert "stopped answering" in state.lend_task(running)["reason"]
+
+    state.expire_lend_tasks(later + timedelta(seconds=host_module.LEND_KEEP_SECONDS + 1))
+    assert state.lend_task(untaken) is None and state.lend_task(running) is None
+
+
+def test_a_lender_s_window_lists_the_other_researchers_with_agents(endpoint):
+    status, said = lend(endpoint, "yoshi-agent", {"researchers": True})
+    assert status == 200 and said["researchers"] == [{"username": "Wendy", "name": "Wendy Wan"}]

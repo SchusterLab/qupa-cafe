@@ -39,6 +39,7 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -94,9 +95,10 @@ def env_dir(workspace: Path) -> Path:
     return workspace / ".pixi" / "envs" / "default"
 
 
-def load_config() -> dict | None:
+def load_config(path: Path | None = None) -> dict | None:
+    """The sandbox's configuration, or with ``path`` a lent task's."""
     try:
-        config = json.loads(config_path().read_text(encoding="utf-8"))
+        config = json.loads((path or config_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     # A relative wsl.exe is found only from the directory it was written in.
@@ -124,7 +126,8 @@ def ready(config: dict | None = None) -> bool:
         config.get("run", ""),
         config.get("pixi", ""),
         str(Path(config.get("run", "")).parent / "node_modules" / "@anthropic-ai" / "sandbox-runtime"),
-        str(env_dir(Path(config.get("workspace", "")))),
+        # A lent task's home has no environment: it uses the wakes' one.
+        str(env_dir(Path(config.get("env_workspace") or config.get("workspace", "")))),
     ]
     return all(item and Path(item).exists() for item in needed)
 
@@ -154,7 +157,8 @@ def wrapped(command: str, config: dict) -> str:
              "-e", shell_quote(wsl["node"]), shell_quote(wsl["run"]), shell_quote(wsl["config"]), encoded]
         )
     return " ".join(
-        [shell_quote(posix(config["node"])), shell_quote(posix(config["run"])), shell_quote(posix(str(config_path()))), encoded]
+        [shell_quote(posix(config["node"])), shell_quote(posix(config["run"])),
+         shell_quote(posix(str(config.get("config_file") or config_path()))), encoded]
     )
 
 
@@ -187,11 +191,16 @@ def decide(event: dict, config: dict | None) -> dict | None:
             out["updatedInput"] = updated
         return {"hookSpecificOutput": out}
 
+    lent = bool((config or {}).get("lend"))
     if tool == "SendMessage":
+        if lent:
+            return answer("deny", "A lent task works alone: it messages no session. Put what you found in your answer.")
         return handoff(arguments, answer)
     if tool in SLACK_TOOLS:
         return answer("deny", "A wake does not read or write in Slack: hand the post to one of your researcher's "
                               "sessions, or tell them by private message.")
+    if tool in LENT_TOOLS:
+        return answer("deny", "A wake does not give a lent agent tasks: that spends another researcher's plan.")
     if tool == REGISTER_TOOL:
         return answer("deny", "A wake is not a session with your researcher, so it does not register.")
     if tool in CATEGORY_TOOLS:
@@ -203,6 +212,9 @@ def decide(event: dict, config: dict | None) -> dict | None:
             return answer("deny", "The sandbox is not set up on this machine, so no command can run. "
                                   "Your researcher sets it up with qupa-install.")
         command = str(arguments.get("command") or "")
+        if lent and LEND_INSTALL.search(command):
+            return answer("deny", "A lent task cannot install packages: the environment is fixed. Use what is "
+                                  "installed, or download a pure-Python file with curl and import it from your home.")
         advice = pixi_advice.advise(command, config["workspace"])
         if advice:
             return answer("deny", advice)
@@ -220,7 +232,8 @@ def decide(event: dict, config: dict | None) -> dict | None:
         path = arguments.get(WRITE_TOOLS[tool])
         if path and within(str(path), protected, cwd):
             return answer("deny", f"{path} steers your wakes, so it is read-only here. Your researcher edits it.")
-        if path and config.get("wsl") and within(str(path), [config["workspace"]], cwd):
+        if path and config.get("wsl") and str(config["workspace"]).startswith(chr(92) * 2) \
+                and within(str(path), [config["workspace"]], cwd):
             # Claude Code asks before writing to a network path such as
             # \\wsl.localhost, whatever the hook approves, and a wake has
             # nobody to ask.
@@ -243,6 +256,10 @@ REGISTER_TOOL = "mcp__qupa-cafe__register_session"
 # Nor may it make a category, or change who reads one.
 CATEGORY_TOOLS = ("mcp__qupa-cafe__create_category", "mcp__qupa-cafe__add_to_category")
 SLACK_TOOLS = tuple(f"mcp__qupa-cafe__slack_{name}" for name in ("channels", "read", "post", "message"))
+# Nor may it give a lent agent a task, which spends another researcher's plan.
+LENT_TOOLS = ("mcp__qupa-cafe__lent_agent_run", "mcp__qupa-cafe__lent_agent_result")
+# An install a lent task types, which its fixed environment refuses.
+LEND_INSTALL = re.compile(r"(^|[\s;&|(])(pip3?|conda|mamba|micromamba|uv|pixi)\s+(\S+\s+)*?(install|add|remove|uninstall)\b")
 
 
 def handoff(arguments: dict, answer) -> dict:
@@ -279,27 +296,29 @@ def read_dirs(config: dict) -> list[str]:
     return list(config.get("read_dirs") or [])
 
 
-def hook_main() -> int:
+def hook_main(lent: bool = False) -> int:
     try:
         event = json.loads(sys.stdin.read() or "{}")
     except ValueError:
         return 0
-    result = decide(event, load_config())
+    result = decide(event, load_config(lend_config_path() if lent else None))
     if result is not None:
         sys.stdout.write(json.dumps(result))
     return 0
 
 
-def hook_command() -> str:
+def hook_command(lent: bool = False) -> str:
     """The hook as Claude Code runs it: this file under this interpreter."""
-    return f'"{posix(sys.executable)}" "{posix(str(Path(__file__).resolve()))}" hook'
+    return f'"{posix(sys.executable)}" "{posix(str(Path(__file__).resolve()))}" hook' + (" lend" if lent else "")
 
 
-def claude_settings() -> str:
-    """The ``--settings`` a sandboxed wake gets, as JSON."""
-    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS, "SendMessage", REGISTER_TOOL, *SLACK_TOOLS, *CATEGORY_TOOLS])
+def claude_settings(lent: bool = False) -> str:
+    """The ``--settings`` a sandboxed wake gets, or a lent task, as JSON."""
+    matcher = "|".join(["Bash", *READ_TOOLS, *WRITE_TOOLS, "SendMessage", REGISTER_TOOL, *SLACK_TOOLS, *CATEGORY_TOOLS,
+                        *LENT_TOOLS])
     return json.dumps(
-        {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]}]}}
+        {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": hook_command(lent),
+                                                                   "timeout": 30}]}]}}
     )
 
 
@@ -1198,9 +1217,97 @@ def forget_read(directory: str) -> bool:
     return True
 
 
+# ------------------------------------------------------------- lent tasks
+
+
+def lend_dir() -> Path:
+    """The folder Claude Code is asked to trust once, for every lent task's home in it."""
+    return sandbox_dir() / "lend"
+
+
+def lend_home() -> Path:
+    """A lent task's only directory, emptied before each task."""
+    return lend_dir() / "home"
+
+
+def lend_config_path() -> Path:
+    return sandbox_dir() / "lend-config.json"
+
+
+def lend_side_config(config: dict, home: str) -> dict:
+    """The sandbox's configuration, where commands run, for a lent task. Its
+    home is its HOME and TMPDIR, where commands start and the one place they
+    write. It reads the wakes' Python environment and cannot change it. It
+    reads nothing else of the researcher's: not their agent's directory, nor
+    their projects, nor the wakes' workspace."""
+    return {**config, "workspace": home, "env_workspace": config.get("env_workspace") or config["workspace"],
+            "agent_dirs": [], "read_dirs": [], "protected": [], "lend": True,
+            "config_file": str(lend_config_path())}
+
+
+def write_lend_side(home: str) -> bool:
+    """Write the lent task's configuration where commands run."""
+    config = load_config()
+    if not config:
+        return False
+    lend_config_path().write_text(json.dumps(lend_side_config(config, home), indent=2) + NL, encoding="utf-8")
+    return True
+
+
+def lend_config() -> dict | None:
+    """The configuration a lent task's hook and commands get, written now,
+    with the task's home emptied; None when the sandbox is not set up."""
+    config = load_config()
+    if not config or not ready(config):
+        return None
+    home = lend_home()
+    shutil.rmtree(home, ignore_errors=True)
+    (home / ".tmp").mkdir(parents=True)
+    wsl = config.get("wsl")
+    if not wsl:
+        return lend_side_config(config, str(home)) if write_lend_side(str(home)) else None
+    # On Windows: the home is on Windows' drive, where Write and Edit reach
+    # it, and the commands' side of the configuration is written in WSL.
+    linux_home = linux_path(str(home), wsl["mount"])
+    if linux_home is None:
+        return None
+    try:
+        ran = subprocess.run(wsl_command(config, "lend-config", linux_home), capture_output=True, text=True,
+                             timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if ran.returncode != 0:
+        return None
+    given = {"workspace": str(home), "agent_dirs": [], "read_dirs": [], "protected": [], "lend": True,
+             "wsl": {**wsl, "config": f"{wsl['dir']}/lend-config.json", "workspace": linux_home}}
+    lend_config_path().write_text(json.dumps(given, indent=2) + NL, encoding="utf-8")
+    return given
+
+
+def lend_notice(config: dict) -> str:
+    """What a lent task can do and how, for the end of its prompt."""
+    home = config["workspace"]
+    inside = (config.get("wsl") or {}).get("workspace") or home
+    where = f" Commands see it as {inside}." if inside != home else ""
+    return (
+        f"You work in {home}, which is empty when you start and is emptied after you finish.{where} "
+        "Commands start there, and it is the only place they and Write and Edit can write. Give Write and "
+        "Edit absolute paths. You can read nothing else on this machine but its system programs. Commands run "
+        "in a sandbox with the internet, and Python with numpy, scipy, matplotlib, pandas, sympy and the rest "
+        "of Jupyter's scipy-notebook packages, already active. The packages are fixed: nothing can be "
+        "installed. A command stops after two minutes unless you give Bash a longer timeout, of up to ten "
+        "minutes. Save a figure with savefig and look at it with Read. You have no tools for the forum, Slack or any "
+        "other service. Whoever gave you the task sees only your final message, so put the whole answer in "
+        "it, with the numbers, code or text they need; a file you write is not sent to them."
+    )
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["hook"]:
-        return hook_main()
+        return hook_main(lent=argv[1:2] == ["lend"])
+    if argv[:1] == ["lend-config"] and len(argv) == 2:
+        # In WSL, from Windows' lend_config: the lent task's home, as a Linux path.
+        return 0 if write_lend_side(argv[1]) else 1
     if argv[:1] == ["check"]:
         return 0 if check() else 1
     if argv[:1] == ["wsl-setup"] and len(argv) == 2:

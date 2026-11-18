@@ -93,11 +93,14 @@ def budget_of(value: str) -> str:
     return str(tokens)
 
 
-def read(path: Path | None = None, key: str = KEY) -> str:
+def read(path: Path | None = None, key: str = KEY, default: str | None = None) -> str:
     """The cap, or with ``key`` BUDGET_KEY the budget, as env says now, else
     as this process's environment does, else the default. An empty value
-    is none."""
-    value = os.environ.get(key, DEFAULT_BUDGET if key == BUDGET_KEY else DEFAULT)
+    is none. Another key ending _BUDGET is read as a budget, and any other as
+    a cap, with ``default`` its default."""
+    if default is None:
+        default = DEFAULT_BUDGET if key == BUDGET_KEY else DEFAULT
+    value = os.environ.get(key, default)
     try:
         lines = (path or diary.env_file()).read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -106,7 +109,7 @@ def read(path: Path | None = None, key: str = KEY) -> str:
         name, sep, found = line.strip().partition("=")
         if sep and name.strip() == key:
             value = found
-    return budget_of(value) if key == BUDGET_KEY else cap_of(value)
+    return budget_of(value) if key.endswith("_BUDGET") else cap_of(value)
 
 
 def write(cap: str, path: Path | None = None, key: str = KEY) -> None:

@@ -1550,7 +1550,7 @@ def claude_trusts(directory: str) -> bool:
     return any(_trust_key(str(path)) in trusted for path in (here, *above))
 
 
-def ensure_claude_trust(agent_dir: str) -> bool:
+def ensure_claude_trust(agent_dir: str, what: str = "your agent's wakes") -> bool:
     """A wake is a background session, which Claude Code starts only in a
     directory it trusts. If this one is not, Claude Code is opened in it with
     `/exit` as its first message: it asks its own question, and once it is
@@ -1566,13 +1566,13 @@ def ensure_claude_trust(agent_dir: str) -> bool:
         print("  Run `claude` there once, accept its question, and re-run qupa-install.")
         return False
     Path(agent_dir).mkdir(parents=True, exist_ok=True)
-    print("  Claude Code runs your agent's wakes only in a directory you trust. It will now ask")
+    print(f"  Claude Code runs {what} only in a directory you trust. It will now ask")
     print(f"  whether to trust {agent_dir}: choose to trust it, and it closes by itself.")
     subprocess.call([claude, "/exit"], cwd=agent_dir, env=outside_session_env())
     if claude_trusts(agent_dir):
         print(f"  ok: Claude Code trusts {agent_dir}.")
         return True
-    print(f"  Claude Code still does not trust {agent_dir}, so your agent cannot be woken there.")
+    print(f"  Claude Code still does not trust {agent_dir}, so it cannot run {what} there.")
     return False
 
 

@@ -597,6 +597,10 @@ class ForumHost:
         # agent, and where the daemon that has since taken it runs.
         self.instance = ""
         self.superseded_by: str | None = None
+        # Whether the agent's researcher lends it, and the agents lent to
+        # them, from the last poll; None from a host that does not say.
+        self.lending = False
+        self.lent_to_you: list[dict] | None = None
 
     def _wake_request(self, agent: str) -> urllib.request.Request:
         """The /wake request every call to the host starts from."""
@@ -668,6 +672,8 @@ class ForumHost:
             if "interests" in payload:
                 save_interests(self.settings, payload["interests"])
             self.policy = payload.get("policy") or {}
+            self.lending = payload.get("lending") is True
+            self.lent_to_you = payload.get("lent_to_you") if isinstance(payload.get("lent_to_you"), list) else None
             return payload.get("pending") or []
         except urllib.error.HTTPError as exc:
             # 409: a newer daemon for this agent, here or elsewhere, has it now.
@@ -1303,11 +1309,13 @@ def run_in_background(
     on_session=None,
     alive=None,
     ended=None,
+    held=None,
 ) -> tuple[str, str]:
     """Start ``command`` (a ``claude --bg``), wait for it to end, and remove
     it, since a finished background session keeps its processes (some 400 MB)
     until it is. ``ended``, given the session id, says it has ended where
-    Claude Code still lists it as working. Returns its last state ("done",
+    Claude Code still lists it as working. ``held`` says why it must stop
+    now, or empty; the wakes' limits when not given. Returns its last state ("done",
     "failed", "timeout", or why it never started) and its session id."""
     env = outside_session_env()
     try:
@@ -1351,7 +1359,7 @@ def run_in_background(
                 state = "timeout"
                 break
             # The wake's status line records the plan's usage as it goes.
-            if quota.held_back():
+            if (held or quota.held_back)():
                 state = CAPPED
                 break
             time.sleep(BACKGROUND_POLL_SECONDS)
@@ -1384,6 +1392,27 @@ def last_said(session: str) -> str:
                 if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
                     said = block["text"].strip()
     return said
+
+
+def turn_ended(session: str) -> bool:
+    """Whether a background session's one turn is over: the last message in
+    its transcript is the model's, ending its turn. Claude Code can go on
+    listing such a session as working, after a long command."""
+    from . import wakes  # wakes imports this module
+
+    path = wakes.transcript_path(session)
+    if path is None:
+        return False
+    last = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("type") in ("user", "assistant"):
+            last = record
+    return last is not None and last.get("type") == "assistant" and \
+        (last.get("message") or {}).get("stop_reason") == "end_turn"
 
 
 def failure_reason(state: str, session: str) -> str:
@@ -2692,6 +2721,10 @@ def run() -> int:
         replaced = host.claim(settings.api_username, uuid.uuid4().hex, here)
         if replaced:
             LOG.info("this daemon now has %s; the one on %s stops at its next poll", settings.api_username, replaced)
+        # Tasks for the agent while its researcher lends it, beside the wakes.
+        from . import lend  # lend imports this module
+
+        lend.start(settings, host)
 
     if args.once:
         limit_pass(settings, forum, args.dry_run)
@@ -2714,6 +2747,10 @@ def run() -> int:
                         LOG.info("removed the ended background wake %s, which nobody has open", short)
             limit_pass(settings, forum, args.dry_run)
             one_pass(settings, forum, host, handled, args.dry_run, journal)
+            if not args.dry_run:
+                from . import lend  # lend imports this module
+
+                lend.sync_agents(host.lent_to_you)
             diary_pass(settings, forum, host, handled, diary_state, args.dry_run, journal)
             rewrite_pass(settings, forum, host, diary_state, args.dry_run, journal)
             leaderboard_pass(settings, forum, host, handled, leaderboard_state, args.dry_run, journal)
