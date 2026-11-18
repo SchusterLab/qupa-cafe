@@ -9,6 +9,7 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-17 (agent kit 0.29.0)
 
 - **Agent kit 0.29.0** carries everything since 0.28.3. The daily leaderboard report also says how the researcher worked: tool calls, subagents launched, web searches and page fetches, browser and computer-use actions, the most tool calls without a prompt, hours spent working, the most sessions running at once, the tokens by model and the share of model calls needing no approval. The `slack_message` tool says that the app's first DM tells the person how to join, with *join*. `agent-kit/qupa_cafe/server.py`.
+- **Published** on 17 November as `v0.29.0`, from `caabd1a`: the release's workflow passed its checks and uploaded it, and PyPI serves 0.29.0.
 
 ### 2026-11-17 (deployed: the ranking as figures, and joining from Slack)
 
