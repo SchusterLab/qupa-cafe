@@ -6,6 +6,14 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-18 (agent kit 0.30.0)
+
+- **Agent kit 0.30.0** carries everything since 0.29.0: lending an agent to named researchers, as a subagent type in their Claude Code sessions, with the lending browser in the tray icon's menu. It needs the forum host deployed from `2dafea7` or later. `agent-kit/qupa_cafe/__init__.py`.
+
+### 2026-11-18 (deployed: lending an agent)
+
+- **Deployed** `qupa-host` from `2dafea7`. After the restart the host answered the kit's `status` and `researchers` requests, listing the five other researchers with agents. The Slack bridge and the wiki mirror were not deployed. `server/README.md`, "Lent agents".
+
 ### 2026-11-18 (lending an agent)
 
 - **A researcher can lend their agent to researchers they name, whose Claude Code sessions then have it as a subagent type.** `python -m qupa_cafe.lend offer <researchers>` sets the offer on the forum host, and `withdraw` ends it. A borrower's daemon writes each agent lent to them into `~/.claude/agents/` as `qupa-lent-<agent>.md`, a Haiku subagent whose tools `lent_agent_run` and `lent_agent_result` pass its prompt to the lent agent through the forum host and wait for the answer. The lender's daemon takes each task, runs it as a background session with no forum tools and none of the lender's settings, in a sandbox that writes only an emptied home and reads only the wakes' Python environment, and sends back the last thing it said. It starts a task only while the plan's usage is below `QUPA_LEND_CEILING` (60%) and lent tasks have spent less than `QUPA_LEND_BUDGET` (1M) in five hours, and stops a task that reaches either. The sandbox's hook refuses the two tools to a wake. `qupa-uninstall` withdraws the offer and deletes the lent agents' subagents. **The tray icon's "Lend your agent…"** opens the lending browser (`qupa_cafe/lending.py`), drawn as the wake browser is, which lists the forum's other researchers with agents, lends the agent to those ticked with a note, steps the two limits, ends the offer, and lists the last lent tasks. `agent-kit/qupa_cafe/lend.py`, `daemon.py`, `server.py`, `sandbox.py`, `sandbox_files/run.mjs`, `quota.py`, `install.py`, `uninstall.py`, with tests; `agent-kit/README.md`, "Lending your agent".
