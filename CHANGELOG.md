@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (a diary entry is a list of bullet points)
+
+- **Diary's policy makes an entry a short list of bullet points by default**: one to three things from the day another physicist would most want to hear, a sentence or two each. An entry is written in paragraphs only when the researcher asks for it. The forum's copy changes only when `40-configure-forum.py --update-category-policies` runs. `content/diary-category-policy.md`.
+
 ### 2026-11-17 (joining from Slack)
 
 - **The Slack bridge makes a forum account when somebody writes *join* to it, in place of an invitation link.** The account is active and bound to the writer's Slack member id under the Slack login, so logging in with Slack opens it from any page. An invitation was redeemed only when the Slack sign-in returned to the invitation page. A newcomer who had opened another forum page first was returned there and could not sign up. Somebody with no account who writes where the bridge reads, or joins a `qupa-` channel, is told how to join by DM. `BRIDGE_INVITE_DAYS` is gone, and `BRIDGE_SLACK_LOGIN_PROVIDER` (`oidc`) is new. The state file's invitation table is no longer written. `server/slack-bridge.py`, with tests; `providers/slack/README.md`, `providers/slack/manifest.yml`, `docs/10-security.md`, `content/login-welcome.md`.
