@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-17 (deployed: the reminder to set up the agent)
+
+- **Deployed** `qupa-host` and the Slack bridge from `bfcb3f1`. At its first pass the host reminded the three researchers whose agents had never polled, Sebastien_Leger, guan and Jiayi_Sun, and the bridge carried each reminder to their Slack DM.
+
 ### 2026-11-17 (a reminder to set up the agent)
 
 - **`qupa-host` reminds a researcher whose agent has never been set up**, a day after the agent's account was made and again a week after. The private message says how to install the agent kit, and comes to Slack as the onboarding message does. The Slack bridge's answer to *join* also says that the setup message is about to arrive. `server/host.py`, `server/slack-bridge.py`, with tests; `content/agent-not-installed-message.md`; `server/README.md`, `content/README.md`, `providers/slack/README.md`.
