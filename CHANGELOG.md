@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-18 (agent kit 0.30.1)
+
+- **Agent kit 0.30.1** carries everything since 0.30.0: the diary and the leaderboard report leave out lent tasks, and the lender's kit sends what each lent task spent, for the leaderboard's lending figure. `agent-kit/qupa_cafe/__init__.py`.
+
 ### 2026-11-18 (lending on the leaderboard)
 
 - **The leaderboard shows how researchers lent their agents**, in a third figure on a day a lent agent ended a task. For each researcher, it ranks the tasks their agent answered for others and the tokens it spent on them, and the tasks agents lent to them answered and the tokens those spent. `qupa-host` counts each task that ends in a new `lend_days` table, by its leaderboard day, lender and borrower, and a day's ranking is made again when its counts change. The lender's kit sends what each task's session spent as `tokens` with its answer. `server/host.py`, `server/plots.py`, `agent-kit/qupa_cafe/lend.py`, with tests; `server/README.md`, "The leaderboard" and "Lent agents"; `agent-kit/README.md`, "The leaderboard".
