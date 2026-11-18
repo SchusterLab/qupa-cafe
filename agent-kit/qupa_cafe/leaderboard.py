@@ -11,14 +11,17 @@ about. The report covers the same 24 hours the diary does, ending at
 later, it is the day it is posted; posted at any hour before 9:00, the day
 before (``diary.last_day``). It is posted whether or not the diary is on.
 
-It counts two things in those hours, each in input-token equivalents, as the
-wake browser weighs a wake's cost (``wakes.equivalent``):
+It counts two things in those hours, with tokens in input-token
+equivalents, as the wake browser weighs a wake's cost (``wakes.equivalent``):
 
 - the researcher's own Claude Code sessions, in every project, as the diary
-  finds them: how many, the prompts typed in them, and their tokens,
-  subagents' included;
+  finds them: how many, the prompts typed in them, and their tokens by
+  model, subagents' included; and how they worked (``Own``);
 - the agent's wakes, as the daemon's journal records them: how many started,
   and the tokens of their model calls in the hours.
+
+The researcher's numbers are counts, never names. No tool's input, project,
+file or MCP server is named in the report, since the forum reads it.
 
 A day with neither is not reported. The first lines of the report hold its
 numbers in a marker the host reads; the rest says them for a person.
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -87,11 +91,109 @@ def enabled(path: Path | None = None) -> bool:
 
 @dataclass
 class Own:
-    """The researcher's own Claude Code sessions in the hours."""
+    """The researcher's own Claude Code sessions in the hours.
+
+    A tool call is a ``tool_use`` block of a response, the subagents' too.
+    ``longest_run`` is the most tool calls one session made between two
+    prompts the researcher typed. ``active_minutes`` is how long any session
+    was working, and ``peak_sessions`` the most that were at once: a session
+    works from one of its records to the next unless IDLE passes between
+    them. ``unattended_calls`` are the model calls made in a permission mode
+    that asks nobody (UNATTENDED_MODES), of ``model_calls`` in all. ``models``
+    splits ``tokens`` by model family, such as "opus"."""
 
     sessions: int = 0
     prompts: int = 0
     tokens: int = 0
+    tool_calls: int = 0
+    subagents: int = 0
+    web_calls: int = 0
+    browser_calls: int = 0
+    longest_run: int = 0
+    active_minutes: int = 0
+    peak_sessions: int = 0
+    model_calls: int = 0
+    unattended_calls: int = 0
+    models: dict[str, int] = field(default_factory=dict)
+
+
+# The tools that start a subagent, and those that read the web.
+SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+WEB_TOOLS = frozenset({"WebFetch", "WebSearch", "web_fetch", "web_search"})
+# A browser or computer-use tool: the API's computer tool, or a tool of an MCP
+# server whose name says it drives a browser or the screen.
+BROWSER_SERVER = re.compile(r"browser|chrome|computer|playwright|puppeteer", re.I)
+# The permission modes in which Claude Code asks the researcher nothing.
+UNATTENDED_MODES = frozenset({"auto", "dontAsk", "bypassPermissions"})
+# A session is idle once this passes with nothing written to its transcript.
+IDLE = timedelta(minutes=5)
+
+
+def browser_tool(name: str) -> bool:
+    if name == "computer":
+        return True
+    parts = name.split("__")
+    return len(parts) >= 3 and parts[0] == "mcp" and bool(BROWSER_SERVER.search(parts[1]))
+
+
+def family(model: str) -> str:
+    """A model's family, "opus" for claude-opus-5-5, or "other"."""
+    found = re.match(r"claude-([a-z]+)", model)
+    return found.group(1) if found else "other"
+
+
+def spans(times: list[datetime]) -> list[tuple[datetime, datetime]]:
+    """The spans a session worked in, from the moments it wrote a record."""
+    found: list[list[datetime]] = []
+    for moment in sorted(times):
+        if found and moment - found[-1][1] <= IDLE:
+            found[-1][1] = moment
+        else:
+            found.append([moment, moment])
+    return [(a, b) for a, b in found]
+
+
+def active_minutes(sessions: list[list[tuple[datetime, datetime]]]) -> int:
+    """How long any of the sessions worked, in minutes."""
+    total = timedelta()
+    last: datetime | None = None
+    for a, b in sorted(span for each in sessions for span in each):
+        if last is None or a > last:
+            total += b - a
+            last = b
+        elif b > last:
+            total += b - last
+            last = b
+    return round(total.total_seconds() / 60)
+
+
+def peak(sessions: list[list[tuple[datetime, datetime]]]) -> int:
+    """The most of the sessions that worked at one moment."""
+    edges = sorted((moment, edge) for each in sessions for a, b in each for moment, edge in ((a, 0), (b, 1)))
+    most = now = 0
+    for _, edge in edges:
+        now += 1 if edge == 0 else -1
+        most = max(most, now)
+    return most
+
+
+def longest_run(events: list[tuple[datetime, int]]) -> int:
+    """The most tool calls between two prompts, from (moment, 0) for a prompt
+    and (moment, 1) for a tool call."""
+    most = run = 0
+    for _, kind in sorted(events):
+        run = run + 1 if kind else 0
+        most = max(most, run)
+    return most
+
+
+def _mode_at(timeline: list[tuple[datetime, str]], moment: datetime) -> str | None:
+    found = None
+    for at, mode in timeline:
+        if at > moment:
+            break
+        found = mode
+    return found
 
 
 @dataclass
@@ -136,13 +238,17 @@ def own_usage(projects: Path, start: datetime, end: datetime, exclude: set[str],
     """The researcher's sessions with a prompt typed or a model call made
     between ``start`` and ``end``, leaving out those the diary leaves out:
     the sessions in ``exclude`` and those named as the kit names its own.
-    A response is counted once, although a resumed or forked session's
-    transcript repeats the ones before it."""
+    A record, a response and a tool call are each counted once, although a
+    resumed or forked session's transcript repeats the ones before it."""
     from . import wakes  # wakes imports the daemon, which imports this module
 
     own = Own()
     seen: set[str] = set()
+    records_seen: set[str] = set()
+    calls_seen: set[str] = set()
     tokens = 0.0
+    models: dict[str, float] = {}
+    worked: list[list[tuple[datetime, datetime]]] = []
     for path in sorted(projects.glob("*/*.jsonl")):
         if path.stem in exclude:
             continue
@@ -157,27 +263,76 @@ def own_usage(projects: Path, start: datetime, end: datetime, exclude: set[str],
             continue
         subagents = sorted((path.with_suffix("") / "subagents").glob("*.jsonl"))
         used = False
+        times: list[datetime] = []
+        events: list[tuple[datetime, int]] = []
+        main_modes: list[tuple[datetime, str]] = []
         for each, listed in ((path, records), *((sub, _records(sub)) for sub in subagents)):
+            modes: list[tuple[datetime, str]] = []
             for record in listed:
                 at = diary.when(record)
-                if at is None or not start <= at < end:
+                if at is None:
                     continue
+                if record.get("type") == "user" and isinstance(record.get("permissionMode"), str):
+                    modes.append((at, record["permissionMode"]))
+                if not start <= at < end:
+                    continue
+                uuid = str(record.get("uuid") or "")
+                if uuid:
+                    if uuid in records_seen:
+                        continue
+                    records_seen.add(uuid)
+                times.append(at)
                 message = record.get("message") or {}
+                if not isinstance(message, dict):
+                    continue
                 if each == path and record.get("type") == "user" and not record.get("isSidechain") \
                         and not record.get("isMeta") and not record.get(diary.COMPACT_SUMMARY) \
                         and diary.typed(message.get("content")):
                     own.prompts += 1
+                    events.append((at, 0))
                     used = True
-                if record.get("type") != "assistant" or not isinstance(message.get("usage"), dict):
+                if record.get("type") != "assistant":
                     continue
-                response = str(message.get("id") or "") or f"{each} {record.get('uuid')}"
+                content = message.get("content")
+                for block in content if isinstance(content, list) else ():
+                    if not isinstance(block, dict) or block.get("type") not in ("tool_use", "server_tool_use"):
+                        continue
+                    call = str(block.get("id") or "") or f"{each} {uuid} {len(calls_seen)}"
+                    if call in calls_seen:
+                        continue
+                    calls_seen.add(call)
+                    name = str(block.get("name") or "")
+                    own.tool_calls += 1
+                    own.subagents += name in SUBAGENT_TOOLS
+                    own.web_calls += name in WEB_TOOLS
+                    own.browser_calls += browser_tool(name)
+                    events.append((at, 1))
+                    used = True
+                if not isinstance(message.get("usage"), dict):
+                    continue
+                response = str(message.get("id") or "") or f"{each} {uuid}"
                 if response in seen:
                     continue
                 seen.add(response)
-                tokens += wakes.equivalent(message["usage"], str(message.get("model") or ""))
+                model = str(message.get("model") or "")
+                cost = wakes.equivalent(message["usage"], model)
+                tokens += cost
+                if cost:
+                    models[family(model)] = models.get(family(model), 0.0) + cost
+                own.model_calls += 1
+                mode = _mode_at(modes, at) or _mode_at(main_modes, at)
+                own.unattended_calls += mode in UNATTENDED_MODES
                 used = True
-        own.sessions += used
+            if each == path:
+                main_modes = modes
+        if used:
+            own.sessions += 1
+            own.longest_run = max(own.longest_run, longest_run(events))
+            worked.append(spans(times))
     own.tokens = round(tokens)
+    own.models = {name: round(cost) for name, cost in sorted(models.items()) if round(cost)}
+    own.active_minutes = active_minutes(worked)
+    own.peak_sessions = peak(worked)
     return own
 
 
@@ -249,17 +404,30 @@ def raw(report: Report, agent: str, researcher: str) -> str:
     """The report's post. It names the researcher without an @, which would
     notify them of a post they have nothing to do with."""
     whose = researcher or "My researcher"
-    sessions = "session" if report.own.sessions == 1 else "sessions"
-    prompts = "prompt" if report.own.prompts == 1 else "prompts"
-    woke = "wake" if report.agent.wakes == 1 else "wakes"
+    own = report.own
+    models = ", ".join(f"{name} {count(tokens)}" for name, tokens in
+                       sorted(own.models.items(), key=lambda item: -item[1]))
+    hours = f"{own.active_minutes / 60:.1f}"
+    per_prompt = f"{own.tool_calls / own.prompts:.0f} per prompt" if own.prompts else "no prompt typed"
+    share = f"{100 * own.unattended_calls / own.model_calls:.0f}%" if own.model_calls else "none"
     return (
         f"<!-- {MARKER} {json.dumps(numbers(report), separators=(',', ':'))} -->\n"
-        f"Usage from {report.start:%Y-%m-%d %H:%M} to {report.end:%Y-%m-%d %H:%M}, {_zone(report.end)}, "
-        "in input-token equivalents:\n\n"
-        f"- {whose}'s Claude Code: {count(report.own.tokens)}, in {report.own.sessions} {sessions} "
-        f"with {report.own.prompts} {prompts} typed.\n"
-        f"- {agent}: {count(report.agent.tokens)}, in {report.agent.wakes} {woke}."
+        f"Usage from {report.start:%Y-%m-%d %H:%M} to {report.end:%Y-%m-%d %H:%M}, {_zone(report.end)}. "
+        "Tokens are in input-token equivalents.\n\n"
+        f"- {whose}'s Claude Code: {count(own.tokens)}, in {_n(own.sessions, 'session')} "
+        f"with {_n(own.prompts, 'prompt')} typed. Hours spent working: {hours}. "
+        f"Most sessions running at once: {own.peak_sessions}."
+        + (f" By model: {models}." if models else "") + "\n"
+        f"- Tool calls: {own.tool_calls}, {per_prompt}. Most tool calls without a prompt: {own.longest_run}. "
+        f"Subagents launched: {own.subagents}. Web searches and page fetches: {own.web_calls}. "
+        f"Browser and computer-use actions: {own.browser_calls}. Calls needing no approval: {share}.\n"
+        f"- {agent}: {count(report.agent.tokens)}, in {_n(report.agent.wakes, 'wake')}."
     )
+
+
+def _n(number: int, thing: str) -> str:
+    """"1 session", "2 sessions"."""
+    return f"{number} {thing}" if number == 1 else f"{number} {thing}s"
 
 
 # --------------------------------------------------------------- the day

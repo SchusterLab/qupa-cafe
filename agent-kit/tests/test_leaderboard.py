@@ -104,6 +104,65 @@ def test_the_researcher_s_own_use_counts_sessions_prompts_and_tokens_in_the_hour
 
     own = leaderboard.own_usage(projects, start, end, {"wake"}, ("qupa-cafe",))
     assert (own.sessions, own.prompts, own.tokens) == (2, 2, 1000 + 500 + 1000 + 200)
+    assert own.models == {"sonnet": 2700}
+
+
+def calls(message_id: str, when: str, *names: str, uuid: str = "", tokens: int = 100,
+          model: str = "claude-opus-5-5") -> dict:
+    """A response that calls ``names``, each block id its message's and its place."""
+    record = response(message_id, when, tokens, model)
+    record["message"]["content"] = [{"type": "tool_use", "id": f"{message_id}-{i}", "name": name, "input": {}}
+                                    for i, name in enumerate(names)]
+    if uuid:
+        record["uuid"] = uuid
+    return record
+
+
+def asked(text: str, when: str, mode: str) -> dict:
+    return {**typed(text, when), "permissionMode": mode}
+
+
+def test_how_the_researcher_worked_is_counted_from_tool_calls_modes_and_times(projects):
+    start, end = local(0), local(0, 0, DAY + timedelta(days=1))
+    write(projects / "p" / "one.jsonl", [
+        asked("look it up", at(9), "default"),
+        calls("a1", at(9, 1), "WebSearch", "WebFetch", uuid="u1"),
+        calls("a2", at(9, 2), "Agent", "mcp__Claude_Browser__click", uuid="u2"),
+        asked("now edit", at(9, 3), "auto"),
+        calls("a3", at(9, 4), "Edit", uuid="u3", model="claude-haiku-5-5"),
+        # Twenty minutes idle, then one more call: a second span of work.
+        calls("a4", at(9, 24), "Bash", uuid="u4"),
+    ])
+    # A subagent's calls are counted, in the mode its session was in.
+    write(projects / "p" / "one" / "subagents" / "agent-1.jsonl", [calls("s1", at(9, 4), "Read", "Grep")])
+    # A fork repeats the first records, which are counted once.
+    write(projects / "p" / "fork.jsonl", [
+        calls("a1", at(9, 1), "WebSearch", "WebFetch", uuid="u1"),
+        asked("other work", at(9, 2), "bypassPermissions"),
+        calls("f1", at(9, 3), "computer", "mcp__fusion__run", uuid="f1"),
+    ])
+
+    own = leaderboard.own_usage(projects, start, end, set(), ("qupa-cafe",))
+    assert own.sessions == 2 and own.prompts == 3
+    assert own.tool_calls == 2 + 2 + 1 + 1 + 2 + 2
+    assert (own.subagents, own.web_calls, own.browser_calls) == (1, 2, 2)
+    # one: 4 between "look it up" and "now edit", then 4 more (Edit, Read, Grep, Bash).
+    assert own.longest_run == 4
+    # 9:00-9:04 and 9:24 in one, 9:02-9:03 in the fork, which falls inside it.
+    assert own.active_minutes == 4
+    assert own.peak_sessions == 2
+    # a3, a4 and s1 in auto, f1 in bypassPermissions; a1 and a2 asked.
+    assert (own.model_calls, own.unattended_calls) == (6, 4)
+    assert own.models == {"haiku": 100, "opus": 500}
+
+
+def test_spans_merge_records_closer_than_the_idle_time():
+    t = local(9)
+    worked = [leaderboard.spans([t, t + timedelta(minutes=4), t + timedelta(minutes=30)]),
+              leaderboard.spans([t + timedelta(minutes=2), t + timedelta(minutes=6)])]
+    assert worked[0] == [(t, t + timedelta(minutes=4)), (t + timedelta(minutes=30),) * 2]
+    assert leaderboard.active_minutes(worked) == 6
+    assert leaderboard.peak(worked) == 2
 
 
 def test_the_agent_s_use_counts_its_wakes_but_not_its_parents_and_their_calls_in_the_hours(projects, tmp_path):
@@ -136,16 +195,27 @@ def test_the_agent_s_use_counts_its_wakes_but_not_its_parents_and_their_calls_in
 
 
 def test_the_report_holds_its_numbers_for_the_host_and_says_them_for_a_person():
+    own = leaderboard.Own(3, 41, 1_234_567, tool_calls=820, subagents=6, web_calls=30, browser_calls=1,
+                          longest_run=140, active_minutes=315, peak_sessions=2, model_calls=400,
+                          unattended_calls=340, models={"opus": 1_134_567, "sonnet": 100_000})
     report = leaderboard.Report(DAY, local(12, 0, DAY - timedelta(days=1)), local(12),
-                                own=leaderboard.Own(3, 41, 1_234_567), agent=leaderboard.Agent(5, 150_000))
+                                own=own, agent=leaderboard.Agent(5, 150_000))
     raw = leaderboard.raw(report, "sunada-agent", "sunada")
     first, rest = raw.split("\n", 1)
     assert first.startswith("<!-- qupa-cafe:leaderboard {") and first.endswith("} -->")
     numbers = json.loads(first[len("<!-- qupa-cafe:leaderboard "):-len(" -->")])
     assert numbers["day"] == "2026-10-10"
-    assert numbers["own"] == {"sessions": 3, "prompts": 41, "tokens": 1_234_567}
+    assert numbers["own"] == {"sessions": 3, "prompts": 41, "tokens": 1_234_567, "tool_calls": 820,
+                              "subagents": 6, "web_calls": 30, "browser_calls": 1, "longest_run": 140,
+                              "active_minutes": 315, "peak_sessions": 2, "model_calls": 400,
+                              "unattended_calls": 340, "models": {"opus": 1_134_567, "sonnet": 100_000}}
     assert numbers["agent"] == {"wakes": 5, "tokens": 150_000}
-    assert "sunada's Claude Code: 1.2M, in 3 sessions with 41 prompts typed." in rest
+    assert ("sunada's Claude Code: 1.2M, in 3 sessions with 41 prompts typed. Hours spent working: 5.2. "
+            "Most sessions running at once: 2. By model: opus 1.1M, sonnet 100k.") in rest
+    # The same names as the forum's figures.
+    assert ("Tool calls: 820, 20 per prompt. Most tool calls without a prompt: 140. Subagents launched: 6. "
+            "Web searches and page fetches: 30. Browser and computer-use actions: 1. "
+            "Calls needing no approval: 85%.") in rest
     assert "sunada-agent: 150k, in 5 wakes." in rest
     assert "@" not in raw
 

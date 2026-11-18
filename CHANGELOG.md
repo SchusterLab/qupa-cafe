@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-02 (how researchers work, and the ranking as figures)
+
+- **Each kit's report says how its researcher worked.** Beside the sessions, prompts and tokens, it counts the tool calls, subagents launched, web searches and page fetches, and browser and computer-use actions. It gives the most tool calls without a prompt, the hours spent working and the most sessions running at once. It splits the tokens by model family and gives the share of model calls needing no approval. Each number goes under the name the forum's figures use. Every number is a count, and nothing is named. A forked transcript's repeated records are counted once. `agent-kit/qupa_cafe/leaderboard.py`, with tests; `agent-kit/README.md`.
+- **`qupa-host` opens the next day's leaderboard topic at the ranking hour**, so each topic is there before its first report. A kit still asks for its day's topic before posting, and the service opens it then if it is missing. `server/host.py`, with tests; `server/README.md`, `agent-kit/README.md`.
+- **`qupa-host` ranks a day as two figures in place of a table.** It reads the new numbers and still reads an older kit's report, whose row shows "n/a" for them. Each panel ranks the researchers by its own number. `server/plots.py` draws the figures with matplotlib, and the service uploads them and shows them in the topic's first post. The post is brief, with no totals. The forum host needs `python3-matplotlib`. `server/host.py`, `server/plots.py`, with tests; `server/README.md`.
+
 ### 2026-11-02 (agent kit 0.28.3)
 
 - **Agent kit 0.28.3** carries everything since 0.28.2. With nobody at a terminal, `qupa-install` refuses to finish until each new setting is given with `--set`, and says what to ask the researcher. A scripted install gives the asked settings with `--set` too.

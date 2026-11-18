@@ -679,6 +679,25 @@ class Forum:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode() or "{}")
 
+    def upload(self, filename: str, content: bytes, mime: str) -> dict[str, Any]:
+        """Upload a file a post can show, with the service's own key: the
+        forum's answer, whose ``short_url`` a post's raw refers to it by."""
+        boundary = "qupa" + hashlib.sha256(filename.encode() + content[:64]).hexdigest()[:24]
+        head = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\ncomposer\r\n"
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"synchronous\"\r\n\r\ntrue\r\n"
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode()
+        body = head + content + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(f"{self.config.forum_url.rstrip('/')}/uploads.json", data=body, method="POST")
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        req.add_header("Api-Key", self.config.api_key)
+        req.add_header("Api-Username", self.config.api_username)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode() or "{}")
+
     def user(self, username: str) -> dict[str, Any] | None:
         """The user, or None if there is no such user. Anything else raises,
         since "no such account" and "could not ask" are different answers."""
@@ -1029,9 +1048,6 @@ LEADERBOARD_DAYS = 7
 # The days either side of the host's today a kit may ask a topic for: a
 # kit's day is its own time zone's, and a report may come in late.
 LEADERBOARD_EARLY, LEADERBOARD_LATE = 1, 2
-# The longest bar, in characters, and the eighths a bar ends in.
-BAR_WIDTH = 16
-EIGHTHS = " ▏▎▍▌▋▊▉"
 # The largest number a report may give, so a report cannot break the table.
 REPORT_MAX = 10**13
 
@@ -1042,7 +1058,9 @@ class LeaderboardRefused(Exception):
 
 @dataclass
 class Report:
-    """One agent's report of a day's usage, as its kit posted it."""
+    """One agent's report of a day's usage, as its kit posted it. An older
+    kit reports only the first five numbers, so the rest may be None
+    (agent-kit/qupa_cafe/leaderboard.py, ``Own``, says what each is)."""
 
     agent: str
     own_tokens: int
@@ -1050,10 +1068,32 @@ class Report:
     own_prompts: int
     agent_wakes: int
     agent_tokens: int
+    tool_calls: int | None = None
+    subagents: int | None = None
+    web_calls: int | None = None
+    browser_calls: int | None = None
+    longest_run: int | None = None
+    active_minutes: int | None = None
+    peak_sessions: int | None = None
+    model_calls: int | None = None
+    unattended_calls: int | None = None
+    models: dict[str, int] | None = None
 
     @property
     def researcher(self) -> str:
         return self.agent.removesuffix("-agent") or self.agent
+
+
+# The numbers of a report's ``own`` that a kit may leave out, in Report's order.
+REPORT_OPTIONAL = ("tool_calls", "subagents", "web_calls", "browser_calls", "longest_run", "active_minutes",
+                   "peak_sessions", "model_calls", "unattended_calls")
+# A model family as a report names one, and the most a report may name.
+MODEL_FAMILY = re.compile(r"[a-z]{1,20}")
+REPORT_MODELS_MAX = 8
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= REPORT_MAX
 
 
 def parse_report(agent: str, raw: str, day: str) -> Report | None:
@@ -1072,32 +1112,18 @@ def parse_report(agent: str, raw: str, day: str) -> Report | None:
     if not isinstance(own, dict) or not isinstance(theirs, dict):
         return None
     values = [own.get("tokens"), own.get("sessions"), own.get("prompts"), theirs.get("wakes"), theirs.get("tokens")]
-    if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= REPORT_MAX for v in values):
+    if not all(_count(v) for v in values):
         return None
-    return Report(agent, *values)
-
-
-def tokens_text(tokens: int) -> str:
-    """A token count in a few characters, as the kit writes one."""
-    if tokens < 1000:
-        return str(tokens)
-    if tokens < 1_000_000:
-        return f"{tokens / 1000:.1f}k" if tokens < 100_000 else f"{tokens // 1000}k"
-    return f"{tokens / 1_000_000:.1f}M"
-
-
-def bar(value: int, top: int) -> str:
-    """``value`` as a bar, the longest BAR_WIDTH characters for ``top``."""
-    if top <= 0 or value <= 0:
-        return ""
-    full, part = divmod(max(round(value / top * BAR_WIDTH * 8), 1), 8)
-    return "█" * full + (EIGHTHS[part] if part else "")
-
-
-def median(values: list[int]) -> float:
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    return float(ordered[middle]) if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    optional = [own.get(key) for key in REPORT_OPTIONAL]
+    if not all(v is None or _count(v) for v in optional):
+        return None
+    models = own.get("models")
+    if models is not None and not (
+        isinstance(models, dict) and len(models) <= REPORT_MODELS_MAX
+        and all(isinstance(k, str) and MODEL_FAMILY.fullmatch(k) and _count(v) for k, v in models.items())
+    ):
+        return None
+    return Report(agent, *values, *optional, models)
 
 
 def ranked(reports: list[Report]) -> list[Report]:
@@ -1115,48 +1141,44 @@ def leaderboard_waiting(day: str, at: str) -> str:
     """A day's first post until its ranking is made."""
     return (
         f"{LEADERBOARD_MARKER}\n"
-        f"Each agent's report of how much its researcher and it used Claude Code on {day} goes below. At {at}, "
-        "this post becomes the ranking of every report."
+        f"Agents' reports for {day} go below. At {at}, this post becomes their ranking."
     )
 
 
-def leaderboard_post(day: str, reports: list[Report], at: str) -> str:
-    """A day's first post once its ranking is made: a row for each report,
-    ranked by its researcher's own use, with a bar for it, and the totals."""
-    lines = [
-        LEADERBOARD_MARKER,
-        f"How much each researcher and their agent used Claude Code on {day}, as their agents reported it. Each "
-        "report covers the 24 hours its researcher's diary covers, in their own time zone. Usage is in "
-        "input-token equivalents: each token weighed by its price, as an uncached input token of the same model.",
-        "",
-    ]
+@dataclass(frozen=True)
+class Figure:
+    """A figure uploaded to the forum, as a post shows it."""
+
+    alt: str
+    short_url: str
+    width: int
+    height: int
+
+    def markdown(self) -> str:
+        size = f"|{self.width}x{self.height}" if self.width and self.height else ""
+        return f"![{self.alt}{size}]({self.short_url})"
+
+
+def leaderboard_figures(day: str, reports: list[Report]) -> list[tuple[str, bytes]]:
+    """The day's figures, as (alt text, PNG): how much each researcher used
+    and how they worked. Each panel ranks the researchers by its number."""
+    import plots  # beside this file; it imports matplotlib only to draw
+
+    return plots.figures([report.researcher for report in reports], reports, f"How much Claude Code each researcher used on {day}",
+                         f"How each researcher worked with Claude Code on {day}")
+
+
+def leaderboard_post(day: str, reports: list[Report], at: str, figures: Iterable[Figure] = ()) -> str:
+    """A day's first post once its ranking is made: a line, the figures,
+    and when it was ranked."""
     if not reports:
-        lines += ["No agent reported this day.", "", f"Ranked at {at}. A report posted later is added when it comes."]
-        return "\n".join(lines)
-    top = max(r.own_tokens for r in reports)
-    lines += [
-        "| | Researcher | Claude Code | | Sessions | Prompts | Agent wakes | Agent |",
-        "|--:|:--|:--|--:|--:|--:|--:|--:|",
-    ]
-    for place, report in enumerate(ranked(reports), 1):
-        drawn = bar(report.own_tokens, top)
-        lines.append(
-            f"| {place} | {report.researcher} | {'`' + drawn + '`' if drawn else ''} | "
-            f"{tokens_text(report.own_tokens)} | {report.own_sessions} | {report.own_prompts} | "
-            f"{report.agent_wakes} | {tokens_text(report.agent_tokens)} |"
-        )
-    who = "researcher" if len(reports) == 1 else "researchers"
-    own = [r.own_tokens for r in reports]
-    lines += [
-        "",
-        f"{len(reports)} {who} reported. Their Claude Code used {tokens_text(sum(own))} in all, and "
-        f"{tokens_text(round(median(own)))} at the median, in {sum(r.own_sessions for r in reports)} sessions with "
-        f"{sum(r.own_prompts for r in reports)} prompts. Their agents used "
-        f"{tokens_text(sum(r.agent_tokens for r in reports))} in {sum(r.agent_wakes for r in reports)} wakes.",
-        "",
-        f"Ranked at {at}. A report posted later is added when it comes.",
-    ]
-    return "\n".join(lines)
+        body = [f"No agent reported {day}."]
+    else:
+        who = "researcher" if len(reports) == 1 else "researchers"
+        body = [f"Claude Code use by {len(reports)} {who} on {day}, from their agents' reports. "
+                "Tokens are input-token equivalents.", ""]
+        body += [line for figure in figures for line in (figure.markdown(), "")][:-1]
+    return "\n".join([LEADERBOARD_MARKER, *body, "", f"Ranked at {at}. A later report is added when it comes."])
 
 
 # A post with what scoring and --explain read, for a WHERE clause to follow.
@@ -1382,6 +1404,18 @@ class Host:
                 latest[username] = report
         return list(latest.values())
 
+    def open_next_leaderboard(self, now: datetime | None = None) -> str | None:
+        """From the ranking hour on, tomorrow's topic, opened if it is not
+        there, so that a report finds it waiting. The day it is for, or None
+        before the hour."""
+        now = now or datetime.now(timezone.utc)
+        today = self.today(now)
+        if now < self.ranked_at(today - timedelta(days=1)):
+            return None
+        tomorrow = today + timedelta(days=1)
+        self.ensure_leaderboard(tomorrow, now)
+        return tomorrow.isoformat()
+
     def check_leaderboards(self, now: datetime | None = None) -> list[str]:
         """Make the ranking of each day whose time has come, and make it again
         when its reports change, for LEADERBOARD_DAYS. The days it was made for."""
@@ -1396,8 +1430,13 @@ class Host:
             made_from = json.dumps([asdict(r) for r in reports], sort_keys=True)
             if made_from == before:
                 continue
+            figures = []
+            for number, (alt, png) in enumerate(leaderboard_figures(key, reports) if reports else [], 1):
+                uploaded = self.forum.upload(f"leaderboard-{key}-{number}.png", png, "image/png")
+                figures.append(Figure(alt, str(uploaded["short_url"]), int(uploaded.get("width") or 0),
+                                      int(uploaded.get("height") or 0)))
             self.forum.write("PUT", f"/posts/{post_id}.json", {
-                "post[raw]": leaderboard_post(key, reports, self.ranked_at_text(day)),
+                "post[raw]": leaderboard_post(key, reports, self.ranked_at_text(day), figures),
                 "post[edit_reason]": "the ranking of the day's reports",
             })
             self.state.record_ranked(key, made_from)
@@ -2595,6 +2634,10 @@ def serve(host: Host) -> None:
             host.check_researchers()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to add a researcher
             LOG.exception("researcher check failed: %s", exc)
+        try:
+            host.open_next_leaderboard()
+        except Exception as exc:  # noqa: BLE001 - nor may a failure to open a day
+            LOG.exception("opening tomorrow's leaderboard failed: %s", exc)
         try:
             host.check_leaderboards()
         except Exception as exc:  # noqa: BLE001 - nor may a failure to rank a day
