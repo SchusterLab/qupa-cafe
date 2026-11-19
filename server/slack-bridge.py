@@ -1965,8 +1965,8 @@ class Bridge:
 
     def handle_conversation(self, event: dict) -> str:
         """In a DM with the bot, a top-level message opens a private message
-        with the writer's agent, and a thread reply continues one. In a group
-        DM, only a reply in a private message's thread is carried."""
+        with the writer's agent, and a thread reply continues one. A group DM
+        is ``handle_group``'s."""
         subtype = event.get("subtype")
         channel_id = event.get("channel") or ""
         user = event["user"]
@@ -2013,43 +2013,76 @@ class Bridge:
         return self.open_message(account, event, tell)
 
     def handle_group(self, event: dict, top_level: bool) -> str:
-        """A group DM's message. A reply in a private message's thread is
-        posted to it as its writer; anything else stays in Slack, and its
-        writer is told so privately."""
+        """A group DM's message, as a DM's: a top-level one opens a private
+        message with everybody in the group DM and their agents, and a reply
+        in its thread continues it. A reply in any other thread stays in
+        Slack, and its writer is told so privately."""
         subtype = event.get("subtype")
         channel_id = event.get("channel") or ""
         user = event["user"]
-        thread_ts = None if top_level else event.get("thread_ts")
-
-        def tell(text: str) -> None:
-            self.ephemeral(channel_id, user, thread_ts, text)
-
-        topic_id = None if top_level else self.state.topic_for(channel_id, thread_ts)
-        if topic_id is None:
-            if not subtype:
-                tell("Only replies in a private message's thread are carried to the forum. To talk to your agent, "
-                     "message this app directly. To start a message with others, write it on the forum.")
-            return "group DM, not relayed"
+        thread_ts = event.get("ts") if top_level else event.get("thread_ts")
         if subtype not in (None, "thread_broadcast", "file_share"):
             return f"ignored {subtype}"
+
+        def whisper(text: str) -> None:
+            self.ephemeral(channel_id, user, None if top_level else thread_ts, text)
+
+        def tell(text: str) -> None:
+            try:
+                self.slack.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
+            except Exception as exc:
+                LOG.warning("cannot answer %s: %s", user, exc)
+
+        topic_id = None if top_level else self.state.topic_for(channel_id, thread_ts)
+        if not top_level and topic_id is None:
+            whisper("This thread is not a private message on the forum, so nothing was posted.")
+            return "thread is not a private message"
         try:
             account, email = self.forum_user_for(user)
         except Unusable as exc:
-            tell(UNUSABLE_ACCOUNT)
+            whisper(UNUSABLE_ACCOUNT)
             return f"refused: {exc}"
         if not account:
-            # The app opens a group DM only with people who have accounts.
-            tell("You have no forum account, so nothing was posted.")
-            return "no account"
-        return self.post_as(account, topic_id, event, tell)
+            return self.no_account(user, email, whisper)
+        if topic_id is not None:
+            return self.post_as(account, topic_id, event, whisper)
 
-    def open_message(self, account: dict, event: dict, tell: Callable[[str], None]) -> str:
-        """A private message from the writer to their own agent."""
+        # Everybody else in the group DM must have an account. One without
+        # would be left out of the message, and its replies would then go to
+        # a group DM without them.
+        others, missing = [], []
+        for member in self.slack.conversations_members(channel=channel_id).get("members") or []:
+            if member in (user, self.bot_user_id):
+                continue
+            try:
+                found, _ = self.forum_user_for(member)
+            except Unusable:
+                found = None
+            if found:
+                others.append(found["username"])
+            elif not (self.slack.users_info(user=member).get("user") or {}).get("is_bot"):
+                missing.append(f"<@{member}>")
+        if missing:
+            verb = "has" if len(missing) == 1 else "have"
+            whisper(f"{', '.join(missing)} {verb} no forum account, so this conversation cannot be a private "
+                    "message on the forum, and nothing was posted.")
+            return "somebody in it has no forum account"
+        people = [account["username"], *others]
+        agents = [a for a in (self.agent_of(p) for p in people) if a]
+        return self.open_message(account, event, tell, recipients=others + agents)
+
+    def open_message(
+        self, account: dict, event: dict, tell: Callable[[str], None], recipients: list[str] | None = None,
+    ) -> str:
+        """A private message from the writer to ``recipients``, or with none
+        given, to their own agent."""
         sender = account["username"]
-        agent = self.agent_of(sender)
-        if not agent:
-            tell("You have no agent on the forum yet, so there is nobody to send this to.")
-            return "no agent to send to"
+        if recipients is None:
+            agent = self.agent_of(sender)
+            if not agent:
+                tell("You have no agent on the forum yet, so there is nobody to send this to.")
+                return "no agent to send to"
+            recipients = [agent]
 
         text = from_slack(event.get("text") or "", self.mention_for)
         files = self.carry_files(event, sender, tell)
@@ -2061,13 +2094,13 @@ class Bridge:
         with self.lock:
             try:
                 try:
-                    created = self.forum.private_message(title, raw, [agent], as_user=sender)
+                    created = self.forum.private_message(title, raw, recipients, as_user=sender)
                 except Refused as exc:
                     # A duplicate title, from two messages opening alike.
                     if "title" not in forum_error(exc).lower():
                         raise
                     stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(event.get("ts") or time.time())))
-                    created = self.forum.private_message(f"{title} ({stamp})", raw, [agent], as_user=sender)
+                    created = self.forum.private_message(f"{title} ({stamp})", raw, recipients, as_user=sender)
             except Refused as exc:
                 reason = forum_error(exc)
                 tell(f"The forum did not accept that message: {reason}")
@@ -2082,11 +2115,12 @@ class Bridge:
                 self.state.set_thread(topic_id, event["channel"], event["ts"])
 
         url = f"{self.forum.base_url}/t/{created.get('topic_slug') or 'message'}/{topic_id}"
+        names = recipients[0] if len(recipients) == 1 else ", ".join(recipients[:-1]) + f" and {recipients[-1]}"
         tell(
-            f"Sent to {agent} as <{url}|a private message> on the forum. Replies in this thread go to the same "
+            f"Sent to {names} as <{url}|a private message> on the forum. Replies in this thread go to the same "
             "private message. A new message outside the thread starts another one."
         )
-        return f"opened message {topic_id} as {sender} to {agent}"
+        return f"opened message {topic_id} as {sender} to {', '.join(recipients)}"
 
     def mention_for(self, slack_user: str) -> str:
         try:

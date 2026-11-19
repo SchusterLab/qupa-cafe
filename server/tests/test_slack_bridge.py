@@ -441,6 +441,9 @@ class FakeSlack:
         return {"channel": {"id": self.channels[name]}}
 
     def conversations_members(self, channel, limit=200, cursor=None):
+        if channel.startswith("G"):
+            # A group DM's members, from its id as conversations_open makes it.
+            return {"members": re.findall(r"U[A-Z]", channel) + ["UBOT"], "response_metadata": {}}
         return {"members": list(self.members.get(channel, [])), "response_metadata": {}}
 
     def conversations_invite(self, channel, users):
@@ -1069,12 +1072,47 @@ def group_dm(user, text, ts, thread_ts=None, channel="GUPUS"):
     return {**dm(user, text, ts, thread_ts=thread_ts, channel=channel), "channel_type": "mpim"}
 
 
-def test_a_group_dm_message_outside_a_private_messages_thread_is_not_carried(world):
+def test_a_group_dm_with_the_bot_is_a_private_message_with_everybody_and_their_agents(world):
     stub, slack, bridge = world
-    assert bridge.handle_message(group_dm("US", "Shall we write the comparison up?", "7100.1")) == "group DM, not relayed"
-    assert bridge.handle_message(group_dm("US", "And the plots?", "7100.2", thread_ts="7100.1")) == "group DM, not relayed"
+    outcome = bridge.handle_message(group_dm("US", "Shall we write the comparison up?", "7100.1"))
+    assert outcome.startswith("opened message")
+    as_user, form = stub.created_as[-1]
+    assert as_user == "sunada" and form["archetype"] == "private_message"
+    assert form["target_recipients"] == "pat,sunada-agent,pat-agent"
+    topic_id = max(stub.topics)
+    assert bridge.state.thread_for(topic_id) == ("GUPUS", "7100.1")
+    (note,) = in_thread(slack, "GUPUS", "7100.1")
+    assert "pat, sunada-agent and pat-agent" in note["text"]
+
+    # An agent's answer on the forum comes back into the same thread.
+    stub.post(topic_id, "pat-agent", "My d=5 data is in the shared folder.")
+    assert bridge.poll() == 1
+    reply = in_thread(slack, "GUPUS", "7100.1")[-1]
+    assert reply["username"] == "pat-agent" and reply["text"].startswith("My d=5 data")
+    assert stub.added == []
+
+    # Pat's reply in the thread posts to the message as pat, and is not echoed.
+    assert bridge.handle_message(group_dm("UP", "Yes, let's.", "7100.5", thread_ts="7100.1")).startswith("posted as pat")
+    assert stub.created_as[-1] == ("pat", {"topic_id": str(topic_id), "raw": "Yes, let's."})
+    before = len(in_thread(slack, "GUPUS", "7100.1"))
+    bridge.poll()
+    assert len(in_thread(slack, "GUPUS", "7100.1")) == before
+
+
+def test_a_group_dm_with_somebody_who_has_no_account_opens_no_message(world):
+    stub, slack, bridge = world
+    outcome = bridge.handle_message(group_dm("US", "Shall we write it up?", "7100.1", channel="GUNUS"))
+    assert outcome == "somebody in it has no forum account"
     assert stub.created_as == []
-    assert "message this app directly" in slack.ephemerals[-1]["text"]
+    assert slack.ephemerals[-1]["text"].startswith("<@UN> has no forum account")
+
+
+def test_a_reply_in_a_group_dms_other_thread_is_not_carried(world):
+    stub, slack, bridge = world
+    outcome = bridge.handle_message(group_dm("US", "And the plots?", "7100.2", thread_ts="7100.1"))
+    assert outcome == "thread is not a private message"
+    assert stub.created_as == []
+    assert slack.ephemerals[-1]["thread_ts"] == "7100.1"
 
 
 def test_someone_added_on_the_forum_brings_their_agent(world):

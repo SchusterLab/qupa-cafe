@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (a group DM with the bot opens a private message)
+
+- **A top-level message in a Slack group DM with the bot opens a forum private message** with everybody in the group DM and their agents, as one in a DM with the bot opens one with the writer's agent. Its thread continues the message. If somebody in the group DM has no forum account, nothing is posted, and the writer is told who. Before, the bot left every message in a group DM in Slack and said so to its writer each time. `server/slack-bridge.py` (`handle_group`, `open_message`), with tests; `providers/slack/README.md`.
+
 ### 2026-11-19 (deployed: group DMs and the chat-fit settings)
 
 - **Deployed** the chat bridge from `d3a60d3` over `bfcb3f1`'s copy, so `43af49c`'s workspace guard too, with `providers/slack/README.md`. Both are backed up as `.bak-20261119-slackfit`. The bridge restarted and is bridging. Its state file is unchanged in shape. The forum's settings were written through `40-configure-forum.py`'s own `apply_settings`, for `SIZE_SETTINGS` and `CHAT_FIT_SETTINGS` only, from a copy in `/tmp`. The host's copy of the script stays at its last deploy, since the rest of `d3a60d3`'s script would make the Lab wiki category, which waits on the wiki's credentials. A dry run showed only those eight settings changing, and the forum then returned each new value. Every person was at trust level 1 already, so `default_trust_level` holds only for accounts made from now on. Whispers are off, and `moderators` is the one group anyone may message, which is left on. On the scratch forum, a trust-level-1 person's reply "ok" was accepted twice in a row, six seconds apart. A group DM has not yet been opened in the real workspace.
