@@ -16,6 +16,7 @@ import hmac
 import importlib.util
 import io
 import json
+import sqlite3
 import re
 import sys
 import threading
@@ -42,7 +43,7 @@ spec.loader.exec_module(bridge_mod)
 
 def test_to_slack_escapes_and_converts_links_and_bold():
     text = bridge_mod.to_slack("a < b & **c** [arXiv](https://arxiv.org/abs/1) $x<y$", "https://f/t/x/1/1")
-    assert text == "a &lt; b &amp; *c* <https://arxiv.org/abs/1|arXiv> $x&lt;y$"
+    assert text == "a &lt; b &amp; *c* <https://arxiv.org/abs/1|arXiv> `$x&lt;y$`"
 
 
 def test_to_slack_resolves_relative_markdown_links():
@@ -164,6 +165,8 @@ class StubForum:
         self.created_as: list[tuple[str, dict]] = []
         self.edited_as: list[tuple[str, int, str]] = []
         self.deleted_as: list[tuple[str, int]] = []
+        # (as whom, post id, "like" or "unlike") for each like and its undoing.
+        self.likes: list[tuple[str, int, str]] = []
         self.next_post = 100
         # upload:// reference -> bytes; an image whose bytes are None is known
         # to the forum but fails to download.
@@ -353,6 +356,12 @@ def serve(stub: StubForum):
                     ]})
                 post = stub.post(topic["id"], as_user, form["raw"])
                 return self._json(200, post)
+            if self.path == "/post_actions.json":
+                post = next(p for p in stub.posts if p["id"] == int(form["id"]))
+                if post["username"] == self.headers.get("Api-Username"):
+                    return self._json(403, {"errors": ["You are not permitted to view the requested resource."]})
+                stub.likes.append((self.headers.get("Api-Username"), post["id"], "like"))
+                return self._json(200, {"id": post["id"]})
             if self.path.startswith("/t/") and self.path.endswith("/invite.json"):
                 topic = stub.topics[int(self.path.split("/")[2])]
                 topic["allowed_users"].append(form["user"])
@@ -387,6 +396,10 @@ def serve(stub: StubForum):
             return self._json(404, {})
 
         def do_DELETE(self):  # noqa: N802
+            if self.path.startswith("/post_actions/") and "post_action_type_id=2" in self.path:
+                post_id = int(self.path.split("/")[2].split(".")[0])
+                stub.likes.append((self.headers.get("Api-Username"), post_id, "unlike"))
+                return self._json(200, {})
             if self.path.startswith("/posts/"):
                 post_id = int(self.path.split("/")[2].removesuffix(".json"))
                 post = next(p for p in stub.posts if p["id"] == post_id)
@@ -413,6 +426,8 @@ class FakeSlack:
         self.channels: dict[str, str] = {}
         self.messages: list[dict] = []
         self.ephemerals: list[dict] = []
+        # (channel, ts) -> the reactions on that message, as reactions.get gives them.
+        self.reactions: dict[tuple[str, str], list[dict]] = {}
         self.dms: list[dict] = []
         self.people = {
             "US": {"id": "US", "profile": {"email": "sunada@uni.edu", "display_name": "Sunada"}},
@@ -555,6 +570,9 @@ class FakeSlack:
 
     def users_info(self, user):
         return {"user": self.people[user]}
+
+    def reactions_get(self, channel, timestamp):  # As Slack's reactions.get.
+        return {"message": {"reactions": self.reactions.get((channel, timestamp), [])}}
 
     def users_lookupByEmail(self, email):  # noqa: N802
         for person in self.people.values():
@@ -2101,3 +2119,153 @@ def test_a_message_deleted_in_slack_deletes_its_post_as_its_writer(world):
     assert bridge.handle_message(ours) == "not a deletion by a person"
     elsewhere = {**event, "previous_message": {"user": "US", "ts": "123.4"}}
     assert bridge.handle_message(elsewhere) == "a deleted message that is not on the forum"
+
+
+# ---------------------------------------------------------------- tables and math
+
+
+def test_a_table_becomes_a_code_block_with_its_columns_lined_up():
+    raw = "Thresholds:\n\n| d | p_th |\n|---|---:|\n| 5 | **0.0103** |\n| 11 | [0.0109](https://x.org) |\n\nDone."
+    text = bridge_mod.to_slack(raw, "https://f/t/x/1/1")
+    assert text == (
+        "Thresholds:\n\n```\nd   p_th\n--  ----------------------\n5   0.0103\n11  0.0109 (https://x.org)\n```\n\nDone."
+    )
+
+
+def test_math_is_code_so_slack_does_not_format_it():
+    raw = "The rate $p_L = A (p/p_{th})^{(d+1)/2}$ and \\(a_1 * b_1\\), at $5 and $10.\n\n$$\n\\sum_k a_k\n$$"
+    text = bridge_mod.to_slack(raw, "https://f/t/x/1/1")
+    assert text == (
+        "The rate `$p_L = A (p/p_{th})^{(d+1)/2}$` and `\\(a_1 * b_1\\)`, at $5 and $10.\n\n```\n$$\n\\sum_k a_k\n$$\n```"
+    )
+
+
+def test_tables_and_math_in_code_stay_as_written():
+    raw = "```\n| a | b |\n|---|---|\n$x_1$\n```\nand `$y_1$`"
+    assert bridge_mod.to_slack(raw, "https://f/t/x/1/1") == raw
+
+
+# ---------------------------------------------------------------- forum edits to posts written in Slack
+
+
+def test_a_forum_edit_to_a_post_written_in_slack_is_noted_in_its_thread(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    event = reply_event(slack, bridge, "US", "The d=9 run is done.")
+    bridge.handle_message(event)
+    post = stub.posts[-1]
+    channel, thread_ts = bridge.state.thread_for(10)
+
+    # The writer's own edit in Slack is no edit on the forum to tell of.
+    bridge.handle_message(edit_event(event, "The d=9 run is done, at last."))
+    bridge.edited("post", post["id"])
+    before = len(in_thread(slack, channel, thread_ts))
+    bridge.poll()
+    assert len(in_thread(slack, channel, thread_ts)) == before
+
+    post["raw"] = "The d=9 run is done; see the corrected plot."
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    note = in_thread(slack, channel, thread_ts)[-1]
+    assert note["text"].startswith("_sunada's post was edited on the forum, so it differs from their message here.")
+    assert f"/t/surface-code-thresholds/10/{post['post_number']}|Read it there>" in note["text"]
+    assert updates(slack) == []
+
+    # Told once an edit.
+    bridge.edited("post", post["id"])
+    bridge.poll()
+    assert in_thread(slack, channel, thread_ts)[-1] == note
+
+
+# ---------------------------------------------------------------- files in an edit in Slack
+
+
+def test_a_file_added_or_removed_in_a_slack_edit_changes_the_post(world, slack_files):
+    stub, slack, bridge = world
+    add, _ = slack_files
+    start_thread(stub, bridge)
+    shot = add("shot.png", PNG)
+    event = reply_event(slack, bridge, "US", "A plot.", subtype="file_share", files=[shot])
+    bridge.handle_message(event)
+    post = stub.posts[-1]
+
+    notes = add("notes.txt", b"d=9 notes", mime="text/plain")
+    assert bridge.handle_message(edit_event(event, "A plot.", files=[shot, notes])).startswith("edited post")
+    assert stub.edited_as[-1][2] == (
+        "A plot.\n\n![shot.png|10x20](upload://up1.png)\n[notes.txt|attachment](upload://up2.txt) (9 Bytes)"
+    )
+
+    gone = {"id": shot["id"], "mode": "tombstone"}
+    assert bridge.handle_message(edit_event(event, "A plot.", files=[gone, notes])).startswith("edited post")
+    assert stub.edited_as[-1][2] == "A plot.\n\n[notes.txt|attachment](upload://up2.txt) (9 Bytes)"
+    assert bridge.handle_message(edit_event(event, "A plot.", files=[gone, notes])) == "unchanged"
+    assert post["raw"] == stub.edited_as[-1][2]
+
+
+# ---------------------------------------------------------------- reactions
+
+
+def reaction(slack, kind, user, channel, ts, name="+1"):
+    """Slack's reaction event, and the reactions Slack then holds on the message."""
+    held = slack.reactions.setdefault((channel, ts), [])
+    entry = next((r for r in held if r["name"] == name), None)
+    if kind == "reaction_added":
+        if entry is None:
+            entry = {"name": name, "users": []}
+            held.append(entry)
+        entry["users"].append(user)
+    elif entry is not None:
+        entry["users"].remove(user)
+        if not entry["users"]:
+            held.remove(entry)
+    return {"type": kind, "user": user, "reaction": name, "item": {"type": "message", "channel": channel, "ts": ts}}
+
+
+def test_a_like_reaction_likes_the_post_as_its_giver(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    channel, thread_ts = bridge.state.thread_for(10)
+    copy = in_thread(slack, channel, thread_ts)[-1]
+    ts = next(t for t, m in slack.sent.items() if m is copy)
+    pats = stub.posts[-1]["id"]
+
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "US", channel, ts)) == f"liked post {pats} as sunada"
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "US", channel, ts, "heart::skin-tone-2")).startswith("liked")
+    # The like goes with the last of sunada's like reactions.
+    assert bridge.handle_reaction(reaction(slack, "reaction_removed", "US", channel, ts)) == "another like reaction stays"
+    assert bridge.handle_reaction(reaction(slack, "reaction_removed", "US", channel, ts, "heart::skin-tone-2")) == (
+        f"unliked post {pats} as sunada"
+    )
+    assert stub.likes == [("sunada", pats, "like"), ("sunada", pats, "like"), ("sunada", pats, "unlike")]
+
+    # The thread's parent is the first post's copy.
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "UP", channel, thread_ts)).startswith("liked post")
+    assert stub.likes[-1] == ("pat", stub.topics[10]["posts"][0]["id"], "like")
+
+
+def test_reactions_that_are_no_like_or_on_no_post_do_nothing(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    channel, thread_ts = bridge.state.thread_for(10)
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "US", channel, thread_ts, "eyes")) == "not a like"
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "US", channel, "1.1")) == "a message that is no post"
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "UN", channel, thread_ts)) == "no account"
+    # One's own post: the forum refuses, and the reaction stays in Slack only.
+    assert bridge.handle_reaction(reaction(slack, "reaction_added", "US", channel, thread_ts)).startswith("refused")
+    assert stub.likes == []
+
+
+def test_a_state_file_without_the_slack_files_column_gains_it(tmp_path):
+    path = tmp_path / "state.db"
+    db = sqlite3.connect(str(path))
+    db.execute("CREATE TABLE from_slack (post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL, "
+               "raw TEXT, files TEXT)")
+    db.execute("INSERT INTO from_slack VALUES (7, 'C1', '1.1', 'Text', 'markdown')")
+    db.commit()
+    db.close()
+    state = bridge_mod.State(path)
+    # Its files are unknown by id, so an edit leaves them as they are.
+    assert state.written_at("C1", "1.1") == (7, "Text", "markdown", None)
+    state.record_from_slack(8, "C1", "2.1", "More", {"F1": "[a.txt|attachment](upload://a.txt)"})
+    assert state.written_at("C1", "2.1") == (8, "More", "[a.txt|attachment](upload://a.txt)",
+                                             {"F1": "[a.txt|attachment](upload://a.txt)"})

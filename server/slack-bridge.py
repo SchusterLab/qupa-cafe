@@ -117,6 +117,10 @@ PLACEHOLDER_WATCH_SECONDS = 86400
 
 # Not a whisper or a small action.
 POST_TYPE_REGULAR = 1
+# The forum's like, as a post action.
+LIKE = 2
+# The Slack reactions that are a like on the forum, with any skin tone.
+LIKE_REACTIONS = {"+1", "thumbsup", "heart"}
 
 TOPIC_HINT = "Reply in this thread to post to the topic."
 PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
@@ -184,10 +188,12 @@ class State:
                 -- A post written in Slack keeps the text it was given, to tell an
                 -- edit from Slack's report of a link preview arriving, and the
                 -- markdown of the files it carried, which an edit in Slack keeps:
-                -- the edited message's text does not mention them.
+                -- the edited message's text does not mention them. slack_files
+                -- maps each Slack file's id to its markdown, as JSON, so an edit
+                -- that adds or removes a file changes the post's.
                 CREATE TABLE IF NOT EXISTS from_slack (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
-                    raw TEXT, files TEXT);
+                    raw TEXT, files TEXT, slack_files TEXT);
                 CREATE TABLE IF NOT EXISTS placeholders (
                     post_id INTEGER PRIMARY KEY, channel_id TEXT NOT NULL, ts TEXT NOT NULL,
                     thread_ts TEXT NOT NULL, topic_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -213,6 +219,10 @@ class State:
                     codes INTEGER NOT NULL, files TEXT NOT NULL);
                 """
             )
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(from_slack)")}
+            if "slack_files" not in columns:
+                # A state file made before the column, whose posts' files stay as they are.
+                self.db.execute("ALTER TABLE from_slack ADD COLUMN slack_files TEXT")
 
     def _one(self, sql: str, *args) -> tuple | None:
         with self.lock:
@@ -270,20 +280,46 @@ class State:
         return row[0] if row else None
 
     def record_from_slack(
-        self, post_id: int, channel_id: str, ts: str, raw: str | None = None, files: str = "",
+        self, post_id: int, channel_id: str, ts: str, raw: str | None = None,
+        slack_files: dict[str, str] | None = None,
     ) -> None:
+        slack_files = slack_files or {}
         self._run(
-            "INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts, raw, files) VALUES (?, ?, ?, ?, ?)",
-            post_id, channel_id, ts, raw, files,
+            "INSERT OR IGNORE INTO from_slack (post_id, channel_id, ts, raw, files, slack_files) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            post_id, channel_id, ts, raw, "\n".join(slack_files.values()), json.dumps(slack_files),
         )
 
-    def written_at(self, channel_id: str, ts: str) -> tuple[int, str | None, str] | None:
-        """(post id, raw, files' markdown) for the post a Slack message became."""
-        row = self._one("SELECT post_id, raw, files FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts)
-        return (row[0], row[1], row[2] or "") if row else None
+    def written_at(self, channel_id: str, ts: str) -> tuple[int, str | None, str, dict[str, str] | None] | None:
+        """(post id, raw, files' markdown, the files by Slack id) for the post
+        a Slack message became; the last is None for a post recorded without it."""
+        row = self._one(
+            "SELECT post_id, raw, files, slack_files FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts,
+        )
+        if not row:
+            return None
+        return row[0], row[1], row[2] or "", json.loads(row[3]) if row[3] is not None else None
 
-    def set_slack_raw(self, post_id: int, raw: str) -> None:
-        self._run("UPDATE from_slack SET raw = ? WHERE post_id = ?", raw, post_id)
+    def slack_message_of(self, post_id: int) -> tuple[str, str, str | None] | None:
+        """(channel, ts, raw) of the Slack message a post was written as."""
+        row = self._one("SELECT channel_id, ts, raw FROM from_slack WHERE post_id = ?", post_id)
+        return (row[0], row[1], row[2]) if row else None
+
+    def post_at(self, channel_id: str, ts: str) -> int | None:
+        """The post a Slack message is the copy of, or was written as."""
+        row = self._one("SELECT post_id FROM copies WHERE channel_id = ? AND ts = ?", channel_id, ts)
+        if not row:
+            row = self._one("SELECT post_id FROM from_slack WHERE channel_id = ? AND ts = ?", channel_id, ts)
+        return row[0] if row else None
+
+    def set_slack_raw(self, post_id: int, raw: str, slack_files: dict[str, str] | None = None) -> None:
+        if slack_files is None:
+            self._run("UPDATE from_slack SET raw = ? WHERE post_id = ?", raw, post_id)
+            return
+        self._run(
+            "UPDATE from_slack SET raw = ?, files = ?, slack_files = ? WHERE post_id = ?",
+            raw, "\n".join(slack_files.values()), json.dumps(slack_files), post_id,
+        )
 
     def watch_placeholder(
         self, post_id: int, channel_id: str, ts: str, thread_ts: str, topic: dict, mention: bool, codes: bool,
@@ -543,6 +579,12 @@ class Forum:
             as_user=as_user,
         )
 
+    def like(self, post_id: int, as_user: str) -> dict:
+        return self.request("POST", "/post_actions.json", {"id": post_id, "post_action_type_id": LIKE}, as_user=as_user)
+
+    def unlike(self, post_id: int, as_user: str) -> Any:
+        return self.request("DELETE", f"/post_actions/{post_id}.json?post_action_type_id={LIKE}", as_user=as_user)
+
     def edit(self, post_id: int, raw: str, as_user: str) -> dict:
         return self.request("PUT", f"/posts/{post_id}.json", {"post[raw]": raw}, as_user=as_user)
 
@@ -720,6 +762,11 @@ def upload_markdown(upload: dict, name: str) -> str:
     return f"[{label}|attachment]({short_url}){size}"
 
 
+def file_key(file: dict) -> str:
+    """A Slack file's id, or its name for one given without."""
+    return file.get("id") or file.get("name") or file.get("title") or "file"
+
+
 def with_files(text: str, files: str) -> str:
     return "\n\n".join(part for part in (text, files) if part)
 
@@ -759,11 +806,60 @@ def slack_mentions(text: str, mention_for: Callable[[str], str | None]) -> str:
     return _FORUM_MENTION.sub(swap, text)
 
 
+# Code, which tables and math in it are not: a fence, or an inline span.
+_CODE = re.compile(r"(^[ \t]*```.*?^[ \t]*```[ \t]*$|^[ \t]*~~~.*?^[ \t]*~~~[ \t]*$|`[^`\n]+`)", re.M | re.DOTALL)
+# A markdown table: a header row, the row of dashes under it, and its rows.
+_TABLE = re.compile(
+    r"^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*\n(?:[ \t]*\|?.*\|.*(?:\n|$))*",
+    re.M,
+)
+# TeX as the forum's math plugin reads it. An inline one opens on a character
+# and closes after one, so "$5 and $10" is no formula.
+_DISPLAY_MATH = re.compile(r"\$\$.+?\$\$|\\\[.+?\\\]", re.DOTALL)
+_INLINE_MATH = re.compile(r"(?<![\\$\w])\$(?=[^\s$])[^$\n`]*?[^\s$\\]\$(?![\w$])|\$[^\s$]\$(?![\w$])|\\\([^`\n]+?\\\)")
+
+
+def outside_code(text: str, change: Callable[[str], str]) -> str:
+    """``change`` applied to everything but code."""
+    parts = _CODE.split(text)
+    return "".join(part if i % 2 else change(part) for i, part in enumerate(parts))
+
+
+def table_cells(line: str) -> list[str]:
+    line = line.strip()
+    line = line[1:] if line.startswith("|") else line
+    line = line[:-1] if line.endswith("|") and not line.endswith("\\|") else line
+    cells = re.split(r"(?<!\\)\|", line)
+    return [_MD_LINK.sub(r"\1 (\2)", c.strip().replace("\\|", "|")).replace("**", "") for c in cells]
+
+
+def table_text(match: re.Match) -> str:
+    """A markdown table as a code block, its columns lined up, since Slack
+    shows a table's markdown as it is, in a font whose columns do not align."""
+    lines = [line for line in match.group(0).splitlines() if line.strip()]
+    rows = [table_cells(line) for i, line in enumerate(lines) if i != 1]
+    columns = max(len(row) for row in rows)
+    rows = [row + [""] * (columns - len(row)) for row in rows]
+    widths = [max(len(row[i]) for row in rows) for i in range(columns)]
+    out = ["  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+    out.insert(1, "  ".join("-" * w for w in widths))
+    ending = "\n" if match.group(0).endswith("\n") else ""
+    return "```\n" + "\n".join(out) + "\n```" + ending
+
+
+def math_text(text: str) -> str:
+    """TeX as code, which Slack shows as written: outside code, its
+    underscores and asterisks would turn to italics and bold."""
+    text = _DISPLAY_MATH.sub(lambda m: "\n```\n" + m.group(0).strip() + "\n```\n", text)
+    return outside_code(text, lambda part: _INLINE_MATH.sub(lambda m: f"`{m.group(0)}`", part))
+
+
 def to_slack(
     raw: str, link: str, codes: bool = False, mention_for: Callable[[str], str | None] | None = None,
 ) -> str:
     """Forum markdown, readable in a thread: links, bold, superscripts, images
-    and, with ``mention_for``, mentions converted, and the rest as written, in full.
+    and, with ``mention_for``, mentions converted, tables and math as code, and
+    the rest as written, in full.
     ``link`` is the post's address, against which a relative one is resolved;
     ``codes`` is ``redact``'s. A post is at
     most `max_post_length` (3,800) characters, which with a title and a closing
@@ -773,6 +869,9 @@ def to_slack(
     text = _MD_IMAGE.sub(image_text, _HTML_COMMENT.sub("", redact(raw, codes)))
     text = _UPLOAD.sub(lambda m: m.group(1), text)
     text = _FENCE_LANGUAGE.sub(lambda m: m.group(1), text)
+    text = outside_code(text, lambda part: _TABLE.sub(table_text, part))
+    text = outside_code(text, math_text)
+    text = outside_code(text, lambda part: re.sub(r"\n{3,}", "\n\n", part))
     text = _HTML_LINK.sub(lambda m: html_link(m, link), text)
     text = _HTML_SUP.sub(lambda m: m.group(1).translate(SUPERSCRIPT_DIGITS), text)
     text = slack_escape(text)
@@ -1535,7 +1634,7 @@ class Bridge:
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
         if self.state.origin_of(post_id) is not None:
-            return "came from Slack, where the message is its writer's"
+            return self.tell_edited(post)
         copy = self.state.copy_of(post_id) or self.find_copy(post)
         if copy is None:
             return "no copy in Slack"
@@ -1557,6 +1656,29 @@ class Bridge:
         self.send_files(post, copy.channel_id, copy.thread_ts, sent=tuple(copy.files))
         self.record_copy(post, copy.channel_id, copy.ts, copy.thread_ts, copy.parent, copy.mention, copy.codes)
         return f"updated its copy in {copy.channel_id}"
+
+    def tell_edited(self, post: dict) -> str:
+        """A post written in Slack, edited on the forum: only its writer can
+        edit their message, so its thread says the post differs from it."""
+        written = self.state.slack_message_of(post["id"])
+        if written is None:
+            return "came from Slack"
+        channel_id, ts, stored = written
+        if same_text(post.get("raw"), stored):
+            return "came from Slack, and reads as its message does"
+        threaded = self.state.thread_for(post["topic_id"])
+        if not threaded or threaded[0] != channel_id:
+            return "came from Slack, whose thread is elsewhere now"
+        topic = self.topic_meta(post)
+        url = self.post_url(topic, post.get("post_number") or 1)
+        author = post.get("username") or "somebody"
+        self.slack.chat_postMessage(
+            channel=channel_id, thread_ts=threaded[1], unfurl_links=False, unfurl_media=False,
+            text=f"_{author}'s post was edited on the forum, so it differs from their message here. <{url}|Read it there>._",
+        )
+        # Told once an edit: the next differs from this text.
+        self.state.set_slack_raw(post["id"], post.get("raw") or "")
+        return f"came from Slack; said in {channel_id} that it was edited"
 
     def find_copy(self, post: dict) -> Copy | None:
         """The copy of a post the state file does not place: its thread's
@@ -1865,10 +1987,19 @@ class Bridge:
             written = self.state.written_at(channel_id, message.get("ts") or "")
             if written is None:
                 return "an edit to a message that is not on the forum"
-            post_id, stored, files = written
-            raw = with_files(from_slack(message.get("text") or "", self.mention_for), files)
+            post_id, stored, files, known = written
+            text = from_slack(message.get("text") or "", self.mention_for)
+            # The message's files now, by id: a deleted one stays as a tombstone.
+            present = {file_key(f): f for f in message.get("files") or [] if f.get("mode") != "tombstone"}
+            added: list[dict] = []
+            # An edit that names no files leaves them be.
+            if known is not None and "files" in message:
+                known = {key: markdown for key, markdown in known.items() if key in present}
+                added = [f for key, f in present.items() if key not in known]
+                files = "\n".join(known.values())
+            raw = with_files(text, files)
             # Slack reports a link preview arriving as an edit too.
-            if same_text(raw, stored):
+            if not added and same_text(raw, stored):
                 return "unchanged"
 
             def tell(text: str) -> None:
@@ -1880,11 +2011,14 @@ class Bridge:
                 else:
                     self.ephemeral(channel_id, user, thread_ts, text)
 
-            if not raw:
-                tell("The forum cannot hold an empty post, so the post was not changed. To remove the post, delete it on the forum.")
-                return "an empty edit"
             try:
                 author = self.forum.post(post_id).get("username") or ""
+                if added:
+                    known.update(self.carry_files({"files": added}, author, tell))
+                    raw = with_files(text, "\n".join(known.values()))
+                if not raw:
+                    tell("The forum cannot hold an empty post, so the post was not changed. To remove the post, delete it on the forum.")
+                    return "an empty edit"
                 self.forum.edit(post_id, raw, as_user=author)
             except Refused as exc:
                 reason = forum_error(exc)
@@ -1893,7 +2027,7 @@ class Bridge:
             except Transient as exc:
                 tell("The forum is not answering just now, so that edit was not made. Edit the message again in a minute.")
                 return f"transient: {exc}"
-            self.state.set_slack_raw(post_id, raw)
+            self.state.set_slack_raw(post_id, raw, known)
         return f"edited post {post_id} as {author}"
 
     def handle_delete(self, event: dict) -> str:
@@ -1923,6 +2057,53 @@ class Bridge:
                 return f"refused: {reason}"
         return f"deleted post {post_id} as {author}"
 
+    def handle_reaction(self, event: dict) -> str:
+        """A like reaction to a message that is a post, or its copy: a like
+        on the forum as the person who reacted, taken back with the last of
+        their like reactions to it. Nothing is said to anybody: a reaction
+        the forum refuses, as on one's own post, stays in Slack only."""
+        reaction = (event.get("reaction") or "").split("::")[0]
+        if reaction not in LIKE_REACTIONS:
+            return "not a like"
+        user = event.get("user")
+        item = event.get("item") or {}
+        if not user or user == self.bot_user_id or item.get("type") != "message":
+            return "not a person's reaction to a message"
+        post_id = self.state.post_at(item.get("channel") or "", item.get("ts") or "")
+        if post_id is None:
+            return "a message that is no post"
+        try:
+            account, _ = self.forum_user_for(user)
+        except Unusable as exc:
+            return f"refused: {exc}"
+        if not account:
+            return "no account"
+        username = account["username"]
+        added = event.get("type") == "reaction_added"
+        if not added and self.still_likes(user, item):
+            return "another like reaction stays"
+        with self.lock:
+            try:
+                if added:
+                    self.forum.like(post_id, as_user=username)
+                else:
+                    self.forum.unlike(post_id, as_user=username)
+            except Refused as exc:
+                return f"refused: {forum_error(exc)}"
+        return f"{'liked' if added else 'unliked'} post {post_id} as {username}"
+
+    def still_likes(self, user: str, item: dict) -> bool:
+        """Whether ``user`` has another like reaction on the message."""
+        try:
+            message = self.slack.reactions_get(channel=item.get("channel"), timestamp=item.get("ts")).get("message") or {}
+        except Exception as exc:
+            LOG.warning("cannot read the reactions in %s: %s", item.get("channel"), exc)
+            return False
+        return any(
+            r.get("name", "").split("::")[0] in LIKE_REACTIONS and user in (r.get("users") or [])
+            for r in message.get("reactions") or []
+        )
+
     def slack_file(self, file: dict) -> bytes:
         """A Slack file's bytes, read with the bot token, which needs
         ``files:read``. Raises ``CannotCarry`` with a reason for its writer."""
@@ -1949,10 +2130,11 @@ class Bridge:
             raise CannotCarry("the app may not read Slack's files; a workspace admin must reinstall it")
         return content
 
-    def carry_files(self, event: dict, as_user: str, tell: Callable[[str], None]) -> str:
-        """The message's files, uploaded to the forum as their writer, as the
-        markdown that attaches them. Any that cannot go are named to the writer."""
-        lines: list[str] = []
+    def carry_files(self, event: dict, as_user: str, tell: Callable[[str], None]) -> dict[str, str]:
+        """The message's files, uploaded to the forum as their writer: the
+        markdown that attaches each, by its Slack id. Any that cannot go are
+        named to the writer."""
+        carried: dict[str, str] = {}
         missed: list[str] = []
         files = event.get("files") or []
         for file in files[:MAX_FILES_PER_POST]:
@@ -1968,15 +2150,15 @@ class Bridge:
             except Transient:
                 missed.append(f"{name}: the forum is not answering just now")
                 continue
-            lines.append(upload_markdown(uploaded, name))
+            carried[file_key(file)] = upload_markdown(uploaded, name)
         missed += [f"{f.get('name') or 'file'}: more than {MAX_FILES_PER_POST} files" for f in files[MAX_FILES_PER_POST:]]
         if missed:
             tell("Not attached on the forum: " + "; ".join(missed) + ". Attach it there instead.")
-        return "\n".join(lines)
+        return carried
 
     def post_as(self, account: dict, topic_id: int, event: dict, tell: Callable[[str], None]) -> str:
         files = self.carry_files(event, account["username"], tell)
-        raw = with_files(from_slack(event.get("text") or "", self.mention_for), files)
+        raw = with_files(from_slack(event.get("text") or "", self.mention_for), "\n".join(files.values()))
         if not raw:
             return "empty"
         with self.lock:
@@ -2047,7 +2229,7 @@ class Bridge:
         sender = account["username"]
         text = from_slack(event.get("text") or "", self.mention_for)
         files = self.carry_files(event, sender, tell)
-        raw = with_files(text, files)
+        raw = with_files(text, "\n".join(files.values()))
         if not raw:
             return "empty"
         names = ", ".join(f.get("name") or "file" for f in event.get("files") or [])
@@ -2204,7 +2386,7 @@ class Bridge:
 
         text = from_slack(event.get("text") or "", self.mention_for)
         files = self.carry_files(event, sender, tell)
-        raw = with_files(text, files)
+        raw = with_files(text, "\n".join(files.values()))
         if not raw:
             return "empty"
         names = ", ".join(f.get("name") or "file" for f in event.get("files") or [])
@@ -2857,10 +3039,13 @@ def connect_slack(bridge: Bridge) -> Any:
         if req.type != "events_api":
             return
         event = (req.payload or {}).get("event") or {}
-        if event.get("type") not in ("message", "member_joined_channel"):
+        handlers = {"message": bridge.handle_message, "member_joined_channel": bridge.handle_join,
+                    "reaction_added": bridge.handle_reaction, "reaction_removed": bridge.handle_reaction}
+        handler = handlers.get(event.get("type"))
+        if handler is None:
             return
         try:
-            outcome = bridge.handle_join(event) if event["type"] == "member_joined_channel" else bridge.handle_message(event)
+            outcome = handler(event)
         except Exception:
             LOG.exception("could not handle a Slack message")
             return
@@ -2885,7 +3070,7 @@ REQUIRED_SCOPES = {
     "channels:history", "channels:join", "channels:manage", "channels:read",
     "chat:write", "chat:write.customize", "files:read", "files:write",
     "groups:history", "groups:read", "groups:write", "im:history", "im:write",
-    "mpim:history", "mpim:read", "mpim:write", "users:read", "users:read.email",
+    "mpim:history", "mpim:read", "mpim:write", "reactions:read", "users:read", "users:read.email",
 }
 
 

@@ -38,6 +38,8 @@ oauth_config:
       - mpim:history
       - mpim:read
       - mpim:write
+      # A like reaction, carried as a like.
+      - reactions:read
       - users:read
       - users:read.email
 settings:
@@ -49,6 +51,9 @@ settings:
       - message.mpim
       # Somebody joining a qupa- channel, told how to join.
       - member_joined_channel
+      # A like reaction, carried as a like.
+      - reaction_added
+      - reaction_removed
   interactivity:
     is_enabled: false
   org_deploy_enabled: false

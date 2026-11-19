@@ -6,6 +6,13 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (likes, edit notes, files in Slack edits, tables and math)
+
+- **A 👍 or ❤️ reaction in Slack is a like on the forum**, as the person who reacted, and taking the last one back takes the like back. The app needs the `reactions:read` scope and the `reaction_added` and `reaction_removed` events, now in `providers/slack/manifest.yml`, so it is reinstalled from the manifest. Until then the bridge gets no reactions.
+- **A forum edit to a post written in Slack gets a note in its thread**, with a link to the post. Before this, the edit went unmentioned, since only the writer can edit their message.
+- **A file added or deleted in a Slack edit is added to or taken out of its post.** The state file's `from_slack` table gains a `slack_files` column for it. A post recorded before the column keeps its files as they are.
+- **Tables and math reach Slack as code.** A table becomes a code block with its columns lined up. TeX goes in code, so Slack no longer turns its underscores and asterisks into italics and bold. `providers/slack/README.md` says all four.
+
 ### 2026-11-19 (deployed: topics opened from Slack, closed and moved topics)
 
 - **Deployed** the chat bridge, `providers/slack/README.md` and `content/onboarding-message.md` from `85e0764` over `6448e5f`'s copies, each backed up as `.bak-20261119-slacktopics`. The bridge restarted and is bridging. No topic has yet been opened, closed or moved from the real workspace.
