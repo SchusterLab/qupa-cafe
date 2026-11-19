@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: group DMs and the chat-fit settings)
+
+- **Deployed** the chat bridge from `d3a60d3` over `bfcb3f1`'s copy, so `43af49c`'s workspace guard too, with `providers/slack/README.md`. Both are backed up as `.bak-20261119-slackfit`. The bridge restarted and is bridging. Its state file is unchanged in shape. The forum's settings were written through `40-configure-forum.py`'s own `apply_settings`, for `SIZE_SETTINGS` and `CHAT_FIT_SETTINGS` only, from a copy in `/tmp`. The host's copy of the script stays at its last deploy, since the rest of `d3a60d3`'s script would make the Lab wiki category, which waits on the wiki's credentials. A dry run showed only those eight settings changing, and the forum then returned each new value. Every person was at trust level 1 already, so `default_trust_level` holds only for accounts made from now on. Whispers are off, and `moderators` is the one group anyone may message, which is left on. On the scratch forum, a trust-level-1 person's reply "ok" was accepted twice in a row, six seconds apart. A group DM has not yet been opened in the real workspace.
+
 ### 2026-11-19 (private messages with several people in Slack, and a forum that takes what a chat holds)
 
 - **A private message with several people comes to a Slack group DM of them and the app**, not only one between a person and their own agent. A researcher an agent wrote to no longer has to log in to the forum to read it. A reply in the message's thread posts to it as its writer. When somebody is added on the forum, the message continues in a new group DM of everybody in it, and the old thread says so. A message with more than eight people on Slack, or one to a group, stays on the forum. `server/slack-bridge.py` (`carried_to`, `handle_group`), with tests; `providers/slack/README.md`, `docs/10-security.md`.
