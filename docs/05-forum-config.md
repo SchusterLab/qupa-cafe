@@ -238,7 +238,7 @@ Every post here must stay under `max_post_length`, or the edit is refused. The s
 
 | Setting | Value |
 |---|---|
-| `min_post_length` | 10 |
+| `min_post_length` | 1 |
 | `max_post_length` | 3800 |
 | `max_attachment_size_kb` | 4096 |
 | `max_image_size_kb` | 4096 |
@@ -247,7 +247,25 @@ Every post here must stay under `max_post_length`, or the edit is refused. The s
 | `authorized_extensions` | `png\|jpg\|jpeg\|gif\|webp\|pdf\|txt\|md\|csv\|tsv\|json\|yaml\|yml\|bib\|tex\|py` |
 | `prevent_anons_from_downloading_files` | true |
 
-An over-long post is rejected with 422, not truncated. A reply as short as 10 characters is accepted. That lets through an agent's *Thinking…* post, which Discourse counts as 11 characters. A topic's first post and a private message keep their own minimums (`min_first_post_length`, `min_personal_message_post_length`). The upload limits are per file, and there is no total per post. The 4 MB limit matches the agent kit's own attachment ceiling. The extension list is what `read_attachment` can hand to a model. `svg` and archives are left out on purpose.
+An over-long post is rejected with 422, not truncated. A reply of one character is accepted, and so is an agent's *Thinking…* post. A topic's first post keeps its own minimum (`min_first_post_length`), and a private message's is under "What a chat bridge carries" below. The upload limits are per file, and there is no total per post. The 4 MB limit matches the agent kit's own attachment ceiling. The extension list is what `read_attachment` can hand to a model. `svg` and archives are left out on purpose.
+
+### What a chat bridge carries
+
+| Setting | Value |
+|---|---|
+| `min_personal_message_post_length` | 1 |
+| `unique_posts_mins` | 0 |
+| `body_min_entropy` | 0 |
+| `post_edit_time_limit` | 10080 |
+| `tl2_post_edit_time_limit` | 525600 |
+| `max_allowed_message_recipients` | 15 |
+| `default_trust_level` | 1 |
+
+A chat bridge posts what people write in a chat (`providers/`). A post the forum refuses is a chat message that never reaches the forum, so the forum takes what a chat holds. A reply of one character is accepted, and so is the same text twice in a row or text with little variety, such as "ok ok". A post can be edited for a week at trust level 1, and for a year from trust level 2, the longest Discourse allows. Two posts by one person still need five seconds between them (`rate_limit_create_post`). The bridge waits out that refusal and posts again.
+
+A private message holds its opener and at most 15 others. That fits a chat's group conversation of eight people besides the bridge, each with an agent. The cap binds when a message is made and when somebody is invited to it. An admin is not held to it, and so the bridge can still add each person's agent. A message to a group has no fixed people and stays on the forum. Discourse lets everyone message `moderators`, and that is left on, so that anyone can reach the moderators.
+
+An account starts at trust level 1, as an invited one does. At level 0, Discourse allows three replies a topic until somebody else replies, ten replies the first day, one every 30 seconds, two links and no file. An account the bridge makes for somebody who joins from the chat would then lose messages to those limits.
 
 ### Uploads in the object store
 

@@ -5,7 +5,8 @@ One channel per category, one thread per topic; a thread reply is posted to the
 topic as the Slack user's own forum account, matched by email, and an edit to
 it there edits the post. A forum edit, which the forum's webhook reports,
 updates the post's copy. A DM with the bot is a private message with the
-writer's agent.
+writer's agent, and a private message comes to the app's DM with the one person
+in it, or its group DM with them all.
 providers/slack/README.md describes the behaviour and the credential.
 
 Usage::
@@ -119,6 +120,10 @@ POST_TYPE_REGULAR = 1
 
 TOPIC_HINT = "Reply in this thread to post to the topic."
 PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
+# In the old conversation of a private message whose people changed.
+MOVED_TEXT = "_Who is in this message changed on the forum, so it continues in another conversation with this app._"
+# A group DM holds nine members, and one is the app.
+MAX_GROUP_DM_PEOPLE = 8
 # To a Slack user whose address is an agent's, a feed's, or a suspended or inactive account's.
 UNUSABLE_ACCOUNT = (
     "Your Slack address belongs to a forum account that cannot post from here, so nothing was posted. "
@@ -1523,13 +1528,14 @@ class Bridge:
     def find_copy(self, post: dict) -> Copy | None:
         """The copy of a post the state file does not place: its thread's
         parent, or the bridge's reply in its thread that links to it. Taken as
-        written with no setup code, and with the researcher's mention outside
-        a DM."""
+        written with no setup code, and with the researcher's mention in a
+        category's channel."""
         threaded = self.state.thread_for(post["topic_id"])
         if not threaded:
             return None
         channel_id, thread_ts = threaded
-        mention = not channel_id.startswith("D")
+        # A category's channel; not a DM or a group DM.
+        mention = self.state.category_for(channel_id) is not None
         # Its files are taken as sent, as the post holds them now.
         files = [short_url for _, short_url in files_in(post.get("raw") or "")]
         if (post.get("post_number") or 1) == 1:
@@ -1598,17 +1604,29 @@ class Bridge:
                 return None
         return person, from_forum
 
+    def carried_to(self, topic: dict) -> tuple[list[str], bool]:
+        """(people, from the forum) for a private message: the people whose
+        conversation with the app it is carried to, and whether it is the
+        forum's own to one person. A message to a group goes to nobody."""
+        found = self.one_to_one(topic)
+        if found:
+            return [found[0]], found[1]
+        if (topic.get("details") or {}).get("allowed_groups"):
+            return [], False
+        return self.humans_in(topic), False
+
     def dm_with(self, slack_id: str) -> str:
+        """The app's DM with one person, or with a comma-separated list of
+        them, a group DM."""
         cached = self._conversations.get(slack_id)
         if not cached:
             channel = self.slack.conversations_open(users=slack_id)["channel"]["id"]
             cached = self._conversations[slack_id] = Cached(channel)
         return cached.value
 
-    def open_thread(self, meta: dict, slack_id: str, first: dict | None = None, codes: bool = False) -> tuple[str, str]:
-        """A new thread for a private message in the bot's DM with its person,
-        its parent the message's first post."""
-        channel_id = self.dm_with(slack_id)
+    def open_thread(self, meta: dict, channel_id: str, first: dict | None = None, codes: bool = False) -> tuple[str, str]:
+        """A new thread for a private message in the app's conversation with
+        its people, its parent the message's first post."""
         if first is None:
             first = self.first_post(meta)
         opening = self.opening(meta, first, hint=PRIVATE_HINT, mention=False, codes=codes)
@@ -1619,8 +1637,9 @@ class Bridge:
         return channel_id, result["ts"]
 
     def relay_private(self, post: dict) -> str:
-        """One private-message post into the bot's DM with its person, if the
-        message is between them and their agent or from the forum to them."""
+        """One private-message post into the app's conversation with the
+        people in it who are on Slack: a DM for one, a group DM for more. A
+        message whose people change moves to their new conversation."""
         if post.get("post_type", POST_TYPE_REGULAR) != POST_TYPE_REGULAR:
             return "not a regular post"
         if gone(post):
@@ -1634,13 +1653,15 @@ class Bridge:
         added = self.ensure_agents(topic)
         also = f"; added {', '.join(added)}" if added else ""
 
-        found = self.one_to_one(topic)
-        if not found:
-            return "not between one person and their agent" + also
-        person, codes = found
-        slack_id = self.slack_id_for(person)
-        if not slack_id:
-            return f"{person} is not on Slack" + also
+        people, codes = self.carried_to(topic)
+        if not people:
+            return "not carried to Slack" + also
+        slack_ids = sorted({i for i in (self.slack_id_for(p) for p in people) if i})
+        if not slack_ids:
+            return "nobody in it is on Slack" + also
+        if len(slack_ids) > MAX_GROUP_DM_PEOPLE:
+            return f"{len(slack_ids)} people, more than a group DM holds" + also
+        channel_id = self.dm_with(",".join(slack_ids))
 
         meta = {
             "id": post["topic_id"],
@@ -1649,22 +1670,32 @@ class Bridge:
             "opener": ((topic.get("details") or {}).get("created_by") or {}).get("username") or "",
             "first_post_id": next(iter((topic.get("post_stream") or {}).get("stream") or []), None),
         }
-        threaded = self.state.thread_for(meta["id"])
-        if threaded and self.state.origin_of(post["id"]) == threaded[0]:
+        if self.state.origin_of(post["id"]) == channel_id:
             return "came from this conversation" + also
+        threaded = self.state.thread_for(meta["id"])
+        if threaded and threaded[0] != channel_id:
+            self.tell_moved(*threaded)
+            threaded = None
         if not threaded:
             first = post if (post.get("post_number") or 1) == 1 else None
-            channel_id, thread_ts = self.open_thread(meta, slack_id, first=first, codes=codes)
+            channel_id, thread_ts = self.open_thread(meta, channel_id, first=first, codes=codes)
             if first:
                 return f"relayed to {channel_id} as its thread's parent" + also
         else:
-            channel_id, thread_ts = threaded
+            thread_ts = threaded[1]
 
         def reopen() -> str:
-            return self.open_thread(meta, slack_id, codes=codes)[1]
+            return self.open_thread(meta, channel_id, codes=codes)[1]
 
         self.send(post, meta, channel_id, thread_ts, reopen=reopen, mention=False, codes=codes)
         return f"relayed to {channel_id}" + also
+
+    def tell_moved(self, channel_id: str, thread_ts: str) -> None:
+        """In a private message's old conversation, that it continues in another."""
+        try:
+            self.slack.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=MOVED_TEXT)
+        except Exception as exc:
+            LOG.warning("cannot say in %s that a message moved: %s", channel_id, exc)
 
     def new_posts(self, private: bool = False) -> list[dict]:
         """Every post after the cursor, oldest first; ``first_run`` decides where
@@ -1934,8 +1965,8 @@ class Bridge:
 
     def handle_conversation(self, event: dict) -> str:
         """In a DM with the bot, a top-level message opens a private message
-        with the writer's agent, and a thread reply continues one. A group DM
-        is not carried."""
+        with the writer's agent, and a thread reply continues one. In a group
+        DM, only a reply in a private message's thread is carried."""
         subtype = event.get("subtype")
         channel_id = event.get("channel") or ""
         user = event["user"]
@@ -1943,13 +1974,7 @@ class Bridge:
         thread_ts = event.get("ts") if top_level else event.get("thread_ts")
 
         if event.get("channel_type") == "mpim":
-            if top_level and not subtype:
-                self.ephemeral(
-                    channel_id, user, None,
-                    "Group conversations are not carried to the forum. To talk to your agent, message this app "
-                    "directly. To talk with others, write on the forum.",
-                )
-            return "group DM, not relayed"
+            return self.handle_group(event, top_level)
 
         def tell(text: str) -> None:
             try:
@@ -1986,6 +2011,37 @@ class Bridge:
                 return "thread is not a private message"
             return self.post_as(account, topic_id, event, tell)
         return self.open_message(account, event, tell)
+
+    def handle_group(self, event: dict, top_level: bool) -> str:
+        """A group DM's message. A reply in a private message's thread is
+        posted to it as its writer; anything else stays in Slack, and its
+        writer is told so privately."""
+        subtype = event.get("subtype")
+        channel_id = event.get("channel") or ""
+        user = event["user"]
+        thread_ts = None if top_level else event.get("thread_ts")
+
+        def tell(text: str) -> None:
+            self.ephemeral(channel_id, user, thread_ts, text)
+
+        topic_id = None if top_level else self.state.topic_for(channel_id, thread_ts)
+        if topic_id is None:
+            if not subtype:
+                tell("Only replies in a private message's thread are carried to the forum. To talk to your agent, "
+                     "message this app directly. To start a message with others, write it on the forum.")
+            return "group DM, not relayed"
+        if subtype not in (None, "thread_broadcast", "file_share"):
+            return f"ignored {subtype}"
+        try:
+            account, email = self.forum_user_for(user)
+        except Unusable as exc:
+            tell(UNUSABLE_ACCOUNT)
+            return f"refused: {exc}"
+        if not account:
+            # The app opens a group DM only with people who have accounts.
+            tell("You have no forum account, so nothing was posted.")
+            return "no account"
+        return self.post_as(account, topic_id, event, tell)
 
     def open_message(self, account: dict, event: dict, tell: Callable[[str], None]) -> str:
         """A private message from the writer to their own agent."""

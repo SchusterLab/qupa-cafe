@@ -533,7 +533,8 @@ class FakeSlack:
         self.ephemerals.append(kwargs)
 
     def conversations_open(self, users):
-        return {"channel": {"id": f"D{users}"}}
+        # A group DM's id, as Slack's own, does not start with D.
+        return {"channel": {"id": f"G{users.replace(',', '')}" if "," in users else f"D{users}"}}
 
     def users_info(self, user):
         return {"user": self.people[user]}
@@ -1063,11 +1064,15 @@ def test_a_dm_with_the_bot_is_a_private_message_with_your_agent(world):
     assert len(in_thread(slack, "DUS", "7000.1")) == before
 
 
-def test_a_group_dm_is_not_carried(world):
+def group_dm(user, text, ts, thread_ts=None, channel="GUPUS"):
+    """Slack's event for a message in a group DM with the bot."""
+    return {**dm(user, text, ts, thread_ts=thread_ts, channel=channel), "channel_type": "mpim"}
+
+
+def test_a_group_dm_message_outside_a_private_messages_thread_is_not_carried(world):
     stub, slack, bridge = world
-    event = {"type": "message", "channel_type": "mpim", "channel": "GSP", "user": "US",
-             "text": "Shall we write the comparison up?", "ts": "7100.1"}
-    assert bridge.handle_message(event) == "group DM, not relayed"
+    assert bridge.handle_message(group_dm("US", "Shall we write the comparison up?", "7100.1")) == "group DM, not relayed"
+    assert bridge.handle_message(group_dm("US", "And the plots?", "7100.2", thread_ts="7100.1")) == "group DM, not relayed"
     assert stub.created_as == []
     assert "message this app directly" in slack.ephemerals[-1]["text"]
 
@@ -1101,24 +1106,77 @@ def test_a_message_from_the_agent_reaches_its_researchers_dm(world):
     assert stub.created_as[-1] == ("sunada", {"topic_id": "41", "raw": "Great, write it up."})
 
 
-def test_a_message_between_people_stays_on_the_forum_and_brings_their_agents(world):
+def test_a_message_between_people_is_their_group_dm_and_brings_their_agents(world):
+    stub, slack, bridge = world
+    stub.topic(41, "About your threshold result", None, "sunada-agent", archetype="private_message",
+               allowed_users=["sunada-agent", "sunada", "pat"])
+    stub.post(41, "sunada-agent", "Pat, your d=5 threshold is 0.6%; mine is 0.57%.")
+    stub.post(41, "pat-agent", "Mine used a different noise model.")
+    assert bridge.poll() == 2
+    assert stub.added == [(41, "pat-agent")]
+    # One thread in the group DM of the people, each post under its writer.
+    parent, reply = [m for m in slack.messages if m["channel"] == "GUPUS"]
+    assert not parent.get("thread_ts") and bridge.state.thread_for(41) == ("GUPUS", reply["thread_ts"])
+    assert parent["username"] == "sunada-agent" and "mine is 0.57%" in parent["text"]
+    assert reply["username"] == "pat-agent" and "<@" not in reply["text"]
+
+    # A reply in its thread posts to the message as its writer, and the
+    # others read it there, so it is not sent again.
+    event = group_dm("UP", "It was circuit-level noise.", "8000.2", thread_ts=reply["thread_ts"])
+    assert bridge.handle_message(event).startswith("posted as pat")
+    assert stub.created_as[-1] == ("pat", {"topic_id": "41", "raw": "It was circuit-level noise."})
+    sent = len(slack.messages)
+    bridge.poll()
+    assert len(slack.messages) == sent
+
+
+def test_a_message_a_person_opens_with_another_is_their_group_dm_too(world):
     stub, slack, bridge = world
     stub.topic(41, "About your threshold result", None, "pat", archetype="private_message",
                allowed_users=["pat", "sunada"])
     stub.post(41, "pat", "Can we compare notes?")
-    assert bridge.poll() == 0
+    assert bridge.poll() == 1
     assert sorted(a for _, a in stub.added) == ["pat-agent", "sunada-agent"]
-    assert slack.dms == [] and slack.messages == []
+    assert [m["channel"] for m in slack.messages] == ["GUPUS"] and slack.dms == []
 
 
-def test_a_message_someone_joins_stays_on_the_forum_from_then_on(world):
+def test_a_message_someone_joins_continues_in_the_group_dm_of_them_all(world):
     stub, slack, bridge = world
     agent_message(stub, "Threshold holds at 0.57%.")
     assert bridge.poll() == 1
+    old = bridge.state.thread_for(41)
     stub.topics[41]["allowed_users"].append("pat")
     stub.post(41, "sunada", "Adding pat.")
-    assert bridge.poll() == 0
+    assert bridge.poll() == 1
     assert stub.added == [(41, "pat-agent")]
+    # The old thread says so, and the new one opens with the first post.
+    assert in_thread(slack, *old)[-1]["text"] == bridge_mod.MOVED_TEXT
+    parent, reply = [m for m in slack.messages if m["channel"] == "GUPUS"]
+    assert "Threshold holds at 0.57%." in parent["text"] and reply["text"].startswith("Adding pat.")
+    assert bridge.state.thread_for(41) == ("GUPUS", reply["thread_ts"])
+    # A late reply in the old thread does not post to the message.
+    event = dm("US", "Welcome, pat.", "8000.3", thread_ts=old[1])
+    assert bridge.handle_message(event) == "thread is not a private message"
+
+
+def test_a_message_with_more_people_than_a_group_dm_holds_stays_on_the_forum(world, monkeypatch):
+    stub, slack, bridge = world
+    monkeypatch.setattr(bridge_mod, "MAX_GROUP_DM_PEOPLE", 1)
+    stub.topic(41, "About your threshold result", None, "pat", archetype="private_message",
+               allowed_users=["pat", "sunada"])
+    stub.post(41, "pat", "Can we compare notes?")
+    assert bridge.poll() == 0
+    assert slack.dms == [] and slack.messages == []
+
+
+def test_a_message_to_a_group_stays_on_the_forum(world):
+    stub, slack, bridge = world
+    stub.groups["staff"] = ["pat", "sunada"]
+    stub.topic(41, "Flagged post", None, "system", archetype="private_message",
+               allowed_users=["system"], allowed_groups=["staff"])
+    stub.post(41, "system", "A post was flagged.")
+    assert bridge.poll() == 0
+    assert slack.dms == [] and slack.messages == []
 
 
 def test_an_agent_provisioned_a_moment_ago_is_known_as_one(world):

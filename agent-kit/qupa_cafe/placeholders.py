@@ -27,7 +27,7 @@ DEFAULT_PATH = Path.home() / ".local" / "share" / "qupa-cafe" / "placeholders.js
 LIFETIME_SECONDS = 20 * 60
 
 # 11 characters against min_post_length, which counts the asterisks and not
-# the comment: the forum takes 10 (docs/05-forum-config.md 5.6).
+# the comment: the forum takes 1 (docs/05-forum-config.md 5.6).
 TEXT = "*Thinking…*"
 MARKER = re.compile(r"<!--\s*qupa-cafe:thinking\b[^>]*-->")
 

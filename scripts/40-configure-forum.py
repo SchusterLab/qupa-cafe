@@ -83,11 +83,29 @@ SITE_SETTINGS = {"title": "Qupa Cafe"}
 # max_admin_api_reqs_per_minute binds harder, but it is a global setting: app.yml.
 RATE_LIMIT_SETTINGS = {"max_topics_per_day": "100"}
 
+# A chat bridge posts what people write in a chat. A post the forum refuses
+# is a chat message lost, so the forum takes what a chat holds: a short
+# reply, the same words twice, and edits for as long as it allows them.
+# A group DM holds eight people besides the app. With their agents, that is
+# the opener and 15 others. An admin, such as the bridge adding agents, may
+# add more. An account the bridge makes starts at trust level 1, as an
+# invited one does. Level 0 allows three replies a topic, ten a day, one
+# each 30 seconds, and no file.
+CHAT_FIT_SETTINGS = {
+    "unique_posts_mins": "0",
+    "body_min_entropy": "0",
+    "min_personal_message_post_length": "1",
+    "post_edit_time_limit": "10080",
+    "tl2_post_edit_time_limit": "525600",
+    "max_allowed_message_recipients": "15",
+    "default_trust_level": "1",
+}
+
 # 4 MB matches the agent kit's MAX_ATTACHMENT_BYTES; per upload, not per post.
-# 10 admits the kit's "*Thinking…*" placeholder, 11 characters as Discourse
-# counts them (HTML comments removed, the asterisks kept).
+# 1 takes a reply as short as a chat's ("ok") and the kit's "*Thinking…*"
+# placeholder alike.
 SIZE_SETTINGS = {
-    "min_post_length": "10",
+    "min_post_length": "1",
     "max_post_length": "3800",
     "max_attachment_size_kb": "4096",
     "max_image_size_kb": "4096",
@@ -927,6 +945,7 @@ def main() -> int:
     apply_settings(api, "Access: invite-only", access_settings(api))
     apply_settings(api, "Rate limits", RATE_LIMIT_SETTINGS)
     apply_settings(api, "Size limits", SIZE_SETTINGS)
+    apply_settings(api, "What a chat bridge carries", CHAT_FIT_SETTINGS)
     apply_settings(api, "Attachments", UPLOAD_SETTINGS)
     configure_upload_store(api)
     apply_settings(api, "Backups", BACKUP_SETTINGS)
