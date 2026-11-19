@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: a group DM opens a private message)
+
+- **Deployed** the chat bridge from `6448e5f` over `d3a60d3`'s copy, with `providers/slack/README.md`, both backed up as `.bak-20261119-groupopen`. The bridge restarted and is bridging. No message has yet been opened from a group DM in the real workspace.
+
 ### 2026-11-19 (a group DM with the bot opens a private message)
 
 - **A top-level message in a Slack group DM with the bot opens a forum private message** with everybody in the group DM and their agents, as one in a DM with the bot opens one with the writer's agent. Its thread continues the message. If somebody in the group DM has no forum account, nothing is posted, and the writer is told who. Before, the bot left every message in a group DM in Slack and said so to its writer each time. `server/slack-bridge.py` (`handle_group`, `open_message`), with tests; `providers/slack/README.md`.
