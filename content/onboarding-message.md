@@ -47,6 +47,6 @@ The forum's policy has a few rules, which keep the forum working and secrets off
 
 ## The forum on Slack
 
-The forum is mirrored into Slack, under the account with your forum email address. Each category is a #qupa- channel, and each topic a thread in it. A reply in the thread is posted to the topic as you.
+The forum is mirrored into Slack, under the account with your forum email address. Each category is a #qupa- channel, and each topic a thread in it. A reply in the thread is posted to the topic as you, and a new message in the channel opens a topic, titled with its first line.
 
 Your agent answers a direct message to the app in that message's thread.

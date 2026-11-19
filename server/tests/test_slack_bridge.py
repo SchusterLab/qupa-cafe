@@ -182,6 +182,7 @@ class StubForum:
             "id": topic_id, "title": title, "slug": title.lower().replace(" ", "-"),
             "category_id": category_id, "archetype": archetype, "opener": opener, "posts": [],
             "allowed_users": list(allowed_users), "allowed_groups": list(allowed_groups),
+            "closed": False, "archived": False,
         }
 
     def post(self, topic_id, username, raw, post_type=1):
@@ -240,6 +241,7 @@ def serve(stub: StubForum):
                 return self._json(200, {
                     "id": topic["id"], "title": topic["title"], "slug": topic["slug"],
                     "category_id": topic["category_id"], "archetype": topic["archetype"],
+                    "closed": topic["closed"], "archived": topic["archived"],
                     "details": {
                         "created_by": {"id": stub.users[topic["opener"]]["id"] if topic["opener"] in stub.users else -1, "username": topic["opener"]},
                         "allowed_users": [
@@ -337,7 +339,19 @@ def serve(stub: StubForum):
                     stub.topic(topic_id, form["title"], None, as_user, archetype="private_message",
                                allowed_users=[as_user] + form["target_recipients"].split(","))
                     return self._json(200, stub.post(topic_id, as_user, form["raw"]))
-                post = stub.post(int(form["topic_id"]), as_user, form["raw"])
+                if "category" in form:
+                    if any(t["title"] == form["title"] for t in stub.topics.values()):
+                        return self._json(422, {"errors": ["Title has already been used"]})
+                    topic_id = max(stub.topics) + 1
+                    stub.topic(topic_id, form["title"], int(form["category"]), as_user)
+                    return self._json(200, stub.post(topic_id, as_user, form["raw"]))
+                topic = stub.topics[int(form["topic_id"])]
+                if topic["closed"] or topic["archived"]:
+                    # As the forum answers a reply to a closed topic, naming no reason.
+                    return self._json(422, {"errors": [
+                        "Something has gone wrong. Perhaps this topic was closed or deleted while you were looking at it?"
+                    ]})
+                post = stub.post(topic["id"], as_user, form["raw"])
                 return self._json(200, post)
             if self.path.startswith("/t/") and self.path.endswith("/invite.json"):
                 topic = stub.topics[int(self.path.split("/")[2])]
@@ -1341,14 +1355,101 @@ def test_nobody_posts_as_an_agent(world):
     assert stub.created_as == [] and stub.accounts == []
 
 
-def test_a_top_level_message_is_not_relayed(world):
+def test_a_top_level_message_opens_a_topic_in_the_channels_category(world):
     stub, slack, bridge = world
     start_thread(stub, bridge)
     channel = slack.channels["qupa-research"]
-    event = {"type": "message", "user": "US", "text": "Anyone around?", "channel": channel, "ts": "3000.1"}
-    assert bridge.handle_message(event) == "top-level message, not relayed"
-    assert stub.created_as == []
+    event = {"type": "message", "user": "US", "channel": channel, "ts": "3000.1",
+             "text": "Logical error rates at d=9\nMy numbers are in the attached table."}
+    outcome = bridge.handle_message(event)
+    assert outcome.startswith("opened topic")
+    as_user, form = stub.created_as[-1]
+    assert as_user == "sunada" and form["category"] == "1"
+    assert form["title"] == "Logical error rates at d=9"
+    topic_id = max(stub.topics)
+    assert bridge.state.thread_for(topic_id) == (channel, "3000.1")
+    (note,) = in_thread(slack, channel, "3000.1")
+    assert note["text"].startswith("_Posted as <") and "Reply in this thread" in note["text"]
+
+    # The message is the thread's parent, so the poll opens no other one; a
+    # reply on the forum comes into its thread.
+    before = len(parents(slack))
+    stub.post(topic_id, "pat", "Which decoder?")
+    bridge.poll()
+    assert len(parents(slack)) == before
+    assert in_thread(slack, channel, "3000.1")[-1]["text"].startswith("Which decoder?")
+
+    # A reply in the thread posts to the topic.
+    reply = {"type": "message", "user": "UP", "channel": channel, "ts": "3000.5", "thread_ts": "3000.1",
+             "text": "And which noise model?"}
+    assert bridge.handle_message(reply).startswith("posted as pat")
+    assert stub.created_as[-1] == ("pat", {"topic_id": str(topic_id), "raw": "And which noise model?"})
+
+
+def test_a_top_level_message_the_forum_refuses_opens_no_topic(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    channel = slack.channels["qupa-research"]
+    event = {"type": "message", "user": "US", "text": "Hi", "channel": channel, "ts": "3000.1"}
+    assert bridge.handle_message(event).startswith("refused")
     assert slack.ephemerals[-1]["user"] == "US"
+    assert slack.ephemerals[-1]["text"].startswith("The forum did not take that as a new topic: Body is too short")
+    assert bridge.state.topic_for(channel, "3000.1") is None
+
+
+def test_a_reply_to_a_closed_topic_says_so_in_its_thread_once(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    stub.topics[10]["closed"] = True
+    channel, thread_ts = bridge.state.thread_for(10)
+    assert bridge.handle_message(reply_event(slack, bridge, "UP", "One more thought.")) == "refused: topic is closed"
+    note = in_thread(slack, channel, thread_ts)[-1]
+    assert note["text"] == "_This topic is closed on the forum, so replies here are not posted._"
+    assert slack.ephemerals == []
+
+    # The next writer is told alone.
+    before = len(in_thread(slack, channel, thread_ts))
+    assert bridge.handle_message(reply_event(slack, bridge, "US", "And another.")) == "refused: topic is closed"
+    assert len(in_thread(slack, channel, thread_ts)) == before
+    assert slack.ephemerals[-1]["user"] == "US" and "closed on the forum" in slack.ephemerals[-1]["text"]
+
+    stub.topics[10]["closed"] = False
+    stub.topics[10]["archived"] = True
+    assert bridge.handle_message(reply_event(slack, bridge, "UP", "Still here?")) == "refused: topic is archived"
+
+
+def test_a_topic_moved_to_another_category_moves_its_thread(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    old_channel, old_ts = bridge.state.thread_for(10)
+    stub.topics[10]["category_id"] = 8
+    bridge.edited("topic", 10)
+    bridge.poll()
+    new_channel, new_ts = bridge.state.thread_for(10)
+    assert new_channel == slack.channels["qupa-arxiv"] != old_channel
+    assert slack.sent[new_ts]["text"].startswith("*<")
+    note = in_thread(slack, old_channel, old_ts)[-1]
+    assert f"<#{new_channel}>" in note["text"] and "moved to another category" in note["text"]
+
+    # A reply goes to the new thread, and one in the old thread is not a topic's.
+    stub.post(10, "pat", "Following up here.")
+    bridge.poll()
+    assert in_thread(slack, new_channel, new_ts)[-1]["text"].startswith("Following up here.")
+    assert bridge.state.topic_for(old_channel, old_ts) is None
+
+
+def test_a_move_the_webhook_missed_moves_the_thread_at_the_next_post(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    old_channel, old_ts = bridge.state.thread_for(10)
+    stub.topics[10]["category_id"] = 8
+    bridge._topics.pop(10, None)
+    stub.post(10, "pat", "Following up here.")
+    bridge.poll()
+    new_channel, new_ts = bridge.state.thread_for(10)
+    assert new_channel == slack.channels["qupa-arxiv"]
+    assert "moved to another category" in in_thread(slack, old_channel, old_ts)[-1]["text"]
+    assert in_thread(slack, new_channel, new_ts)[-1]["text"].startswith("Following up here.")
 
 
 def test_bots_their_edits_and_unbridged_channels_are_ignored(world):

@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (topics opened from Slack, closed and moved topics)
+
+- **A top-level message in a `qupa-` channel opens a topic** in the channel's category, as its writer, titled with its first line. The message becomes the topic's thread. Before this, such a message stayed in Slack, and its writer was told to start the topic on the forum. `providers/slack/README.md` and the onboarding message's Slack section say so.
+- **A reply to a closed or archived topic gets a note in its thread.** The forum refuses such a reply with "Something has gone wrong. Perhaps this topic was closed or deleted", which the bridge passed on as it was. It now checks the topic and says, once in the thread, that the topic is closed.
+- **A topic moved to another category moves its thread** to that category's channel, at the topic edit webhook or at the topic's next post. The old thread says where it went. Before this, the thread moved only at the next post, and the old thread said nothing.
+
 ### 2026-11-19 (deployed: a group DM opens a private message)
 
 - **Deployed** the chat bridge from `6448e5f` over `d3a60d3`'s copy, with `providers/slack/README.md`, both backed up as `.bak-20261119-groupopen`. The bridge restarted and is bridging. No message has yet been opened from a group DM in the real workspace.

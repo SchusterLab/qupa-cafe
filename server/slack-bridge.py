@@ -122,6 +122,9 @@ TOPIC_HINT = "Reply in this thread to post to the topic."
 PRIVATE_HINT = "A private message on the forum. Reply in this thread to post to it."
 # In the old conversation of a private message whose people changed.
 MOVED_TEXT = "_Who is in this message changed on the forum, so it continues in another conversation with this app._"
+# In a thread whose topic or message the forum closed or archived. A
+# moderator can still post there.
+CLOSED_TEXT = "_This {kind} is {state} on the forum, so replies here are not posted._"
 # A group DM holds nine members, and one is the app.
 MAX_GROUP_DM_PEOPLE = 8
 # To a Slack user whose address is an agent's, a feed's, or a suspended or inactive account's.
@@ -528,6 +531,10 @@ class Forum:
     def reply(self, topic_id: int, raw: str, as_user: str) -> dict:
         return self.request("POST", "/posts.json", {"topic_id": topic_id, "raw": raw}, as_user=as_user)
 
+    def create_topic(self, title: str, raw: str, category_id: int, as_user: str) -> dict:
+        return self.request("POST", "/posts.json", {"title": title, "raw": raw, "category": category_id},
+                            as_user=as_user)
+
     def private_message(self, title: str, raw: str, recipients: list[str], as_user: str) -> dict:
         return self.request(
             "POST",
@@ -852,6 +859,8 @@ class Bridge:
         self._slack_ids: dict[str, Cached] = {}
         self._forum_users: dict[str, Cached] = {}
         self._conversations: dict[str, Cached] = {}
+        # Topics whose thread says they are closed, since its last reply.
+        self._told_shut: set[int] = set()
         self._last_category_sync = 0.0
         self.bot_user_id: str | None = None
         # The workspace the app is installed in; only its full members join.
@@ -1132,6 +1141,9 @@ class Bridge:
             return None
 
     def ensure_thread(self, topic: dict, channel_id: str, first: dict | None = None) -> str:
+        """The topic's thread in ``channel_id``. A topic whose thread is in
+        another channel moved to another category: its new thread opens with
+        its first post, and the old thread says where it went."""
         existing = self.state.thread_for(topic["id"])
         if existing and existing[0] == channel_id:
             return existing[1]
@@ -1143,7 +1155,19 @@ class Bridge:
         self.state.set_thread(topic["id"], channel_id, result["ts"])
         self.record_copy(first, channel_id, result["ts"], result["ts"], parent=True, mention=True, codes=False)
         self.send_files(first, channel_id, result["ts"])
+        if existing:
+            self.tell_topic_moved(*existing, channel_id, result["ts"])
         return result["ts"]
+
+    def tell_topic_moved(self, old_channel: str, old_ts: str, channel_id: str, thread_ts: str) -> None:
+        """In a moved topic's old thread, where it continues."""
+        link = self.permalink(channel_id, thread_ts)
+        there = f"<{link}|its thread there>" if link else "its thread there"
+        text = f"_This topic moved to another category on the forum. It continues in <#{channel_id}>, in {there}._"
+        try:
+            self.slack.chat_postMessage(channel=old_channel, thread_ts=old_ts, text=text)
+        except Exception as exc:
+            LOG.warning("cannot say in %s that a topic moved: %s", old_channel, exc)
 
     def thread_messages(self, channel_id: str, thread_ts: str) -> list[dict]:
         messages: list[dict] = []
@@ -1480,9 +1504,18 @@ class Bridge:
                 raise
 
     def carry_topic_edit(self, topic_id: int) -> str:
-        """A first post edited with its topic's title: the thread's parent."""
+        """A topic edited: moved to another category, its thread moves to that
+        category's channel; otherwise its first post, edited with its title,
+        is the thread's parent."""
         self._topics.pop(topic_id, None)
-        first = self.topic_meta({"topic_id": topic_id}).get("first_post_id")
+        topic = self.topic_meta({"topic_id": topic_id})
+        threaded = self.state.thread_for(topic_id)
+        if threaded and topic["archetype"] == "regular" and topic.get("category_id"):
+            channel_id = self.ensure_channel(self.category(topic["category_id"]))
+            if channel_id and channel_id != threaded[0]:
+                self.ensure_thread(topic, channel_id)
+                return f"moved its thread to {channel_id}"
+        first = topic.get("first_post_id")
         return self.carry_edit(first) if first else "a topic with no first post"
 
     def carry_edit(self, post_id: int) -> str:
@@ -1789,7 +1822,7 @@ class Bridge:
 
         thread_ts = event.get("thread_ts")
         top_level = not thread_ts or thread_ts == event.get("ts")
-        if subtype and (top_level or subtype not in ("thread_broadcast", "file_share")):
+        if subtype not in (None, "thread_broadcast", "file_share"):
             return f"ignored {subtype}"
 
         def tell(text: str) -> None:
@@ -1809,9 +1842,7 @@ class Bridge:
             return outcome
 
         if top_level:
-            tell("That message stays in Slack. To post to the forum, reply in a topic's thread. "
-                 "To start a new topic, create it on the forum, and a thread for it appears here.")
-            return "top-level message, not relayed"
+            return self.open_topic(account, event, self.state.category_for(channel_id), tell)
 
         topic_id = self.state.topic_for(channel_id, thread_ts)
         if topic_id is None:
@@ -1952,6 +1983,10 @@ class Bridge:
             try:
                 created = self.forum.reply(topic_id, raw, as_user=account["username"])
             except Refused as exc:
+                shut = self.shut(topic_id)
+                if shut:
+                    self.tell_shut(topic_id, event, shut, tell)
+                    return f"refused: {shut[0]} is {shut[1]}"
                 reason = forum_error(exc)
                 tell(f"The forum did not accept that reply: {reason}")
                 return f"refused: {reason}"
@@ -1961,7 +1996,90 @@ class Bridge:
             post_id = created.get("id")
             if post_id:
                 self.state.record_from_slack(post_id, event.get("channel") or "", event.get("ts") or "", raw, files)
+            self._told_shut.discard(topic_id)
         return f"posted as {account['username']} (post {post_id})"
+
+    def shut(self, topic_id: int) -> tuple[str, str] | None:
+        """("topic" or "message", "archived" or "closed") for a topic the
+        forum takes no replies to, which it reports only as a vague error."""
+        try:
+            topic = self.forum.topic(topic_id)
+        except (Refused, Transient):
+            return None
+        kind = "message" if topic.get("archetype") == "private_message" else "topic"
+        if topic.get("archived"):
+            return kind, "archived"
+        if topic.get("closed"):
+            return kind, "closed"
+        return None
+
+    def tell_shut(self, topic_id: int, event: dict, shut: tuple[str, str], tell: Callable[[str], None]) -> None:
+        """That a topic is closed: once in its thread, for everybody reading
+        it, and after that to each writer alone."""
+        text = CLOSED_TEXT.format(kind=shut[0], state=shut[1])
+        channel_id = event.get("channel") or ""
+        if topic_id in self._told_shut or self.state.category_for(channel_id) is None:
+            # In a DM or group DM, ``tell`` is already in the thread.
+            tell(text)
+            return
+        try:
+            self.slack.chat_postMessage(channel=channel_id, thread_ts=event.get("thread_ts"), text=text)
+            self._told_shut.add(topic_id)
+        except Exception as exc:
+            LOG.warning("cannot say in %s that topic %d is %s: %s", channel_id, topic_id, shut[1], exc)
+            tell(text)
+
+    def titled(self, title: str, event: dict, create: Callable[[str], dict]) -> dict:
+        """``create(title)``, and on a title the forum has already, again with
+        the message's time after it, as two messages opening alike give."""
+        try:
+            return create(title)
+        except Refused as exc:
+            if "title" not in forum_error(exc).lower():
+                raise
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(event.get("ts") or time.time())))
+            return create(f"{title} ({stamp})")
+
+    def open_topic(self, account: dict, event: dict, category_id: int, tell: Callable[[str], None]) -> str:
+        """A topic in the channel's category, opened by a top-level message
+        as its writer, its title the message's first line. The message is
+        the thread's parent, and the thread is the topic's."""
+        sender = account["username"]
+        text = from_slack(event.get("text") or "", self.mention_for)
+        files = self.carry_files(event, sender, tell)
+        raw = with_files(text, files)
+        if not raw:
+            return "empty"
+        names = ", ".join(f.get("name") or "file" for f in event.get("files") or [])
+        title = message_title(text or f"Files: {names}")
+        channel_id, ts = event["channel"], event.get("ts") or ""
+        with self.lock:
+            try:
+                created = self.titled(
+                    title, event, lambda t: self.forum.create_topic(t, raw, category_id, as_user=sender),
+                )
+            except Refused as exc:
+                reason = forum_error(exc)
+                tell(f"The forum did not take that as a new topic: {reason}")
+                return f"refused: {reason}"
+            except Transient as exc:
+                tell("The forum is not answering just now, so no topic was opened. Try again in a minute.")
+                return f"transient: {exc}"
+            topic_id = created.get("topic_id")
+            if created.get("id"):
+                self.state.record_from_slack(created["id"], channel_id, ts, raw, files)
+            if topic_id:
+                self.state.set_thread(topic_id, channel_id, ts)
+
+        url = f"{self.forum.base_url}/t/{created.get('topic_slug') or 'topic'}/{topic_id}"
+        try:
+            self.slack.chat_postMessage(
+                channel=channel_id, thread_ts=ts, unfurl_links=False, unfurl_media=False,
+                text=f"_Posted as <{url}|a topic> on the forum. {TOPIC_HINT}_",
+            )
+        except Exception as exc:
+            LOG.warning("cannot say in %s that topic %s opened: %s", channel_id, topic_id, exc)
+        return f"opened topic {topic_id} as {sender}"
 
     def handle_conversation(self, event: dict) -> str:
         """In a DM with the bot, a top-level message opens a private message
@@ -2093,14 +2211,9 @@ class Bridge:
         title = message_title(text or f"Files: {names}")
         with self.lock:
             try:
-                try:
-                    created = self.forum.private_message(title, raw, recipients, as_user=sender)
-                except Refused as exc:
-                    # A duplicate title, from two messages opening alike.
-                    if "title" not in forum_error(exc).lower():
-                        raise
-                    stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(event.get("ts") or time.time())))
-                    created = self.forum.private_message(f"{title} ({stamp})", raw, recipients, as_user=sender)
+                created = self.titled(
+                    title, event, lambda t: self.forum.private_message(t, raw, recipients, as_user=sender),
+                )
             except Refused as exc:
                 reason = forum_error(exc)
                 tell(f"The forum did not accept that message: {reason}")
