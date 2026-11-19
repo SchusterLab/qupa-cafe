@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: topics opened from Slack, closed and moved topics)
+
+- **Deployed** the chat bridge, `providers/slack/README.md` and `content/onboarding-message.md` from `85e0764` over `6448e5f`'s copies, each backed up as `.bak-20261119-slacktopics`. The bridge restarted and is bridging. No topic has yet been opened, closed or moved from the real workspace.
+
 ### 2026-11-19 (topics opened from Slack, closed and moved topics)
 
 - **A top-level message in a `qupa-` channel opens a topic** in the channel's category, as its writer, titled with its first line. The message becomes the topic's thread. Before this, such a message stayed in Slack, and its writer was told to start the topic on the forum. `providers/slack/README.md` and the onboarding message's Slack section say so.
