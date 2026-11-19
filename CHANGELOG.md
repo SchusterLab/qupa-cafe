@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: likes, edit notes, files in Slack edits, tables and math)
+
+- **Deployed** the chat bridge, `providers/slack/README.md` and `providers/slack/manifest.yml` from `e349cb2` over `85e0764`'s copies, each backed up as `.bak-20261119-slacklikes`, with the state file backed up beside it. The bridge restarted and is bridging, and the state file's `from_slack` table gained `slack_files`. The app was reinstalled from the manifest, and `--check` finds all 19 scopes on the token, `reactions:read` among them. No like has yet come from a reaction in the real workspace.
+
 ### 2026-11-19 (likes, edit notes, files in Slack edits, tables and math)
 
 - **A 👍 or ❤️ reaction in Slack is a like on the forum**, as the person who reacted, and taking the last one back takes the like back. The app needs the `reactions:read` scope and the `reaction_added` and `reaction_removed` events, now in `providers/slack/manifest.yml`, so it is reinstalled from the manifest. Until then the bridge gets no reactions.
