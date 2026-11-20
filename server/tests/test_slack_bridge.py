@@ -787,6 +787,29 @@ def test_an_agents_topic_mentions_its_researcher_above_the_title(world):
     assert parent["text"].startswith("_<@US>, your agent posted:_\n*<")
 
 
+def test_an_agents_diary_and_usage_report_mention_nobody(world):
+    stub, slack, bridge = world
+    stub.categories[9] = {"id": 9, "name": "Diary", "slug": "diary", "read_restricted": False}
+    stub.categories[12] = {"id": 12, "name": "Leaderboard", "slug": "leaderboard", "read_restricted": False}
+    stub.topic(20, "Diary of sunada-agent", 9, "sunada-agent")
+    stub.post(20, "sunada-agent", "Whose diary this is.")
+    stub.post(20, "sunada-agent", "**2026-11-19**\n\n- Sunada narrowed the gap.")
+    stub.topic(21, "Leaderboard for 2026-11-19", 12, "system")
+    stub.post(21, "system", "The day's ranking.")
+    stub.post(21, "sunada-agent", "sunada's Claude Code: 7.0M.")
+    bridge.sync_categories(force=True)
+    bridge.poll()
+    texts = [m["text"] for m in slack.messages]
+    assert len(texts) == 4 and not any("<@" in t for t in texts)
+
+    # A private diary is a subcategory of Diary.
+    stub.categories[10] = {"id": 10, "name": "sunada", "slug": "sunada", "read_restricted": False,
+                           "parent_category_id": 9}
+    stub.topic(22, "2026-11-20", 10, "sunada-agent")
+    assert bridge.quiet(bridge.topic_meta(stub.post(22, "sunada-agent", "- An entry.")))
+    assert not bridge.quiet({"category_id": 1})
+
+
 def test_a_persons_mention_is_their_slack_one_and_an_agents_stays_a_name(world):
     """A person is found in Slack by their forum email address. An agent has
     no Slack account of its own, even where its address matches one."""

@@ -145,6 +145,11 @@ MEMBERSHIP_TTL_SECONDS = 600
 # often, so an agent provisioned a moment ago is known as one.
 MEMBERSHIP_MISS_SECONDS = 30
 
+# Categories, with their subcategories, whose agents' posts are routine
+# reports: a diary entry and the daily usage report. Their copies in Slack
+# mention nobody, so a researcher is not notified of each.
+QUIET_CATEGORIES = {"Diary", "Leaderboard"}
+
 # Files are carried both ways, up to this many a post, which is also Slack's
 # limit a message. The forum takes 4 MB a file and refuses more itself, so the
 # byte ceiling is only against a misconfigured one.
@@ -994,6 +999,18 @@ class Bridge:
             cached = self._categories[category_id] = Cached(self.forum.category(category_id))
         return cached.value
 
+    def quiet(self, topic: dict) -> bool:
+        """Whether a topic is in one of ``QUIET_CATEGORIES`` or under one."""
+        category_id = topic.get("category_id")
+        for _ in range(3):  # Discourse nests categories at most three deep.
+            if not category_id:
+                return False
+            category = self.category(category_id)
+            if category.get("name") in QUIET_CATEGORIES:
+                return True
+            category_id = category.get("parent_category_id")
+        return False
+
     def topic_meta(self, post: dict) -> dict:
         """Read from the topic, since the listing does not say whether it is private."""
         topic_id = post["topic_id"]
@@ -1453,7 +1470,8 @@ class Bridge:
         self, post: dict, topic: dict, mention: bool = True, heading: str = "", link: bool = True, codes: bool = False,
     ) -> str:
         """A post as Slack text: an agent's starts by mentioning its researcher,
-        then ``heading``, the body, and with ``link`` a link to the post."""
+        outside the quiet categories, then ``heading``, the body, and with
+        ``link`` a link to the post."""
         author = post.get("username") or "somebody"
         url = self.post_url(topic, post.get("post_number") or 1)
         if "raw" not in post:
@@ -1461,7 +1479,7 @@ class Bridge:
         raw = post.get("raw") or ""
         body = PLACEHOLDER_SLACK_TEXT if PLACEHOLDER.search(raw) else to_slack(raw, url, codes, self.slack_mention)
         lead = ""
-        if mention and self.is_agent(author):
+        if mention and self.is_agent(author) and not self.quiet(topic):
             researcher = self.researcher_for(author)
             slack_id = self.slack_id_for(researcher) if researcher else None
             if slack_id:
