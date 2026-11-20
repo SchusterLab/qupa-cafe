@@ -5,12 +5,13 @@ from __future__ import annotations
 import inspect
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import qupa_cafe.install as install
-from qupa_cafe import daemon, diary, preprints, sandbox
+from qupa_cafe import daemon, diary, keepalive, preprints, sandbox
 
 from conftest import refused
 
@@ -160,16 +161,109 @@ def test_the_forum_host_is_asked_once_for_both_answers(monkeypatch):
     assert asked == ["a-agent"]
 
 
-def test_the_windows_startup_entry_restarts_the_daemon():
-    script = install.windows_startup_script(r'cmd /c "C:\py\python.exe" -m qupa_cafe.daemon')
-    # Run hidden, wait for it, and loop.
-    assert r'sh.Run("cmd /c ""C:\py\python.exe"" -m qupa_cafe.daemon", 0, True)' in script
-    assert script.startswith('Set sh = CreateObject("WScript.Shell")\nDo\n')
-    assert script.rstrip().endswith("Loop")
-    # Another daemon holding the lock, and configuration only the installer can
-    # fix, end the loop; anything else is restarted a minute later.
-    assert "If status = 0 Or status = 2 Then Exit Do" in script
-    assert "WScript.Sleep 60000" in script
+def test_the_keepalive_runs_the_module_again_until_it_stops_for_good():
+    """Another daemon holding the lock, and configuration only the installer
+    can fix, end the loop; anything else is run again a minute later."""
+    statuses, runs, sleeps = [1, -9, 2], [], []
+
+    def run(argv, cwd=None, creationflags=0):
+        runs.append((argv, cwd))
+        return statuses.pop(0)
+
+    assert keepalive.keep_alive("qupa_cafe.daemon", sleep=sleeps.append, run=run) == 2
+    assert sleeps == [60, 60] and len(runs) == 3
+    argv, cwd = runs[0]
+    assert argv[-2:] == ["-m", "qupa_cafe.daemon"] and cwd is None
+    assert "-P" in argv
+
+    # From a checkout: in it, and without -P, so -m finds the package there.
+    runs.clear()
+    assert keepalive.keep_alive("qupa_cafe.tray", "/kit", sleep=sleeps.append, run=lambda a, cwd, creationflags: runs.append((a, cwd)) or 0) == 0
+    assert runs[0][1] == "/kit" and "-P" not in runs[0][0]
+
+
+def test_windows_starts_the_signed_pythonw_under_the_keepalive(monkeypatch, tmp_path):
+    (tmp_path / "python.exe").write_text("")
+    (tmp_path / "pythonw.exe").write_text("")
+    monkeypatch.setattr(install.sys, "executable", str(tmp_path / "python.exe"))
+    monkeypatch.setattr(install, "repo_root", lambda: None)
+    argv = install.kept_alive_argv("qupa_cafe.daemon")
+    assert argv[0] == str(tmp_path / "pythonw.exe")
+    assert argv[1:] == [*(["-P"] if sys.version_info >= (3, 11) else []), "-m", "qupa_cafe.keepalive", "qupa_cafe.daemon"]
+
+    kit = tmp_path / "kit"
+    monkeypatch.setattr(install, "repo_root", lambda: kit)
+    argv = install.kept_alive_argv("qupa_cafe.tray")
+    assert argv == [str(tmp_path / "pythonw.exe"), str(kit / "qupa_cafe" / "keepalive.py"), "--cwd", str(kit), "qupa_cafe.tray"]
+    assert install.windows_command(["C:\\a b\\pythonw.exe", "-m", "x"]) == '"C:\\a b\\pythonw.exe" "-m" "x"'
+
+
+class FakeWinreg:
+    """The current user's Run key, as winreg reaches it."""
+
+    HKEY_CURRENT_USER, KEY_SET_VALUE, KEY_QUERY_VALUE, REG_SZ = 1, 2, 4, 1
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+        self.paths: list[str] = []
+
+    def CreateKeyEx(self, root, path, reserved, access):  # noqa: N802
+        self.paths.append(path)
+        fake = self
+
+        class Key:
+            def __enter__(self):
+                return fake
+
+            def __exit__(self, *exc):
+                return False
+
+        return Key()
+
+    def SetValueEx(self, key, name, reserved, kind, value):  # noqa: N802
+        self.values[name] = value
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        if name not in self.values:
+            raise FileNotFoundError(name)
+        return self.values[name], self.REG_SZ
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        if name not in self.values:
+            raise FileNotFoundError(name)
+        del self.values[name]
+
+
+def test_the_run_key_holds_the_command_and_gives_it_back(monkeypatch):
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    command = install.set_run_entry(install.DAEMON_RUN_VALUE, ["C:\\py\\pythonw.exe", "-m", "qupa_cafe.keepalive"])
+    assert command == '"C:\\py\\pythonw.exe" "-m" "qupa_cafe.keepalive"'
+    assert fake.paths == [r"Software\Microsoft\Windows\CurrentVersion\Run"]
+    assert install.run_entry(install.DAEMON_RUN_VALUE) == command
+    assert install.run_entry(install.TRAY_RUN_VALUE) is None
+    install.remove_run_entry(install.DAEMON_RUN_VALUE)
+    install.remove_run_entry(install.DAEMON_RUN_VALUE)
+    assert fake.values == {}
+
+
+def test_an_install_on_windows_replaces_an_older_kits_startup_script(monkeypatch, tmp_path):
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(install.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    old = install.startup_dir()
+    old.mkdir(parents=True)
+    (old / install.DAEMON_VBS).write_text("Set sh = ...", encoding="utf-8")
+    done = []
+    monkeypatch.setattr(install, "stop_running_daemon", lambda: done.append("stop") or True)
+    monkeypatch.setattr(install, "start_detached", lambda argv: done.append(argv[-1]) or True)
+
+    install.register_service(SETTINGS)
+    assert "qupa_cafe.daemon" in fake.values[install.DAEMON_RUN_VALUE]
+    assert "keepalive" in fake.values[install.DAEMON_RUN_VALUE]
+    assert not (old / install.DAEMON_VBS).exists()
+    assert done == ["stop", "qupa_cafe.daemon"]
 
 
 def test_the_windows_daemon_search_ignores_quotes():
@@ -275,14 +369,28 @@ def test_the_autostart_entry_quotes_as_the_specification_asks():
     assert line == '"env" "PYTHONPATH=/a b" "/x/\\"py\\"\\$1" "-m" "qupa_cafe.tray"'
 
 
-def test_the_tray_has_a_startup_entry_of_its_own(monkeypatch, tmp_path):
+def test_the_tray_has_a_run_entry_of_its_own_and_runs_as_python(monkeypatch, tmp_path):
+    fake = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(install.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(install, "tray_available", lambda: True)
+    monkeypatch.setattr(install, "stop_running_tray", lambda: None)
+    monkeypatch.setattr(install, "start_detached", lambda argv: True)
     monkeypatch.setenv("APPDATA", str(tmp_path))
-    entry = install.windows_startup_entry('"pythonw.exe" -m qupa_cafe.tray', install.TRAY_VBS)
-    assert entry.name == "qupa-cafe-tray.vbs"
-    assert not (entry.parent / "qupa-cafe-daemon.vbs").exists()
+    install.startup_dir().mkdir(parents=True)
+    (install.startup_dir() / install.TRAY_VBS).write_text("", encoding="utf-8")
+    monkeypatch.setattr(install.sys, "prefix", str(tmp_path))
+    (tmp_path / "Scripts").mkdir()
+    (tmp_path / "Scripts" / install.TRAY_EXE).write_text("", encoding="utf-8")
+
+    install.register_tray()
+    assert set(fake.values) == {install.TRAY_RUN_VALUE}
+    assert fake.values[install.TRAY_RUN_VALUE].endswith('"qupa_cafe.tray"')
+    assert not (install.startup_dir() / install.TRAY_VBS).exists()
+    assert not (tmp_path / "Scripts" / install.TRAY_EXE).exists()
 
 
-def test_a_startup_entry_started_now_leaves_the_session_behind(monkeypatch, tmp_path):
+def test_a_process_started_now_leaves_the_session_behind(monkeypatch, tmp_path):
     """The daemon and the icon outlive the session the installer ran in, and
     should not carry its id, its socket or its NO_COLOR for the whole login."""
     seen = {}
@@ -295,27 +403,8 @@ def test_a_startup_entry_started_now_leaves_the_session_behind(monkeypatch, tmp_
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(install.subprocess, "Popen", fake_popen)
 
-    assert install.start_startup_entry(tmp_path / "qupa-cafe-daemon.vbs") is True
+    assert install.start_detached(["pythonw.exe", "-m", "qupa_cafe.keepalive", "qupa_cafe.daemon"]) is True
     assert not {"CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "NO_COLOR"} & set(seen["env"])
-
-
-def test_the_tray_keeps_pythonw_outside_a_venv(monkeypatch):
-    monkeypatch.setattr(install.os, "name", "nt")
-    monkeypatch.setattr(install.sys, "base_prefix", install.sys.prefix)
-    assert install.named_tray_interpreter() is None
-
-
-@pytest.mark.skipif(install.os.name != "nt", reason="version resources are Windows-only")
-def test_the_named_copy_carries_the_forum_name(tmp_path):
-    exe = tmp_path / "copy.exe"
-    install.shutil.copy2(install.sys.executable, exe)
-    install.file_description(exe, "Qupa Cafe")
-
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", f"(Get-Item '{exe}').VersionInfo.FileDescription"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    assert out == "Qupa Cafe"
 
 
 @pytest.mark.parametrize("check, said", [

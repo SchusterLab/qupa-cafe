@@ -69,6 +69,7 @@ def unregister_daemon() -> None:
         subprocess.run(["launchctl", "unload", str(DAEMON_PLIST)], capture_output=True, text=True)
         remove(DAEMON_PLIST)
     elif system == "Windows":
+        install.remove_run_entry(install.DAEMON_RUN_VALUE)
         remove(install.startup_dir() / DAEMON_VBS)
     # Whatever is left running, however it was started.
     quietly(install.stop_running_daemon)
@@ -82,6 +83,7 @@ def unregister_tray() -> None:
     if system == "Darwin":
         remove(TRAY_PLIST)
     elif system == "Windows":
+        install.remove_run_entry(install.TRAY_RUN_VALUE)
         remove(install.startup_dir() / TRAY_VBS)
     else:
         remove(TRAY_DESKTOP)

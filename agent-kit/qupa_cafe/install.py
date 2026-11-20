@@ -52,6 +52,12 @@ SKILL_TEMPLATE = PACKAGE_DIR / "skill" / "SKILL.md"
 
 DAEMON_UNIT = "qupa-cafe-daemon"
 DAEMON_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.daemon.plist"
+# On Windows each starts at logon from a value of the current user's Run key.
+# Kits up to 0.30.1 used a VBScript in the Startup folder instead, which
+# endpoint security can block as malware's way to persist; an install or an
+# update removes it.
+WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+DAEMON_RUN_VALUE = "Qupa Cafe daemon"
 DAEMON_VBS = "qupa-cafe-daemon.vbs"
 
 # DETACHED_PROCESS | CREATE_NO_WINDOW, for a process started on Windows that
@@ -887,54 +893,110 @@ def run_step(argv: list[str], done: str, doing: str) -> bool:
     return False
 
 
-def windows_startup_script(command: str) -> str:
-    """The Startup entry's script: run the daemon hidden, and run it again a
-    minute after it exits for any reason other than 0 or 2."""
-    quoted = command.replace('"', '""')
-    return (
-        'Set sh = CreateObject("WScript.Shell")\n'
-        "Do\n"
-        f'    status = sh.Run("{quoted}", 0, True)\n'
-        "    If status = 0 Or status = 2 Then Exit Do\n"
-        "    WScript.Sleep 60000\n"
-        "Loop\n"
-    )
-
-
 def startup_dir() -> Path:
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def windows_startup_entry(command: str, name: str = DAEMON_VBS) -> Path | None:
-    """Register at logon through the Startup folder, which needs no elevation
-    (``schtasks /SC ONLOGON`` does). A ``.vbs`` wrapper, so no console window."""
-    startup = startup_dir()
-    target = startup / name
+def windowless(argv: list[str]) -> list[str]:
+    """``argv`` with ``pythonw.exe`` for ``python.exe``, where there is one,
+    so the process has no console window."""
+    # os.path: a test faking os.name cannot build a WindowsPath elsewhere.
+    candidate = os.path.join(os.path.dirname(argv[0]), "pythonw.exe")
+    if os.path.basename(argv[0]).lower() == "python.exe" and os.path.isfile(candidate):
+        return [candidate, *argv[1:]]
+    return argv
+
+
+def kept_alive_argv(module: str) -> list[str]:
+    """How Windows starts ``module`` at logon: the signed ``pythonw.exe`` of
+    this environment, running it under ``qupa_cafe.keepalive``. From a
+    checkout, the keepalive file itself, told to run the module there."""
+    root = repo_root()
+    if root is None:
+        argv = interpreter_argv("qupa_cafe.keepalive")
+    else:
+        argv = [sys.executable, str(root / "qupa_cafe" / "keepalive.py"), "--cwd", str(root)]
+    return windowless([*argv, module])
+
+
+def windows_command(argv: list[str]) -> str:
+    """``argv`` as one command line, each argument quoted."""
+    return " ".join(f'"{arg}"' for arg in argv)
+
+
+def _run_key(write: bool):
+    import winreg
+
+    access = winreg.KEY_SET_VALUE if write else winreg.KEY_QUERY_VALUE
+    return winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, access)
+
+
+def set_run_entry(name: str, argv: list[str]) -> str | None:
+    """Start ``argv`` at each logon, from the value ``name`` of the current
+    user's Run key, which needs no elevation. The command, or None."""
+    import winreg
+
+    command = windows_command(argv)
     try:
-        startup.mkdir(parents=True, exist_ok=True)
-        target.write_text(windows_startup_script(command), encoding="utf-8")
+        with _run_key(write=True) as key:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, command)
     except OSError as exc:
-        print(f"  could not write a Startup entry either: {exc}")
+        print(f"  could not register it to start at logon: {exc}")
         return None
-    return target
+    return command
 
 
-def start_startup_entry(entry: Path) -> bool:
-    """Run the Startup entry now, detached and outside any Claude Code session."""
+def run_entry(name: str) -> str | None:
+    """The command the Run key starts as ``name``, or None."""
+    import winreg
+
+    try:
+        with _run_key(write=False) as key:
+            value, _ = winreg.QueryValueEx(key, name)
+    except OSError:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def remove_run_entry(name: str) -> None:
+    import winreg
+
+    try:
+        with _run_key(write=True) as key:
+            winreg.DeleteValue(key, name)
+    except OSError:
+        pass
+
+
+def start_detached(argv: list[str]) -> bool:
+    """Start ``argv`` now, detached and outside any Claude Code session, as
+    the Run key would at logon."""
     try:
         subprocess.Popen(
-            ["wscript.exe", str(entry)],
+            argv,
             env=outside_session_env(),
+            cwd=str(Path.home()),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=WINDOWS_DETACHED,
         )
     except OSError as exc:
-        print(f"  could not run {entry}: {exc}")
+        print(f"  could not start {argv[0]}: {exc}")
         return False
     return True
+
+
+def remove_old_startup_script(name: str) -> None:
+    """An older kit's Startup-folder script, once nothing runs it."""
+    entry = startup_dir() / name
+    if entry.is_file():
+        try:
+            entry.unlink()
+            print(f"  removed {entry}, which the Run key replaces")
+        except OSError as exc:
+            print(f"  could not remove {entry}: {exc}")
 
 
 def start_daemon_now() -> bool:
@@ -998,10 +1060,12 @@ def stop_running_daemon() -> bool:
     module = "qupa_cafe" + ".daemon"
 
     if system == "Windows":
-        # The Startup loop first, or it restarts the old daemon.
+        # What restarts it first, or it starts the old daemon again: the
+        # keepalive, or an older kit's Startup script.
         script = (
             "Get-CimInstance Win32_Process |"
-            f" Where-Object {{ $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{DAEMON_VBS}*' }} |"
+            f" Where-Object {{ ($_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{DAEMON_VBS}*') -or"
+            f" ($_.Name -like 'python*' -and ($_.CommandLine -replace '\"', '') -like '*keepalive* {module}*') }} |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
@@ -1060,9 +1124,8 @@ def restart_daemon() -> tuple[bool, str]:
         return False, f"launchctl could not load it: {(result.stderr or '').strip()[:200]}"
 
     stop_running_daemon()
-    entry = startup_dir() / DAEMON_VBS
-    if system == "Windows" and entry.is_file():
-        started = start_startup_entry(entry)
+    if system == "Windows" and run_entry(DAEMON_RUN_VALUE):
+        started = start_detached(kept_alive_argv("qupa_cafe.daemon"))
     else:
         started = start_daemon_now()
     if started:
@@ -1153,25 +1216,23 @@ WantedBy=default.target
         run_step(["launchctl", "load", "-w", str(plist)], "loaded cafe.qupa.daemon", "load cafe.qupa.daemon")
 
     elif system == "Windows":
-        # From a checkout, run from the kit's directory so `-m` finds the package.
-        if root is not None:
-            command = f'cmd /c cd /d "{root}" && "{sys.executable}" -m qupa_cafe.daemon'
-        else:
-            command = " ".join(f'"{a}"' for a in argv)
-
-        entry = windows_startup_entry(command)
-        if entry:
-            print(f"  wrote {entry}")
-            print("       it starts at each logon, unelevated and with no window.")
-            print("       Delete that file to stop it starting.")
+        kept = kept_alive_argv("qupa_cafe.daemon")
+        command = set_run_entry(DAEMON_RUN_VALUE, kept)
+        if command:
+            print(f"  registered \"{DAEMON_RUN_VALUE}\" in HKEY_CURRENT_USER\\{WINDOWS_RUN_KEY}:")
+            print(f"        {command}")
+            print("       it starts at each logon, unelevated and with no window, and again a minute")
+            print("       after it stops. Task Manager's Startup apps can turn it off.")
             print(f"       It reads {ENV_PATH} itself, so it needs no environment.")
         else:
             print("  Nothing is registered. Start the daemon yourself when you want it:")
-            print(f"        {command}")
+            print(f"        {windows_command(kept)}")
 
-        # Unconditionally: an old daemon may hold no lock.
+        # Unconditionally: an old daemon may hold no lock. Then an older
+        # kit's Startup script goes, which the stop has ended.
         stop_running_daemon()
-        if entry and start_startup_entry(entry):
+        remove_old_startup_script(DAEMON_VBS)
+        if command and start_detached(kept):
             print("  started it now, so it is polling already rather than from your next logon")
         elif start_daemon_now():
             print("  started it now, so it is polling already rather than from your next logon")
@@ -1188,51 +1249,18 @@ WantedBy=default.target
 
 
 TRAY_EXTRA = f'"{PACKAGE_NAME}[tray]"'
+TRAY_RUN_VALUE = "Qupa Cafe tray"
 TRAY_VBS = "qupa-cafe-tray.vbs"
 TRAY_PLIST = Path.home() / "Library" / "LaunchAgents" / "cafe.qupa.tray.plist"
 TRAY_DESKTOP = Path.home() / ".config" / "autostart" / "qupa-cafe-tray.desktop"
+# A renamed copy of pythonw.exe that kits up to 0.30.1 ran the icon as, so
+# that Windows named it Qupa Cafe; an install or an update removes it.
 TRAY_EXE = "Qupa Cafe.exe"
 
 
 def tray_available() -> bool:
     """Whether the tray extra's pystray is installed."""
     return importlib.util.find_spec("pystray") is not None
-
-
-def file_description(path: Path, name: str) -> None:
-    """Replace an executable's version resource with one naming ``name``, which
-    is what Windows calls a tray icon in its settings."""
-    import ctypes
-    import struct
-    from ctypes import wintypes
-
-    def pad(data: bytes) -> bytes:
-        return data + b"\0" * (-len(data) % 4)
-
-    def node(key: str, value: bytes = b"", children: bytes = b"", text: bool = True, length: int | None = None) -> bytes:
-        body = pad(struct.pack("<HHH", 0, 0, 0) + (key + "\0").encode("utf-16-le"))
-        body = pad(pad(body + value) + children)
-        if length is None:
-            length = len(value) // 2 if text else len(value)
-        return struct.pack("<HHH", len(body), length, int(text)) + body[6:]
-
-    fields = {"FileDescription": name, "ProductName": name, "OriginalFilename": path.name, "FileVersion": "1.0.0.0"}
-    strings = b"".join(node(k, (v + "\0").encode("utf-16-le")) for k, v in fields.items())
-    table = node("StringFileInfo", children=node("040904B0", children=strings, length=0), length=0)
-    var = node("VarFileInfo", children=node("Translation", struct.pack("<HH", 0x0409, 0x04B0), text=False), length=0)
-    fixed = struct.pack("<13I", 0xFEEF04BD, 0x10000, 0x10000, 0, 0x10000, 0, 0x3F, 0, 0x40004, 1, 0, 0, 0)
-    blob = node("VS_VERSION_INFO", fixed, children=table + var, text=False, length=len(fixed))
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.BeginUpdateResourceW.restype = wintypes.HANDLE
-    kernel.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
-    kernel.UpdateResourceW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, wintypes.WORD, ctypes.c_void_p, wintypes.DWORD]
-    kernel.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
-    handle = kernel.BeginUpdateResourceW(str(path), False)
-    data = ctypes.create_string_buffer(blob, len(blob))
-    # 16 is RT_VERSION, resource 1, US English.
-    if not handle or not kernel.UpdateResourceW(handle, 16, 1, 0x0409, data, len(blob)) or not kernel.EndUpdateResourceW(handle, False):
-        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def tray_host_advice() -> str:
@@ -1255,25 +1283,15 @@ def tray_host_advice() -> str:
     )
 
 
-def named_tray_interpreter() -> str | None:
-    """A copy of the real ``pythonw.exe`` named Qupa Cafe, in this venv's
-    ``Scripts`` so it finds the venv's packages, with the DLLs it loads beside
-    it. The venv's own ``pythonw.exe`` is a launcher whose child, named Python,
-    would own the icon. None outside a venv or when anything fails, and the
-    icon then runs as Python."""
-    if os.name != "nt" or sys.prefix == sys.base_prefix:
-        return None
-    base = Path(getattr(sys, "_base_executable", sys.executable)).with_name("pythonw.exe")
-    target = Path(sys.prefix) / "Scripts" / TRAY_EXE
-    try:
-        for dll in base.parent.glob("*.dll"):
-            shutil.copy2(dll, target.parent / dll.name)
-        shutil.copy2(base, target)
-        file_description(target, "Qupa Cafe")
-    except OSError as exc:
-        print(f"  the tray icon will be named Python: {exc}")
-        return None
-    return str(target)
+def remove_named_tray_copy() -> None:
+    """An older kit's renamed copy of ``pythonw.exe``, once the icon it ran is stopped."""
+    copy = Path(sys.prefix) / "Scripts" / TRAY_EXE
+    if copy.is_file():
+        try:
+            copy.unlink()
+            print(f"  removed {copy}")
+        except OSError as exc:
+            print(f"  could not remove {copy}: {exc}")
 
 
 def tray_argv() -> list[str]:
@@ -1307,7 +1325,8 @@ def stop_running_tray(spare_parent: bool = True) -> None:
     if system == "Windows":
         script = (
             "Get-CimInstance Win32_Process |"
-            f" Where-Object {{ $_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{TRAY_VBS}*' }} |"
+            f" Where-Object {{ ($_.Name -eq 'wscript.exe' -and $_.CommandLine -like '*{TRAY_VBS}*') -or"
+            f" ($_.Name -like 'python*' -and ($_.CommandLine -replace '\"', '') -like '*keepalive* {module}*') }} |"
             " ForEach-Object { Stop-Process -Id $_.ProcessId -Force };"
             f"$mine = @({','.join(str(p) for p in mine)});"
             "Get-CimInstance Win32_Process |"
@@ -1335,18 +1354,15 @@ def register_tray() -> None:
     root = repo_root()
 
     if system == "Windows":
-        # Stopped first: a running icon holds the DLLs the named copy needs.
+        kept = kept_alive_argv("qupa_cafe.tray")
+        command = set_run_entry(TRAY_RUN_VALUE, kept)
         stop_running_tray()
-        argv[0] = named_tray_interpreter() or argv[0]
-        if root is not None:
-            command = f'cmd /c cd /d "{root}" && "{argv[0]}" -m qupa_cafe.tray'
-        else:
-            command = " ".join(f'"{a}"' for a in argv)
-        entry = windows_startup_entry(command, TRAY_VBS)
-        if entry is None:
+        remove_old_startup_script(TRAY_VBS)
+        remove_named_tray_copy()
+        if command is None:
             return
-        print(f"  wrote {entry}")
-        if start_startup_entry(entry):
+        print(f"  registered \"{TRAY_RUN_VALUE}\" in HKEY_CURRENT_USER\\{WINDOWS_RUN_KEY}")
+        if start_detached(kept):
             print("  started the tray icon; Windows may put it among the hidden icons by the clock")
 
     elif system == "Darwin":

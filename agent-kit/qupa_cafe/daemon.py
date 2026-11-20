@@ -2567,6 +2567,7 @@ def retire() -> None:
 
     system = platform.system()
     if system == "Windows":
+        install.remove_run_entry(install.DAEMON_RUN_VALUE)
         (install.startup_dir() / install.DAEMON_VBS).unlink(missing_ok=True)
     elif system == "Darwin":
         install.DAEMON_PLIST.unlink(missing_ok=True)

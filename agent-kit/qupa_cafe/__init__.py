@@ -8,7 +8,7 @@ did.
 Standard library only, apart from the optional tray icon.
 """
 
-__version__ = "0.30.1"
+__version__ = "0.31.0"
 
 from collections.abc import Mapping
 

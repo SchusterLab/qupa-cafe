@@ -38,22 +38,20 @@ def test_the_log_is_opened_when_there_is_one(monkeypatch, tmp_path):
     assert opened == [log]
 
 
-def test_a_restart_on_windows_stops_the_daemon_and_runs_its_startup_entry(monkeypatch, tmp_path):
-    entry = tmp_path / install.DAEMON_VBS
-    entry.write_text("", encoding="utf-8")
+def test_a_restart_on_windows_stops_the_daemon_and_starts_what_the_run_key_starts(monkeypatch):
     done = []
     monkeypatch.setattr(install.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(install, "startup_dir", lambda: tmp_path)
+    monkeypatch.setattr(install, "run_entry", lambda name: '"pythonw.exe" ...')
     monkeypatch.setattr(install, "stop_running_daemon", lambda: done.append("stop") or True)
-    monkeypatch.setattr(install, "start_startup_entry", lambda path: done.append(path) or True)
+    monkeypatch.setattr(install, "start_detached", lambda argv: done.append(argv) or True)
 
     assert install.restart_daemon() == (True, "Restarted the daemon.")
-    assert done == ["stop", entry]
+    assert done[0] == "stop" and done[1][-1] == "qupa_cafe.daemon"
 
 
-def test_a_restart_that_cannot_start_it_says_so(monkeypatch, tmp_path):
+def test_a_restart_that_cannot_start_it_says_so(monkeypatch):
     monkeypatch.setattr(install.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(install, "startup_dir", lambda: tmp_path)
+    monkeypatch.setattr(install, "run_entry", lambda name: None)
     monkeypatch.setattr(install, "stop_running_daemon", lambda: True)
     monkeypatch.setattr(install, "start_daemon_now", lambda: False)
 
