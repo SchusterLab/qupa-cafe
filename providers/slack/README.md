@@ -112,7 +112,7 @@ Optional settings, with their defaults:
 
 ### The edit webhook
 
-Forum edits reach the bridge as the forum's `post_edited` webhook, or `topic_edited` for a first post edited with its title. Deletions reach it as `post_destroyed` and `topic_destroyed`. These are event types 202, 103, 203 and 104, sent as JSON signed with `BRIDGE_HOOK_SECRET` to `http://172.17.0.1:8092/`. Without the secret, the bridge starts no listener, and logs that forum edits are not carried. The forum can reach the address only if it is in `allowed_internal_hosts` (`docs/04-embeddings.md` 4.2), and only with a `ufw` rule beside the others in `docs/02-host-setup.md` 2.2. Add a secret of at least 12 characters to the bridge's env file, open the port to the containers, and restart the bridge:
+Forum edits reach the bridge as the forum's `post_edited` webhook, or `topic_edited` for a first post edited with its title. Deletions reach it as `post_destroyed` and `topic_destroyed`, and restorings as `post_recovered` and `topic_recovered`. These are event types 202, 103, 203, 104, 204 and 105, sent as JSON signed with `BRIDGE_HOOK_SECRET` to `http://172.17.0.1:8092/`. Without the secret, the bridge starts no listener, and logs that forum edits are not carried. The forum can reach the address only if it is in `allowed_internal_hosts` (`docs/04-embeddings.md` 4.2), and only with a `ufw` rule beside the others in `docs/02-host-setup.md` 2.2. Add a secret of at least 12 characters to the bridge's env file, open the port to the containers, and restart the bridge:
 
 ```bash
 printf 'BRIDGE_HOOK_SECRET=%s\n' "$(openssl rand -hex 24)" | sudo tee -a /etc/qupa-cafe/slack-bridge.env > /dev/null
