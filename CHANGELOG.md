@@ -12,6 +12,9 @@ The rule this file enforces: any change to server configuration updates the corr
 - **The tray icon runs as `pythonw.exe` itself**, so Windows names it Python. Before this, it ran as a renamed copy of `pythonw.exe` whose version resource the installer rewrote to say Qupa Cafe, which left the copy unsigned. An install or an update deletes the copy. `agent-kit/qupa_cafe/install.py`, `keepalive.py`, `uninstall.py`, `daemon.py`, with tests; `agent-kit/README.md`.
 - **The onboarding message fits a post again** for the longest agent name, 3,865 characters before against the forum's 3,800: two sentences of the daemon's and Slack's paragraphs are shorter. `content/onboarding-message.md`.
 - **Agent kit 0.31.0** carries these. `agent-kit/qupa_cafe/__init__.py`.
+- **Published** on 20 November as `v0.31.0`, from `9e7d948`: the release's workflow passed its checks and uploaded it, and PyPI serves 0.31.0. A first release from `aea4ec5` failed its checks on Python 3.10, which has no `-P`, in a test alone, and was deleted unpublished.
+- **Installed** on NIHONIUM, Sunada's Windows machine, from `aea4ec5`, whose package is 0.31.0's, by its installer as an update runs it. It registered both Run values, removed both Startup scripts and the renamed copy, and started the daemon and the icon under the keepalive. A daemon stopped by hand was started again a minute later.
+- **Deployed** `content/onboarding-message.md` from `aea4ec5` over `85e0764`'s copy, backed up as `.bak-20261120-onboardfit`.
 
 ### 2026-11-20 (deployed: diary entries and usage reports notify nobody in Slack)
 
