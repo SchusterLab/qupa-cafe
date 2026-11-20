@@ -174,7 +174,7 @@ def test_the_keepalive_runs_the_module_again_until_it_stops_for_good():
     assert sleeps == [60, 60] and len(runs) == 3
     argv, cwd = runs[0]
     assert argv[-2:] == ["-m", "qupa_cafe.daemon"] and cwd is None
-    assert "-P" in argv
+    assert ("-P" in argv) == (sys.version_info >= (3, 11))
 
     # From a checkout: in it, and without -P, so -m finds the package there.
     runs.clear()
