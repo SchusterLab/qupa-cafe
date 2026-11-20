@@ -309,6 +309,19 @@ def test_a_file_too_big_or_not_an_image_is_linked_on_the_wiki(world):
     assert forum.uploaded == []
 
 
+def test_a_big_image_the_wiki_cannot_scale_is_linked_on_the_wiki(world):
+    wiki, forum, mirror = world
+    wiki.files["https://wiki.example/images/d/wiring.png"] = (b"\x89PNG" + b"x" * wm.MAX_UPLOAD_BYTES, "image/png")
+    # A wiki with no image scaler answers the request for a smaller copy with a page.
+    scaled = f"https://wiki.example/index.php?title=Special:FilePath/wiring.png&width={wm.SCALED_WIDTH}"
+    wiki.files[scaled] = (b"<!DOCTYPE html>\n<html>", "text/html")
+    assert mirror.image("/images/d/wiring.png", "wiring", 0, 0) == "[wiring](https://wiki.example/images/d/wiring.png)"
+    assert forum.uploaded == []
+
+    wiki.files[scaled] = (b"\x89PNG small", "image/png")
+    assert mirror.image("/images/d/wiring.png", "wiring", 0, 0) == "![wiring](upload://wiring.png)"
+
+
 def test_one_page_that_fails_does_not_stop_the_rest(world):
     wiki, forum, mirror = world
     wiki.listed = {7: {"title": "Broken page here", "revid": 70}, 8: {"title": "Fine page here", "revid": 80}}

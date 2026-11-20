@@ -724,9 +724,13 @@ class Mirror:
             # The wiki scales an image on request, to a size the forum takes.
             scaled = (f"{self.wiki.base}/index.php?title=Special:FilePath/{urllib.parse.quote(filename)}"
                       f"&width={SCALED_WIDTH}")
+            # A wiki with no image scaler answers with a page, which is no image.
             try:
-                content, scaled_mime = self.wiki.fetch(scaled)
-                mime = scaled_mime if scaled_mime in IMAGE_TYPES else mime
+                smaller, scaled_mime = self.wiki.fetch(scaled)
+                if scaled_mime in IMAGE_TYPES:
+                    content, mime = smaller, scaled_mime
+                else:
+                    LOG.info("the wiki gave no smaller %s, so it is linked", filename)
             except (urllib.error.URLError, OSError, KeyError) as exc:
                 LOG.warning("cannot fetch a scaled %s: %s", filename, exc)
         if len(content) > MAX_UPLOAD_BYTES or mime not in IMAGE_TYPES:

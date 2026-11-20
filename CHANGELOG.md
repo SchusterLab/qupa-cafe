@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-20 (deployed: the lab wiki mirror, second stage)
+
+- **The mirror runs.** `/etc/qupa-cafe/wiki-mirror.env` holds the bot password and the wiki's secret, entered on the host by Sunada. A dry run read the Main Page. `qupa-wiki-mirror.timer` and `qupa-wiki-hook` are enabled and started, and an unsigned notice to `/host/wiki-changed` was refused with a 403. The first run copied all 150 pages into Lab wiki (category 13), the last as topic 3251, and uploaded 108 images.
+- **An image the wiki cannot scale is linked on the wiki.** The wiki has no image scaler, so for a file over 4 MB it answers the request for a smaller copy with an HTML page. The mirror uploaded that page as the image, and the forum refused eight such PNGs, of 13–17 MB, each then linked. It now takes the smaller copy only when the answer is an image. `server/wiki-mirror.py`, `docs/05-forum-config.md`.
+- **Deployed** that `server/wiki-mirror.py` over the host's copy, backed up as `.bak-20261120-222342-wikiscale`, and restarted `qupa-wiki-hook`, which is active.
+
 ### 2026-11-20 (agent kit 0.31.0: Windows starts the daemon from the Run key)
 
 - **On Windows the daemon and the tray icon start at logon from the current user's Run key**, as `pythonw.exe -P -m qupa_cafe.keepalive <module>`, the signed interpreter with no console. Before this, each was a VBScript in the Startup folder that ran a hidden process in a loop. At a logon on 20 November, CrowdStrike Falcon blocked a process as malicious behaviour and the daemon did not start, while the same pythonw.exe started by hand ran. `qupa_cafe.keepalive` runs the module again a minute after it exits, as the script did, apart from exits 0 and 2. An install or an update removes the older kit's scripts and ends the loops they run.
