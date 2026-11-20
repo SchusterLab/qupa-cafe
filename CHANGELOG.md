@@ -6,6 +6,12 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: the lab wiki mirror, first stage)
+
+- **The wiki's side is done**, by its admin: the read-only account `QupaMirror` and its bot password, `wiki-notify.php` loaded with the forum's URL and a secret, and uploads served through `img_auth.php`, with `/images/` refused.
+- **Deployed** `286eb01`'s `scripts/40-configure-forum.py`, `config/app.yml.example`, `docs/05-forum-config.md`, `content/wiki-category-policy.md` and `providers/slack/README.md`, over the host's copies, each backed up as `.bak-20261119-wiki`, and added the mirror's program, `wiki-notify.php` and units. `40-configure-forum.py` then created Lab wiki (category 13) with its policy and `lab-wiki-mods`, created `wiki-bot` (id 15) with its key, and set the logged-out welcome text. It added `post_recovered` and `topic_recovered` to the bridge's webhook, whose ping the bridge accepted. `/etc/qupa-cafe/wiki-mirror.env` holds the key and the category, and the units are installed and not started. `ufw` lets the containers reach port 8093. The running nginx and `app.yml` serve `/host/wiki-changed`, and `app.yml` is backed up. The env file still needs the bot password and the wiki's secret.
+- **The Lab wiki policy says a page's copy follows within a minute**, since the wiki sends a notice for each change. `content/wiki-category-policy.md`.
+
 ### 2026-11-19 (deployed: restored posts, and catching up after a long outage)
 
 - **Deployed** the chat bridge and `providers/slack/README.md` from `1251899` over `e349cb2`'s copies, each backed up as `.bak-20261119-slackrestore`. The bridge restarted and is bridging. The host's `scripts/40-configure-forum.py` is not updated yet and has not been run, so the webhook does not report restorings yet.
