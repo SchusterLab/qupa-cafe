@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (deployed: restored posts, and catching up after a long outage)
+
+- **Deployed** the chat bridge and `providers/slack/README.md` from `1251899` over `e349cb2`'s copies, each backed up as `.bak-20261119-slackrestore`. The bridge restarted and is bridging. The host's `scripts/40-configure-forum.py` is not updated yet and has not been run, so the webhook does not report restorings yet.
+
 ### 2026-11-19 (restored posts, and catching up after a long outage)
 
 - **A post restored on the forum is sent to Slack again**, at the end of its thread, and a restored topic gets a new thread with its posts. A topic opened in Slack keeps its writer's message as the parent. Before this, a restored post stayed out of Slack. The forum reports restorings by the bridge's webhook, so `scripts/40-configure-forum.py` adds `post_recovered` (204) and `topic_recovered` (105) to it. Until the script runs, the bridge gets no restorings.
