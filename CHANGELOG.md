@@ -6,6 +6,11 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-19 (restored posts, and catching up after a long outage)
+
+- **A post restored on the forum is sent to Slack again**, at the end of its thread, and a restored topic gets a new thread with its posts. A topic opened in Slack keeps its writer's message as the parent. Before this, a restored post stayed out of Slack. The forum reports restorings by the bridge's webhook, so `scripts/40-configure-forum.py` adds `post_recovered` (204) and `topic_recovered` (105) to it. Until the script runs, the bridge gets no restorings.
+- **After an outage the bridge catches up on every post it missed.** Before this, it went back at most twenty pages, about a thousand posts, and left older ones on the forum with a warning. `providers/slack/README.md` says both.
+
 ### 2026-11-19 (deployed: likes, edit notes, files in Slack edits, tables and math)
 
 - **Deployed** the chat bridge, `providers/slack/README.md` and `providers/slack/manifest.yml` from `e349cb2` over `85e0764`'s copies, each backed up as `.bak-20261119-slacklikes`, with the state file backed up beside it. The bridge restarted and is bridging, and the state file's `from_slack` table gained `slack_files`. The app was reinstalled from the manifest, and `--check` finds all 19 scopes on the token, `reactions:read` among them. No like has yet come from a reaction in the real workspace.

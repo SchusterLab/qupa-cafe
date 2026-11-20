@@ -245,6 +245,7 @@ def serve(stub: StubForum):
                     "id": topic["id"], "title": topic["title"], "slug": topic["slug"],
                     "category_id": topic["category_id"], "archetype": topic["archetype"],
                     "closed": topic["closed"], "archived": topic["archived"],
+                    "deleted_at": topic.get("deleted_at"),
                     "details": {
                         "created_by": {"id": stub.users[topic["opener"]]["id"] if topic["opener"] in stub.users else -1, "username": topic["opener"]},
                         "allowed_users": [
@@ -2100,6 +2101,89 @@ def test_a_deleted_topic_takes_the_bridges_messages_from_its_thread(world):
     bridge.edited("topic-deleted", 11)
     bridge.poll()
     assert len(deleted(slack)) == 2
+
+
+def test_a_post_restored_on_the_forum_is_sent_again(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    back = stub.post(10, "pat", "Deleted, and then restored.")
+    bridge.poll()
+    back["deleted_at"] = "2026-11-19T08:00:00Z"
+    bridge.edited("post-deleted", back["id"])
+    bridge.poll()
+    assert bridge.state.copy_of(back["id"]) is None
+
+    # Restored but hidden still, then restored.
+    back["hidden"] = True
+    assert bridge.carry_restore(back["id"]) == "still hidden or deleted"
+    back["deleted_at"] = None
+    back["hidden"] = False
+    channel, thread_ts = bridge.state.thread_for(10)
+    assert bridge.carry_restore(back["id"]) == f"restored it: relayed to {channel}"
+    copy = bridge.state.copy_of(back["id"])
+    assert slack.sent[copy.ts]["thread_ts"] == thread_ts
+    assert "Deleted, and then restored." in slack.sent[copy.ts]["text"]
+    assert bridge.carry_restore(back["id"]) == "already in Slack"
+
+    written = stub.post(10, "sunada", "From Slack.")
+    bridge.state.record_from_slack(written["id"], channel, "999.1", "From Slack.", {})
+    assert bridge.carry_restore(written["id"]) == "came from Slack, where its writer's message stayed"
+
+
+def test_a_restored_topic_opens_its_thread_again(world):
+    stub, slack, bridge = world
+    stub.topic(11, "Leakage in the cat qubit", 1, "pat")
+    first = stub.post(11, "pat", "Does leakage matter?")
+    stub.post(11, "sunada-agent", "It does.")
+    written = stub.post(11, "sunada", "From Slack.")
+    bridge.poll()
+    channel, parent = bridge.state.thread_for(11)
+    bridge.state.record_from_slack(written["id"], channel, "999.1", "From Slack.", {})
+    first["user_deleted"] = True
+    stub.topics[11]["deleted_at"] = "2026-11-19T08:00:00Z"
+    bridge.edited("topic-deleted", 11)
+    bridge.poll()
+    assert bridge.state.thread_for(11) is None
+
+    # Discourse reports both the first post's restoring and the topic's.
+    first["user_deleted"] = False
+    stub.topics[11]["deleted_at"] = None
+    assert bridge.carry_restore(first["id"]) == "restored its thread with 2 posts"
+    assert bridge.carry_topic_restore(11) == "already in Slack"
+    channel, again = bridge.state.thread_for(11)
+    assert again != parent
+    texts = [m["text"] for t, m in slack.sent.items() if t == again or m.get("thread_ts") == again]
+    assert len(texts) == 2 and "Does leakage matter?" in texts[0] and "It does." in texts[1]
+
+
+def test_a_restored_topic_opened_in_slack_keeps_its_writers_message_as_the_parent(world):
+    stub, slack, bridge = world
+    channel = slack.channels["qupa-research"]
+    stub.topic(12, "The d=9 run", 1, "sunada")
+    first = stub.post(12, "sunada", "Is the d=9 run done?")
+    bridge.state.record_from_slack(first["id"], channel, "500.1", "Is the d=9 run done?", {})
+    bridge.state.set_thread(12, channel, "500.1")
+    stub.post(12, "sunada-agent", "It is.")
+    bridge.poll()
+    stub.topics[12]["deleted_at"] = "2026-11-19T08:00:00Z"
+    bridge.edited("topic-deleted", 12)
+    bridge.poll()
+    assert bridge.state.thread_for(12) is None
+
+    stub.topics[12]["deleted_at"] = None
+    bridge.edited("topic-restored", 12)
+    bridge.poll()
+    assert bridge.state.thread_for(12) == (channel, "500.1")
+    (reply,) = [m for m in slack.sent.values() if m.get("thread_ts") == "500.1"]
+    assert "It is." in reply["text"]
+
+
+def test_a_long_outage_is_caught_up_in_full(world):
+    stub, slack, bridge = world
+    start_thread(stub, bridge)
+    missed = [stub.post(10, "pat", f"Post {n}.") for n in range(1100)]
+    # 22 pages of 50, past the forum's newest page.
+    assert [p["id"] for p in bridge.new_posts()] == [p["id"] for p in missed]
 
 
 def test_a_message_deleted_in_slack_deletes_its_post_as_its_writer(world):

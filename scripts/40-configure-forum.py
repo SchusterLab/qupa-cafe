@@ -209,7 +209,8 @@ PROVISION_HOOK = {
     "web_hook_event_type_ids": [304],
 }
 # post_edited (202) and topic_edited (103), a first post edited with its
-# title, and post_destroyed (203) and topic_destroyed (104), to
+# title, post_destroyed (203) and topic_destroyed (104), and post_recovered
+# (204) and topic_recovered (105), to
 # server/slack-bridge.py on the docker bridge, as JSON, signed with
 # BRIDGE_HOOK_SECRET. providers/slack/README.md.
 EDIT_HOOK = {
@@ -217,7 +218,7 @@ EDIT_HOOK = {
     "content_type": 1,
     "wildcard_web_hook": False,
     "active": True,
-    "web_hook_event_type_ids": [103, 104, 202, 203],
+    "web_hook_event_type_ids": [103, 104, 105, 202, 203, 204],
 }
 # Discourse refuses a shorter secret.
 MIN_HOOK_SECRET_LENGTH = 12
@@ -850,8 +851,8 @@ def ensure_provision_hook(api: Discourse) -> None:
 
 
 def ensure_edit_hook(api: Discourse) -> None:
-    """The webhook for edits and deletions, to the Slack bridge."""
-    ensure_webhook(api, "edits and deletions, to the Slack bridge", EDIT_HOOK, "BRIDGE_HOOK_SECRET",
+    """The webhook for edits, deletions and restorings, to the Slack bridge."""
+    ensure_webhook(api, "edits, deletions and restorings, to the Slack bridge", EDIT_HOOK, "BRIDGE_HOOK_SECRET",
                    "providers/slack/README.md")
 
 

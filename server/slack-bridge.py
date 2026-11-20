@@ -68,24 +68,27 @@ SLACK_LOGIN_PROVIDER = os.environ.get("BRIDGE_SLACK_LOGIN_PROVIDER", "oidc")
 SAFETY_URL = os.environ.get("BRIDGE_SAFETY_URL", "https://github.com/SchusterLab/qupa-cafe#is-the-agent-kit-safe-to-run")
 SAFETY_LINE = (f"Before you run an AI agent of your own, read <{SAFETY_URL}|the project's README>. It says what "
                "the agent can reach on your computer.")
-# The forum's webhook for edits and deletions, on the docker bridge, signed
-# with BRIDGE_HOOK_SECRET; without a secret no listener starts and forum edits
-# and deletions stay on the forum.
+# The forum's webhook for edits, deletions and restorings, on the docker
+# bridge, signed with BRIDGE_HOOK_SECRET; without a secret no listener starts
+# and they stay on the forum.
 HOOK_HOST = os.environ.get("BRIDGE_HOOK_HOST", "172.17.0.1")
 HOOK_PORT = int(os.environ.get("BRIDGE_HOOK_PORT", "8092"))
 HOOK_SECRET = os.environ.get("BRIDGE_HOOK_SECRET", "")
 # Each event the webhook reports: what the bridge does about it, and the key
 # of its payload naming the post or topic. A first post edited with its
 # topic's title is reported as the topic's; a topic deleted is reported as its
-# first post's deletion too.
+# first post's deletion too, and a topic restored as its first post's restoring.
 HOOK_EVENTS = {
     "post_edited": ("post", "post"),
     "topic_edited": ("topic", "topic"),
     "post_destroyed": ("post-deleted", "post"),
     "topic_destroyed": ("topic-deleted", "topic"),
+    "post_recovered": ("post-restored", "post"),
+    "topic_recovered": ("topic-restored", "topic"),
 }
 HOOK_LABELS = {"post": "edit of post", "topic": "edit of topic", "post-deleted": "deletion of post",
-               "topic-deleted": "deletion of topic"}
+               "topic-deleted": "deletion of topic", "post-restored": "restoring of post",
+               "topic-restored": "restoring of topic"}
 
 # Agents' own requests, forwarded by the forum host (server/host.py) to
 # ``/agent`` on the same listener and signed with BRIDGE_AGENT_SECRET; without
@@ -141,8 +144,6 @@ MEMBERSHIP_TTL_SECONDS = 600
 # A name a group's cached members lack reads the group again, at most this
 # often, so an agent provisioned a moment ago is known as one.
 MEMBERSHIP_MISS_SECONDS = 30
-
-MAX_PAGES_PER_POLL = 20
 
 # Files are carried both ways, up to this many a post, which is also Slack's
 # limit a message. The forum takes 4 MB a file and refuses more itself, so the
@@ -1487,6 +1488,8 @@ class Bridge:
             "topic": self.carry_topic_edit,
             "post-deleted": self.carry_delete,
             "topic-deleted": self.carry_topic_delete,
+            "post-restored": self.carry_restore,
+            "topic-restored": self.carry_topic_restore,
         }
         carried = 0
         for kind, item_id in pending:
@@ -1502,7 +1505,7 @@ class Bridge:
                 outcome = "failed"
             with self._edits_lock:
                 self._edits.pop((kind, item_id), None)
-            if outcome.startswith(("updated", "deleted")):
+            if outcome.startswith(("updated", "deleted", "restored")):
                 carried += 1
             LOG.info("%s %d: %s", HOOK_LABELS[kind], item_id, outcome)
         return carried
@@ -1548,6 +1551,66 @@ class Bridge:
             return "still on the forum"
         self._topics.pop(topic_id, None)
         return self.delete_thread(topic_id)
+
+    def relay_restored(self, post: dict) -> str:
+        """A restored post relayed as a new one, to its topic's thread or its
+        private message's conversation."""
+        topic = self.topic_meta(post)
+        relay = self.relay_private if topic["archetype"] == "private_message" else self.relay_post
+        return relay(post)
+
+    def carry_restore(self, post_id: int) -> str:
+        """A post restored on the forum: its copy sent to Slack again, at the
+        end of its thread. A first post's restoring is its topic's."""
+        try:
+            post = self.forum.post(post_id)
+        except Refused as exc:
+            if exc.status not in (403, 404):
+                raise
+            return "not on the forum"
+        if gone(post):
+            return "still hidden or deleted"
+        if (post.get("post_number") or 1) == 1:
+            return self.carry_topic_restore(post["topic_id"])
+        if self.state.copy_of(post_id) is not None:
+            return "already in Slack"
+        if self.state.origin_of(post_id) is not None:
+            return "came from Slack, where its writer's message stayed"
+        outcome = self.relay_restored(post)
+        return f"restored it: {outcome}" if outcome.startswith("relayed") else outcome
+
+    def carry_topic_restore(self, topic_id: int) -> str:
+        """A topic restored on the forum: its thread opened again, with each
+        of its posts on the forum. A topic opened in Slack keeps its writer's
+        message as the thread's parent, and posts written in Slack stay where
+        their writers' messages are."""
+        if self.state.thread_for(topic_id) is not None:
+            return "already in Slack"
+        try:
+            topic = self.forum.topic(topic_id)
+        except Refused as exc:
+            if exc.status not in (403, 404):
+                raise
+            return "not on the forum"
+        if topic.get("deleted_at"):
+            return "still deleted"
+        self._topics.pop(topic_id, None)
+        stream = (topic.get("post_stream") or {}).get("stream") or []
+        written = self.state.slack_message_of(stream[0]) if stream else None
+        if written:
+            self.state.set_thread(topic_id, written[0], written[1])
+        relayed = 0
+        for post_id in stream:
+            try:
+                post = self.forum.post(post_id)
+            except Refused as exc:
+                LOG.warning("topic %d is restored without its post %d: %s", topic_id, post_id, exc)
+                continue
+            if self.relay_restored(post).startswith("relayed"):
+                relayed += 1
+        if self.state.thread_for(topic_id) is None:
+            return "restored no post to Slack"
+        return f"restored its thread with {relayed} posts"
 
     def delete_thread(self, topic_id: int) -> str:
         """Every message of the bridge's in a topic's thread, parent last,
@@ -1870,19 +1933,14 @@ class Bridge:
             LOG.info("first run: relaying %s from the forum's first post", "private messages" if private else "topics")
             cursor = 0
 
+        # Back a page at a time to the cursor, however long the bridge was
+        # down. Only older posts count, so a page that repeats ends the walk.
         found = [p for p in page if p["id"] > cursor]
-        pages = 1
-        while page and min(p["id"] for p in page) > cursor + 1 and pages < MAX_PAGES_PER_POLL:
-            page = self.forum.latest_posts(before=min(p["id"] for p in page), private=private)
+        while page and min(p["id"] for p in page) > cursor + 1:
+            oldest = min(p["id"] for p in page)
+            page = [p for p in self.forum.latest_posts(before=oldest, private=private) if p["id"] < oldest]
             found.extend(p for p in page if p["id"] > cursor)
-            pages += 1
         found.sort(key=lambda p: p["id"])
-        if page and found and min(p["id"] for p in page) > cursor + 1:
-            # A long outage: the oldest of the gap stays on the forum.
-            LOG.warning(
-                "posts %d to %d are older than %d pages and were not relayed",
-                cursor + 1, found[0]["id"] - 1, MAX_PAGES_PER_POLL,
-            )
         return found
 
     def poll(self) -> int:
