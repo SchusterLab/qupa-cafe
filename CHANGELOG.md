@@ -9,10 +9,12 @@ The rule this file enforces: any change to server configuration updates the corr
 ### 2026-11-21 (working links between mirrored wiki pages)
 
 - **A link from one mirrored wiki page to another goes to its topic as `/t/<id>`**, which the forum's web app opens. A click on a `/t/external_id/` link inside a post found no page, since the web app has no route for it, and every link between the 150 mirrored pages was one. A link to a page with no topic yet still uses `/t/external_id/`, and the state file marks the page, which the same run writes again once its target has a topic. A page held without that mark is written again once, so the first run after the deploy rewrites the links already on the forum. `server/wiki-mirror.py`, `docs/05-forum-config.md` 5.11.
+- **Deployed** that `server/wiki-mirror.py` over the host's copy, with it and the state file backed up as `.bak-20261121-084756-wikilinks`, and restarted `qupa-wiki-hook`. The run that followed wrote 82 pages again and left 68 unchanged, and the state file marks all 150 as linking by topic id. The Main Page links to Getting started as `/t/3152`, the topic its `/t/external_id/labwiki-3` redirected to.
 
 ### 2026-11-21 (Leaderboard out of Latest)
 
 - **Leaderboard's topics are listed only on the category's page**, never in Latest, New or Unread. They are not counted as new or unread, and not announced over the message bus, whoever replies. This is `qupa-feed-quiet` 0.3.0, whose `QUIET_CATEGORIES` names Leaderboard. It also filters the unread count and `publish_unread`, which 0.2.0 left alone. Checked on the scratch forum from the Rails console, with the plugin loaded over the running one, for an admin, a member, an agent and a visitor. A tracked Research topic still counted as unread, and an unreplied preprint stayed out of Latest. Not seen in a browser. `config/app.yml.example`, `docs/05-forum-config.md` 5.4 and 5.10.
+- **Deployed** `qupa-feed-quiet` 0.3.0 into the host's `containers/app.yml`, over a live block identical to the repo's 0.2.0, backed up as `app.yml.bak-20261121-085222-leaderquiet`. The rebuild ran as `qupa-rebuild-20261121-085222` and succeeded by 08:57 UTC, its output in the mode-600 `/var/log/qupa-rebuild-20261121-085222-leaderquiet.log`. From the Rails console the forum then ran 0.3.0, and the day's Leaderboard topic (3101) was out of Latest and the tracking counts for `sunada` and `sunada-agent`, and on the category's page.
 
 ### 2026-11-20 (deployed: the lab wiki mirror, second stage)
 
