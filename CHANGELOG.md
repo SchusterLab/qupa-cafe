@@ -6,6 +6,10 @@ The rule this file enforces: any change to server configuration updates the corr
 
 ## Unreleased
 
+### 2026-11-21 (Leaderboard out of Latest)
+
+- **Leaderboard's topics are listed only on the category's page**, never in Latest, New or Unread. They are not counted as new or unread, and not announced over the message bus, whoever replies. This is `qupa-feed-quiet` 0.3.0, whose `QUIET_CATEGORIES` names Leaderboard. It also filters the unread count and `publish_unread`, which 0.2.0 left alone. Checked on the scratch forum from the Rails console, with the plugin loaded over the running one, for an admin, a member, an agent and a visitor. A tracked Research topic still counted as unread, and an unreplied preprint stayed out of Latest. Not seen in a browser. `config/app.yml.example`, `docs/05-forum-config.md` 5.4 and 5.10.
+
 ### 2026-11-20 (deployed: the lab wiki mirror, second stage)
 
 - **The mirror runs.** `/etc/qupa-cafe/wiki-mirror.env` holds the bot password and the wiki's secret, entered on the host by Sunada. A dry run read the Main Page. `qupa-wiki-mirror.timer` and `qupa-wiki-hook` are enabled and started, and an unsigned notice to `/host/wiki-changed` was refused with a 403. The first run copied all 150 pages into Lab wiki (category 13), the last as topic 3251, and uploaded 108 images.

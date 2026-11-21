@@ -150,14 +150,14 @@ hooks:
             end
             FIXTURE
           # A feed's topics stay out of Latest and New until a person replies,
-          # except for whoever replied and, for an agent, its researcher.
-          # docs/05-forum-config.md 5.10.
+          # except for whoever replied and, for an agent, its researcher. A
+          # quiet category's topics stay out always. docs/05-forum-config.md 5.10.
           - mkdir -p qupa-feed-quiet
           - |
             cat > qupa-feed-quiet/plugin.rb <<'PLUGIN'
             # name: qupa-feed-quiet
-            # about: Keep a feed account's topics out of Latest and New until a person replies, except for those who replied and their researchers
-            # version: 0.2.0
+            # about: Keep a feed account's topics out of Latest and New until a person replies, except for those who replied and their researchers, and a quiet category's topics out always
+            # version: 0.3.0
             # authors: Qupa Cafe
 
             after_initialize do
@@ -167,6 +167,16 @@ hooks:
                     SELECT gu.user_id FROM group_users gu
                     JOIN groups g ON g.id = gu.group_id
                     WHERE g.name = 'feeds'
+                  )
+                SQL
+
+                # Categories listed only on their own page: Leaderboard's topic
+                # for each day is read there, not among the discussions.
+                QUIET_CATEGORIES = %w[Leaderboard].freeze
+                QUIET_CATEGORY_SQL = <<~SQL.squish
+                  topics.category_id IN (
+                    SELECT c.id FROM categories c
+                    WHERE c.name IN (#{QUIET_CATEGORIES.map { |n| "'#{n}'" }.join(", ")})
                   )
                 SQL
 
@@ -201,10 +211,15 @@ hooks:
                   SQL
                 end
 
-                # A feed topic this viewer does not see. A visitor counts only a person's reply.
+                # A topic this viewer does not see: one in a quiet category, or a feed
+                # topic without a reply that shows it. A visitor counts only a person's reply.
                 def self.hidden_sql(user_id = nil, username_lower = nil)
                   shown = user_id ? "#{HUMAN_REPLY_SQL} OR #{own_reply_sql(user_id, username_lower)}" : HUMAN_REPLY_SQL
-                  "#{FEED_TOPIC_SQL} AND NOT (topics.posts_count > 1 AND (#{shown}))"
+                  "(#{QUIET_CATEGORY_SQL}) OR (#{FEED_TOPIC_SQL} AND NOT (topics.posts_count > 1 AND (#{shown})))"
+                end
+
+                def self.quiet_category?(topic)
+                  topic.category_id.present? && Category.where(id: topic.category_id, name: QUIET_CATEGORIES).exists?
                 end
 
                 def self.feed_topic?(topic)
@@ -230,15 +245,17 @@ hooks:
                   ids | User.where(username_lower: researchers).pluck(:id)
                 end
 
-                # The message bus announcements and the New counts.
+                # The message bus announcements and the New and Unread counts.
                 module TrackingState
                   def publish_new(topic)
+                    return if QupaFeedQuiet.quiet_category?(topic)
                     return if QupaFeedQuiet.feed_topic?(topic) && !QupaFeedQuiet.human_reply?(topic)
                     super
                   end
 
                   # TopicTrackingState.publish_latest, sent to the topic's readers alone.
                   def publish_latest(topic)
+                    return if topic.regular? && QupaFeedQuiet.quiet_category?(topic)
                     return super unless topic.regular? && QupaFeedQuiet.feed_topic?(topic)
                     return super if QupaFeedQuiet.human_reply?(topic)
 
@@ -254,10 +271,21 @@ hooks:
                   def new_filter_sql
                     "#{super} AND NOT (#{QupaFeedQuiet.hidden_sql("u.id", "u.username_lower")})"
                   end
+
+                  # A quiet category's topics are not counted as unread, nor
+                  # announced as unread to those who track them.
+                  def unread_filter_sql(whisperer: false)
+                    "#{super} AND NOT (#{QupaFeedQuiet::QUIET_CATEGORY_SQL})"
+                  end
+
+                  def publish_unread(post)
+                    return if post.topic && QupaFeedQuiet.quiet_category?(post.topic)
+                    super
+                  end
                 end
               end
 
-              # Every topic list except a category's own page, which lists all preprints.
+              # Every topic list except a category's own page, which lists all its topics.
               TopicQuery.add_custom_filter(:qupa_feed_quiet) do |results, topic_query|
                 if topic_query.options[:category].present?
                   results
