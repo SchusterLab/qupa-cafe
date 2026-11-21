@@ -291,13 +291,40 @@ def test_links_to_pages_and_redirects_go_to_their_topics_and_images_are_uploaded
     wiki.html_by_title["Fridges"] = page(f'<p><a rel="mw:WikiLink" href="./BF1">BF1</a> and '
                                          f'<a rel="mw:WikiLink" href="./Nowhere">nowhere</a></p>{img}')
     wiki.files["https://wiki.example/images/a/ab/Plate.png"] = (b"\x89PNG...", "image/png")
-    mirror.run()
+    assert mirror.run() == ["BlueFors1", "Fridges"]
+    pages = mirror.state["pages"]
+    blue, fridges = pages["7"]["topic_id"], pages["8"]["topic_id"]
     raws = {c[2]["title"]: c[2]["raw"] for c in forum.calls if c[1] == "/posts.json"}
+    # BlueFors1 came first, so it linked ahead to Fridges, which had no topic yet ...
     assert "[up](/t/external_id/labwiki-8)" in raws["BlueFors1 (lab wiki page)"]
-    assert "[BF1](/t/external_id/labwiki-7)" in raws["Fridges (lab wiki page)"]
+    # ... and Fridges, written after it, links to its topic by id, through the redirect.
+    assert f"[BF1](/t/{blue})" in raws["Fridges (lab wiki page)"]
     assert "[nowhere](https://wiki.example/index.php/Nowhere)" in raws["Fridges (lab wiki page)"]
     assert "![plate|10x20](upload://Plate.png)" in raws["Fridges (lab wiki page)"]
     assert forum.uploaded == ["Plate.png"]
+    # The same run wrote BlueFors1 again, with Fridges' topic by id.
+    relinked = [c for c in forum.calls if c[1] == f"/posts/{pages['7']['posts'][0]}.json"]
+    assert len(relinked) == 1 and f"[up](/t/{fridges})" in relinked[0][2]["post[raw]"]
+    assert pages["7"]["links"] == pages["8"]["links"] == wm.LINKS_RESOLVED
+
+    forum.calls.clear()
+    assert mirror.run() == [] and forum.calls == []
+
+
+def test_a_page_held_before_links_went_by_id_is_written_again_once(world):
+    wiki, forum, mirror = world
+    wiki.listed = {7: {"title": "BlueFors1", "revid": 70}, 8: {"title": "Fridges", "revid": 80}}
+    wiki.html_by_title["BlueFors1"] = page('<p><a rel="mw:WikiLink" href="./Fridges">up</a></p>')
+    wiki.html_by_title["Fridges"] = page("<p>Cold.</p>")
+    mirror.run()
+    for held in mirror.state["pages"].values():
+        del held["links"]
+    held = mirror.state["pages"]["7"]
+    held["digests"][0] = "an older rendering"
+    forum.calls.clear()
+    assert mirror.run() == ["BlueFors1"]
+    assert forum.writes() == [("PUT", f"/posts/{held['posts'][0]}.json")]
+    assert mirror.run() == []
 
 
 def test_a_file_too_big_or_not_an_image_is_linked_on_the_wiki(world):

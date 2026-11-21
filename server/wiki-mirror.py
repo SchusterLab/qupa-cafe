@@ -73,6 +73,10 @@ STATE_PATH = Path(os.environ.get("WIKI_STATE", "/var/lib/qupa-wiki-mirror/state.
 POST_INTERVAL = float(os.environ.get("WIKI_POST_INTERVAL", "1"))
 # The external_id of a page's topic is this, then the page's id.
 EXTERNAL_PREFIX = os.environ.get("WIKI_EXTERNAL_PREFIX", "labwiki-")
+# A page's "links" in the state file: every link to another page reaches its
+# topic by id, or some reach a page with no topic yet. A page held without
+# LINKS_RESOLVED is written again even when the wiki has not changed it.
+LINKS_RESOLVED, LINKS_AHEAD = "topic ids", "ahead"
 USER_AGENT = "qupa-cafe wiki mirror (+https://github.com/SchusterLab/qupa-cafe)"
 
 # The forum's max_post_length (scripts/40-configure-forum.py). A part of a page
@@ -689,6 +693,8 @@ class Mirror:
         self.state.setdefault("uploads", {})
         self.titles: dict[str, int] = {}
         self.redirects: dict[str, str] = {}
+        # Whether the page being rendered links to a page with no topic yet.
+        self.links_ahead = False
 
     def save(self) -> None:
         if self.forum.dry_run:
@@ -700,10 +706,18 @@ class Mirror:
     # -- what a link and an image become
 
     def link(self, title: str, fragment: str) -> str:
+        """A page's topic, as ``/t/<id>``. The forum's web app opens that in
+        place; it has no route for ``/t/external_id/``, which only a fresh page
+        load resolves. So a link to a page with no topic yet uses that, and
+        the page is written again once the topic exists."""
         title = title[:1].upper() + title[1:]
         target = self.redirects.get(title, title)
         page_id = self.titles.get(target)
         if page_id is not None:
+            held = self.state["pages"].get(str(page_id)) or {}
+            if held.get("topic_id"):
+                return f"/t/{held['topic_id']}"
+            self.links_ahead = True
             return f"/t/external_id/{EXTERNAL_PREFIX}{page_id}"
         return self.wiki.page_url(title, fragment)
 
@@ -758,14 +772,22 @@ class Mirror:
     def mirror_page(self, page_id: int, page: dict) -> str:
         key = str(page_id)
         held = self.state["pages"].get(key)
-        if held and held.get("revid") == page["revid"] and held.get("title") == page["title"] and not held.get("deleted"):
+        # A page whose links all reach their topics, unchanged on the wiki.
+        if (held and held.get("revid") == page["revid"] and held.get("title") == page["title"]
+                and not held.get("deleted") and held.get("links") == LINKS_RESOLVED):
             return "unchanged"
+        self.links_ahead = False
         posts = self.posts_for(page["title"], self.render(page["title"]))
+        links = LINKS_AHEAD if self.links_ahead else LINKS_RESOLVED
         if not held:
             held = self.adopt(page_id)
         if not held:
-            return self.create(page_id, page, posts)
-        return self.update(key, held, page, posts)
+            outcome = self.create(page_id, page, posts)
+        else:
+            outcome = self.update(key, held, page, posts)
+        self.state["pages"][key]["links"] = links
+        self.save()
+        return outcome
 
     def adopt(self, page_id: int) -> dict | None:
         """A topic the forum has for the page that the state file lost."""
@@ -829,7 +851,7 @@ class Mirror:
         held.update(posts=ids, digests=[digest(p) for p in posts] + ["gone"] * (len(ids) - len(posts)),
                     title=page["title"], revid=page["revid"])
         self.save()
-        return f"updated topic {topic_id}: {changed} change(s)"
+        return f"updated topic {topic_id}: {changed} change(s)" if changed else "unchanged"
 
     def mark_deleted(self, key: str, held: dict) -> str:
         title = held.get("title") or "this page"
@@ -866,6 +888,20 @@ class Mirror:
             if outcome != "unchanged":
                 LOG.info("%s: %s", page["title"], outcome)
                 done.append(page["title"])
+        # A page that linked ahead, to a page this run then gave a topic.
+        for page_id, page in sorted(pages.items(), key=lambda item: item[1]["title"]):
+            held = self.state["pages"].get(str(page_id)) or {}
+            if (only and page["title"] != only) or held.get("links") != LINKS_AHEAD:
+                continue
+            try:
+                outcome = self.mirror_page(page_id, page)
+            except Exception as exc:  # noqa: BLE001 - tried again at the next run
+                LOG.error("cannot relink %s: %s", page["title"], exc, exc_info=LOG.isEnabledFor(logging.DEBUG))
+                continue
+            if outcome != "unchanged":
+                LOG.info("%s: relinked, %s", page["title"], outcome)
+                if page["title"] not in done:
+                    done.append(page["title"])
         if not only:
             for key, held in list(self.state["pages"].items()):
                 if int(key) not in pages and not held.get("deleted"):
